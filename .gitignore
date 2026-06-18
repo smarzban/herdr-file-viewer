@@ -1,0 +1,13 @@
+# Rust build output
+/target
+
+# macOS / AppleDouble
+.DS_Store
+._*
+
+# Editor / OS cruft
+*.swp
+*~
+
+# Local Claude Code tooling (skills, local settings) — not part of the plugin
+.claude/
