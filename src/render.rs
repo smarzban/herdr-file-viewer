@@ -5,11 +5,13 @@
 //! neutralizes control/escape sequences (AC-27) and delegates styling to external CLIs
 //! with a plain-text fallback (AC-24/25). Reads only, never writes (AC-N1).
 
+use crate::view_policy::ViewMode;
 use ansi_to_tui::IntoText;
 use ratatui::text::Text;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 /// The size cap: files at or above this many bytes are previewed, not shown whole (AC-13).
 const MAX_BYTES: u64 = 1024 * 1024; // 1 MB
@@ -31,12 +33,12 @@ pub enum Prepared {
 /// `MAX_BYTES` from disk, so a huge or hostile file can never be slurped whole (AC-N1).
 pub fn classify(path: &Path) -> Prepared {
     let byte_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let Ok(mut file) = File::open(path) else {
+    let Ok(file) = File::open(path) else {
         return Prepared::Full { text: String::new() };
     };
     // Bounded read: at most MAX_BYTES, so a giant/hostile file is never slurped whole.
     let mut buf = Vec::new();
-    if file.by_ref().take(MAX_BYTES).read_to_end(&mut buf).is_err() {
+    if file.take(MAX_BYTES).read_to_end(&mut buf).is_err() {
         return Prepared::Full { text: String::new() };
     }
 
@@ -76,6 +78,103 @@ pub fn classify(path: &Path) -> Prepared {
         return Prepared::Truncated { text: preview, notice };
     }
     Prepared::Full { text }
+}
+
+/// The external renderer commands (program + args) per view mode. Injected so tests stay
+/// hermetic and so a real deployment points these at glow / delta / bat.
+#[derive(Debug, Clone)]
+pub struct Renderers {
+    pub markdown: Vec<String>,
+    pub diff: Vec<String>,
+    pub syntax: Vec<String>,
+}
+
+/// Produce the content-pane text for a prepared file in a given view mode, delegating to
+/// the external renderer for that mode. Untrusted content is fed on **stdin** (never as an
+/// argument) to the trusted, configured renderer; its output is re-neutralized by
+/// [`to_text`]. A missing/failed renderer falls back to plain text plus a notice naming
+/// the missing capability (AC-24, AC-25). Returns the text and an optional notice.
+pub fn render(
+    renderers: &Renderers,
+    prepared: &Prepared,
+    mode: ViewMode,
+    raw_diff: Option<&str>,
+) -> (Text<'static>, Option<String>) {
+    // Binary: a placeholder, never the raw bytes (AC-12).
+    let (content, base_notice) = match prepared {
+        Prepared::Binary => {
+            return (Text::raw("[binary file — preview not shown]"), None);
+        }
+        Prepared::Full { text } => (text.as_str(), None),
+        Prepared::Truncated { text, notice } => (text.as_str(), Some(notice.clone())),
+    };
+
+    // Pick the input to render and the command for this mode (None = raw, no delegation).
+    let (input, command) = match mode {
+        ViewMode::Diff => (raw_diff.unwrap_or(""), Some(&renderers.diff)),
+        ViewMode::RenderedMarkdown => (content, Some(&renderers.markdown)),
+        ViewMode::SyntaxContent => (content, Some(&renderers.syntax)),
+        ViewMode::RawContent => (content, None),
+    };
+
+    match command {
+        None => (to_text(input), base_notice),
+        Some(cmd) => match run_renderer(cmd, input) {
+            Ok(out) => (to_text(&out), base_notice),
+            Err(reason) => {
+                // Plain-text fallback (AC-24) + a notice naming the capability (AC-25).
+                let fallback = format!(
+                    "{} renderer unavailable ({reason}); showing plain text.",
+                    capability(mode)
+                );
+                let notice = match base_notice {
+                    Some(prev) => format!("{prev}\n{fallback}"),
+                    None => fallback,
+                };
+                (to_text(input), Some(notice))
+            }
+        },
+    }
+}
+
+/// A human name for the renderer a mode delegates to (for fallback notices).
+fn capability(mode: ViewMode) -> &'static str {
+    match mode {
+        ViewMode::Diff => "Diff",
+        ViewMode::RenderedMarkdown => "Markdown",
+        ViewMode::SyntaxContent => "Syntax",
+        ViewMode::RawContent => "Plain",
+    }
+}
+
+/// Spawn a renderer, feed `input` on stdin (on a writer thread to avoid a pipe deadlock),
+/// and capture stdout. `Err` on a missing program or non-zero exit. The command is trusted
+/// (operator-configured); only the stdin content is untrusted, so there is no injection.
+fn run_renderer(command: &[String], input: &str) -> Result<String, String> {
+    let (prog, args) = command.split_first().ok_or("empty renderer command")?;
+    let mut child = Command::new(prog)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{prog}: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let owned = input.to_owned();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(owned.as_bytes()); // ignore a closed pipe
+        });
+    }
+
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("{prog}: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!("{prog} exited with {}", out.status))
+    }
 }
 
 /// Ingest (possibly untrusted) content into ratatui `Text`. Cursor-movement and
