@@ -4,7 +4,12 @@
 //! Modules are added by each plan task as it lands.
 
 pub mod context;
+pub mod editor;
 pub mod git;
+pub mod host;
+pub mod input;
+pub mod intent;
+pub mod presenter;
 pub mod render;
 pub mod root;
 pub mod tree;
