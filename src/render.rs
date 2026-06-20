@@ -5,6 +5,8 @@
 //! neutralizes control/escape sequences (AC-27) and delegates styling to external CLIs
 //! with a plain-text fallback (AC-24/25). Reads only, never writes (AC-N1).
 
+use ansi_to_tui::IntoText;
+use ratatui::text::Text;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -74,6 +76,67 @@ pub fn classify(path: &Path) -> Prepared {
         return Prepared::Truncated { text: preview, notice };
     }
     Prepared::Full { text }
+}
+
+/// Ingest (possibly untrusted) content into ratatui `Text`. Cursor-movement and
+/// screen-control escape sequences are stripped regardless of source; only SGR styling is
+/// kept and mapped into spans by `ansi-to-tui` (AC-27). The result can only ever paint the
+/// viewer's own region — it carries no terminal-control operations.
+pub fn to_text(raw: &str) -> Text<'static> {
+    let cleaned = strip_terminal_control(raw);
+    cleaned
+        .into_text()
+        .unwrap_or_else(|_| Text::raw(cleaned.clone()))
+}
+
+/// Remove cursor/screen-control escape sequences, keeping only SGR (`…m`) styling so it
+/// can be mapped to ratatui styles downstream. Operates on bytes (control sequences are
+/// ASCII) and preserves all other (UTF-8) content verbatim.
+fn strip_terminal_control(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            match bytes.get(i + 1) {
+                Some(b'[') => {
+                    // CSI: params/intermediates until a final byte (0x40..=0x7e).
+                    let start = i;
+                    let mut j = i + 2;
+                    while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b'm' {
+                        out.extend_from_slice(&bytes[start..=j]); // keep SGR styling
+                    }
+                    // else: drop the whole control sequence (cursor move, erase, …)
+                    i = if j < bytes.len() { j + 1 } else { j };
+                }
+                Some(b']') => {
+                    // OSC: drop through BEL or ST (ESC \).
+                    let mut j = i + 2;
+                    while j < bytes.len() {
+                        if bytes[j] == 0x07 {
+                            j += 1;
+                            break;
+                        }
+                        if bytes[j] == 0x1b && bytes.get(j + 1) == Some(&b'\\') {
+                            j += 2;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                }
+                Some(_) => i += 2, // ESC + single (e.g. ESC c reset) → drop both
+                None => i += 1,    // lone trailing ESC → drop
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
