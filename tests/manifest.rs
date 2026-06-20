@@ -1,0 +1,91 @@
+//! T-1 — the herdr plugin manifest is the Host Adapter's static surface.
+//!
+//! AC-17: the viewer declares a split-pane launch of the release binary.
+//! AC-N4: the viewer never auto-launches — the manifest declares no event hooks.
+//!
+//! Per the plan, these read `herdr-plugin.toml` to a string and assert on its contents.
+
+use std::fs;
+use std::path::PathBuf;
+
+fn manifest_raw() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("herdr-plugin.toml");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+}
+
+/// The manifest with `#` line-comments stripped, so assertions match actual
+/// declarations (table headers, keys/values) rather than prose in comments.
+/// (The manifest uses no `#` inside string values, so cutting at the first `#`
+/// per line is sufficient and keeps the test free of a TOML-parser dependency.)
+fn manifest() -> String {
+    manifest_raw()
+        .lines()
+        .map(|line| match line.find('#') {
+            Some(i) => &line[..i],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn declares_split_pane_launching_the_release_binary() {
+    let m = manifest();
+    assert!(m.contains("[[panes]]"), "manifest must declare a [[panes]] entry");
+    assert!(
+        m.contains(r#"placement = "split""#),
+        "AC-17: the pane must declare placement = \"split\""
+    );
+    assert!(
+        m.contains(r#"command = ["./target/release/herdr-file-viewer"]"#),
+        "AC-17: the pane command must launch the release binary"
+    );
+}
+
+#[test]
+fn declares_at_least_one_action() {
+    assert!(
+        manifest().contains("[[actions]]"),
+        "manifest must declare an [[actions]] entry to summon the viewer"
+    );
+}
+
+#[test]
+fn pins_minimum_herdr_version() {
+    assert!(
+        manifest().contains(r#"min_herdr_version = "0.7.0""#),
+        "manifest must pin min_herdr_version = \"0.7.0\""
+    );
+}
+
+#[test]
+fn declares_a_release_build_command() {
+    let m = manifest();
+    assert!(m.contains("[[build]]"), "manifest must declare a [[build]] step");
+    assert!(
+        m.contains(r#"command = ["cargo", "build", "--release"]"#),
+        "the build step must run `cargo build --release`"
+    );
+}
+
+#[test]
+fn declares_linux_and_macos_platforms() {
+    assert!(
+        manifest().contains(r#"platforms = ["linux", "macos"]"#),
+        "manifest must declare platforms = [\"linux\", \"macos\"]"
+    );
+}
+
+#[test]
+fn declares_no_event_hooks() {
+    let m = manifest();
+    // AC-N4: no event-hook table — the viewer only ever opens via an explicit action.
+    assert!(
+        !m.contains("[[events]]"),
+        "AC-N4: manifest must declare no [[events]] hooks"
+    );
+    assert!(
+        !m.contains("[[link_handlers]]"),
+        "manifest must declare no [[link_handlers]] (no automatic invocation path)"
+    );
+}
