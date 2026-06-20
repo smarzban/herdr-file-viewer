@@ -4,7 +4,7 @@
 mod common;
 
 use common::{git, TempDir};
-use herdr_file_viewer::git::{changed_set, default_baseline, diff, Baseline, Status};
+use herdr_file_viewer::git::{changed_set, default_baseline, diff, status, Baseline, Status};
 use herdr_file_viewer::root::Resolved;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -167,6 +167,56 @@ fn option_like_base_branch_hint_is_rejected_not_injected() {
     // falls back to the local base, so committed work is still found.
     let set = changed_set(repo.path(), Baseline::Base, Some("--output=/tmp/pwned"));
     assert!(set.contains_key(&PathBuf::from("feat.txt")));
+}
+
+#[test]
+fn staged_file_in_unborn_repo_diffs_as_added() {
+    // No commits yet → HEAD doesn't resolve; a staged file must still diff as added.
+    let repo = TempDir::new();
+    git(repo.path(), &["init", "-q", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "t@example.com"]);
+    git(repo.path(), &["config", "user.name", "T"]);
+    fs::write(repo.path().join("first.txt"), "hello\n").unwrap();
+    git(repo.path(), &["add", "first.txt"]);
+
+    let d = diff(repo.path(), Path::new("first.txt"), Baseline::Head, None);
+    assert!(d.contains("+hello"), "unborn-repo staged file shows an added diff (AC-9)");
+}
+
+#[test]
+fn diff_refuses_paths_outside_the_root() {
+    // No arbitrary file reads; the viewer never resolves above its root (AC-N5).
+    let repo = make_repo();
+    assert!(diff(repo.path(), Path::new("/etc/hostname"), Baseline::Head, None).is_empty());
+    assert!(diff(repo.path(), Path::new("../../etc/hostname"), Baseline::Head, None).is_empty());
+}
+
+#[test]
+fn malicious_repo_config_is_not_executed_during_queries() {
+    // A planted .git/config must not run programs via fsmonitor/textconv when the viewer
+    // opens an untrusted repo.
+    let repo = make_repo();
+    let marker = repo.path().join("PWNED");
+    let script = repo.path().join("payload.sh");
+    fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let s = script.to_str().unwrap();
+    git(repo.path(), &["config", "core.fsmonitor", s]);
+    fs::write(repo.path().join(".gitattributes"), "* diff=pwn\n").unwrap();
+    git(repo.path(), &["config", "diff.pwn.textconv", s]);
+    fs::write(repo.path().join("seed.txt"), "changed\n").unwrap();
+
+    let _ = status(repo.path());
+    let _ = changed_set(repo.path(), Baseline::Head, None);
+    let _ = diff(repo.path(), Path::new("seed.txt"), Baseline::Head, None);
+
+    assert!(
+        !marker.exists(),
+        "repo-configured fsmonitor/textconv must not execute"
+    );
 }
 
 #[test]

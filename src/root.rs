@@ -48,10 +48,14 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
 }
 
 /// Run a read-only `git` query in `dir`; `Some(trimmed stdout)` on success, else `None`.
+/// Hardened like the Git Service runner: no optional index locks, and repo-controlled
+/// `core.fsmonitor` / `core.hooksPath` neutralized (the root may be an untrusted repo).
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(dir)
+        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
         .args(args)
         .output()
         .ok()?;
