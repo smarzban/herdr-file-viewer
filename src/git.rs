@@ -169,7 +169,10 @@ pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option
             base_fork_point(repo_root, base_hint).unwrap_or_else(|| head_or_empty_tree(repo_root))
         }
     };
-    let mut cmd = git_command(repo_root, &["diff", "--no-ext-diff", "--no-textconv", &against, "--"]);
+    let mut cmd = git_command(
+        repo_root,
+        &["diff", "--no-ext-diff", "--no-textconv", "--no-color", &against, "--"],
+    );
     cmd.arg(path);
     capture_stdout(cmd)
 }
