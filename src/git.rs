@@ -80,7 +80,9 @@ pub fn default_baseline(resolved: &Resolved) -> Baseline {
     ) {
         // On a branch other than the base/default branch → compare to the base (AC-14).
         (Some(base), Some(cur)) if base != cur => Baseline::Base,
-        // On the base branch, detached, or no base info → uncommitted vs HEAD (AC-15).
+        // A detached managed worktree is still a body of work to review vs the base.
+        (Some(_), None) if resolved.is_worktree => Baseline::Base,
+        // On the base branch, plain detached HEAD, or no base info → vs HEAD (AC-15).
         _ => Baseline::Head,
     }
 }
@@ -151,21 +153,15 @@ pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option
     if !is_within_root(path) {
         return String::new();
     }
-    let p = path.to_string_lossy();
+    // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
+    // filenames reach git verbatim and their diffs are not silently empty.
     if is_untracked(repo_root, path) {
-        return run_allow_fail(
+        let mut cmd = git_command(
             repo_root,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-index",
-                "--no-color",
-                "--",
-                "/dev/null",
-                p.as_ref(),
-            ],
+            &["diff", "--no-ext-diff", "--no-textconv", "--no-index", "--no-color", "--", "/dev/null"],
         );
+        cmd.arg(path);
+        return capture_stdout(cmd);
     }
     let against = match baseline {
         Baseline::Head => head_or_empty_tree(repo_root),
@@ -173,11 +169,9 @@ pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option
             base_fork_point(repo_root, base_hint).unwrap_or_else(|| head_or_empty_tree(repo_root))
         }
     };
-    run_raw(
-        repo_root,
-        &["diff", "--no-ext-diff", "--no-textconv", &against, "--", p.as_ref()],
-    )
-    .unwrap_or_default()
+    let mut cmd = git_command(repo_root, &["diff", "--no-ext-diff", "--no-textconv", &against, "--"]);
+    cmd.arg(path);
+    capture_stdout(cmd)
 }
 
 /// Build a `git -C <repo> <args>` command hardened for read-only use against an
@@ -187,11 +181,26 @@ pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option
 fn git_command(repo_root: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        // Drop inherited repo-redirecting env so queries resolve against `-C <repo>`, not
+        // a GIT_DIR/GIT_WORK_TREE the viewer happened to be launched with.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(repo_root)
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
         .args(args);
     cmd
+}
+
+/// Capture a git command's stdout (lossy) regardless of exit code. `git diff` exits 1
+/// under `--no-index` *because* it found differences, so we cannot gate on success.
+fn capture_stdout(mut cmd: Command) -> String {
+    cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 /// Run a read-only `git` command, returning raw stdout bytes (for `-z` parsing).
@@ -205,15 +214,6 @@ fn run_bytes(repo_root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// failure. Used where the output is not a list of paths.
 fn run_raw(repo_root: &Path, args: &[&str]) -> Option<String> {
     run_bytes(repo_root, args).map(|b| String::from_utf8_lossy(&b).into_owned())
-}
-
-/// Run a read-only `git` command, returning stdout regardless of exit code. Used for
-/// `git diff --no-index`, which exits 1 precisely *because* it found differences.
-fn run_allow_fail(repo_root: &Path, args: &[&str]) -> String {
-    git_command(repo_root, args)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
 }
 
 /// Run a read-only `git` command and trim the stdout (for branch names / hashes).
@@ -244,10 +244,12 @@ fn is_within_root(path: &Path) -> bool {
     !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Whether `path` is untracked (not in the index) but present on disk.
+/// Whether `path` is untracked (not in the index) but present on disk. The path is passed
+/// as a raw OsStr arg so non-UTF-8 names match the index correctly.
 fn is_untracked(repo_root: &Path, path: &Path) -> bool {
-    let p = path.to_string_lossy();
-    let tracked = run_raw(repo_root, &["ls-files", "--error-unmatch", "--", p.as_ref()]).is_some();
+    let mut cmd = git_command(repo_root, &["ls-files", "--error-unmatch", "--"]);
+    cmd.arg(path);
+    let tracked = cmd.output().map(|o| o.status.success()).unwrap_or(false);
     !tracked && repo_root.join(path).exists()
 }
 
