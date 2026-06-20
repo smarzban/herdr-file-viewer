@@ -88,7 +88,11 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
         {
             let fx = controller.handle(intent);
             if fx.clear {
-                terminal.clear()?; // an editor took the screen — force a full repaint
+                // An external program (an editor) drew over the screen — force a full
+                // repaint. `clear()` issues a cursor-position query; best-effort, because a
+                // terminal that doesn't answer it must not crash the viewer (the next draw
+                // still repaints). Degrade, never crash (constitution).
+                let _ = terminal.clear();
                 dirty = true;
             }
             if fx.quit {
