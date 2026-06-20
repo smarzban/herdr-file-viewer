@@ -150,7 +150,7 @@ pub fn changed_set(
 pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option<&str>) -> String {
     // Never resolve a path outside the root — no arbitrary file reads, and the viewer
     // does not navigate above its root (AC-N5).
-    if !is_within_root(path) {
+    if !is_within_root(repo_root, path) {
         return String::new();
     }
     // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
@@ -190,6 +190,10 @@ fn git_command(repo_root: &Path, args: &[&str]) -> Command {
         .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(repo_root)
+        // Read attributes from the empty tree, not the worktree `.gitattributes`, so a
+        // repo-planted `filter=<driver>` (clean/smudge) or `diff=<driver>` (textconv)
+        // cannot run a configured program during a read-only query.
+        .arg(format!("--attr-source={EMPTY_TREE}"))
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
         .args(args);
     cmd
@@ -239,9 +243,18 @@ fn head_or_empty_tree(repo_root: &Path) -> String {
     }
 }
 
-/// A path that stays within the root: relative and free of parent-dir (`..`) components.
-fn is_within_root(path: &Path) -> bool {
-    !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
+/// A path that stays within the root: relative, free of parent-dir (`..`) components, and
+/// — once resolved — not escaping the root via a symlinked intermediate directory.
+fn is_within_root(repo_root: &Path, path: &Path) -> bool {
+    if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    // If the target resolves (exists), ensure symlinks didn't lead outside the root.
+    match (repo_root.join(path).canonicalize(), repo_root.canonicalize()) {
+        (Ok(full), Ok(root)) => full.starts_with(root),
+        // Non-existent target (e.g. a deleted file): the lexical checks already bound it.
+        _ => true,
+    }
 }
 
 /// Whether `path` is untracked (not in the index) but present on disk. The path is passed

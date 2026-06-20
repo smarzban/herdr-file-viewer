@@ -237,8 +237,11 @@ fn malicious_repo_config_is_not_executed_during_queries() {
     }
     let s = script.to_str().unwrap();
     git(repo.path(), &["config", "core.fsmonitor", s]);
-    fs::write(repo.path().join(".gitattributes"), "* diff=pwn\n").unwrap();
+    // Cover every attribute/config-driven exec vector: textconv, ext-diff, clean/smudge.
+    fs::write(repo.path().join(".gitattributes"), "* diff=pwn filter=pwn\n").unwrap();
     git(repo.path(), &["config", "diff.pwn.textconv", s]);
+    git(repo.path(), &["config", "filter.pwn.clean", s]);
+    git(repo.path(), &["config", "filter.pwn.smudge", s]);
     fs::write(repo.path().join("seed.txt"), "changed\n").unwrap();
 
     let _ = status(repo.path());
@@ -247,8 +250,21 @@ fn malicious_repo_config_is_not_executed_during_queries() {
 
     assert!(
         !marker.exists(),
-        "repo-configured fsmonitor/textconv must not execute"
+        "repo-configured fsmonitor/textconv/clean/smudge must not execute"
     );
+}
+
+#[test]
+fn diff_refuses_symlink_escaping_the_root() {
+    // A symlinked intermediate directory must not let a path resolve outside the root.
+    let repo = make_repo();
+    let outside = TempDir::new();
+    fs::write(outside.path().join("secret.txt"), "TOPSECRET\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.path().join("escape")).unwrap();
+
+    let d = diff(repo.path(), Path::new("escape/secret.txt"), Baseline::Head, None);
+    assert!(d.is_empty(), "must not read files via a symlink escaping the root (AC-N5)");
+    assert!(!d.contains("TOPSECRET"));
 }
 
 #[test]

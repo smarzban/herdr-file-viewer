@@ -48,11 +48,18 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
 }
 
 /// Run a read-only `git` query in `dir`; `Some(trimmed stdout)` on success, else `None`.
-/// Hardened like the Git Service runner: no optional index locks, and repo-controlled
-/// `core.fsmonitor` / `core.hooksPath` neutralized (the root may be an untrusted repo).
+/// Hardened like the Git Service runner: no optional index locks, repo-controlled
+/// `core.fsmonitor` / `core.hooksPath` neutralized, and inherited repo-redirecting env
+/// (`GIT_DIR`/`GIT_WORK_TREE`/…) dropped so the *root* resolves against `dir`, not a
+/// repository the viewer happened to be launched against (the root may be untrusted).
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(dir)
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
