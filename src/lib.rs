@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod git;
+pub mod render;
 pub mod root;
 pub mod tree;
 pub mod view_policy;
