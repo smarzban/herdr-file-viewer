@@ -58,6 +58,30 @@ fn changed_only_restricts_then_restores_full_tree() {
 }
 
 #[test]
+fn changed_only_shows_deleted_files_with_their_marker() {
+    // A deleted file is no longer on disk; it must still appear in changed-only mode so
+    // the deletion can be reviewed (AC-6) with a deleted marker (AC-7).
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/present.rs"), "x").unwrap();
+    // src/gone.rs is intentionally NOT created.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("src/gone.rs"), Status::Deleted);
+    changed.insert(PathBuf::from("src/present.rs"), Status::Modified);
+
+    let mut model = TreeModel::new(dir.path());
+    model.set_status(&changed);
+    model.set_changed_only(true, &changed);
+
+    let gone = model
+        .visible_nodes()
+        .into_iter()
+        .find(|n| n.path.ends_with("gone.rs"));
+    let gone = gone.expect("AC-6: deleted file appears in changed-only mode");
+    assert_eq!(gone.status, Some(Status::Deleted)); // AC-7
+}
+
+#[test]
 fn status_markers_attach_to_nodes() {
     let dir = TempDir::new();
     fs::write(dir.path().join("m.txt"), "m").unwrap();

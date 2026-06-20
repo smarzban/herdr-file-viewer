@@ -12,6 +12,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// The size cap: files at or above this many bytes are previewed, not shown whole (AC-13).
 const MAX_BYTES: u64 = 1024 * 1024; // 1 MB
@@ -31,9 +33,25 @@ pub enum Prepared {
 
 /// Classify a file for display: binary vs. truncated-preview vs. full text. Reads at most
 /// `MAX_BYTES` from disk, so a huge or hostile file can never be slurped whole (AC-N1).
-pub fn classify(path: &Path) -> Prepared {
-    let byte_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let Ok(file) = File::open(path) else {
+///
+/// Refuses to read anything that does not resolve to a **regular file inside `root`**:
+/// a symlink (or `..`) escaping the root cannot leak out-of-root content into the pane
+/// (AC-N5), and a FIFO/device/dir is never opened (no hang, no garbage). Such paths
+/// return `Binary` (a placeholder, no bytes).
+pub fn classify(root: &Path, path: &Path) -> Prepared {
+    let (Ok(canonical), Ok(canon_root)) = (path.canonicalize(), root.canonicalize()) else {
+        return Prepared::Binary; // unresolvable / missing
+    };
+    if !canonical.starts_with(&canon_root) {
+        return Prepared::Binary; // escapes the root (AC-N5)
+    }
+    match std::fs::metadata(&canonical) {
+        Ok(m) if m.is_file() => {}
+        _ => return Prepared::Binary, // dir / FIFO / device / gone
+    }
+
+    let byte_len = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
+    let Ok(file) = File::open(&canonical) else {
         return Prepared::Full { text: String::new() };
     };
     // Bounded read: at most MAX_BYTES, so a giant/hostile file is never slurped whole.
@@ -87,6 +105,9 @@ pub struct Renderers {
     pub markdown: Vec<String>,
     pub diff: Vec<String>,
     pub syntax: Vec<String>,
+    /// Per-invocation wall-clock bound; a renderer exceeding it is killed and the plain-
+    /// text fallback is used, so a wedged delegate can never hang rendering.
+    pub timeout: Duration,
 }
 
 /// Produce the content-pane text for a prepared file in a given view mode, delegating to
@@ -119,7 +140,7 @@ pub fn render(
 
     match command {
         None => (to_text(input), base_notice),
-        Some(cmd) => match run_renderer(cmd, input) {
+        Some(cmd) => match run_renderer(cmd, input, renderers.timeout) {
             Ok(out) => (to_text(&out), base_notice),
             Err(reason) => {
                 // Plain-text fallback (AC-24) + a notice naming the capability (AC-25).
@@ -147,10 +168,12 @@ fn capability(mode: ViewMode) -> &'static str {
     }
 }
 
-/// Spawn a renderer, feed `input` on stdin (on a writer thread to avoid a pipe deadlock),
-/// and capture stdout. `Err` on a missing program or non-zero exit. The command is trusted
-/// (operator-configured); only the stdin content is untrusted, so there is no injection.
-fn run_renderer(command: &[String], input: &str) -> Result<String, String> {
+/// Spawn a renderer, feed `input` on stdin (writer thread, avoids a pipe deadlock), read
+/// stdout (reader thread), and bound the wait by `timeout` — a wedged renderer is killed
+/// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
+/// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
+/// content is untrusted, so there is no argument injection.
+fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<String, String> {
     let (prog, args) = command.split_first().ok_or("empty renderer command")?;
     let mut child = Command::new(prog)
         .args(args)
@@ -167,13 +190,30 @@ fn run_renderer(command: &[String], input: &str) -> Result<String, String> {
         });
     }
 
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("{prog}: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(format!("{prog} exited with {}", out.status))
+    let stdout = child.stdout.take();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(buf) => {
+            let status = child.wait().map_err(|e| format!("{prog}: {e}"))?;
+            if status.success() {
+                Ok(String::from_utf8_lossy(&buf).into_owned())
+            } else {
+                Err(format!("{prog} exited with {status}"))
+            }
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("{prog} timed out"))
+        }
     }
 }
 
@@ -231,7 +271,15 @@ fn strip_terminal_control(raw: &str) -> String {
                 None => i += 1,    // lone trailing ESC → drop
             }
         } else {
-            out.push(bytes[i]);
+            // Drop other C0 control bytes (BEL/BS/CR/FF/VT/…) and DEL, which can still
+            // ring the bell, backspace, or carriage-return to overwrite/spoof a line.
+            // Keep only newline and tab. C1 bytes (0x80–0x9f) are UTF-8 continuation
+            // bytes here and are left to the final lossy decode.
+            let b = bytes[i];
+            let is_c0_control = b < 0x20 && b != b'\n' && b != b'\t';
+            if !is_c0_control && b != 0x7f {
+                out.push(b);
+            }
             i += 1;
         }
     }
@@ -260,14 +308,14 @@ mod tests {
     #[test]
     fn nul_bytes_classify_as_binary_without_emitting_raw_bytes() {
         let p = tmp("bin", &[0x00, 0x01, 0x02, b'h', b'i']);
-        assert_eq!(classify(&p), Prepared::Binary); // AC-12
+        assert_eq!(classify(&std::env::temp_dir(), &p), Prepared::Binary); // AC-12
         fs::remove_file(&p).ok();
     }
 
     #[test]
     fn small_text_file_is_returned_in_full() {
         let p = tmp("small.txt", b"hello\nworld\n");
-        match classify(&p) {
+        match classify(&std::env::temp_dir(), &p) {
             Prepared::Full { text } => assert!(text.contains("hello")),
             other => panic!("expected Full, got {other:?}"),
         }
@@ -278,7 +326,7 @@ mod tests {
     fn file_over_one_megabyte_is_truncated_with_a_notice() {
         let big = vec![b'a'; (MAX_BYTES as usize) + 100];
         let p = tmp("big.txt", &big);
-        match classify(&p) {
+        match classify(&std::env::temp_dir(), &p) {
             Prepared::Truncated { text, notice } => {
                 assert!(!notice.is_empty(), "AC-13: a visible truncation notice");
                 assert!(text.len() as u64 <= MAX_BYTES, "AC-13: preview is bounded");
@@ -292,7 +340,7 @@ mod tests {
     fn file_over_five_thousand_lines_is_truncated() {
         let many = "x\n".repeat(6000);
         let p = tmp("many.txt", many.as_bytes());
-        match classify(&p) {
+        match classify(&std::env::temp_dir(), &p) {
             Prepared::Truncated { text, notice } => {
                 assert!(text.lines().count() <= MAX_LINES, "AC-13: preview line-bounded");
                 assert!(notice.contains("line"), "notice describes the line cap");
@@ -306,8 +354,55 @@ mod tests {
     fn classify_does_not_modify_the_file() {
         let p = tmp("ro.txt", b"unchanged\n");
         let before = fs::read(&p).unwrap();
-        let _ = classify(&p);
+        let _ = classify(&std::env::temp_dir(), &p);
         assert_eq!(fs::read(&p).unwrap(), before); // AC-N1
         fs::remove_file(&p).ok();
+    }
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "hfv-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn refuses_a_symlink_whose_target_escapes_the_root() {
+        use std::os::unix::fs::symlink;
+        let root = unique_dir("root");
+        let outside = tmp("secret", b"TOPSECRET"); // lives in temp_dir, outside `root`
+        let link = root.join("link.txt");
+        symlink(&outside, &link).unwrap();
+        assert_eq!(classify(&root, &link), Prepared::Binary, "AC-N5: no out-of-root read");
+        fs::remove_dir_all(&root).ok();
+        fs::remove_file(&outside).ok();
+    }
+
+    #[test]
+    fn follows_a_symlink_that_stays_within_the_root() {
+        use std::os::unix::fs::symlink;
+        let root = unique_dir("root");
+        let real = root.join("real.txt");
+        fs::write(&real, "hello inside").unwrap();
+        let link = root.join("link.txt");
+        symlink(&real, &link).unwrap();
+        match classify(&root, &link) {
+            Prepared::Full { text } => assert!(text.contains("hello inside")),
+            other => panic!("expected Full, got {other:?}"),
+        }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_a_non_regular_file() {
+        let root = unique_dir("root");
+        // a directory is not a regular file
+        let sub = root.join("subdir");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(classify(&root, &sub), Prepared::Binary);
+        fs::remove_dir_all(&root).ok();
     }
 }
