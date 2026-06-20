@@ -8,6 +8,13 @@
 //! unit-testable with stubs; the Tree Model is the one read-only component it drives
 //! directly. No intent edits a file (AC-N3); git-only intents are inert when not in a repo
 //! (AC-26); a component failure becomes a non-fatal notice, never a crash.
+//!
+//! **Rendering is off the input thread (AC-23).** Selecting a file *dispatches* a render
+//! job to a worker thread that owns the Content Renderer; `handle()` returns immediately so
+//! input never blocks on a slow external renderer. The finished text arrives later and is
+//! drained by [`Controller::poll`], which the run loop calls each tick. Jobs carry a
+//! monotonic sequence so a slow render for a file the user has since left is dropped rather
+//! than clobbering the current selection.
 
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
@@ -18,6 +25,7 @@ use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
 /// the run loop injects an implementation bound to the real repository.
@@ -80,6 +88,15 @@ impl Effects {
     }
 }
 
+/// A unit of off-thread rendering work sent to the worker. `seq` orders jobs so a stale
+/// result (one whose selection has been superseded) is discarded on arrival.
+struct RenderJob {
+    seq: u64,
+    path: PathBuf,
+    mode: ViewMode,
+    raw_diff: Option<String>,
+}
+
 /// The interaction orchestrator and the ephemeral session state.
 pub struct Controller {
     root: PathBuf,
@@ -103,8 +120,12 @@ pub struct Controller {
     /// the next intent is handled.
     action_notice: Option<String>,
     git: Box<dyn GitService>,
-    provider: Box<dyn ContentProvider>,
     editor: Box<dyn EditorHandoff>,
+    /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
+    /// dispatched job; a `poll`ed result with a smaller seq is stale and dropped.
+    job_tx: mpsc::Sender<RenderJob>,
+    result_rx: mpsc::Receiver<(u64, RenderResult)>,
+    latest_seq: u64,
 }
 
 impl Controller {
@@ -114,6 +135,20 @@ impl Controller {
     /// is rendered so the first frame is populated.
     pub fn new(root: PathBuf, is_git_repo: bool, baseline: Baseline, components: Components) -> Self {
         let Components { git, content, editor } = components;
+        // The Content Renderer lives on a worker thread; the controller talks to it over a
+        // job channel and reads finished renders off a result channel (AC-23). The worker
+        // exits when the job sender (held by the controller) is dropped.
+        let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
+        let (result_tx, result_rx) = mpsc::channel::<(u64, RenderResult)>();
+        std::thread::spawn(move || {
+            while let Ok(job) = job_rx.recv() {
+                let result = content.render(&job.path, job.mode, job.raw_diff.as_deref());
+                if result_tx.send((job.seq, result)).is_err() {
+                    break; // controller gone
+                }
+            }
+        });
+
         let mut ctrl = Controller {
             tree: TreeModel::new(root.clone()),
             root,
@@ -129,15 +164,17 @@ impl Controller {
             content_notices: Vec::new(),
             action_notice: None,
             git,
-            provider: content,
             editor,
+            job_tx,
+            result_rx,
+            latest_seq: 0,
         };
         if is_git_repo {
             let status = ctrl.git.status();
             ctrl.tree.set_status(&status);
             ctrl.changed = ctrl.git.changed_set(baseline);
         }
-        ctrl.refresh_content();
+        ctrl.dispatch_render();
         ctrl
     }
 
@@ -212,7 +249,7 @@ impl Controller {
 
     fn navigate(&mut self, delta: isize) -> Effects {
         self.tree.move_cursor(delta);
-        self.refresh_content();
+        self.dispatch_render();
         Effects::redraw()
     }
 
@@ -248,7 +285,7 @@ impl Controller {
         }
         self.changed_only = !self.changed_only;
         self.tree.set_changed_only(self.changed_only, &self.changed);
-        self.refresh_content();
+        self.dispatch_render();
         Effects::redraw()
     }
 
@@ -264,7 +301,7 @@ impl Controller {
         // filter consistent with it.
         self.changed = self.git.changed_set(self.baseline);
         self.tree.set_changed_only(self.changed_only, &self.changed);
-        self.refresh_content(); // a diff is relative to the baseline, so it must re-render
+        self.dispatch_render(); // a diff is relative to the baseline, so it must re-render
         Effects::redraw()
     }
 
@@ -278,7 +315,7 @@ impl Controller {
         let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
         let next = modes[(idx + 1) % modes.len()];
         self.overrides.insert(node.path.clone(), next);
-        self.refresh_content();
+        self.dispatch_render();
         Effects::redraw()
     }
 
@@ -308,19 +345,19 @@ impl Controller {
 
     // ---- content coordination ----------------------------------------------------------
 
-    /// Re-render the content pane for the current selection. A directory or empty selection
-    /// shows nothing; a file is rendered in its effective mode, pulling the raw diff from git
-    /// for diff mode.
-    fn refresh_content(&mut self) {
-        let Some(node) = self.tree.selected() else {
-            self.content = Text::raw("");
-            self.content_notices.clear();
-            return;
-        };
+    /// Dispatch a render of the current selection to the worker thread (AC-23) — never
+    /// blocking. A directory or empty selection clears the pane synchronously (no job). The
+    /// raw diff for diff mode is read from git on this thread (a single bounded query); the
+    /// heavy delegation to the external renderer is what runs off-thread. Every call bumps
+    /// `latest_seq`, so any still-in-flight render for the previous selection is superseded
+    /// and dropped by [`poll`].
+    fn dispatch_render(&mut self) {
+        self.latest_seq += 1;
+        let seq = self.latest_seq;
+
+        let Some(node) = self.tree.selected() else { return self.clear_content() };
         if node.kind != NodeKind::File {
-            self.content = Text::raw("");
-            self.content_notices.clear();
-            return;
+            return self.clear_content();
         }
         let mode = self.effective_mode(&node.path);
         let raw_diff = if mode == ViewMode::Diff && self.is_git_repo {
@@ -328,9 +365,31 @@ impl Controller {
         } else {
             None
         };
-        let result = self.provider.render(&node.path, mode, raw_diff.as_deref());
-        self.content = result.content;
-        self.content_notices = result.notices;
+        // If the worker has gone (channel closed) the send simply fails; the pane keeps its
+        // last content rather than panicking.
+        let _ = self.job_tx.send(RenderJob { seq, path: node.path, mode, raw_diff });
+    }
+
+    /// Clear the content pane (selection is a directory / nothing).
+    fn clear_content(&mut self) {
+        self.content = Text::raw("");
+        self.content_notices.clear();
+    }
+
+    /// Drain finished renders from the worker, applying only the one matching the latest
+    /// dispatched selection (stale results are discarded). Returns `Some` redraw effect when
+    /// fresh content was applied, so the run loop repaints; `None` when nothing arrived.
+    pub fn poll(&mut self) -> Option<Effects> {
+        let mut applied = false;
+        while let Ok((seq, result)) = self.result_rx.try_recv() {
+            if seq == self.latest_seq {
+                self.content = result.content;
+                self.content_notices = result.notices;
+                applied = true;
+            }
+            // else: a superseded selection's render — drop it.
+        }
+        applied.then(Effects::redraw)
     }
 
     /// The effective view mode for a file: the user's override, else the policy default.
