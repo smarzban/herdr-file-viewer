@@ -11,3 +11,6 @@
 
 # Local Claude Code tooling (skills, local settings) — not part of the plugin
 .claude/
+
+# Review-gate run logs / dismissal records — local audit trail, not part of the plugin
+.review-gate/
