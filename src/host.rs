@@ -114,6 +114,12 @@ pub fn open_pane(
         return Err(invalid(format!("unsafe new pane id from split: {new_pane:?}")));
     }
 
+    // Trust boundary: `editor` is application configuration ($EDITOR / user config), treated
+    // as trusted shell text and left unquoted so editors-with-flags work (as git does with
+    // GIT_EDITOR). `file` is the untrusted, repo-controlled input — it is single-quoted by
+    // `shell_quote_path`, so it is inert data inside the command. (A file name that is not
+    // valid UTF-8 is rendered lossily here — a known v1 limitation on the rare non-UTF-8
+    // path; the herdr `pane run` command is a text string and cannot carry raw bytes.)
     let command = format!("{} {}", editor.to_string_lossy(), shell_quote_path(file));
     cli.run(&[
         OsString::from("pane"),

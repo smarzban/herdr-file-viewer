@@ -59,6 +59,22 @@ fn wide_shows_both_columns_regardless_of_focus() {
 }
 
 #[test]
+fn split_decision_follows_the_live_frame_not_a_stale_state_width() {
+    // The narrow/wide decision must come from the frame the Presenter actually draws into,
+    // so a stale state.width can never disagree with the geometry. Here state.width claims
+    // "wide" (100) but the real pane is 60 → must render the narrow single-column layout.
+    let mut st = state(100, Focus::Tree);
+    let out = render(&st, 60, 20);
+    assert!(out.contains("scratch.log"), "tree shown\n{out}");
+    assert!(!out.contains("fn main()"), "narrow layout follows the 60-col frame, content hidden\n{out}");
+
+    // Conversely, a stale "narrow" width with a wide frame must show both columns.
+    st.width = 40;
+    let out = render(&st, 100, 20);
+    assert!(out.contains("scratch.log") && out.contains("fn main()"), "wide frame → both columns\n{out}");
+}
+
+#[test]
 fn narrow_tree_snapshot() {
     insta::assert_snapshot!("presenter_narrow_tree", render(&state(60, Focus::Tree), 60, 20));
 }

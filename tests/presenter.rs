@@ -91,6 +91,32 @@ fn surfaces_truncation_and_fallback_notices() {
 }
 
 #[test]
+fn hostile_file_name_emits_no_control_bytes_to_the_buffer() {
+    // AC-27 (defense-in-depth): a repo-controlled file name carrying screen-clear / cursor-
+    // move sequences must never reach the terminal as control bytes when drawn in the tree.
+    let hostile = "evil\u{1b}[2J\u{1b}[10;10H\u{07}pwned";
+    let mut state = sample_state();
+    state.nodes = vec![node(&format!("/r/{hostile}"), NodeKind::File, 0, false, Some(Status::Modified))];
+    state.selected = 0;
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    terminal.draw(|f| draw(f, &state)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let mut cells = String::new();
+    for y in 0..buf.area().height {
+        for x in 0..buf.area().width {
+            if let Some(c) = buf.cell((x, y)) {
+                cells.push_str(c.symbol());
+            }
+        }
+    }
+    assert!(!cells.chars().any(|c| c.is_control()), "no control byte may reach a cell");
+    assert!(!cells.contains('\u{1b}'), "no ESC byte in the buffer");
+    assert!(cells.contains("pwned"), "the printable remainder is still shown");
+}
+
+#[test]
 fn wide_layout_snapshot() {
     insta::assert_snapshot!("presenter_wide", render(&sample_state(), 100, 24));
 }

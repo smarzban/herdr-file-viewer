@@ -53,6 +53,28 @@ fn editor_target_spawns_configured_editor_with_the_selected_file() {
 }
 
 #[test]
+fn editor_target_splits_a_configured_editor_with_flags() {
+    // AC-19: $EDITOR commonly carries flags (e.g. "code --wait"); the local spawn must
+    // launch the program with its args, not treat the whole string as one executable name.
+    let dir = TempDir::new();
+    let file = dir.path().join("f.rs");
+    fs::write(&file, "x").unwrap();
+
+    let launcher = EditorLauncher::new("code --wait");
+    let mut sp = FakeSpawner::default();
+    launcher.open(&file, Target::Editor, &mut sp).unwrap();
+
+    assert_eq!(
+        sp.spawned,
+        vec![vec![
+            OsString::from("code"),
+            OsString::from("--wait"),
+            file.clone().into_os_string(),
+        ]],
+    );
+}
+
+#[test]
 fn new_pane_target_requests_a_herdr_pane_carrying_the_file() {
     let dir = TempDir::new();
     let file = dir.path().join("main.rs");

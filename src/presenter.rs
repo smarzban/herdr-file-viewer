@@ -37,7 +37,9 @@ pub struct ViewState {
     pub notices: Vec<String>,
     /// Which column has focus.
     pub focus: Focus,
-    /// The pane width the controller observed (drives the AC-21 narrow-split decision).
+    /// The pane width the controller last observed (session state — e.g. for tracking the
+    /// narrow-split flag). The Presenter lays out from the live frame width, not this, so
+    /// the two can never disagree; it is carried for the controller's own use.
     pub width: u16,
 }
 
@@ -50,6 +52,15 @@ fn status_marker(status: Option<Status>) -> char {
         Some(Status::Untracked) => '?',
         None => ' ',
     }
+}
+
+/// Neutralize a string for display as a label/title: drop control characters (C0, DEL, and
+/// C1 — `char::is_control`), so a repo-controlled file name carrying ESC/CSI bytes cannot
+/// move the cursor, clear the screen, or spoof the UI (AC-27, defense-in-depth). ratatui's
+/// own renderer also drops control graphemes, but the viewer's security guarantee must not
+/// rest on that internal — this makes it explicit.
+fn sanitize_label(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// The display name of a node — its final path component, or the whole path for a root.
@@ -73,7 +84,7 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
         status_marker(node.status),
         "  ".repeat(node.depth),
         glyph,
-        node_name(node),
+        sanitize_label(&node_name(node)),
     );
     let style = if selected {
         Style::new().add_modifier(Modifier::REVERSED)
@@ -114,7 +125,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) {
     let title = state
         .nodes
         .get(state.selected)
-        .map(node_name)
+        .map(|n| sanitize_label(&node_name(n)))
         .unwrap_or_else(|| "Content".to_string());
     let block = Block::bordered()
         .title(title)
@@ -145,11 +156,11 @@ const NARROW_SPLIT: u16 = 80;
 ///
 /// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the
 /// focused column is drawn — full width — so the active content stays readable (AC-21).
-/// `state.width` is the controller-observed pane width and, in the single-pane TUI, equals
-/// `frame.area().width`; geometry is taken from the live frame area.
+/// The decision is taken from the **live frame width**, so the split can never disagree
+/// with the geometry it is drawn into (a stale `state.width` cannot desync the layout).
 pub fn draw(frame: &mut Frame, state: &ViewState) {
     let area = frame.area();
-    if state.width < NARROW_SPLIT {
+    if area.width < NARROW_SPLIT {
         match state.focus {
             Focus::Tree => draw_tree(frame, area, state),
             Focus::Content => draw_content(frame, area, state),
@@ -160,4 +171,22 @@ pub fn draw(frame: &mut Frame, state: &ViewState) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_tree(frame, cols[0], state);
     draw_content(frame, cols[1], state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_label_strips_control_bytes_keeps_printable() {
+        // ESC + CSI + C0 controls removed; the printable remainder (incl. unicode) survives.
+        assert_eq!(sanitize_label("evil\u{1b}[2J\u{1b}[10;10Hpwned"), "evil[2J[10;10Hpwned");
+        assert_eq!(sanitize_label("a\u{07}\u{08}\rb\tc"), "abc");
+        assert_eq!(sanitize_label("plain_name.rs"), "plain_name.rs");
+        assert_eq!(sanitize_label("café—ok"), "café—ok");
+        // C1 controls (U+0080..U+009F) are also dropped.
+        assert_eq!(sanitize_label("x\u{0090}y"), "xy");
+        // No control codepoint survives, ever.
+        assert!(!sanitize_label("\u{1b}\u{07}\u{7f}\u{9b}z").chars().any(|c| c.is_control()));
+    }
 }
