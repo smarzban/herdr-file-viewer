@@ -26,6 +26,15 @@ pub struct Node {
     pub status: Option<Status>,
 }
 
+/// Order tree entries: directories first, then files; alphabetical within each group.
+fn sort_entries(entries: &mut [(PathBuf, NodeKind)]) {
+    entries.sort_by(|a, b| {
+        (b.1 == NodeKind::Dir)
+            .cmp(&(a.1 == NodeKind::Dir))
+            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+    });
+}
+
 /// The browsable file tree rooted at `root`.
 pub struct TreeModel {
     root: PathBuf,
@@ -33,9 +42,12 @@ pub struct TreeModel {
     cursor: usize,
     show_ignored: bool,
     changed_only: bool,
-    /// The changed-set against the active baseline: drives status markers (always shown,
-    /// AC-7) and the changed-only filter (AC-6). Keyed by root-relative path.
-    status_map: BTreeMap<PathBuf, Status>,
+    /// Per-file status for tree markers (AC-7), keyed by root-relative path. Set
+    /// independently of the filter (`set_status`) so the two can never overwrite each
+    /// other.
+    markers: BTreeMap<PathBuf, Status>,
+    /// The changed-set driving the changed-only filter (AC-6), set by `set_changed_only`.
+    changed_filter: BTreeMap<PathBuf, Status>,
 }
 
 impl TreeModel {
@@ -46,7 +58,8 @@ impl TreeModel {
             cursor: 0,
             show_ignored: false,
             changed_only: false,
-            status_map: BTreeMap::new(),
+            markers: BTreeMap::new(),
+            changed_filter: BTreeMap::new(),
         }
     }
 
@@ -56,15 +69,15 @@ impl TreeModel {
     }
 
     /// Restrict the tree to changed files only (AC-6); `changed` is the changed-set
-    /// against the active baseline, which also feeds status markers.
+    /// against the active baseline.
     pub fn set_changed_only(&mut self, on: bool, changed: &BTreeMap<PathBuf, Status>) {
         self.changed_only = on;
-        self.status_map = changed.clone();
+        self.changed_filter = changed.clone();
     }
 
     /// Set the per-file status used for tree markers (AC-7), independent of the filter.
     pub fn set_status(&mut self, status: &BTreeMap<PathBuf, Status>) {
-        self.status_map = status.clone();
+        self.markers = status.clone();
     }
 
     pub fn root(&self) -> &Path {
@@ -84,7 +97,22 @@ impl TreeModel {
     }
 
     fn collect(&self, dir: &Path, depth: usize, out: &mut Vec<Node>) {
-        for (path, kind) in self.entries(dir) {
+        let mut entries = self.entries(dir);
+        if self.changed_only {
+            // Deleted files aren't on disk, so synthesize nodes for them under their
+            // (still-present) parent directory, so changed-only mode can show and review
+            // them (AC-6) with a deleted marker (AC-7).
+            for (rel, status) in &self.changed_filter {
+                if *status == Status::Deleted {
+                    let abs = self.root.join(rel);
+                    if abs.parent() == Some(dir) && !abs.exists() {
+                        entries.push((abs, NodeKind::File));
+                    }
+                }
+            }
+            sort_entries(&mut entries);
+        }
+        for (path, kind) in entries {
             if self.changed_only && !self.leads_to_change(&path, kind) {
                 continue;
             }
@@ -105,11 +133,15 @@ impl TreeModel {
         }
     }
 
-    /// The node's git status (AC-7), looked up by root-relative path.
+    /// The node's git status (AC-7): the dedicated marker map, falling back to the
+    /// changed-set so synthesized deleted nodes still carry their marker.
     fn status_for(&self, path: &Path) -> Option<Status> {
-        path.strip_prefix(&self.root)
-            .ok()
-            .and_then(|rel| self.status_map.get(rel).copied())
+        path.strip_prefix(&self.root).ok().and_then(|rel| {
+            self.markers
+                .get(rel)
+                .or_else(|| self.changed_filter.get(rel))
+                .copied()
+        })
     }
 
     /// In changed-only mode: a file kept iff it is itself changed; a directory kept iff it
@@ -119,9 +151,9 @@ impl TreeModel {
             return false;
         };
         match kind {
-            NodeKind::File => self.status_map.contains_key(rel),
+            NodeKind::File => self.changed_filter.contains_key(rel),
             NodeKind::Dir => self
-                .status_map
+                .changed_filter
                 .keys()
                 .any(|changed| changed != rel && changed.starts_with(rel)),
         }
@@ -156,12 +188,7 @@ impl TreeModel {
             })
             .collect();
 
-        // Directories first, then files; alphabetical within each group.
-        entries.sort_by(|a, b| {
-            (b.1 == NodeKind::Dir)
-                .cmp(&(a.1 == NodeKind::Dir))
-                .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
-        });
+        sort_entries(&mut entries);
         entries
     }
 

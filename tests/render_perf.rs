@@ -19,7 +19,7 @@ fn classify_and_ingest_one_megabyte_within_300ms() {
     fs::write(&path, &content).unwrap();
 
     let start = Instant::now();
-    let prepared = classify(&path);
+    let prepared = classify(dir.path(), &path);
     let text = match &prepared {
         Prepared::Full { text } | Prepared::Truncated { text, .. } => text.clone(),
         Prepared::Binary => String::new(),

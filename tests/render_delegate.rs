@@ -7,12 +7,14 @@
 use herdr_file_viewer::render::{render, Prepared, Renderers};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
+use std::time::{Duration, Instant};
 
 fn cat() -> Renderers {
     Renderers {
         markdown: vec!["cat".into()],
         diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        timeout: Duration::from_secs(5),
     }
 }
 
@@ -52,6 +54,7 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         markdown: vec!["herdr-no-such-binary-xyz".into()],
         diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full { text: "# Title".into() };
     let (text, notice) = render(&renderers, &prepared, ViewMode::RenderedMarkdown, None);
@@ -75,11 +78,28 @@ fn raw_content_mode_does_not_invoke_a_renderer() {
         markdown: vec!["nope-xyz".into()],
         diff: vec!["nope-xyz".into()],
         syntax: vec!["nope-xyz".into()],
+        timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full { text: "plain text here".into() };
     let (text, notice) = render(&renderers, &prepared, ViewMode::RawContent, None);
     assert!(flatten(&text).contains("plain text here"));
     assert!(notice.is_none(), "raw content needs no renderer → no fallback notice");
+}
+
+#[test]
+fn a_hanging_renderer_times_out_and_falls_back() {
+    let renderers = Renderers {
+        markdown: vec!["sleep".into(), "30".into()],
+        diff: vec!["cat".into()],
+        syntax: vec!["cat".into()],
+        timeout: Duration::from_millis(150),
+    };
+    let prepared = Prepared::Full { text: "# Title".into() };
+    let start = Instant::now();
+    let (text, notice) = render(&renderers, &prepared, ViewMode::RenderedMarkdown, None);
+    assert!(start.elapsed() < Duration::from_secs(3), "must not block on a wedged renderer");
+    assert!(flatten(&text).contains("# Title"), "AC-24: plain-text fallback after timeout");
+    assert!(notice.unwrap().to_lowercase().contains("timed out"), "notice reports the timeout");
 }
 
 #[test]

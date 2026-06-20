@@ -26,6 +26,21 @@ fn cursor_and_screen_control_sequences_are_neutralized() {
 }
 
 #[test]
+fn c0_control_bytes_are_stripped() {
+    // BEL, backspace, carriage-return, form-feed, vertical-tab can ring the bell or
+    // overwrite/spoof a line; only newline and tab survive (AC-27).
+    let hostile = "a\x07b\x08c\rd\x0ce\x0bf\ttab\nnext";
+    let text = to_text(hostile);
+    let rendered = flatten(&text);
+    for ctl in ['\u{07}', '\u{08}', '\r', '\u{0c}', '\u{0b}'] {
+        assert!(!rendered.contains(ctl), "control {:#x} must be stripped", ctl as u32);
+    }
+    assert!(rendered.contains('\t'), "tab is kept");
+    assert_eq!(text.lines.len(), 2, "newline is kept as a line break, not stripped");
+    assert!(rendered.contains("tab") && rendered.contains("next"));
+}
+
+#[test]
 fn sgr_styling_is_mapped_to_style_not_left_as_raw_codes() {
     let styled = "\x1b[31mRED\x1b[0m"; // red foreground
     let text = to_text(styled);
