@@ -61,3 +61,27 @@ fn non_repo_directory_yields_an_empty_status_map() {
     fs::write(dir.path().join("loose.txt"), "x\n").unwrap();
     assert!(status(dir.path()).is_empty()); // AC-26 degradation
 }
+
+#[test]
+fn untracked_directory_is_listed_per_file_not_collapsed() {
+    // git's default porcelain collapses an untracked dir to `dir/`; -uall must expand it
+    // so nested untracked files get status markers and pass the changed-only filter.
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    fs::create_dir_all(repo.path().join("newdir/sub")).unwrap();
+    fs::write(repo.path().join("newdir/a.txt"), "a\n").unwrap();
+    fs::write(repo.path().join("newdir/sub/b.txt"), "b\n").unwrap();
+
+    let map = status(repo.path());
+    assert_eq!(
+        map.get(&PathBuf::from("newdir/a.txt")),
+        Some(&Status::Untracked)
+    );
+    assert_eq!(
+        map.get(&PathBuf::from("newdir/sub/b.txt")),
+        Some(&Status::Untracked)
+    );
+    // The collapsed directory form must NOT be present.
+    assert!(map.get(&PathBuf::from("newdir")).is_none());
+    assert!(map.get(&PathBuf::from("newdir/")).is_none());
+}
