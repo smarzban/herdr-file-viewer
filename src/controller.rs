@@ -18,7 +18,7 @@
 
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
-use crate::presenter::Focus;
+use crate::presenter::{Focus, ViewState};
 use crate::tree::{NodeKind, TreeModel};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use ratatui::text::Text;
@@ -223,6 +223,20 @@ impl Controller {
     /// Record the pane width the run loop observed (session state, AC-21).
     pub fn set_width(&mut self, width: u16) {
         self.width = width;
+    }
+
+    /// Assemble the [`ViewState`] the Presenter draws from: the visible tree rows + cursor,
+    /// the current content and notices, focus, and the observed width (the narrow-split
+    /// input, AC-21).
+    pub fn view_state(&self) -> ViewState {
+        ViewState {
+            nodes: self.tree.visible_nodes(),
+            selected: self.tree.cursor(),
+            content: self.content.clone(),
+            notices: self.notices(),
+            focus: self.focus,
+            width: self.width,
+        }
     }
 
     // ---- intent handling ---------------------------------------------------------------
