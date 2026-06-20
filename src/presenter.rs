@@ -138,10 +138,24 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) {
     frame.render_widget(Paragraph::new(state.content.clone()), parts[1]);
 }
 
-/// Draw the viewer for the given state (two-column layout). The narrow-split single-column
-/// branch is added in T-15.
+/// Below this pane width the viewer drops to a single, focused column (AC-21).
+const NARROW_SPLIT: u16 = 80;
+
+/// Draw the viewer for the given state.
+///
+/// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the
+/// focused column is drawn — full width — so the active content stays readable (AC-21).
+/// `state.width` is the controller-observed pane width and, in the single-pane TUI, equals
+/// `frame.area().width`; geometry is taken from the live frame area.
 pub fn draw(frame: &mut Frame, state: &ViewState) {
     let area = frame.area();
+    if state.width < NARROW_SPLIT {
+        match state.focus {
+            Focus::Tree => draw_tree(frame, area, state),
+            Focus::Content => draw_content(frame, area, state),
+        }
+        return;
+    }
     let cols =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_tree(frame, cols[0], state);
