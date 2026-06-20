@@ -5,6 +5,8 @@
 
 pub mod context;
 pub mod git;
+pub mod input;
+pub mod intent;
 pub mod render;
 pub mod root;
 pub mod tree;
