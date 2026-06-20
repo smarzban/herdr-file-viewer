@@ -54,7 +54,7 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
 
     let byte_len = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
     let Ok(file) = File::open(&canonical) else {
-        return Prepared::Full { text: String::new() };
+        return Prepared::Binary; // unreadable (e.g. permissions) → placeholder, not a misleading empty pane
     };
     // Bounded read: at most MAX_BYTES, so a giant/hostile file is never slurped whole.
     let mut buf = Vec::new();
@@ -124,7 +124,8 @@ pub fn render(
     raw_diff: Option<&str>,
     file_name: Option<&str>,
 ) -> (Text<'static>, Option<String>) {
-    let name = file_name.unwrap_or("");
+    let name = sanitize_name(file_name.unwrap_or(""));
+    let name = name.as_str();
     // A diff is derived from git, not from the file's bytes, so it renders even for a
     // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder.
     if mode == ViewMode::Diff {
@@ -164,6 +165,20 @@ pub fn render(
 /// keeping the secure stdin design while enabling syntax highlighting (AC-10).
 fn with_name(command: &[String], name: &str) -> Vec<String> {
     command.iter().map(|arg| arg.replace("{name}", name)).collect()
+}
+
+/// Reduce an untrusted file name to a safe basename — directory parts stripped, only
+/// `[A-Za-z0-9._-]` kept (others → `_`). The extension survives (for language detection),
+/// but the value is safe to interpolate even into a shell-wrapper renderer command, so a
+/// repo-controlled file name cannot inject shell metacharacters via `{name}`.
+fn sanitize_name(name: &str) -> String {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    base.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect()
 }
 
 /// Run a renderer over `input`, ingesting its output; on missing/failed/timed-out renderer

@@ -66,6 +66,7 @@ impl TreeModel {
     /// Reveal gitignored/all files (AC-5).
     pub fn set_show_ignored(&mut self, on: bool) {
         self.show_ignored = on;
+        self.clamp_cursor();
     }
 
     /// Restrict the tree to changed files only (AC-6); `changed` is the changed-set
@@ -73,6 +74,7 @@ impl TreeModel {
     pub fn set_changed_only(&mut self, on: bool, changed: &BTreeMap<PathBuf, Status>) {
         self.changed_only = on;
         self.changed_filter = changed.clone();
+        self.clamp_cursor();
     }
 
     /// Set the per-file status used for tree markers (AC-7), independent of the filter.
@@ -228,6 +230,7 @@ impl TreeModel {
     /// Collapse a directory.
     pub fn collapse(&mut self, path: &Path) {
         self.expanded.remove(path);
+        self.clamp_cursor();
     }
 
     /// Toggle a directory's expansion.
@@ -237,5 +240,28 @@ impl TreeModel {
         } else {
             self.expand(path);
         }
+    }
+
+    /// Move the cursor by `delta` rows, clamped to the visible range.
+    pub fn move_cursor(&mut self, delta: isize) {
+        let len = self.visible_nodes().len();
+        if len == 0 {
+            self.cursor = 0;
+            return;
+        }
+        let max = (len - 1) as isize;
+        self.cursor = (self.cursor as isize + delta).clamp(0, max) as usize;
+    }
+
+    /// The currently-selected node, if any.
+    pub fn selected(&self) -> Option<Node> {
+        self.visible_nodes().into_iter().nth(self.cursor)
+    }
+
+    /// Keep the cursor within the (possibly shrunken) visible list after a structural or
+    /// filter change, so indexing by `cursor` can never run past the end.
+    fn clamp_cursor(&mut self) {
+        let len = self.visible_nodes().len();
+        self.cursor = self.cursor.min(len.saturating_sub(1));
     }
 }
