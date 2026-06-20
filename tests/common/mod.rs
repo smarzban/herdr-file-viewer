@@ -74,3 +74,11 @@ pub fn init_repo_with_commit(dir: &Path) {
 pub fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
+
+/// A `Command` that runs the built viewer binary with its cwd set to `dir`. The e2e tests
+/// wrap this in an `expectrl` pty session; callers add env (e.g. `EDITOR`) before spawning.
+pub fn viewer_command(dir: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-file-viewer"));
+    cmd.current_dir(dir);
+    cmd
+}

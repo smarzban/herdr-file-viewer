@@ -88,7 +88,17 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
         {
             let fx = controller.handle(intent);
             if fx.clear {
-                terminal.clear()?; // an editor took the screen — force a full repaint
+                // An external program (an editor) drew over the screen, so force a full
+                // repaint: `terminal.clear()` resets ratatui's back buffer so the next draw
+                // rewrites every cell (a plain redraw would only diff against the stale
+                // buffer and skip cells). `clear()` first issues a cursor-position (DSR)
+                // query to preserve the cursor; a real interactive terminal answers it, so
+                // this succeeds and the repaint is full. We make it best-effort because a
+                // terminal that never answers (e.g. a headless/test pty) must not crash the
+                // viewer — there the repaint is skipped and the pane may stay stale until the
+                // next change, which is strictly better than aborting (constitution: the loop
+                // never crashes). The e2e editor test exercises exactly this failure path.
+                let _ = terminal.clear();
                 dirty = true;
             }
             if fx.quit {
