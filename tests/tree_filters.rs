@@ -104,6 +104,30 @@ fn changed_only_shows_files_under_a_deleted_directory() {
 }
 
 #[test]
+fn cursor_moves_and_stays_in_bounds_when_filters_shrink_the_list() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join("a.txt"), "a").unwrap();
+    fs::write(dir.path().join("b.txt"), "b").unwrap();
+    fs::write(dir.path().join("c.txt"), "c").unwrap();
+    let mut model = TreeModel::new(dir.path());
+
+    model.move_cursor(2); // to the 3rd node
+    assert_eq!(model.cursor(), 2);
+    model.move_cursor(100); // clamped to last
+    assert_eq!(model.cursor(), 2);
+    model.move_cursor(-100); // clamped to first
+    assert_eq!(model.cursor(), 0);
+
+    model.move_cursor(2);
+    // Filter down to a single changed file → cursor must clamp into range.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("a.txt"), Status::Modified);
+    model.set_changed_only(true, &changed);
+    assert!(model.cursor() < model.visible_nodes().len(), "cursor clamped after filtering");
+    assert!(model.selected().is_some());
+}
+
+#[test]
 fn status_markers_attach_to_nodes() {
     let dir = TempDir::new();
     fs::write(dir.path().join("m.txt"), "m").unwrap();

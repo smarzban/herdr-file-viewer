@@ -98,6 +98,26 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
 }
 
 #[test]
+fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
+    // Even with a shell-wrapper renderer, a repo-controlled file name is sanitized to a
+    // safe basename, so command substitution / metacharacters cannot execute.
+    let marker = std::env::temp_dir().join(format!("HFV-PWN-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let renderers = Renderers {
+        markdown: vec!["cat".into()],
+        diff: vec!["cat".into()],
+        syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
+        timeout: Duration::from_secs(5),
+    };
+    let prepared = Prepared::Full { text: "code".into() };
+    let evil = format!("$(touch {}).rs", marker.display());
+    let (text, _) = render(&renderers, &prepared, ViewMode::SyntaxContent, None, Some(&evil));
+    assert!(!marker.exists(), "command substitution must not execute");
+    let out = flatten(&text);
+    assert!(!out.contains('$') && !out.contains('('), "metacharacters sanitized: {out}");
+}
+
+#[test]
 fn raw_content_mode_does_not_invoke_a_renderer() {
     let renderers = Renderers {
         markdown: vec!["nope-xyz".into()],
