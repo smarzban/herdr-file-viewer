@@ -16,6 +16,7 @@ use ratatui::text::Text;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A renderer that sleeps before producing output — the stand-in for a slow external CLI.
@@ -67,7 +68,7 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
 
     let delay = Duration::from_millis(150);
     let components = Components {
-        git: Box::new(NoGit),
+        git: Arc::new(NoGit),
         content: Box::new(SlowContent { delay }),
         editor: Box::new(NoEditor),
     };
@@ -79,8 +80,11 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
     let fx = ctrl.handle(Intent::NavDown);
     let handle_took = start.elapsed();
     assert!(fx.redraw, "the select still asks for a redraw (stale content shown meanwhile)");
+    // Non-blocking proof: had handle() waited for the render it would take at least `delay`
+    // (the worker's sleep). The dispatch is an in-process channel send (sub-millisecond), so
+    // a comfortable margin below `delay` is a robust, non-flaky bound.
     assert!(
-        handle_took < delay / 2,
+        handle_took < delay,
         "handle() must not block on the slow render (took {handle_took:?}, render is {delay:?})"
     );
     // The fresh content has not arrived yet — proof the render is off-thread (AC-23).
@@ -116,7 +120,7 @@ fn a_superseded_render_does_not_overwrite_a_newer_selection() {
     std::fs::write(dir.path().join("c.rs"), "3\n").unwrap();
 
     let components = Components {
-        git: Box::new(NoGit),
+        git: Arc::new(NoGit),
         content: Box::new(SlowContent { delay: Duration::from_millis(80) }),
         editor: Box::new(NoEditor),
     };

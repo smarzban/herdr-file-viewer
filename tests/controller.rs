@@ -15,14 +15,15 @@ use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::presenter::Focus;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-/// A shared, mutable recorder the stubs append to and tests read back.
-type Recorder<T> = Rc<RefCell<Vec<T>>>;
+/// A shared, mutable recorder the stubs append to and tests read back. `Arc<Mutex<_>>`
+/// (not `Rc<RefCell<_>>`) so the Git stub is `Send + Sync` — the controller's render worker
+/// holds the Git Service on another thread.
+type Recorder<T> = Arc<Mutex<Vec<T>>>;
 
 // ---- stubs ----------------------------------------------------------------------------
 
@@ -41,7 +42,7 @@ impl GitService for StubGit {
         self.status.clone()
     }
     fn changed_set(&self, baseline: Baseline) -> BTreeMap<PathBuf, Status> {
-        self.changed_calls.borrow_mut().push(baseline);
+        self.changed_calls.lock().unwrap().push(baseline);
         self.changed.clone()
     }
     fn diff(&self, _rel_path: &Path, _baseline: Baseline) -> String {
@@ -66,7 +67,7 @@ struct StubEditor {
 }
 impl EditorHandoff for StubEditor {
     fn open(&mut self, file: &Path) -> io::Result<bool> {
-        self.opened.borrow_mut().push(file.to_path_buf());
+        self.opened.lock().unwrap().push(file.to_path_buf());
         if self.fail {
             Err(io::Error::other("no editor configured"))
         } else {
@@ -84,9 +85,9 @@ fn controller(
     editor_fails: bool,
 ) -> (Controller, Recorder<Baseline>, Recorder<PathBuf>) {
     let changed_calls = git.changed_calls.clone();
-    let opened = Rc::new(RefCell::new(Vec::new()));
+    let opened = Arc::new(Mutex::new(Vec::new()));
     let components = Components {
-        git: Box::new(git),
+        git: Arc::new(git),
         content: Box::new(StubContent),
         editor: Box::new(StubEditor { fail: editor_fails, opened: opened.clone() }),
     };
@@ -147,14 +148,14 @@ fn toggle_baseline_recomputes_the_changed_set_and_updates_state() {
     // AC-16: switching the baseline re-queries git for the changed-set against it.
     let dir = TempDir::new();
     let (mut ctrl, changed_calls, _) = controller(dir.path(), true, StubGit::default(), false);
-    changed_calls.borrow_mut().clear(); // ignore the initial load in new()
+    changed_calls.lock().unwrap().clear(); // ignore the initial load in new()
 
     assert_eq!(ctrl.baseline(), Baseline::Head);
     let fx = ctrl.handle(Intent::ToggleBaseline);
     assert_eq!(ctrl.baseline(), Baseline::Base, "baseline toggles Head→Base (AC-16)");
     assert!(fx.redraw);
     assert_eq!(
-        *changed_calls.borrow(),
+        *changed_calls.lock().unwrap(),
         vec![Baseline::Base],
         "the changed-set is recomputed against the new baseline (AC-16)"
     );
@@ -171,7 +172,7 @@ fn git_intents_are_inert_without_a_repo() {
 
     ctrl.handle(Intent::ToggleBaseline);
     assert_eq!(ctrl.baseline(), Baseline::Head, "baseline is inert without git (AC-26)");
-    assert!(changed_calls.borrow().is_empty(), "no git query is issued without a repo");
+    assert!(changed_calls.lock().unwrap().is_empty(), "no git query is issued without a repo");
 }
 
 #[test]
@@ -183,7 +184,7 @@ fn an_editor_handoff_error_becomes_a_nonfatal_notice() {
     let (mut ctrl, _, opened) = controller(dir.path(), false, StubGit::default(), true);
 
     let fx = ctrl.handle(Intent::OpenInEditor);
-    assert_eq!(opened.borrow().len(), 1, "the editor hand-off was attempted");
+    assert_eq!(opened.lock().unwrap().len(), 1, "the editor hand-off was attempted");
     assert!(!ctrl.notices().is_empty(), "the failure is surfaced as a notice");
     assert!(!fx.quit, "a component error does not end the session");
 }
