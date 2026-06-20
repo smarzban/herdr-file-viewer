@@ -5,6 +5,7 @@
 //! the viewer keeps working as a plain browser (AC-26). Paths are repo-root-relative,
 //! matching git's own output.
 
+use crate::root::Resolved;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +17,128 @@ pub enum Status {
     Added,
     Deleted,
     Untracked,
+}
+
+/// What a diff and the meaning of "changed" compare against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Baseline {
+    /// Uncommitted changes only (vs HEAD).
+    Head,
+    /// The full body of work since forking from the base branch.
+    Base,
+}
+
+/// The context-smart default baseline: base branch on a feature branch / worktree
+/// (AC-14), else HEAD on the base/default branch (AC-15).
+pub fn default_baseline(resolved: &Resolved) -> Baseline {
+    let Some(repo) = resolved.repo_root.as_deref() else {
+        return Baseline::Head;
+    };
+    match (
+        base_branch(repo, resolved.base_branch.as_deref()),
+        current_branch(repo),
+    ) {
+        // On a branch other than the base/default branch → compare to the base (AC-14).
+        (Some(base), Some(cur)) if base != cur => Baseline::Base,
+        // On the base branch, detached, or no base info → uncommitted vs HEAD (AC-15).
+        _ => Baseline::Head,
+    }
+}
+
+/// The set of files changed against `baseline`, keyed by repo-root-relative path.
+pub fn changed_set(repo_root: &Path, baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+    match baseline {
+        // Uncommitted changes vs HEAD — exactly the working-tree status.
+        Baseline::Head => status(repo_root),
+        // The full body of work since the fork point: committed + uncommitted tracked
+        // changes, plus any untracked files.
+        Baseline::Base => {
+            let mut map = BTreeMap::new();
+            if let Some(fork) = base_fork_point(repo_root) {
+                if let Some(out) = run_raw(repo_root, &["diff", "--name-status", &fork]) {
+                    for line in out.lines() {
+                        let mut fields = line.split('\t');
+                        let code = fields.next().unwrap_or("");
+                        let path = fields.last().unwrap_or(""); // new path on rename/copy
+                        if path.is_empty() {
+                            continue;
+                        }
+                        if let Some(s) = classify_name_status(code) {
+                            map.insert(PathBuf::from(unquote(path)), s);
+                        }
+                    }
+                }
+            }
+            for (path, s) in status(repo_root) {
+                if s == Status::Untracked {
+                    map.entry(path).or_insert(Status::Untracked);
+                }
+            }
+            map
+        }
+    }
+}
+
+/// Raw unified diff text for one file against `baseline` (AC-9). Empty if unavailable.
+pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline) -> String {
+    let against = match baseline {
+        Baseline::Head => "HEAD".to_string(),
+        Baseline::Base => base_fork_point(repo_root).unwrap_or_else(|| "HEAD".to_string()),
+    };
+    let p = path.to_string_lossy();
+    run_raw(repo_root, &["diff", &against, "--", p.as_ref()]).unwrap_or_default()
+}
+
+/// Run a read-only `git` command and trim the stdout (for branch names / hashes).
+fn run_trimmed(repo_root: &Path, args: &[&str]) -> Option<String> {
+    run_raw(repo_root, args).map(|s| s.trim().to_string())
+}
+
+/// The current branch name, or `None` when detached.
+fn current_branch(repo_root: &Path) -> Option<String> {
+    match run_trimmed(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Some(b) if b != "HEAD" => Some(b),
+        _ => None,
+    }
+}
+
+/// Whether a ref resolves to a commit.
+fn ref_exists(repo_root: &Path, name: &str) -> bool {
+    run_raw(
+        repo_root,
+        &["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")],
+    )
+    .is_some()
+}
+
+/// The base/default branch: the host's hint if it resolves, else the conventional
+/// `main`/`master` fallback (the plan threads the hint only through `default_baseline`).
+fn base_branch(repo_root: &Path, hint: Option<&str>) -> Option<String> {
+    if let Some(h) = hint {
+        if ref_exists(repo_root, h) {
+            return Some(h.to_string());
+        }
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|c| ref_exists(repo_root, c))
+        .map(str::to_string)
+}
+
+/// The merge-base of the base branch and HEAD — where the body of work forks off.
+fn base_fork_point(repo_root: &Path) -> Option<String> {
+    let base = base_branch(repo_root, None)?;
+    run_trimmed(repo_root, &["merge-base", &base, "HEAD"])
+}
+
+/// Map a `git diff --name-status` code letter to a tree status.
+fn classify_name_status(code: &str) -> Option<Status> {
+    match code.chars().next() {
+        Some('A') => Some(Status::Added),
+        Some('D') => Some(Status::Deleted),
+        Some('M' | 'T' | 'R' | 'C') => Some(Status::Modified),
+        _ => None,
+    }
 }
 
 /// Per-file working-tree status, keyed by repo-root-relative path.
