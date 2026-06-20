@@ -129,8 +129,8 @@ pub fn render(
     // A diff is derived from git, not from the file's bytes, so it renders even for a
     // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder.
     if mode == ViewMode::Diff {
-        let diff = raw_diff.unwrap_or("");
-        return delegate(&with_name(&renderers.diff, name), diff, mode, renderers.timeout, None);
+        let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
+        return delegate(&with_name(&renderers.diff, name), &diff, mode, renderers.timeout, notice);
     }
 
     // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
@@ -167,6 +167,27 @@ fn with_name(command: &[String], name: &str) -> Vec<String> {
     command.iter().map(|arg| arg.replace("{name}", name)).collect()
 }
 
+/// Bound a text block to the size cap, returning a preview plus a truncation notice when
+/// it exceeds it. Used for diff text (AC-13's bound applied to large diffs, keeping the
+/// UI path responsive regardless of how big a changed file's diff is).
+fn cap_preview(text: &str) -> (String, Option<String>) {
+    let over = text.lines().count() >= MAX_LINES || text.len() as u64 >= MAX_BYTES;
+    if !over {
+        return (text.to_string(), None);
+    }
+    let mut preview: String = text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
+    if preview.len() as u64 > MAX_BYTES {
+        let end = preview
+            .char_indices()
+            .take_while(|(i, _)| (*i as u64) < MAX_BYTES)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        preview.truncate(end);
+    }
+    (preview, Some("⚠ Truncated diff preview — diff exceeds the size cap.".into()))
+}
+
 /// Reduce an untrusted file name to a safe basename — directory parts stripped, only
 /// `[A-Za-z0-9._-]` kept (others → `_`). The extension survives (for language detection),
 /// but the value is safe to interpolate even into a shell-wrapper renderer command, so a
@@ -176,9 +197,17 @@ fn sanitize_name(name: &str) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    base.chars()
+    let safe: String = base
+        .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
-        .collect()
+        .collect();
+    // A leading '-' would be parsed as an option by a renderer (e.g. `bat -rf.rs`); prefix
+    // it so the value is always treated as a file name.
+    if safe.starts_with('-') {
+        format!("_{safe}")
+    } else {
+        safe
+    }
 }
 
 /// Run a renderer over `input`, ingesting its output; on missing/failed/timed-out renderer

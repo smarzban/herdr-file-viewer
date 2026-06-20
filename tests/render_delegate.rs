@@ -49,6 +49,15 @@ fn diff_mode_renders_the_supplied_raw_diff() {
 }
 
 #[test]
+fn an_oversized_diff_is_truncated_with_a_notice() {
+    let huge = "+line\n".repeat(6000); // > 5000 lines
+    let prepared = Prepared::Full { text: "x".into() };
+    let (text, notice) = render(&cat(), &prepared, ViewMode::Diff, Some(&huge), None);
+    assert!(notice.unwrap().to_lowercase().contains("truncated"), "AC-13: large diff bounded");
+    assert!(text.lines.len() <= 5000, "diff preview is line-bounded");
+}
+
+#[test]
 fn diff_mode_renders_even_for_a_binary_or_deleted_file() {
     // A deleted file classifies as Binary (gone from disk), but its diff comes from git,
     // so Diff mode must still show the diff — not the binary placeholder (AC-9).
