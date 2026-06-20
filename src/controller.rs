@@ -201,11 +201,7 @@ impl Controller {
             result_rx,
             latest_seq: 0,
         };
-        if is_git_repo {
-            let status = ctrl.git.status();
-            ctrl.tree.set_status(&status);
-            ctrl.changed = ctrl.git.changed_set(baseline);
-        }
+        ctrl.refresh_git_state();
         ctrl.dispatch_render();
         ctrl
     }
@@ -376,8 +372,10 @@ impl Controller {
         }
         match self.editor.open(&node.path) {
             Ok(true) => {
-                // The editor took the terminal and may have changed the file: re-render the
-                // pane and force a full repaint (the external program drew over the screen).
+                // The editor took the terminal and may have changed the file: re-query git so
+                // status markers and the changed-set reflect the edit, re-render the pane, and
+                // force a full repaint (the external program drew over the screen).
+                self.refresh_git_state();
                 self.dispatch_render();
                 Effects { redraw: true, clear: true, ..Default::default() }
             }
@@ -397,6 +395,22 @@ impl Controller {
             Focus::Content => Focus::Tree,
         };
         Effects::redraw()
+    }
+
+    /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
+    /// against the active baseline (AC-16), updating the tree caches. Used at launch and
+    /// after an editor hand-off returns (the file may have changed). No-op without a repo
+    /// (AC-26). This runs on the calling thread, but only on deliberate, infrequent actions
+    /// (launch, editor return, baseline toggle) — never the hot navigation path, where the
+    /// diff is fetched off-thread (AC-23).
+    fn refresh_git_state(&mut self) {
+        if !self.is_git_repo {
+            return;
+        }
+        let status = self.git.status();
+        self.tree.set_status(&status);
+        self.changed = self.git.changed_set(self.baseline);
+        self.tree.set_changed_only(self.changed_only, &self.changed);
     }
 
     // ---- content coordination ----------------------------------------------------------

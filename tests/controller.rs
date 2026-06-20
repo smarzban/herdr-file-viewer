@@ -190,6 +190,24 @@ fn an_editor_handoff_error_becomes_a_nonfatal_notice() {
 }
 
 #[test]
+fn successful_editor_return_refreshes_git_state() {
+    // After the editor returns the file may have changed, so the controller must re-query
+    // git — status markers (AC-7) and the changed-set — not just the content pane. Otherwise
+    // a freshly-edited file keeps its pre-edit markers/changed-only visibility.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, changed_calls, opened) = controller(dir.path(), true, StubGit::default(), false);
+    changed_calls.lock().unwrap().clear(); // ignore the initial load in new()
+
+    ctrl.handle(Intent::OpenInEditor);
+    assert_eq!(opened.lock().unwrap().len(), 1, "the editor was invoked");
+    assert!(
+        !changed_calls.lock().unwrap().is_empty(),
+        "git state is re-queried after a successful editor return (AC-7/AC-16 freshness)"
+    );
+}
+
+#[test]
 fn toggle_focus_switches_columns() {
     // AC-21 trigger: focus moves between the tree and content columns.
     let dir = TempDir::new();
