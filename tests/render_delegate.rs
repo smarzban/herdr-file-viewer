@@ -73,6 +73,16 @@ fn binary_shows_a_placeholder_not_raw_bytes() {
 }
 
 #[test]
+fn diff_mode_renders_even_for_a_binary_or_deleted_file() {
+    // A deleted file classifies as Binary (gone from disk), but its diff comes from git,
+    // so Diff mode must still show the diff — not the binary placeholder (AC-9).
+    let (text, _) = render(&cat(), &Prepared::Binary, ViewMode::Diff, Some("@@ -1 +0 @@\n-removed"));
+    let s = flatten(&text);
+    assert!(s.contains("-removed"), "deletion diff is shown");
+    assert!(!s.to_lowercase().contains("binary file"), "no binary placeholder in diff mode");
+}
+
+#[test]
 fn raw_content_mode_does_not_invoke_a_renderer() {
     let renderers = Renderers {
         markdown: vec!["nope-xyz".into()],

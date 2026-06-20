@@ -82,6 +82,28 @@ fn changed_only_shows_deleted_files_with_their_marker() {
 }
 
 #[test]
+fn changed_only_shows_files_under_a_deleted_directory() {
+    // A whole directory was deleted: none of its files (nor the dir) are on disk, but the
+    // changed-set still references them — they must be reviewable.
+    let dir = TempDir::new();
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("old/a.rs"), Status::Deleted);
+    changed.insert(PathBuf::from("old/sub/b.rs"), Status::Deleted);
+
+    let mut model = TreeModel::new(dir.path());
+    model.set_changed_only(true, &changed);
+
+    let names: Vec<String> = model
+        .visible_nodes()
+        .iter()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"old".to_string()), "the deleted directory is synthesized");
+    assert!(names.contains(&"a.rs".to_string()));
+    assert!(names.contains(&"b.rs".to_string()), "files under a deleted dir are shown");
+}
+
+#[test]
 fn status_markers_attach_to_nodes() {
     let dir = TempDir::new();
     fs::write(dir.path().join("m.txt"), "m").unwrap();

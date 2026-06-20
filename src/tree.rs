@@ -6,7 +6,7 @@
 
 use crate::git::Status;
 use ignore::WalkBuilder;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Whether a tree node is a directory or a file.
@@ -88,38 +88,22 @@ impl TreeModel {
         self.cursor
     }
 
-    /// The ordered list of currently-visible nodes (root's children, plus the children of
-    /// every expanded directory, depth-first).
+    /// The ordered list of currently-visible nodes. In the full tree these are root's
+    /// children plus the children of every expanded directory, depth-first. In changed-only
+    /// mode the tree is built from the changed-set itself (so deleted files — and files
+    /// under a deleted directory — still appear, AC-6/AC-7), with every directory expanded.
     pub fn visible_nodes(&self) -> Vec<Node> {
+        if self.changed_only {
+            return self.changed_only_nodes();
+        }
         let mut out = Vec::new();
         self.collect(&self.root, 0, &mut out);
         out
     }
 
     fn collect(&self, dir: &Path, depth: usize, out: &mut Vec<Node>) {
-        let mut entries = self.entries(dir);
-        if self.changed_only {
-            // Deleted files aren't on disk, so synthesize nodes for them under their
-            // (still-present) parent directory, so changed-only mode can show and review
-            // them (AC-6) with a deleted marker (AC-7).
-            for (rel, status) in &self.changed_filter {
-                if *status == Status::Deleted {
-                    let abs = self.root.join(rel);
-                    if abs.parent() == Some(dir) && !abs.exists() {
-                        entries.push((abs, NodeKind::File));
-                    }
-                }
-            }
-            sort_entries(&mut entries);
-        }
-        for (path, kind) in entries {
-            if self.changed_only && !self.leads_to_change(&path, kind) {
-                continue;
-            }
-            // In changed-only mode, auto-descend into directories so the (only) changed
-            // files inside are reachable without manual expansion.
-            let expanded = kind == NodeKind::Dir
-                && (self.changed_only || self.expanded.contains(&path));
+        for (path, kind) in self.entries(dir) {
+            let expanded = kind == NodeKind::Dir && self.expanded.contains(&path);
             out.push(Node {
                 path: path.clone(),
                 kind,
@@ -133,6 +117,63 @@ impl TreeModel {
         }
     }
 
+    /// Build the changed-only tree from the changed-set's paths (not the filesystem), so
+    /// deletions — including whole deleted directories — are reviewable.
+    fn changed_only_nodes(&self) -> Vec<Node> {
+        let files: BTreeSet<PathBuf> = self.changed_filter.keys().cloned().collect();
+        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for rel in &files {
+            let mut ancestor = rel.parent();
+            while let Some(p) = ancestor {
+                if p.as_os_str().is_empty() {
+                    break;
+                }
+                dirs.insert(p.to_path_buf());
+                ancestor = p.parent();
+            }
+        }
+        let mut out = Vec::new();
+        self.emit_synthetic(Path::new(""), 0, &dirs, &files, &mut out);
+        out
+    }
+
+    fn emit_synthetic(
+        &self,
+        parent_rel: &Path,
+        depth: usize,
+        dirs: &BTreeSet<PathBuf>,
+        files: &BTreeSet<PathBuf>,
+        out: &mut Vec<Node>,
+    ) {
+        let is_child = |rel: &Path| rel.parent().unwrap_or(Path::new("")) == parent_rel;
+        let mut child_dirs: Vec<&PathBuf> = dirs.iter().filter(|d| is_child(d)).collect();
+        let mut child_files: Vec<&PathBuf> = files.iter().filter(|f| is_child(f)).collect();
+        child_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        child_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        for d in child_dirs {
+            let abs = self.root.join(d);
+            out.push(Node {
+                path: abs.clone(),
+                kind: NodeKind::Dir,
+                depth,
+                expanded: true,
+                status: self.status_for(&abs),
+            });
+            self.emit_synthetic(d, depth + 1, dirs, files, out);
+        }
+        for f in child_files {
+            let abs = self.root.join(f);
+            out.push(Node {
+                path: abs.clone(),
+                kind: NodeKind::File,
+                depth,
+                expanded: false,
+                status: self.status_for(&abs),
+            });
+        }
+    }
+
     /// The node's git status (AC-7): the dedicated marker map, falling back to the
     /// changed-set so synthesized deleted nodes still carry their marker.
     fn status_for(&self, path: &Path) -> Option<Status> {
@@ -142,21 +183,6 @@ impl TreeModel {
                 .or_else(|| self.changed_filter.get(rel))
                 .copied()
         })
-    }
-
-    /// In changed-only mode: a file kept iff it is itself changed; a directory kept iff it
-    /// (transitively) contains a changed file.
-    fn leads_to_change(&self, path: &Path, kind: NodeKind) -> bool {
-        let Ok(rel) = path.strip_prefix(&self.root) else {
-            return false;
-        };
-        match kind {
-            NodeKind::File => self.changed_filter.contains_key(rel),
-            NodeKind::Dir => self
-                .changed_filter
-                .keys()
-                .any(|changed| changed != rel && changed.starts_with(rel)),
-        }
     }
 
     /// Immediate children of `dir`: gitignore-filtered (unless `show_ignored`), `.git`

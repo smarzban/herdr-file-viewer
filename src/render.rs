@@ -19,6 +19,8 @@ use std::time::Duration;
 const MAX_BYTES: u64 = 1024 * 1024; // 1 MB
 /// The size cap by line count (AC-13).
 const MAX_LINES: usize = 5000;
+/// Cap on bytes captured from a renderer's stdout, bounding memory if it spews output.
+const MAX_RENDER_OUTPUT: u64 = 16 * 1024 * 1024; // 16 MB
 
 /// The guarded result of reading a file's content.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,40 +123,55 @@ pub fn render(
     mode: ViewMode,
     raw_diff: Option<&str>,
 ) -> (Text<'static>, Option<String>) {
-    // Binary: a placeholder, never the raw bytes (AC-12).
+    // A diff is derived from git, not from the file's bytes, so it renders even for a
+    // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder.
+    if mode == ViewMode::Diff {
+        let diff = raw_diff.unwrap_or("");
+        return delegate(&renderers.diff, diff, mode, renderers.timeout, None);
+    }
+
+    // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
     let (content, base_notice) = match prepared {
-        Prepared::Binary => {
-            return (Text::raw("[binary file — preview not shown]"), None);
-        }
+        Prepared::Binary => return (Text::raw("[binary file — preview not shown]"), None),
         Prepared::Full { text } => (text.as_str(), None),
         Prepared::Truncated { text, notice } => (text.as_str(), Some(notice.clone())),
     };
 
-    // Pick the input to render and the command for this mode (None = raw, no delegation).
-    let (input, command) = match mode {
-        ViewMode::Diff => (raw_diff.unwrap_or(""), Some(&renderers.diff)),
-        ViewMode::RenderedMarkdown => (content, Some(&renderers.markdown)),
-        ViewMode::SyntaxContent => (content, Some(&renderers.syntax)),
-        ViewMode::RawContent => (content, None),
-    };
+    match mode {
+        ViewMode::RenderedMarkdown => {
+            delegate(&renderers.markdown, content, mode, renderers.timeout, base_notice)
+        }
+        ViewMode::SyntaxContent => {
+            delegate(&renderers.syntax, content, mode, renderers.timeout, base_notice)
+        }
+        ViewMode::RawContent => (to_text(content), base_notice),
+        ViewMode::Diff => unreachable!("handled above"),
+    }
+}
 
-    match command {
-        None => (to_text(input), base_notice),
-        Some(cmd) => match run_renderer(cmd, input, renderers.timeout) {
-            Ok(out) => (to_text(&out), base_notice),
-            Err(reason) => {
-                // Plain-text fallback (AC-24) + a notice naming the capability (AC-25).
-                let fallback = format!(
-                    "{} renderer unavailable ({reason}); showing plain text.",
-                    capability(mode)
-                );
-                let notice = match base_notice {
-                    Some(prev) => format!("{prev}\n{fallback}"),
-                    None => fallback,
-                };
-                (to_text(input), Some(notice))
-            }
-        },
+/// Run a renderer over `input`, ingesting its output; on missing/failed/timed-out renderer
+/// fall back to plain text plus a capability-naming notice (AC-24/25), preserving any
+/// pre-existing `base_notice` (e.g. a truncation notice).
+fn delegate(
+    command: &[String],
+    input: &str,
+    mode: ViewMode,
+    timeout: Duration,
+    base_notice: Option<String>,
+) -> (Text<'static>, Option<String>) {
+    match run_renderer(command, input, timeout) {
+        Ok(out) => (to_text(&out), base_notice),
+        Err(reason) => {
+            let fallback = format!(
+                "{} renderer unavailable ({reason}); showing plain text.",
+                capability(mode)
+            );
+            let notice = match base_notice {
+                Some(prev) => format!("{prev}\n{fallback}"),
+                None => fallback,
+            };
+            (to_text(input), Some(notice))
+        }
     }
 }
 
@@ -193,20 +210,22 @@ fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<St
     let stdout = child.stdout.take();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Cap the captured output so a renderer spewing unbounded data can't exhaust memory.
         let mut buf = Vec::new();
-        if let Some(mut out) = stdout {
-            let _ = out.read_to_end(&mut buf);
+        if let Some(out) = stdout {
+            let _ = out.take(MAX_RENDER_OUTPUT).read_to_end(&mut buf);
         }
         let _ = tx.send(buf);
     });
 
     match rx.recv_timeout(timeout) {
         Ok(buf) => {
-            let status = child.wait().map_err(|e| format!("{prog}: {e}"))?;
-            if status.success() {
-                Ok(String::from_utf8_lossy(&buf).into_owned())
-            } else {
-                Err(format!("{prog} exited with {status}"))
+            // stdout closed; the process should exit promptly. Bound that wait too, so a
+            // renderer that closes stdout then hangs is still killed (no indefinite block).
+            match wait_bounded(&mut child, timeout) {
+                Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
+                Some(status) => Err(format!("{prog} exited with {status}")),
+                None => Err(format!("{prog} did not exit")),
             }
         }
         Err(_) => {
@@ -217,15 +236,35 @@ fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<St
     }
 }
 
+/// Wait for a child to exit within `grace`, polling; kill and reap it if it overruns.
+fn wait_bounded(child: &mut std::process::Child, grace: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// Ingest (possibly untrusted) content into ratatui `Text`. Cursor-movement and
 /// screen-control escape sequences are stripped regardless of source; only SGR styling is
 /// kept and mapped into spans by `ansi-to-tui` (AC-27). The result can only ever paint the
 /// viewer's own region — it carries no terminal-control operations.
 pub fn to_text(raw: &str) -> Text<'static> {
     let cleaned = strip_terminal_control(raw);
-    cleaned
-        .into_text()
-        .unwrap_or_else(|_| Text::raw(cleaned.clone()))
+    cleaned.clone().into_text().unwrap_or_else(|_| {
+        // If ANSI parsing fails, the kept SGR runs still contain raw ESC bytes — strip
+        // ALL ESC on the fallback so no control byte ever reaches the terminal (AC-27).
+        Text::raw(cleaned.replace('\u{1b}', ""))
+    })
 }
 
 /// Remove cursor/screen-control escape sequences, keeping only SGR (`…m`) styling so it
