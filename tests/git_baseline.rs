@@ -139,6 +139,37 @@ fn base_queries_on_non_repo_degrade_to_empty() {
 }
 
 #[test]
+fn remote_tracking_base_branch_is_used_when_no_local_base_exists() {
+    // A cloned/worktree repo whose base exists only as origin/main, no local main.
+    let repo = make_repo(); // on "main" with seed committed
+    let main_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    git(repo.path(), &["checkout", "-q", "-b", "feature"]);
+    fs::write(repo.path().join("feat.txt"), "x\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "feature"]);
+    git(repo.path(), &["update-ref", "refs/remotes/origin/main", &main_sha]);
+    git(repo.path(), &["branch", "-D", "main"]); // base now only remote-tracking
+
+    assert_eq!(default_baseline(&resolved(repo.path())), Baseline::Base); // AC-14
+    let set = changed_set(repo.path(), Baseline::Base, None);
+    assert!(set.contains_key(&PathBuf::from("feat.txt")));
+}
+
+#[test]
+fn option_like_base_branch_hint_is_rejected_not_injected() {
+    let repo = make_repo(); // local "main" exists as fallback
+    git(repo.path(), &["checkout", "-q", "-b", "feature"]);
+    fs::write(repo.path().join("feat.txt"), "x\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "feature"]);
+
+    // A hint shaped like a git flag must be ignored (no option injection); resolution
+    // falls back to the local base, so committed work is still found.
+    let set = changed_set(repo.path(), Baseline::Base, Some("--output=/tmp/pwned"));
+    assert!(set.contains_key(&PathBuf::from("feat.txt")));
+}
+
+#[test]
 fn baseline_queries_do_not_mutate_the_repo() {
     let repo = make_repo();
     git(repo.path(), &["checkout", "-q", "-b", "feature"]);
