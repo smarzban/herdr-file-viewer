@@ -170,6 +170,38 @@ fn option_like_base_branch_hint_is_rejected_not_injected() {
 }
 
 #[test]
+fn detached_worktree_defaults_to_base() {
+    // A managed worktree checked out in detached HEAD still reviews its body of work vs
+    // the base (AC-14), even though there is no current branch name.
+    let main = make_repo(); // on "main"
+    let wt = main.path().join("wt");
+    git(main.path(), &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "feature"]);
+    git(&wt, &["checkout", "-q", "--detach"]); // detached HEAD inside the worktree
+
+    let mut r = resolved(&wt);
+    r.is_worktree = true;
+    r.base_branch = Some("main".to_string());
+    assert_eq!(default_baseline(&r), Baseline::Base);
+}
+
+#[test]
+fn non_ascii_filename_round_trips_through_status_and_diff() {
+    let repo = make_repo();
+    fs::write(repo.path().join("résumé.txt"), "café\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "add"]);
+    fs::write(repo.path().join("résumé.txt"), "café\nnoël\n").unwrap();
+
+    let set = changed_set(repo.path(), Baseline::Head, None);
+    assert_eq!(
+        set.get(&PathBuf::from("résumé.txt")),
+        Some(&Status::Modified)
+    );
+    let d = diff(repo.path(), Path::new("résumé.txt"), Baseline::Head, None);
+    assert!(d.contains("+noël"), "diff of a non-ASCII path is not empty");
+}
+
+#[test]
 fn staged_file_in_unborn_repo_diffs_as_added() {
     // No commits yet → HEAD doesn't resolve; a staged file must still diff as added.
     let repo = TempDir::new();
