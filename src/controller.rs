@@ -24,12 +24,14 @@ use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mod
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
-/// the run loop injects an implementation bound to the real repository.
-pub trait GitService {
+/// the run loop injects an implementation bound to the real repository. `Send + Sync` so the
+/// diff query can run on the render worker thread, off the input path (AC-23).
+pub trait GitService: Send + Sync {
     /// Working-tree status per repo-root-relative path (drives tree markers, AC-7).
     fn status(&self) -> BTreeMap<PathBuf, Status>;
     /// The set of files changed against `baseline` (drives the changed-only filter, AC-6,
@@ -62,7 +64,9 @@ pub trait EditorHandoff {
 
 /// The injected components the controller orchestrates.
 pub struct Components {
-    pub git: Box<dyn GitService>,
+    /// Shared (`Arc`) because both the controller (status / changed-set) and the render
+    /// worker (diff, off the input thread) query git.
+    pub git: Arc<dyn GitService>,
     pub content: Box<dyn ContentProvider>,
     pub editor: Box<dyn EditorHandoff>,
 }
@@ -89,12 +93,17 @@ impl Effects {
 }
 
 /// A unit of off-thread rendering work sent to the worker. `seq` orders jobs so a stale
-/// result (one whose selection has been superseded) is discarded on arrival.
+/// result (one whose selection has been superseded) is discarded on arrival. The diff itself
+/// is *not* carried here — the worker fetches it from git so nothing git-related (and no
+/// unbounded diff text) touches the input thread (AC-23).
 struct RenderJob {
     seq: u64,
     path: PathBuf,
+    /// Repo-root-relative path for the git diff query (`None` if outside the root).
+    rel: Option<PathBuf>,
     mode: ViewMode,
-    raw_diff: Option<String>,
+    baseline: Baseline,
+    is_git: bool,
 }
 
 /// The interaction orchestrator and the ephemeral session state.
@@ -119,7 +128,7 @@ pub struct Controller {
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
     action_notice: Option<String>,
-    git: Box<dyn GitService>,
+    git: Arc<dyn GitService>,
     editor: Box<dyn EditorHandoff>,
     /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
     /// dispatched job; a `poll`ed result with a smaller seq is stale and dropped.
@@ -135,14 +144,37 @@ impl Controller {
     /// is rendered so the first frame is populated.
     pub fn new(root: PathBuf, is_git_repo: bool, baseline: Baseline, components: Components) -> Self {
         let Components { git, content, editor } = components;
-        // The Content Renderer lives on a worker thread; the controller talks to it over a
-        // job channel and reads finished renders off a result channel (AC-23). The worker
-        // exits when the job sender (held by the controller) is dropped.
+        // The Content Renderer (and the diff query it needs) live on a worker thread; the
+        // controller talks to it over a job channel and reads finished renders off a result
+        // channel (AC-23). The worker exits when the job sender (held by the controller) is
+        // dropped.
         let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
         let (result_tx, result_rx) = mpsc::channel::<(u64, RenderResult)>();
+        let worker_git = Arc::clone(&git);
         std::thread::spawn(move || {
-            while let Ok(job) = job_rx.recv() {
-                let result = content.render(&job.path, job.mode, job.raw_diff.as_deref());
+            while let Ok(mut job) = job_rx.recv() {
+                // Collapse any backlog: under rapid navigation only the most recent selection
+                // matters, so skip superseded jobs rather than render each in turn.
+                while let Ok(newer) = job_rx.try_recv() {
+                    job = newer;
+                }
+                // The diff is read here, off the input thread, so a large/slow diff never
+                // blocks input (AC-23). Other modes don't need git.
+                let raw_diff = if job.mode == ViewMode::Diff && job.is_git {
+                    job.rel.as_deref().map(|rel| worker_git.diff(rel, job.baseline))
+                } else {
+                    None
+                };
+                // A renderer panic must not kill the worker (rendering would stop forever) nor
+                // fire the global panic hook from this thread (it would reset the main thread's
+                // terminal mid-session). Contain it and surface a placeholder instead.
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    content.render(&job.path, job.mode, raw_diff.as_deref())
+                }))
+                .unwrap_or_else(|_| RenderResult {
+                    content: Text::raw("[content unavailable — renderer error]"),
+                    notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
+                });
                 if result_tx.send((job.seq, result)).is_err() {
                     break; // controller gone
                 }
@@ -290,6 +322,10 @@ impl Controller {
     fn toggle_ignore(&mut self) -> Effects {
         self.show_ignored = !self.show_ignored;
         self.tree.set_show_ignored(self.show_ignored);
+        // Revealing/hiding ignored entries can shift which node the cursor lands on, so the
+        // content pane must re-render for the (possibly) new selection — otherwise it shows a
+        // file that is no longer highlighted.
+        self.dispatch_render();
         Effects::redraw()
     }
 
@@ -339,12 +375,18 @@ impl Controller {
             return Effects::noop();
         }
         match self.editor.open(&node.path) {
-            // The hand-off took the terminal: force a full repaint on return.
-            Ok(true) => Effects { redraw: true, clear: true, ..Default::default() },
-            Ok(false) => Effects::redraw(),
+            Ok(true) => {
+                // The editor took the terminal and may have changed the file: re-render the
+                // pane and force a full repaint (the external program drew over the screen).
+                self.dispatch_render();
+                Effects { redraw: true, clear: true, ..Default::default() }
+            }
+            Ok(false) => Effects::redraw(), // off-screen hand-off (new pane) — no takeover
             Err(e) => {
                 self.action_notice = Some(format!("Could not open editor: {e}"));
-                Effects::redraw()
+                // The hand-off may have suspended the terminal before failing, so force a full
+                // repaint to recover from any partial screen state.
+                Effects { redraw: true, clear: true, ..Default::default() }
             }
         }
     }
@@ -360,11 +402,10 @@ impl Controller {
     // ---- content coordination ----------------------------------------------------------
 
     /// Dispatch a render of the current selection to the worker thread (AC-23) — never
-    /// blocking. A directory or empty selection clears the pane synchronously (no job). The
-    /// raw diff for diff mode is read from git on this thread (a single bounded query); the
-    /// heavy delegation to the external renderer is what runs off-thread. Every call bumps
-    /// `latest_seq`, so any still-in-flight render for the previous selection is superseded
-    /// and dropped by [`poll`].
+    /// blocking and doing **no git or rendering work on the input thread**: the worker reads
+    /// the diff and delegates to the external renderer. A directory or empty selection clears
+    /// the pane synchronously (no job). Every call bumps `latest_seq`, so any still-in-flight
+    /// render for the previous selection is superseded and dropped by [`poll`].
     fn dispatch_render(&mut self) {
         self.latest_seq += 1;
         let seq = self.latest_seq;
@@ -374,14 +415,17 @@ impl Controller {
             return self.clear_content();
         }
         let mode = self.effective_mode(&node.path);
-        let raw_diff = if mode == ViewMode::Diff && self.is_git_repo {
-            self.rel(&node.path).map(|rel| self.git.diff(&rel, self.baseline))
-        } else {
-            None
-        };
+        let rel = self.rel(&node.path);
         // If the worker has gone (channel closed) the send simply fails; the pane keeps its
         // last content rather than panicking.
-        let _ = self.job_tx.send(RenderJob { seq, path: node.path, mode, raw_diff });
+        let _ = self.job_tx.send(RenderJob {
+            seq,
+            path: node.path,
+            rel,
+            mode,
+            baseline: self.baseline,
+            is_git: self.is_git_repo,
+        });
     }
 
     /// Clear the content pane (selection is a directory / nothing).

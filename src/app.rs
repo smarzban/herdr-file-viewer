@@ -26,6 +26,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long the input poll blocks each tick before draining finished off-thread renders, so
@@ -41,7 +42,7 @@ pub fn run() -> io::Result<()> {
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
 
-    let git: Box<dyn GitService> = Box::new(LiveGit {
+    let git: Arc<dyn GitService> = Arc::new(LiveGit {
         // In a non-repo there is no repo_root; git is never queried then, but a path is still
         // required, so fall back to the tree root.
         repo_root: resolved.repo_root.clone().unwrap_or_else(|| resolved.root.clone()),
@@ -65,14 +66,20 @@ pub fn run() -> io::Result<()> {
     outcome
 }
 
-/// Draw, read one input (or time out), drain renders; repeat until the Close intent.
+/// Draw (only when something changed), read one input (or time out), drain renders; repeat
+/// until the Close intent. Drawing only when `dirty` avoids re-walking the filesystem (the
+/// tree enumeration in `view_state`) on every idle tick.
 fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io::Result<()> {
+    let mut dirty = true; // paint the first frame
     loop {
-        terminal.draw(|frame| {
-            controller.set_width(frame.area().width);
-            let view: ViewState = controller.view_state();
-            presenter::draw(frame, &view);
-        })?;
+        if dirty {
+            terminal.draw(|frame| {
+                controller.set_width(frame.area().width);
+                let view: ViewState = controller.view_state();
+                presenter::draw(frame, &view);
+            })?;
+            dirty = false;
+        }
 
         if event::poll(TICK)?
             && let Event::Key(key) = event::read()?
@@ -82,13 +89,17 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
             let fx = controller.handle(intent);
             if fx.clear {
                 terminal.clear()?; // an editor took the screen — force a full repaint
+                dirty = true;
             }
             if fx.quit {
                 return Ok(());
             }
+            dirty |= fx.redraw;
         }
-        // Surface any content finished by the render worker on the next draw (AC-23).
-        controller.poll();
+        // A render finished by the worker becomes visible on the next draw (AC-23).
+        if let Some(fx) = controller.poll() {
+            dirty |= fx.redraw;
+        }
     }
 }
 
@@ -142,12 +153,22 @@ struct LiveEditor {
 impl EditorHandoff for LiveEditor {
     fn open(&mut self, file: &Path) -> io::Result<bool> {
         let Some(editor) = self.editor.clone() else {
+            // No terminal change yet, so nothing to restore.
             return Err(io::Error::other("no editor configured (set $EDITOR)"));
         };
-        suspend_tui()?;
-        let launched = EditorLauncher::new(editor).open(file, Target::Editor, &mut ProcessSpawner);
+        // Once we touch the terminal we must always try to restore it, even if suspending or
+        // the editor itself fails — otherwise the viewer would keep running with raw mode off
+        // or outside the alternate screen.
+        let suspended = suspend_tui();
+        let launched = if suspended.is_ok() {
+            EditorLauncher::new(editor).open(file, Target::Editor, &mut ProcessSpawner)
+        } else {
+            // Don't run the editor over a half-suspended terminal.
+            Ok(())
+        };
         let resumed = resume_tui();
-        // Report the editor's own failure first, then any failure to restore the terminal.
+        // Report the first failure in order: suspend, then the editor, then restore.
+        suspended?;
         launched?;
         resumed?;
         Ok(true) // the editor drew over the screen → the run loop forces a full repaint
