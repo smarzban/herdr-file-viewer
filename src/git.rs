@@ -100,7 +100,7 @@ pub fn changed_set(
             let mut map = BTreeMap::new();
             if let Some(out) = run_raw(
                 repo_root,
-                &["-c", "core.quotePath=false", "diff", "--name-status", &fork],
+                &["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--name-status", &fork],
             ) {
                 for line in out.lines() {
                     let mut fields = line.split('\t');
@@ -130,28 +130,37 @@ pub fn changed_set(
 /// content (via `git diff --no-index`) rather than returning an empty diff.
 pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option<&str>) -> String {
     let p = path.to_string_lossy();
+    // `--no-ext-diff` refuses any external diff helper an untrusted repo's config or
+    // .gitattributes might point at — git must not execute repo-controlled programs.
     if is_untracked(repo_root, path) {
         return run_allow_fail(
             repo_root,
-            &["diff", "--no-index", "--no-color", "--", "/dev/null", p.as_ref()],
+            &["diff", "--no-ext-diff", "--no-index", "--no-color", "--", "/dev/null", p.as_ref()],
         );
     }
     let against = match baseline {
         Baseline::Head => "HEAD".to_string(),
         Baseline::Base => base_fork_point(repo_root, base_hint).unwrap_or_else(|| "HEAD".to_string()),
     };
-    run_raw(repo_root, &["diff", &against, "--", p.as_ref()]).unwrap_or_default()
+    run_raw(repo_root, &["diff", "--no-ext-diff", &against, "--", p.as_ref()]).unwrap_or_default()
+}
+
+/// Build a `git -C <repo> <args>` command hardened for read-only use against an
+/// untrusted repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from opportunistically
+/// refreshing (writing) the index, keeping git state truly unchanged (AC-N2).
+fn git_command(repo_root: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args);
+    cmd
 }
 
 /// Run a read-only `git` command in `repo_root`, returning raw (untrimmed) stdout.
 /// `None` if git is missing or exits non-zero (degrade to a plain browser, AC-26).
 fn run_raw(repo_root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = git_command(repo_root, args).output().ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -162,10 +171,7 @@ fn run_raw(repo_root: &Path, args: &[&str]) -> Option<String> {
 /// Run a read-only `git` command, returning stdout regardless of exit code. Used for
 /// `git diff --no-index`, which exits 1 precisely *because* it found differences.
 fn run_allow_fail(repo_root: &Path, args: &[&str]) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
+    git_command(repo_root, args)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
@@ -214,14 +220,15 @@ fn is_safe_ref(name: &str) -> bool {
 }
 
 /// The base/default branch: the host's hint if it is safe and resolves, else the
-/// conventional `main`/`master` fallback.
+/// conventional fallback. Remote-tracking refs are included so a freshly-cloned repo or
+/// worktree whose base exists only as `origin/main` still resolves a base (AC-14).
 fn resolve_base_branch(repo_root: &Path, hint: Option<&str>) -> Option<String> {
     if let Some(h) = hint {
         if is_safe_ref(h) && ref_exists(repo_root, h) {
             return Some(h.to_string());
         }
     }
-    ["main", "master"]
+    ["main", "master", "origin/main", "origin/master"]
         .into_iter()
         .find(|c| ref_exists(repo_root, c))
         .map(str::to_string)
