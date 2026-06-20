@@ -44,8 +44,24 @@ impl EditorLauncher {
     /// caller surfaces as a non-fatal notice (never a panic). Performs no file I/O (AC-N1).
     pub fn open(&self, file: &Path, target: Target, spawner: &mut impl Spawner) -> io::Result<()> {
         match target {
-            Target::Editor => spawner.spawn(&[self.editor.clone(), file.as_os_str().to_owned()]),
+            Target::Editor => spawner.spawn(&self.editor_argv(file)),
             Target::NewPane => spawner.open_pane(&self.editor, file),
         }
+    }
+
+    /// Build the local-spawn argv: the configured editor split into program + arguments
+    /// (so `$EDITOR` values like `"code --wait"` launch correctly), with the selected file
+    /// appended as the final argument. Whitespace-split is the conventional `$EDITOR`
+    /// reading; an editor path containing spaces is not supported on this path (use the
+    /// new-pane path, which runs the editor as shell text). An empty/whitespace-only editor
+    /// falls back to the raw value so the launch fails loudly rather than exec-ing the file.
+    fn editor_argv(&self, file: &Path) -> Vec<OsString> {
+        let mut argv: Vec<OsString> =
+            self.editor.to_string_lossy().split_whitespace().map(OsString::from).collect();
+        if argv.is_empty() {
+            argv.push(self.editor.clone());
+        }
+        argv.push(file.as_os_str().to_owned());
+        argv
     }
 }
