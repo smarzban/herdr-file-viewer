@@ -122,12 +122,14 @@ pub fn render(
     prepared: &Prepared,
     mode: ViewMode,
     raw_diff: Option<&str>,
+    file_name: Option<&str>,
 ) -> (Text<'static>, Option<String>) {
+    let name = file_name.unwrap_or("");
     // A diff is derived from git, not from the file's bytes, so it renders even for a
     // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder.
     if mode == ViewMode::Diff {
         let diff = raw_diff.unwrap_or("");
-        return delegate(&renderers.diff, diff, mode, renderers.timeout, None);
+        return delegate(&with_name(&renderers.diff, name), diff, mode, renderers.timeout, None);
     }
 
     // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
@@ -138,15 +140,30 @@ pub fn render(
     };
 
     match mode {
-        ViewMode::RenderedMarkdown => {
-            delegate(&renderers.markdown, content, mode, renderers.timeout, base_notice)
-        }
-        ViewMode::SyntaxContent => {
-            delegate(&renderers.syntax, content, mode, renderers.timeout, base_notice)
-        }
+        ViewMode::RenderedMarkdown => delegate(
+            &with_name(&renderers.markdown, name),
+            content,
+            mode,
+            renderers.timeout,
+            base_notice,
+        ),
+        ViewMode::SyntaxContent => delegate(
+            &with_name(&renderers.syntax, name),
+            content,
+            mode,
+            renderers.timeout,
+            base_notice,
+        ),
         ViewMode::RawContent => (to_text(content), base_notice),
         ViewMode::Diff => unreachable!("handled above"),
     }
+}
+
+/// Substitute the `{name}` placeholder in a renderer command with the selected file name,
+/// so a stdin-fed renderer (e.g. `bat --file-name={name}`) can still infer the language —
+/// keeping the secure stdin design while enabling syntax highlighting (AC-10).
+fn with_name(command: &[String], name: &str) -> Vec<String> {
+    command.iter().map(|arg| arg.replace("{name}", name)).collect()
 }
 
 /// Run a renderer over `input`, ingesting its output; on missing/failed/timed-out renderer
@@ -309,11 +326,14 @@ fn strip_terminal_control(raw: &str) -> String {
                 Some(_) => i += 2, // ESC + single (e.g. ESC c reset) → drop both
                 None => i += 1,    // lone trailing ESC → drop
             }
+        } else if bytes[i] == 0xc2 && matches!(bytes.get(i + 1), Some(0x80..=0x9f)) {
+            // A C1 control codepoint (U+0080–U+009F, e.g. U+009B = CSI) encoded in UTF-8;
+            // some terminals act on these, so drop the whole 2-byte sequence.
+            i += 2;
         } else {
             // Drop other C0 control bytes (BEL/BS/CR/FF/VT/…) and DEL, which can still
             // ring the bell, backspace, or carriage-return to overwrite/spoof a line.
-            // Keep only newline and tab. C1 bytes (0x80–0x9f) are UTF-8 continuation
-            // bytes here and are left to the final lossy decode.
+            // Keep only newline and tab.
             let b = bytes[i];
             let is_c0_control = b < 0x20 && b != b'\n' && b != b'\t';
             if !is_c0_control && b != 0x7f {
