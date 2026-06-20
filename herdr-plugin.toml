@@ -1,0 +1,32 @@
+# herdr-plugin.toml — manifest for the herdr-file-viewer plugin.
+#
+# A git-aware, read-only file viewer that herdr opens in a split pane beside the
+# user's current work. The viewer appears ONLY in response to an explicit action
+# (its keybinding) — there are no event hooks and no automatic invocation (AC-N4).
+
+name = "herdr-file-viewer"
+version = "0.1.0"
+description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+
+# Build step herdr runs at install time to produce the binary the pane launches.
+[[build]]
+command = ["cargo", "build", "--release"]
+
+# The viewer pane. herdr performs the split placement on launch (AC-17); no runtime
+# command is issued to open the viewer — declaring placement = "split" is what opens
+# it beside the current pane.
+[[panes]]
+id = "file-viewer"
+title = "Files"
+placement = "split"
+command = ["./target/release/herdr-file-viewer"]
+
+# The action that summons the viewer (bound to a keybinding in herdr config). This is
+# the only way the viewer is opened — there is no [[events]] hook (AC-N4).
+[[actions]]
+id = "open-file-viewer"
+title = "Open file viewer"
+description = "Open the git-aware file viewer in a split pane beside the current work."
+pane = "file-viewer"
