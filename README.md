@@ -1,7 +1,8 @@
 # herdr-file-viewer
 
-A git-aware, **read-only** file viewer that runs as a [herdr](https://github.com/) plugin:
-a keyboard-driven TUI that opens in a split pane beside your current work, with a directory
+A git-aware, **read-only** file viewer that runs as a **herdr** plugin (herdr is a terminal
+agent-multiplexer): a keyboard-driven TUI that opens in a split pane beside your current work,
+with a directory
 tree on the left and a content pane on the right (rendered markdown, diffs, or
 syntax-highlighted content).
 
