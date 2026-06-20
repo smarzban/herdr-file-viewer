@@ -6,7 +6,7 @@
 
 use crate::git::Status;
 use ignore::WalkBuilder;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Whether a tree node is a directory or a file.
@@ -32,6 +32,10 @@ pub struct TreeModel {
     expanded: HashSet<PathBuf>,
     cursor: usize,
     show_ignored: bool,
+    changed_only: bool,
+    /// The changed-set against the active baseline: drives status markers (always shown,
+    /// AC-7) and the changed-only filter (AC-6). Keyed by root-relative path.
+    status_map: BTreeMap<PathBuf, Status>,
 }
 
 impl TreeModel {
@@ -41,7 +45,26 @@ impl TreeModel {
             expanded: HashSet::new(),
             cursor: 0,
             show_ignored: false,
+            changed_only: false,
+            status_map: BTreeMap::new(),
         }
+    }
+
+    /// Reveal gitignored/all files (AC-5).
+    pub fn set_show_ignored(&mut self, on: bool) {
+        self.show_ignored = on;
+    }
+
+    /// Restrict the tree to changed files only (AC-6); `changed` is the changed-set
+    /// against the active baseline, which also feeds status markers.
+    pub fn set_changed_only(&mut self, on: bool, changed: &BTreeMap<PathBuf, Status>) {
+        self.changed_only = on;
+        self.status_map = changed.clone();
+    }
+
+    /// Set the per-file status used for tree markers (AC-7), independent of the filter.
+    pub fn set_status(&mut self, status: &BTreeMap<PathBuf, Status>) {
+        self.status_map = status.clone();
     }
 
     pub fn root(&self) -> &Path {
@@ -62,17 +85,45 @@ impl TreeModel {
 
     fn collect(&self, dir: &Path, depth: usize, out: &mut Vec<Node>) {
         for (path, kind) in self.entries(dir) {
-            let expanded = kind == NodeKind::Dir && self.expanded.contains(&path);
+            if self.changed_only && !self.leads_to_change(&path, kind) {
+                continue;
+            }
+            // In changed-only mode, auto-descend into directories so the (only) changed
+            // files inside are reachable without manual expansion.
+            let expanded = kind == NodeKind::Dir
+                && (self.changed_only || self.expanded.contains(&path));
             out.push(Node {
                 path: path.clone(),
                 kind,
                 depth,
                 expanded,
-                status: None,
+                status: self.status_for(&path),
             });
             if expanded {
                 self.collect(&path, depth + 1, out);
             }
+        }
+    }
+
+    /// The node's git status (AC-7), looked up by root-relative path.
+    fn status_for(&self, path: &Path) -> Option<Status> {
+        path.strip_prefix(&self.root)
+            .ok()
+            .and_then(|rel| self.status_map.get(rel).copied())
+    }
+
+    /// In changed-only mode: a file kept iff it is itself changed; a directory kept iff it
+    /// (transitively) contains a changed file.
+    fn leads_to_change(&self, path: &Path, kind: NodeKind) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.root) else {
+            return false;
+        };
+        match kind {
+            NodeKind::File => self.status_map.contains_key(rel),
+            NodeKind::Dir => self
+                .status_map
+                .keys()
+                .any(|changed| changed != rel && changed.starts_with(rel)),
         }
     }
 
