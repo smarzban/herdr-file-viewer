@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A shared, mutable recorder the stubs append to and tests read back. `Arc<Mutex<_>>`
 /// (not `Rc<RefCell<_>>`) so the Git stub is `Send + Sync` — the controller's render worker
@@ -263,6 +264,280 @@ fn no_handled_intent_mutates_the_filesystem() {
     }
 
     assert_eq!(snapshot(dir.path()), before, "no intent mutated any file (AC-N1, AC-N3)");
+}
+
+// ---- content scrolling + wrap (focus-aware navigation) --------------------------------
+
+/// A Content Renderer stub returning a fixed number of single-token lines (`L0`..`L{n-1}`),
+/// so a test can scroll a known amount of content.
+struct LinesContent {
+    n: usize,
+}
+impl ContentProvider for LinesContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let body = (0..self.n).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n");
+        RenderResult { content: Text::raw(body), notices: Vec::new() }
+    }
+}
+
+/// A Content Renderer stub returning five 100-column-wide lines (marker `WIDE` at the start
+/// of each), for horizontal-scroll tests.
+struct WideContent;
+impl ContentProvider for WideContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let line = format!("WIDE{}", "x".repeat(96)); // 100 columns
+        let body = std::iter::repeat_n(line, 5).collect::<Vec<_>>().join("\n");
+        RenderResult { content: Text::raw(body), notices: Vec::new() }
+    }
+}
+
+/// Flatten the content pane to a string for assertions.
+fn flatten(t: &Text) -> String {
+    t.lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Spin `poll()` until the worker's render for the current selection lands (or time out).
+fn await_marker(ctrl: &mut Controller, marker: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !flatten(ctrl.content()).contains(marker) {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "content '{marker}' never rendered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Build a controller over `root` whose Content Renderer returns `n` lines.
+fn controller_with_lines(root: &Path, n: usize) -> Controller {
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(LinesContent { n }),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    Controller::new(root.to_path_buf(), false, Baseline::Head, components)
+}
+
+#[test]
+fn nav_does_not_scroll_content_while_the_tree_is_focused() {
+    // Default focus is the tree: j/k move the tree cursor and never scroll the content pane.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+
+    assert_eq!(ctrl.focus(), Focus::Tree);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().content_scroll, 0, "tree focus: content never scrolls");
+}
+
+#[test]
+fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 visible → max scroll = 40
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+    assert_eq!(ctrl.view_state().content_scroll, 0, "starts at the top");
+
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().content_scroll, 2, "NavDown scrolls the content down");
+    ctrl.handle(Intent::NavUp);
+    assert_eq!(ctrl.view_state().content_scroll, 1, "NavUp scrolls the content up");
+
+    for _ in 0..10 {
+        ctrl.handle(Intent::NavUp);
+    }
+    assert_eq!(ctrl.view_state().content_scroll, 0, "cannot scroll above the first line");
+
+    for _ in 0..200 {
+        ctrl.handle(Intent::NavDown);
+    }
+    assert_eq!(ctrl.view_state().content_scroll, 40, "cannot scroll past the last screenful");
+}
+
+#[test]
+fn selecting_a_different_file_resets_the_scroll_to_the_top() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "y\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+
+    ctrl.handle(Intent::ToggleFocus); // focus content
+    for _ in 0..5 {
+        ctrl.handle(Intent::NavDown);
+    }
+    assert_eq!(ctrl.view_state().content_scroll, 5, "scrolled down");
+
+    ctrl.handle(Intent::ToggleFocus); // back to the tree
+    ctrl.handle(Intent::NavDown); // select the next file
+    assert_eq!(ctrl.view_state().content_scroll, 0, "a new selection resets the scroll");
+}
+
+#[test]
+fn wrap_is_on_for_markdown_and_off_for_code() {
+    // The content pane wraps prose (markdown / plain) but not code/diffs, whose column
+    // alignment must be preserved.
+    let md = TempDir::new();
+    std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
+    let (ctrl_md, _, _) = controller(md.path(), false, StubGit::default(), false);
+    assert_eq!(ctrl_md.selected_view_mode(), Some(ViewMode::RenderedMarkdown));
+    assert!(ctrl_md.view_state().wrap, "markdown content wraps");
+
+    let rs = TempDir::new();
+    std::fs::write(rs.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let (ctrl_rs, _, _) = controller(rs.path(), false, StubGit::default(), false);
+    assert_eq!(ctrl_rs.selected_view_mode(), Some(ViewMode::SyntaxContent));
+    assert!(!ctrl_rs.view_state().wrap, "code content does not wrap");
+}
+
+#[test]
+fn wrap_toggle_forces_wrapping_on_for_code_then_back_to_the_mode_default() {
+    // The mode default leaves code/diffs unwrapped (aligned); `w` forces wrap on so long
+    // lines can be read, and toggles back to the default.
+    let rs = TempDir::new();
+    std::fs::write(rs.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let (mut ctrl, _, _) = controller(rs.path(), false, StubGit::default(), false);
+
+    assert!(!ctrl.view_state().wrap, "code does not wrap by default");
+    let fx = ctrl.handle(Intent::ToggleWrap);
+    assert!(fx.redraw);
+    assert!(ctrl.view_state().wrap, "`w` forces wrap on for code");
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(!ctrl.view_state().wrap, "toggling again returns to the mode default");
+}
+
+#[test]
+fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
+    // A .rs file renders unwrapped (SyntaxContent), so its long lines can overflow the pane;
+    // with the content focused, ←/→ scroll it sideways to read them. (When the tree is
+    // focused those keys still collapse/expand — covered by the navigation tests.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "code\n").unwrap();
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(WideContent),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
+    assert!(!ctrl.view_state().wrap, "a .rs file does not wrap, so horizontal scroll applies");
+
+    ctrl.handle(Intent::ToggleFocus); // focus the content pane
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "starts at the left edge");
+
+    let fx = ctrl.handle(Intent::Expand); // → scrolls right
+    assert!(fx.redraw);
+    let after_one = ctrl.view_state().content_hscroll;
+    assert!(after_one > 0, "→ scrolls the content right when focused");
+    ctrl.handle(Intent::Expand);
+    assert!(ctrl.view_state().content_hscroll > after_one, "→ again scrolls further right");
+    ctrl.handle(Intent::Collapse); // ← scrolls left
+    assert_eq!(ctrl.view_state().content_hscroll, after_one, "← scrolls back left");
+
+    for _ in 0..50 {
+        ctrl.handle(Intent::Collapse);
+    }
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "cannot scroll left of the start");
+    for _ in 0..500 {
+        ctrl.handle(Intent::Expand);
+    }
+    assert_eq!(ctrl.view_state().content_hscroll, 80, "clamps at the widest line minus the viewport");
+}
+
+#[test]
+fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
+    // With wrap on (a markdown file), the vertical clamp must count WRAPPED rows so the bottom
+    // of long prose is reachable (regression: a ceil estimate undercounted word-wrap), and
+    // horizontal scrolling is inert (nothing overflows the pane when wrapped).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.md"), "# x\n").unwrap(); // markdown → wraps by default
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(WideContent), // 5 lines × 100 columns
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(25, 10); // 5 lines × ceil(100/25)=4 = 20 wrapped rows; max = 10
+    assert!(ctrl.view_state().wrap, "a .md file wraps");
+
+    ctrl.handle(Intent::ToggleFocus); // focus content
+    for _ in 0..500 {
+        ctrl.handle(Intent::NavDown);
+    }
+    // Wrapped rows (20) are counted, not raw lines (5, which would clamp to 0): the bottom is
+    // reachable. Exact count via ratatui means no over-scroll into blank past row 20.
+    let vmax = ctrl.view_state().content_scroll;
+    assert_eq!(vmax, 10, "scrolls to exactly the last wrapped row (20 rows − 10 tall)");
+
+    let h_before = ctrl.view_state().content_hscroll;
+    ctrl.handle(Intent::Expand); // → : would scroll right, but wrap leaves nothing to scroll past
+    assert_eq!(ctrl.view_state().content_hscroll, h_before, "no horizontal scroll while wrapping");
+}
+
+#[test]
+fn shrinking_the_viewport_reclamps_an_existing_scroll_offset() {
+    // Resizing the pane smaller lowers the max scroll; an existing offset must be re-clamped
+    // so it never points past the end (which would leave blank space below the content).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max 40
+    ctrl.handle(Intent::ToggleFocus);
+    for _ in 0..200 {
+        ctrl.handle(Intent::NavDown);
+    }
+    assert_eq!(ctrl.view_state().content_scroll, 40, "scrolled to the bottom");
+
+    ctrl.set_content_viewport(40, 30); // taller viewport → max 20; the offset must re-clamp
+    assert_eq!(ctrl.view_state().content_scroll, 20, "offset re-clamped to the new, smaller max");
+}
+
+#[test]
+fn resize_intents_move_the_tree_content_divider_and_clamp() {
+    // The tree/content split is adjustable from the keyboard (the viewer owns both columns,
+    // so herdr's pane-resize can't move this internal divider).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let start = ctrl.view_state().split_pct;
+    let fx = ctrl.handle(Intent::GrowTree);
+    assert!(fx.redraw);
+    assert!(ctrl.view_state().split_pct > start, "GrowTree widens the tree column");
+    ctrl.handle(Intent::ShrinkTree);
+    assert_eq!(ctrl.view_state().split_pct, start, "ShrinkTree narrows it back");
+
+    // Clamp at the wide end.
+    for _ in 0..50 {
+        ctrl.handle(Intent::GrowTree);
+    }
+    let max = ctrl.view_state().split_pct;
+    assert!((20..=80).contains(&max), "split stays within bounds ({max})");
+    ctrl.handle(Intent::GrowTree);
+    assert_eq!(ctrl.view_state().split_pct, max, "cannot grow past the maximum");
+
+    // Clamp at the narrow end.
+    for _ in 0..50 {
+        ctrl.handle(Intent::ShrinkTree);
+    }
+    let min = ctrl.view_state().split_pct;
+    assert!((20..=80).contains(&min) && min < max, "split clamps to a minimum ({min})");
+    ctrl.handle(Intent::ShrinkTree);
+    assert_eq!(ctrl.view_state().split_pct, min, "cannot shrink past the minimum");
 }
 
 /// A sorted (path, bytes) snapshot of every file under `root`, for an exact read-only check.

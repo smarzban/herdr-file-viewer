@@ -27,26 +27,42 @@ This procedure verifies the remaining **live-host** behavior.
 ## Procedure
 
 1. **Install / link the plugin into herdr.**
-   Register this plugin's directory with your herdr installation (per your herdr plugin-
-   install docs) so herdr reads `herdr-plugin.toml`. Bind the `open-file-viewer` action to a
-   key in your herdr config.
+   Build the binary, then register the checkout (a linked plugin does **not** run the
+   `[[build]]` step, so build first):
+
+   ```bash
+   cargo build --release
+   herdr plugin link /path/to/herdr-file-viewer
+   herdr plugin list                       # confirm `herdr-file-viewer` is listed + enabled
+   ```
+
+   (Or `herdr plugin install <owner>/<repo>` from a published repo, which runs the build.)
 
 2. **Open a workspace and note the current pane.**
    Start herdr in (or `cd` to) the directory you want to browse. Note which pane currently
    has focus — call it the *origin* pane.
 
 3. **Invoke the action.**
-   Press the key you bound to `open-file-viewer`.
+
+   ```bash
+   herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
+   ```
+
+   (Or press the key you bound to the action.)
    - ✅ **AC-17:** the viewer opens in a **new split pane beside** the origin pane (not full-
      screen, not replacing it). The origin pane is still visible. The viewer shows the file
      tree on the left and a content pane on the right.
 
 4. **Exercise it briefly (sanity, not exhaustive).**
    - Navigate with `j`/`k`; the content pane updates to the selected file.
-   - If this is a git worktree: confirm status markers (`M`/`A`/`D`/`?`) appear, press `c`
-     to filter to changed files, and select a changed file to see its diff.
+   - If this is a git worktree: confirm colored status markers (`M`/`A`/`D`/`?` — changed
+     red, new green, folders-with-changes red), press `c` to filter to changed files, and
+     select a changed file to see its diff.
+   - Press `Tab` to focus the content pane, then scroll with the arrows (`←`/`→` horizontally,
+     `↑`/`↓` vertically), `w` to toggle wrapping, and `<`/`>` to resize the split.
    - Press `e` on a file (with `$EDITOR` set) and confirm your editor opens on that file, then
      exit the editor and confirm the viewer redraws cleanly.
+   - Resize the pane (e.g. `herdr pane resize`) and confirm the layout reflows to the new size.
 
 5. **Close the viewer.**
    Press `q` (or `Esc`).

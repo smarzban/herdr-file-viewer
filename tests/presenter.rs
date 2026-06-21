@@ -10,7 +10,7 @@ use ratatui::backend::TestBackend;
 use std::path::PathBuf;
 
 fn node(path: &str, kind: NodeKind, depth: usize, expanded: bool, status: Option<Status>) -> Node {
-    Node { path: PathBuf::from(path), kind, depth, expanded, status }
+    Node { path: PathBuf::from(path), kind, depth, expanded, status, dir_dirty: false }
 }
 
 /// A known tree+content+notices state, wide enough for the two-column layout.
@@ -34,12 +34,20 @@ fn sample_state() -> ViewState {
         ],
         focus: Focus::Tree,
         width: 100,
+        content_scroll: 0,
+        content_hscroll: 0,
+        wrap: false,
+        split_pct: 40,
     }
 }
 
 fn render(state: &ViewState, w: u16, h: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-    terminal.draw(|f| draw(f, state)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(f, state);
+        })
+        .unwrap();
     format!("{}", terminal.backend())
 }
 
@@ -100,7 +108,11 @@ fn hostile_file_name_emits_no_control_bytes_to_the_buffer() {
     state.selected = 0;
 
     let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
-    terminal.draw(|f| draw(f, &state)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(f, &state);
+        })
+        .unwrap();
     let buf = terminal.backend().buffer().clone();
 
     let mut cells = String::new();
@@ -114,6 +126,131 @@ fn hostile_file_name_emits_no_control_bytes_to_the_buffer() {
     assert!(!cells.chars().any(|c| c.is_control()), "no control byte may reach a cell");
     assert!(!cells.contains('\u{1b}'), "no ESC byte in the buffer");
     assert!(cells.contains("pwned"), "the printable remainder is still shown");
+}
+
+#[test]
+fn content_pane_applies_the_vertical_scroll_offset() {
+    // With content_scroll = N (and no wrap), the first visible content row is line N: the
+    // lines above it are scrolled off the top.
+    let mut state = sample_state();
+    state.notices = vec![]; // no notice strip, so content starts at the inner top row
+    state.content = to_text("c0\nc1\nc2\nc3\nc4\nc5\nc6\nc7\n");
+    state.wrap = false;
+    state.content_scroll = 3;
+    let out = render(&state, 100, 12);
+    assert!(out.contains("c3"), "the scrolled-to line is visible\n{out}");
+    assert!(out.contains("c7"), "lines below it are visible\n{out}");
+    assert!(!out.contains("c0"), "lines scrolled past the top are hidden\n{out}");
+}
+
+#[test]
+fn wrapping_shows_more_of_a_long_line_than_truncating() {
+    // A line far wider than the content pane: wrapped, it spills onto further rows; not
+    // wrapped, it is truncated to a single row. So the wrapped render shows strictly more of
+    // it. (The sample tree/title carry no 'W', so every 'W' counted comes from the content.)
+    let long = "W ".repeat(80); // ~160 cols, far wider than the ~58-col content pane
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(&long);
+
+    state.wrap = true;
+    let wrapped = render(&state, 100, 12);
+    state.wrap = false;
+    let truncated = render(&state, 100, 12);
+
+    let ws = |s: &str| s.matches('W').count();
+    assert!(
+        ws(&wrapped) > ws(&truncated),
+        "wrapped shows more of the long line (wrapped W={}, truncated W={})\n{wrapped}",
+        ws(&wrapped),
+        ws(&truncated)
+    );
+}
+
+/// Render to a buffer (for cell-style assertions).
+fn render_buffer(state: &ViewState, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(f, state);
+        })
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// The foreground color of the first cell where `needle` begins in the buffer.
+fn row_fg(buf: &ratatui::buffer::Buffer, needle: &str) -> ratatui::style::Color {
+    let (w, h) = (buf.area().width, buf.area().height);
+    for y in 0..h {
+        for x in 0..w {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w && buf.cell((cx, y)).is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                return buf.cell((x, y)).unwrap().fg;
+            }
+        }
+    }
+    panic!("{needle:?} not found in buffer");
+}
+
+#[test]
+fn tree_rows_are_colored_by_git_status() {
+    use ratatui::style::Color;
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = vec![
+        // A directory that contains changes (dir_dirty), a modified file, a new file, a clean
+        // file. The clean file is selected so the colored rows aren't reversed (which would
+        // swap fg/bg).
+        Node {
+            path: PathBuf::from("/r/src"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: true,
+        },
+        node("/r/src/mod.rs", NodeKind::File, 1, false, Some(Status::Modified)),
+        node("/r/src/new.rs", NodeKind::File, 1, false, Some(Status::Added)),
+        node("/r/clean.txt", NodeKind::File, 0, false, None),
+    ];
+    state.selected = 3; // the clean file
+    let buf = render_buffer(&state, 100, 12);
+
+    assert_eq!(row_fg(&buf, "mod.rs"), Color::LightRed, "a modified file is light red");
+    assert_eq!(row_fg(&buf, "new.rs"), Color::LightGreen, "a new file is light green");
+    assert_eq!(row_fg(&buf, "src"), Color::LightRed, "a directory with changes is light red");
+    assert_ne!(row_fg(&buf, "clean.txt"), Color::LightRed, "a clean file is not colored red");
+    assert_ne!(row_fg(&buf, "clean.txt"), Color::LightGreen, "a clean file is not colored green");
+}
+
+#[test]
+fn content_pane_applies_the_horizontal_scroll_offset() {
+    // With content_hscroll = N (and no wrap), the leftmost N columns are scrolled off, so a
+    // long line shows from column N onward.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    state.wrap = false;
+    state.content_hscroll = 5;
+    let out = render(&state, 100, 12);
+    assert!(out.contains("FGHIJ"), "columns from the offset are visible\n{out}");
+    assert!(!out.contains("ABCDE"), "columns scrolled past the left edge are hidden\n{out}");
+}
+
+#[test]
+fn split_ratio_controls_the_tree_column_width() {
+    // A larger split_pct gives the tree column more width, so its block's top-right corner
+    // (the first `┐`) sits further along the top border row.
+    let corner = |pct: u16| -> usize {
+        let mut s = sample_state();
+        s.split_pct = pct;
+        let out = render(&s, 100, 24);
+        out.lines().next().unwrap().find('┐').expect("tree block corner")
+    };
+    assert!(corner(60) > corner(20), "a wider split_pct widens the tree column");
 }
 
 #[test]

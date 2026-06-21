@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 use std::path::PathBuf;
 
 fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Node {
-    Node { path: PathBuf::from(path), kind, depth, expanded: true, status }
+    Node { path: PathBuf::from(path), kind, depth, expanded: true, status, dir_dirty: false }
 }
 
 fn state(width: u16, focus: Focus) -> ViewState {
@@ -26,12 +26,20 @@ fn state(width: u16, focus: Focus) -> ViewState {
         notices: vec!["delta not found — showing plain diff".to_string()],
         focus,
         width,
+        content_scroll: 0,
+        content_hscroll: 0,
+        wrap: false,
+        split_pct: 40,
     }
 }
 
 fn render(state: &ViewState, w: u16, h: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-    terminal.draw(|f| draw(f, state)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(f, state);
+        })
+        .unwrap();
     format!("{}", terminal.backend())
 }
 

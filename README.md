@@ -13,29 +13,36 @@ hand-off to an *external* editor — the viewer itself only reads.
 
 - **Tree, scoped to your work** — rooted at the worktree root inside a git repo, else the
   launch directory. Honors `.gitignore` (toggle to reveal ignored files).
-- **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), a changed-files-only filter,
-  and a baseline you can switch between the merge-base of your branch and `HEAD`.
+- **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), **colored** so changes read at
+  a glance (changed files and folders containing changes are red, new files green); a
+  changed-files-only filter; and a baseline you can switch between the merge-base of your
+  branch and `HEAD`.
 - **The right view per file** — a changed file shows its **diff**; a markdown file renders;
-  anything else is shown as syntax-highlighted content. Cycle the view to override.
+  anything else is shown as syntax-highlighted content with line numbers. Cycle the view to
+  override.
+- **Navigable content** — scroll the content pane in all four directions, toggle line
+  wrapping, and resize the tree/content split; the layout reflows when the pane is resized.
 - **Keyboard-first** — every function has a key; no mouse required.
 
 ## Install
 
-The plugin builds from source. herdr runs the build step declared in the manifest
-(`herdr-plugin.toml`) at install time:
+Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Linux** or
+**macOS**.
 
-```toml
-[[build]]
-command = ["cargo", "build", "--release"]
+**Install through herdr** — herdr runs the manifest's `[[build]]` step
+(`cargo build --release`) at install time, producing `./target/release/herdr-file-viewer`,
+which the viewer pane launches:
+
+```bash
+# from a published GitHub repo (owner/repo[/subdir]):
+herdr plugin install <owner>/<repo>
+
+# or, for local development, link this checkout in place:
+cargo build --release            # plugin link does NOT run the [[build]] step, so build first
+herdr plugin link /path/to/herdr-file-viewer
 ```
 
-So installing it through herdr produces `./target/release/herdr-file-viewer`, which the
-viewer pane launches. Requirements:
-
-- **Rust 1.96+** (edition 2024) and Cargo.
-- **herdr 0.7.0+**, on **Linux** or **macOS**.
-
-To build manually:
+Confirm it registered with `herdr plugin list`. To build manually outside herdr:
 
 ```bash
 cargo build --release
@@ -65,35 +72,55 @@ content cannot inject a command or drive the terminal.
 ## Summoning the viewer
 
 The viewer opens **only** in response to an explicit action — there are no event hooks and no
-automatic invocation. The manifest declares one action:
+automatic invocation. The manifest declares a `[[panes]]` entry (the split-pane viewer) and an
+`[[actions]]` whose command opens it:
 
 ```toml
+[[panes]]
+id = "file-viewer"
+placement = "split"
+command = ["./target/release/herdr-file-viewer"]
+
 [[actions]]
 id = "open-file-viewer"
 title = "Open file viewer"
-pane = "file-viewer"
+command = ["bash", "scripts/open-file-viewer.sh"]   # opens the pane via the herdr CLI
 ```
 
-Bind this action to a key in your herdr configuration (see your herdr docs for the action
-keybinding syntax). Invoking it opens the viewer in a **split** pane beside your current work.
+Summon it by invoking the action:
+
+```bash
+herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
+```
+
+It opens the viewer in a **split** pane beside your current work. Bind the action to a key in
+your herdr configuration for one-press access (see your herdr docs for the keybinding syntax).
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| `↑` / `k`, `↓` / `j` | Move the tree cursor |
-| `→` / `l` | Expand the selected directory |
-| `←` / `h` | Collapse the selected directory |
+| `↑` / `k`, `↓` / `j` | Move the tree cursor — or **scroll the content pane** vertically when it is focused |
+| `→` / `l` | Expand the selected directory — or **scroll the content pane right** when it is focused |
+| `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
 | `i` | Toggle gitignored files |
 | `c` | Toggle changed-files-only |
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` |
 | `Tab` | Move focus between the tree and content columns |
+| `<` / `>` | Narrow / widen the tree column (move the divider) |
+| `w` | Toggle line wrapping for the content pane |
 | `q` / `Esc` | Close the viewer and return to the prior pane |
 
-All character keys act only when no modifier is held, so terminal chords (e.g. `Ctrl+C`) are
-never intercepted.
+`Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
+directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
+plain text); diffs and code keep their original lines so columns stay aligned — scroll
+sideways with `←`/`→`, or press `w` to wrap them instead. The layout reflows automatically
+when the pane is resized.
+
+Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
+never intercepted); `Shift` is permitted, for keys such as `<` and `>`.
 
 ### Opening in an editor
 

@@ -19,7 +19,7 @@
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
 use crate::presenter::{Focus, ViewState};
-use crate::tree::{NodeKind, TreeModel};
+use crate::tree::{Node, NodeKind, TreeModel};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
@@ -27,6 +27,16 @@ use std::io;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
+
+/// Tree-column width as a percentage of the pane: its default and the bounds the resize keys
+/// clamp to, so neither column can be squeezed to nothing.
+const SPLIT_DEFAULT: u16 = 40;
+const SPLIT_MIN: u16 = 20;
+const SPLIT_MAX: u16 = 80;
+/// How many percentage points one resize keypress moves the divider.
+const SPLIT_STEP: u16 = 5;
+/// How many columns one horizontal-scroll keypress moves the content pane.
+const HSCROLL_STEP: u16 = 8;
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
 /// the run loop injects an implementation bound to the real repository. `Send + Sync` so the
@@ -117,6 +127,22 @@ pub struct Controller {
     /// The pane width the run loop last observed (session state for the narrow-split flag,
     /// AC-21); the Presenter still lays out from the live frame, never this.
     width: u16,
+    /// Vertical scroll offset of the content pane, in lines. Reset to the top whenever a new
+    /// render is dispatched (a new file / mode / baseline).
+    content_scroll: u16,
+    /// Horizontal scroll offset of the content pane, in columns (only used when not wrapping).
+    /// Reset to the left edge on a new render.
+    content_hscroll: u16,
+    /// The content viewport `(width, height)` the Presenter last drew into. Used to clamp
+    /// `content_scroll` so the user cannot scroll past the last screenful.
+    content_width: u16,
+    content_height: u16,
+    /// The tree column's share of the width, as a percentage (the rest is the content pane).
+    /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002).
+    split_pct: u16,
+    /// User override forcing content wrap on regardless of view mode (the `w` toggle), so long
+    /// lines in code/diffs can be wrapped on demand. `false` ⇒ the per-mode default applies.
+    wrap_override: bool,
     tree: TreeModel,
     /// Changed-set vs the active baseline, cached; recomputed on a baseline toggle (AC-16).
     changed: BTreeMap<PathBuf, Status>,
@@ -190,6 +216,12 @@ impl Controller {
             changed_only: false,
             focus: Focus::Tree,
             width: 0,
+            content_scroll: 0,
+            content_hscroll: 0,
+            content_width: 0,
+            content_height: 0,
+            split_pct: SPLIT_DEFAULT,
+            wrap_override: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
             content: Text::raw(""),
@@ -253,17 +285,61 @@ impl Controller {
         self.width = width;
     }
 
+    /// Record the content viewport `(width, height)` the Presenter last drew into, so content
+    /// scrolling can be clamped to it. Called by the run loop after each draw.
+    pub fn set_content_viewport(&mut self, width: u16, height: u16) {
+        if width == self.content_width && height == self.content_height {
+            return; // unchanged — avoid recomputing the clamp on every (mostly idle) draw
+        }
+        self.content_width = width;
+        self.content_height = height;
+        // A smaller viewport shrinks the max offset, so an existing scroll could now point past
+        // the end, leaving blank space; re-clamp both axes to the new geometry.
+        self.content_scroll = self.content_scroll.min(self.max_content_scroll());
+        self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+    }
+
+    /// The content scroll offset (lines). Exposed for the Presenter wiring and tests.
+    pub fn content_scroll(&self) -> u16 {
+        self.content_scroll
+    }
+
     /// Assemble the [`ViewState`] the Presenter draws from: the visible tree rows + cursor,
     /// the current content and notices, focus, and the observed width (the narrow-split
     /// input, AC-21).
     pub fn view_state(&self) -> ViewState {
+        // Build the visible node list once and read the selection from it, rather than calling
+        // `tree.selected()` (which re-runs the gitignore-aware filesystem walk) a second time
+        // for the wrap decision — `visible_nodes()` is the hot, per-frame path.
+        let nodes = self.tree.visible_nodes();
+        let selected = self.tree.cursor();
+        let wrap = self.wrap_for(nodes.get(selected));
         ViewState {
-            nodes: self.tree.visible_nodes(),
-            selected: self.tree.cursor(),
+            nodes,
+            selected,
             content: self.content.clone(),
             notices: self.notices(),
             focus: self.focus,
             width: self.width,
+            content_scroll: self.content_scroll,
+            content_hscroll: self.content_hscroll,
+            wrap,
+            split_pct: self.split_pct,
+        }
+    }
+
+    /// Whether the content pane wraps for `node`: forced on by the `w` override, else the
+    /// per-mode default — prose (rendered markdown / plain text) wraps; diffs and code stay
+    /// unwrapped so their columns align. Takes the node so the draw path needn't re-walk.
+    fn wrap_for(&self, node: Option<&Node>) -> bool {
+        if self.wrap_override {
+            return true;
+        }
+        match node {
+            Some(n) if n.kind == NodeKind::File => {
+                matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown | ViewMode::RawContent)
+            }
+            _ => false,
         }
     }
 
@@ -285,17 +361,93 @@ impl Controller {
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
             Intent::ToggleFocus => self.toggle_focus(),
+            Intent::ShrinkTree => self.resize_split(-(SPLIT_STEP as i16)),
+            Intent::GrowTree => self.resize_split(SPLIT_STEP as i16),
+            Intent::ToggleWrap => self.toggle_wrap(),
             Intent::Close => Effects { quit: true, ..Default::default() },
         }
     }
 
+    /// Up/down navigation is focus-aware: it moves the tree cursor when the tree is focused
+    /// (selecting a file, which re-renders the content), and scrolls the content pane when the
+    /// content is focused (`Tab` switches focus). This reads each pane's natural keys without
+    /// adding a separate scroll intent.
     fn navigate(&mut self, delta: isize) -> Effects {
-        self.tree.move_cursor(delta);
-        self.dispatch_render();
+        match self.focus {
+            Focus::Content => {
+                self.scroll_content(delta);
+                Effects::redraw()
+            }
+            Focus::Tree => {
+                self.tree.move_cursor(delta);
+                self.dispatch_render(); // new selection → re-render (and reset the scroll)
+                Effects::redraw()
+            }
+        }
+    }
+
+    /// Scroll the content pane by `delta` lines, clamped to `[0, max]` so it can never run
+    /// above the first line or past the last screenful.
+    fn scroll_content(&mut self, delta: isize) {
+        let max = self.max_content_scroll() as isize;
+        let next = (self.content_scroll as isize + delta).clamp(0, max);
+        self.content_scroll = next as u16;
+    }
+
+    /// The largest valid scroll offset: total rendered lines minus the viewport height.
+    fn max_content_scroll(&self) -> u16 {
+        self.rendered_line_count().saturating_sub(self.content_height)
+    }
+
+    /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
+    /// real last row. Without wrapping each source line is one (truncated) row. With wrapping a
+    /// line spans multiple rows: ratatui's exact `line_count` is private, and an arithmetic
+    /// `ceil`/`floor` undercounts word wrapping (words don't pack to the column), which would
+    /// leave the bottom of wrapped prose unreachable — so [`wrapped_rows`] simulates the word
+    /// packing, floored by the all-columns char-wrap count so leading/interior spaces can't
+    /// make it undershoot. Off the per-frame path: only scroll / resize / wrap-toggle keypaths
+    /// reach it (`set_content_viewport` early-returns on an unchanged size).
+    fn rendered_line_count(&self) -> u16 {
+        let count = if self.effective_wrap() {
+            let w = self.content_width.max(1) as usize;
+            self.content
+                .lines
+                .iter()
+                .map(|l| {
+                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
+                })
+                .sum::<usize>()
+        } else {
+            self.content.lines.len()
+        };
+        count.min(u16::MAX as usize) as u16
+    }
+
+    /// Scroll the content pane horizontally by `delta` columns, clamped to `[0, max]`.
+    fn scroll_content_h(&mut self, delta: i32) -> Effects {
+        let max = self.max_content_hscroll() as i32;
+        let next = (self.content_hscroll as i32 + delta).clamp(0, max);
+        self.content_hscroll = next as u16;
         Effects::redraw()
     }
 
+    /// The largest valid horizontal offset: the widest content line minus the viewport width.
+    /// Zero while wrapping (no line overflows the pane, so there is nothing to scroll past).
+    fn max_content_hscroll(&self) -> u16 {
+        if self.effective_wrap() {
+            return 0;
+        }
+        let widest = self.content.lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        (widest.min(u16::MAX as usize) as u16).saturating_sub(self.content_width)
+    }
+
+    /// Right (→/l): expand the selected directory when the tree is focused, or scroll the
+    /// content pane right when it is focused (so long unwrapped lines can be read).
     fn expand(&mut self) -> Effects {
+        if self.focus == Focus::Content {
+            return self.scroll_content_h(HSCROLL_STEP as i32);
+        }
         if let Some(node) = self.tree.selected()
             && node.kind == NodeKind::Dir
         {
@@ -305,7 +457,12 @@ impl Controller {
         Effects::noop()
     }
 
+    /// Left (←/h): collapse the selected directory when the tree is focused, or scroll the
+    /// content pane left when it is focused.
     fn collapse(&mut self) -> Effects {
+        if self.focus == Focus::Content {
+            return self.scroll_content_h(-(HSCROLL_STEP as i32));
+        }
         if let Some(node) = self.tree.selected()
             && node.kind == NodeKind::Dir
         {
@@ -397,6 +554,32 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// Move the tree/content divider by `delta` percentage points, clamped so neither column
+    /// can collapse. Pure layout state — no re-render is needed (the content is unchanged).
+    fn resize_split(&mut self, delta: i16) -> Effects {
+        let next = (self.split_pct as i16 + delta).clamp(SPLIT_MIN as i16, SPLIT_MAX as i16);
+        self.split_pct = next as u16;
+        Effects::redraw()
+    }
+
+    /// Flip the content-wrap override. Pure layout state — the content text is unchanged, only
+    /// how the Presenter lays it out; the scroll clamp recomputes from the new wrap.
+    fn toggle_wrap(&mut self) -> Effects {
+        self.wrap_override = !self.wrap_override;
+        // Wrapping changes the content's layout, so re-clamp both offsets: vertical to the new
+        // line count, and horizontal to zero while wrapped (no line overflows the pane).
+        self.content_scroll = self.content_scroll.min(self.max_content_scroll());
+        self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+        Effects::redraw()
+    }
+
+    /// Whether the content pane wraps the current selection (the `w` override or the per-mode
+    /// default). Off the per-frame path — the scroll-clamp helpers call it on a keypress —
+    /// so resolving the selected node via `tree.selected()` here is fine.
+    fn effective_wrap(&self) -> bool {
+        self.wrap_for(self.tree.selected().as_ref())
+    }
+
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
     /// against the active baseline (AC-16), updating the tree caches. Used at launch and
     /// after an editor hand-off returns (the file may have changed). No-op without a repo
@@ -423,6 +606,10 @@ impl Controller {
     fn dispatch_render(&mut self) {
         self.latest_seq += 1;
         let seq = self.latest_seq;
+        // A fresh render means new content — start it at the top-left, never inheriting the
+        // previous file's scroll offsets.
+        self.content_scroll = 0;
+        self.content_hscroll = 0;
 
         let Some(node) = self.tree.selected() else { return self.clear_content() };
         if node.kind != NodeKind::File {
@@ -498,4 +685,56 @@ fn is_markdown(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)
+}
+
+/// How many rows one rendered line occupies under ratatui's word wrapper (`Wrap{trim:false}`)
+/// at `width` columns: greedy word packing — fill the row with space-separated words until the
+/// next one doesn't fit, then wrap; a word wider than the row is broken across rows. A plain
+/// `ceil(width/col)` undercounts this (words rarely pack flush to the column), which is what
+/// would make the bottom of wrapped prose unreachable via the scroll clamp. Char counts stand
+/// in for display width — close enough for the clamp, and the caller floors with the
+/// all-columns char-wrap so it never undershoots.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for (i, word) in text.split(' ').enumerate() {
+        let wl = word.chars().count();
+        let sep = usize::from(i > 0);
+        if col != 0 && col + sep + wl > width {
+            rows += 1; // doesn't fit → start a new row
+            col = 0;
+        }
+        if col == 0 {
+            // word starts a fresh row; a word wider than the row breaks across full rows
+            let extra = wl.saturating_sub(1) / width;
+            rows += extra;
+            col = wl - extra * width;
+        } else {
+            col += sep + wl;
+        }
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_rows;
+
+    #[test]
+    fn wrapped_rows_counts_word_wrapping_not_just_char_wrapping() {
+        // Four width-6 words in a 10-col pane pack one per row → 4 rows, even though the
+        // 27-column line char-wraps to only 3. The scroll clamp must use the larger count.
+        assert_eq!(wrapped_rows("aaaaaa aaaaaa aaaaaa aaaaaa", 10), 4);
+        // A single over-long word is broken like char wrapping.
+        assert_eq!(wrapped_rows(&"x".repeat(100), 25), 4);
+        // Words that pack flush share rows.
+        assert_eq!(wrapped_rows("ab cd ef", 8), 1); // "ab cd ef" = 8 cols, fits exactly
+        // Short / empty / zero-width are one row.
+        assert_eq!(wrapped_rows("hello", 80), 1);
+        assert_eq!(wrapped_rows("", 80), 1);
+        assert_eq!(wrapped_rows("anything", 0), 1);
+    }
 }
