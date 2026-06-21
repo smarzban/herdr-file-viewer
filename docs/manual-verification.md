@@ -69,10 +69,21 @@ This procedure verifies the remaining **live-host** behavior.
    - ✅ **AC-20:** the viewer pane closes and **focus returns to the origin pane**, with the
      origin pane's content intact. Control is back where it started.
 
+6. **Idempotent launcher / keybinding (launch-or-focus-or-toggle).**
+   The action and any keybinding share `scripts/open-file-viewer.sh`. With the viewer open,
+   focus the origin pane and invoke the action again, then once more:
+   - Invoke with the viewer open-but-unfocused → the **existing** viewer is focused (no second
+     viewer pane spawns).
+   - Invoke again with the viewer focused → it **closes**.
+   - Bind it to a key (README `[[keys.command]]` snippet) and confirm the key drives the same
+     open → focus → close cycle.
+
 ## Pass criteria
 
 - [ ] Step 3 — the viewer opened in a **split** pane beside the current work (AC-17).
 - [ ] Step 5 — the close key closed the viewer and returned focus to the origin pane (AC-20).
+- [ ] Step 6 — repeated invocation focuses the existing viewer (no duplicate panes) and toggles
+      it closed; a bound key drives the same cycle.
 
 If either fails, capture the herdr version (`herdr --version`), the platform, and the manifest
 in use, and file an issue — these are the host-integration points most sensitive to herdr
