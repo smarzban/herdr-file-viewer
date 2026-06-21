@@ -232,19 +232,53 @@ fn resume_tui() -> io::Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)
 }
 
+/// Resolve glow's `-s` style argument: the bundled palette style if it ships in the
+/// executable's own install tree (prose in the host ANSI palette, stripped `##` markers,
+/// syntax-highlighted code blocks), else glow's built-in `dark` so markdown still renders
+/// rather than failing on a missing `-s` file.
+///
+/// The style is a glow *argument* — trusted, operator-configured — so it is located ONLY
+/// relative to the executable, **never the cwd**: the viewed repo is untrusted and could
+/// otherwise plant an `assets/markdown-style.json` for the cwd fallback to pick up, turning
+/// repo content into the (trusted) renderer's config.
+fn markdown_style() -> String {
+    bundled_style_path(std::env::current_exe().ok().as_deref())
+        .unwrap_or_else(|| "dark".to_string())
+}
+
+/// Find `assets/markdown-style.json` among the ancestors of the executable — the trusted
+/// install dir (the binary runs from `<root>/target/<profile>/herdr-file-viewer`, with the
+/// asset at `<root>/assets/…`, under both `herdr plugin link` and `plugin install`). Pure
+/// over its input, so it is unit-testable and provably never consults the cwd. `None` (→
+/// caller uses `dark`) when `exe` is absent or no ancestor bundles the asset.
+fn bundled_style_path(exe: Option<&Path>) -> Option<String> {
+    exe?.ancestors()
+        .map(|anc| anc.join("assets/markdown-style.json"))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
 /// The default external renderers (the documented runtime deps). Each reads the untrusted
 /// content on **stdin** (never as an argument); a missing one degrades to plain text +
 /// notice (AC-24/25). `{name}` is substituted with the sanitized file name for language
 /// detection.
 fn default_renderers() -> Renderers {
     Renderers {
-        // `-s dark` forces a concrete glamour style (glow's default `auto` downgrades to the
-        // plain "notty" renderer when stdout is a pipe — as the viewer always captures it —
-        // leaving `#`, `**`, etc. as literal text). `-w 0` disables glow's own wrapping/line-
-        // padding: otherwise it pads every line to 80 cols, and in a narrower pane the trailing
-        // padding wraps to a blank row after each line ("gaps"). With `-w 0` the Presenter's
-        // own wrap reflows the text to the actual pane width.
-        markdown: vec!["glow".into(), "-s".into(), "dark".into(), "-w".into(), "0".into(), "-".into()],
+        // glow's default `auto` style downgrades to the plain "notty" renderer when stdout is a
+        // pipe (the viewer always captures it), leaving `#`, `**`, etc. literal — so a concrete
+        // style is forced (the bundled palette style, else `dark`) and color is forced on the
+        // subprocess (see `render::renderer_command`). `-w 0` disables glow's own wrapping/
+        // line-padding: otherwise it pads every line to 80 cols, and in a narrower pane that
+        // trailing padding wraps to a blank row after each line ("gaps"); the Presenter's own
+        // wrap reflows to the actual pane width instead.
+        markdown: vec![
+            "glow".into(),
+            "-s".into(),
+            markdown_style(),
+            "-w".into(),
+            "0".into(),
+            "-".into(),
+        ],
         // delta already colorizes piped output (its default), and has no `--color=always` flag.
         diff: vec!["delta".into()],
         syntax: vec![
@@ -264,16 +298,59 @@ fn default_renderers() -> Renderers {
 mod tests {
     use super::*;
 
+    /// A fresh empty temp dir for a test (no tempfile dep — matches the project's hermetic
+    /// test style). Distinct per `tag` so parallel unit tests don't collide.
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hfv-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn bundled_style_is_found_in_the_executables_install_tree() {
+        // A binary at <root>/target/release/<bin> resolves <root>/assets/markdown-style.json,
+        // so glow is pointed at the bundled palette style (not the built-in `dark`).
+        let root = tmp("bundled-present");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/markdown-style.json"), "{}").unwrap();
+        let exe = root.join("target/release/herdr-file-viewer");
+        let s = bundled_style_path(Some(&exe)).expect("style found in the install tree");
+        assert!(s.ends_with("markdown-style.json"), "points at the bundled style: {s}");
+        assert!(Path::new(&s).is_file(), "the referenced style file exists: {s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_bundled_style_yields_none_and_never_consults_the_cwd() {
+        // Security regression: the style is a trusted glow argument, located ONLY via the
+        // executable's tree — never the cwd, which may be an untrusted viewed repo. Here the
+        // exe's tree ships no asset, so we get None EVEN THOUGH the real cwd (this repo) ships
+        // one. `markdown_style()` then falls back to glow's built-in `dark`.
+        let root = tmp("bundled-absent"); // deliberately no assets/ created
+        let exe = root.join("target/release/herdr-file-viewer");
+        assert_eq!(bundled_style_path(Some(&exe)), None, "no asset in the install tree → None");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_executable_path_yields_none() {
+        assert_eq!(bundled_style_path(None), None);
+    }
+
     #[test]
     fn markdown_renderer_forces_a_concrete_glow_style() {
         // Regression: glow's default `auto` style degrades to the plain "notty" renderer when
         // stdout is a pipe (as the viewer always captures it), leaving literal `#`/`**`. A
-        // concrete style must be forced or markdown renders as near-raw text.
+        // concrete `-s` style (the bundled file or `dark`) must be passed, and `-w 0` must
+        // follow `-w` to disable glow's line-padding (else blank-row gaps in a narrow pane).
         let r = default_renderers();
-        assert!(r.markdown.iter().any(|a| a == "-s"), "glow style flag present: {:?}", r.markdown);
-        assert!(r.markdown.iter().any(|a| a == "dark"), "a concrete style is named: {:?}", r.markdown);
-        // `-w 0` must follow `-w`: it disables glow's line-padding that otherwise wraps to
-        // blank-row gaps in a narrow pane.
+        let s = r.markdown.iter().position(|a| a == "-s");
+        assert!(
+            s.is_some_and(|i| r.markdown.get(i + 1).is_some_and(|v| !v.is_empty())),
+            "a concrete -s style is passed: {:?}",
+            r.markdown
+        );
         let w = r.markdown.iter().position(|a| a == "-w");
         assert!(
             w.is_some_and(|i| r.markdown.get(i + 1).is_some_and(|v| v == "0")),
