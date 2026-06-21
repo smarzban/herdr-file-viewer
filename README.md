@@ -142,6 +142,22 @@ when the pane is resized.
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
 never intercepted); `Shift` is permitted, for keys such as `<` and `>`.
 
+### Mouse
+
+The viewer is keyboard-first (AC-18); the mouse is additive and on by default:
+
+| Gesture | Action |
+| --- | --- |
+| **Click** a tree row | Select it (focus the tree) |
+| **Double-click** a folder | Expand / collapse it |
+| **Double-click** a file | Open it in `$EDITOR` (same as `e`) |
+| **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
+| **Drag** the divider | Resize the tree / content split |
+
+**`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the
+viewer owns ordinary clicks — herdr reserves `Shift`+mouse for exactly this. (herdr forwards
+mouse events to the pane because the viewer requests capture.)
+
 ### Opening in an editor
 
 `e` hands the selected file to the editor named by the `$EDITOR` environment variable
