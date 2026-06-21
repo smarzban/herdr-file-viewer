@@ -10,12 +10,17 @@
 # herdr actions/keybindings run a command (no declarative "open this pane" field), so this shells
 # out to the herdr CLI via $HERDR_BIN_PATH (herdr injects it; fall back to `herdr` on PATH).
 #
-# herdr has no focus-by-id, so a focus is done with a zoom on/off cycle: `zoom <id> --on` focuses
-# (and maximizes) the pane, and `--off` un-maximizes while *keeping* it focused (verified). The
-# decision is computed from a single `pane list` so repeated key presses are deterministic.
+# The OPEN/FOCUS/CLOSE decision is computed in-process by the viewer binary itself
+# (`herdr-file-viewer --launch-decision`, fed the `pane list` JSON on stdin) — so it is unit-
+# tested and the pane id it returns is already validated as flag-safe (option-injection guard).
+# Any failure (binary missing, parse error, no focused pane) degrades to OPEN, preserving the
+# original always-open behavior. herdr has no focus-by-id, so a focus is a `zoom <id> --on/--off`
+# cycle: `--on` focuses (and maximizes) the pane, `--off` un-maximizes while keeping it focused.
 set -uo pipefail
 
 herdr_bin="${HERDR_BIN_PATH:-herdr}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+viewer_bin="$script_dir/../target/release/herdr-file-viewer"
 
 open_pane() {
   exec "$herdr_bin" plugin pane open \
@@ -26,26 +31,13 @@ open_pane() {
     --focus
 }
 
-# Decide OPEN / "FOCUS <id>" / "CLOSE <id>" from the current pane layout. Any parse/tool failure
-# (e.g. python3 absent) degrades to OPEN, preserving the original always-open behavior.
-panes_json="$("$herdr_bin" pane list 2>/dev/null || true)"
-decision="$(printf '%s' "$panes_json" | python3 -c '
-import json, sys
-try:
-    panes = json.load(sys.stdin)["result"]["panes"]
-except Exception:
-    print("OPEN"); sys.exit(0)
-focused = next((p for p in panes if p.get("focused")), None)
-tab = focused.get("tab_id") if focused else None
-files = next((p for p in panes
-              if p.get("label") == "Files" and (tab is None or p.get("tab_id") == tab)), None)
-if not files:
-    print("OPEN")
-elif focused and files.get("pane_id") == focused.get("pane_id"):
-    print("CLOSE " + files["pane_id"])
-else:
-    print("FOCUS " + files["pane_id"])
-' 2>/dev/null || echo OPEN)"
+decision="OPEN"
+if [ -x "$viewer_bin" ]; then
+  panes="$("$herdr_bin" pane list 2>/dev/null || true)"
+  if [ -n "$panes" ]; then
+    decision="$(printf '%s' "$panes" | "$viewer_bin" --launch-decision 2>/dev/null || echo OPEN)"
+  fi
+fi
 
 case "$decision" in
   "FOCUS "*)
