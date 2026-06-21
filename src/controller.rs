@@ -19,7 +19,7 @@
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
 use crate::presenter::{Focus, ViewState};
-use crate::tree::{NodeKind, TreeModel};
+use crate::tree::{Node, NodeKind, TreeModel};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
@@ -288,8 +288,15 @@ impl Controller {
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
     pub fn set_content_viewport(&mut self, width: u16, height: u16) {
+        if width == self.content_width && height == self.content_height {
+            return; // unchanged — avoid recomputing the clamp on every (mostly idle) draw
+        }
         self.content_width = width;
         self.content_height = height;
+        // A smaller viewport shrinks the max offset, so an existing scroll could now point past
+        // the end, leaving blank space; re-clamp both axes to the new geometry.
+        self.content_scroll = self.content_scroll.min(self.max_content_scroll());
+        self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
     }
 
     /// The content scroll offset (lines). Exposed for the Presenter wiring and tests.
@@ -301,27 +308,39 @@ impl Controller {
     /// the current content and notices, focus, and the observed width (the narrow-split
     /// input, AC-21).
     pub fn view_state(&self) -> ViewState {
+        // Build the visible node list once and read the selection from it, rather than calling
+        // `tree.selected()` (which re-runs the gitignore-aware filesystem walk) a second time
+        // for the wrap decision — `visible_nodes()` is the hot, per-frame path.
+        let nodes = self.tree.visible_nodes();
+        let selected = self.tree.cursor();
+        let wrap = self.wrap_for(nodes.get(selected));
         ViewState {
-            nodes: self.tree.visible_nodes(),
-            selected: self.tree.cursor(),
+            nodes,
+            selected,
             content: self.content.clone(),
             notices: self.notices(),
             focus: self.focus,
             width: self.width,
             content_scroll: self.content_scroll,
             content_hscroll: self.content_hscroll,
-            wrap: self.effective_wrap(),
+            wrap,
             split_pct: self.split_pct,
         }
     }
 
-    /// Whether the content pane should wrap long lines: yes for prose (rendered markdown and
-    /// plain text), no for diffs and code, whose column alignment must be preserved.
-    fn wrap_content(&self) -> bool {
-        matches!(
-            self.selected_view_mode(),
-            Some(ViewMode::RenderedMarkdown | ViewMode::RawContent)
-        )
+    /// Whether the content pane wraps for `node`: forced on by the `w` override, else the
+    /// per-mode default — prose (rendered markdown / plain text) wraps; diffs and code stay
+    /// unwrapped so their columns align. Takes the node so the draw path needn't re-walk.
+    fn wrap_for(&self, node: Option<&Node>) -> bool {
+        if self.wrap_override {
+            return true;
+        }
+        match node {
+            Some(n) if n.kind == NodeKind::File => {
+                matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown | ViewMode::RawContent)
+            }
+            _ => false,
+        }
     }
 
     // ---- intent handling ---------------------------------------------------------------
@@ -380,14 +399,18 @@ impl Controller {
         self.rendered_line_count().saturating_sub(self.content_height)
     }
 
-    /// How many lines the content occupies once laid out. Without wrapping each source line
-    /// is one row; with wrapping a line spans `ceil(width / viewport_width)` rows — estimated
-    /// from each line's display width (matches ratatui's per-wrapped-line scrolling).
+    /// How many lines the content occupies once laid out. Without wrapping each source line is
+    /// one row; with wrapping a line spans roughly `width / viewport_width` rows. ratatui wraps
+    /// at word boundaries, which can leave a partial row that `ceil` undercounts — making the
+    /// bottom of wrapped prose unreachable — so we use `floor(width / w) + 1` per line, a tight
+    /// upper bound (exact for lines that fit; at most one row generous), so the last line is
+    /// always reachable. Over-shooting only risks a little blank space, which ratatui renders
+    /// harmlessly; undershooting would hide content.
     fn rendered_line_count(&self) -> u16 {
         let lines = &self.content.lines;
         let count = if self.effective_wrap() {
             let w = self.content_width.max(1) as usize;
-            lines.iter().map(|l| l.width().max(1).div_ceil(w)).sum::<usize>()
+            lines.iter().map(|l| l.width() / w + 1).sum::<usize>()
         } else {
             lines.len()
         };
@@ -543,10 +566,11 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Whether the content pane wraps right now: the per-mode default (prose wraps, code/diffs
-    /// don't), unless the user has forced wrap on with the `w` toggle.
+    /// Whether the content pane wraps the current selection (the `w` override or the per-mode
+    /// default). Off the per-frame path — the scroll-clamp helpers call it on a keypress —
+    /// so resolving the selected node via `tree.selected()` here is fine.
     fn effective_wrap(&self) -> bool {
-        self.wrap_override || self.wrap_content()
+        self.wrap_for(self.tree.selected().as_ref())
     }
 
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
