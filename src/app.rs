@@ -49,7 +49,7 @@ pub fn run() -> io::Result<()> {
         base_hint: resolved.base_branch.clone(),
     });
     let content: Box<dyn ContentProvider> =
-        Box::new(LiveContent { root: resolved.root.clone(), renderers: default_renderers(&asset_root()) });
+        Box::new(LiveContent { root: resolved.root.clone(), renderers: default_renderers() });
     let editor: Box<dyn EditorHandoff> =
         Box::new(LiveEditor { editor: std::env::var_os("EDITOR") });
 
@@ -232,39 +232,37 @@ fn resume_tui() -> io::Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)
 }
 
-/// Resolve glow's `-s` style argument: the bundled palette style if it ships at
-/// `<asset_root>/assets/markdown-style.json` (prose in the host ANSI palette, stripped `##`
-/// markers, syntax-highlighted code blocks), else glow's built-in `dark` so markdown still
-/// renders rather than failing on a missing `-s` file.
-fn markdown_style(asset_root: &Path) -> String {
-    let bundled = asset_root.join("assets/markdown-style.json");
-    if bundled.is_file() {
-        bundled.to_string_lossy().into_owned()
-    } else {
-        "dark".to_string()
-    }
+/// Resolve glow's `-s` style argument: the bundled palette style if it ships in the
+/// executable's own install tree (prose in the host ANSI palette, stripped `##` markers,
+/// syntax-highlighted code blocks), else glow's built-in `dark` so markdown still renders
+/// rather than failing on a missing `-s` file.
+///
+/// The style is a glow *argument* — trusted, operator-configured — so it is located ONLY
+/// relative to the executable, **never the cwd**: the viewed repo is untrusted and could
+/// otherwise plant an `assets/markdown-style.json` for the cwd fallback to pick up, turning
+/// repo content into the (trusted) renderer's config.
+fn markdown_style() -> String {
+    bundled_style_path(std::env::current_exe().ok().as_deref())
+        .unwrap_or_else(|| "dark".to_string())
 }
 
-/// Locate the plugin root holding the bundled `assets/`. The binary runs from
-/// `<root>/target/<profile>/herdr-file-viewer`, so walk up from the executable to the first
-/// ancestor that actually contains the style (works under both `herdr plugin link` and
-/// `plugin install`, which both build into `target/`). Falls back to the current directory.
-fn asset_root() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        for anc in exe.ancestors() {
-            if anc.join("assets/markdown-style.json").is_file() {
-                return anc.to_path_buf();
-            }
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+/// Find `assets/markdown-style.json` among the ancestors of the executable — the trusted
+/// install dir (the binary runs from `<root>/target/<profile>/herdr-file-viewer`, with the
+/// asset at `<root>/assets/…`, under both `herdr plugin link` and `plugin install`). Pure
+/// over its input, so it is unit-testable and provably never consults the cwd. `None` (→
+/// caller uses `dark`) when `exe` is absent or no ancestor bundles the asset.
+fn bundled_style_path(exe: Option<&Path>) -> Option<String> {
+    exe?.ancestors()
+        .map(|anc| anc.join("assets/markdown-style.json"))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 /// The default external renderers (the documented runtime deps). Each reads the untrusted
 /// content on **stdin** (never as an argument); a missing one degrades to plain text +
 /// notice (AC-24/25). `{name}` is substituted with the sanitized file name for language
 /// detection.
-fn default_renderers(asset_root: &Path) -> Renderers {
+fn default_renderers() -> Renderers {
     Renderers {
         // glow's default `auto` style downgrades to the plain "notty" renderer when stdout is a
         // pipe (the viewer always captures it), leaving `#`, `**`, etc. literal — so a concrete
@@ -276,7 +274,7 @@ fn default_renderers(asset_root: &Path) -> Renderers {
         markdown: vec![
             "glow".into(),
             "-s".into(),
-            markdown_style(asset_root),
+            markdown_style(),
             "-w".into(),
             "0".into(),
             "-".into(),
@@ -310,59 +308,62 @@ mod tests {
     }
 
     #[test]
-    fn markdown_style_uses_the_bundled_style_when_present() {
-        // When the plugin ships `assets/markdown-style.json`, glow is pointed at it (not the
-        // built-in `dark`) so prose inherits the host palette and code blocks highlight.
-        let root = tmp("style-present");
+    fn bundled_style_is_found_in_the_executables_install_tree() {
+        // A binary at <root>/target/release/<bin> resolves <root>/assets/markdown-style.json,
+        // so glow is pointed at the bundled palette style (not the built-in `dark`).
+        let root = tmp("bundled-present");
         std::fs::create_dir_all(root.join("assets")).unwrap();
         std::fs::write(root.join("assets/markdown-style.json"), "{}").unwrap();
-        let s = markdown_style(&root);
+        let exe = root.join("target/release/herdr-file-viewer");
+        let s = bundled_style_path(Some(&exe)).expect("style found in the install tree");
         assert!(s.ends_with("markdown-style.json"), "points at the bundled style: {s}");
         assert!(Path::new(&s).is_file(), "the referenced style file exists: {s}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn markdown_style_falls_back_to_dark_when_absent() {
-        // No bundled style (e.g. a stripped install) → glow's built-in `dark`, so markdown
-        // still renders rather than erroring on a missing `-s` file.
-        let root = tmp("style-absent");
-        assert_eq!(markdown_style(&root), "dark");
+    fn no_bundled_style_yields_none_and_never_consults_the_cwd() {
+        // Security regression: the style is a trusted glow argument, located ONLY via the
+        // executable's tree — never the cwd, which may be an untrusted viewed repo. Here the
+        // exe's tree ships no asset, so we get None EVEN THOUGH the real cwd (this repo) ships
+        // one. `markdown_style()` then falls back to glow's built-in `dark`.
+        let root = tmp("bundled-absent"); // deliberately no assets/ created
+        let exe = root.join("target/release/herdr-file-viewer");
+        assert_eq!(bundled_style_path(Some(&exe)), None, "no asset in the install tree → None");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_executable_path_yields_none() {
+        assert_eq!(bundled_style_path(None), None);
     }
 
     #[test]
     fn markdown_renderer_forces_a_concrete_glow_style() {
         // Regression: glow's default `auto` style degrades to the plain "notty" renderer when
         // stdout is a pipe (as the viewer always captures it), leaving literal `#`/`**`. A
-        // concrete style must be forced or markdown renders as near-raw text.
-        let root = tmp("renderers-style");
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/markdown-style.json"), "{}").unwrap();
-        let r = default_renderers(&root);
-        assert!(r.markdown.iter().any(|a| a == "-s"), "glow style flag present: {:?}", r.markdown);
+        // concrete `-s` style (the bundled file or `dark`) must be passed, and `-w 0` must
+        // follow `-w` to disable glow's line-padding (else blank-row gaps in a narrow pane).
+        let r = default_renderers();
+        let s = r.markdown.iter().position(|a| a == "-s");
         assert!(
-            r.markdown.iter().any(|a| a.ends_with("markdown-style.json")),
-            "the bundled style is used: {:?}",
+            s.is_some_and(|i| r.markdown.get(i + 1).is_some_and(|v| !v.is_empty())),
+            "a concrete -s style is passed: {:?}",
             r.markdown
         );
-        // `-w 0` must follow `-w`: it disables glow's line-padding that otherwise wraps to
-        // blank-row gaps in a narrow pane.
         let w = r.markdown.iter().position(|a| a == "-w");
         assert!(
             w.is_some_and(|i| r.markdown.get(i + 1).is_some_and(|v| v == "0")),
             "glow width disabled with `-w 0`: {:?}",
             r.markdown
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn syntax_renderer_forces_color_and_line_numbers() {
         // bat, like glow, must be told to colorize since its output is piped, not a TTY; and
-        // `--style=numbers` shows the line-number gutter the viewer wants for code. (The
-        // syntax/diff commands don't depend on the asset root.)
-        let r = default_renderers(Path::new("/nonexistent"));
+        // `--style=numbers` shows the line-number gutter the viewer wants for code.
+        let r = default_renderers();
         assert!(r.syntax.iter().any(|a| a == "--color=always"), "bat color forced: {:?}", r.syntax);
         assert!(r.syntax.iter().any(|a| a == "--style=numbers"), "bat line numbers: {:?}", r.syntax);
     }
