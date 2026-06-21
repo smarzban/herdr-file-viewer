@@ -246,11 +246,6 @@ fn capability(mode: ViewMode) -> &'static str {
     }
 }
 
-/// Spawn a renderer, feed `input` on stdin (writer thread, avoids a pipe deadlock), read
-/// stdout (reader thread), and bound the wait by `timeout` — a wedged renderer is killed
-/// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
-/// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
-/// content is untrusted, so there is no argument injection.
 /// Build the (trusted, operator-configured) renderer subprocess: program + args, color forced
 /// for the pipe, stdin/stdout piped, stderr discarded. `CLICOLOR_FORCE=1` stops termenv-based
 /// tools (glow/glamour) from dropping to a no-color profile when stdout is not a TTY — as it
@@ -267,6 +262,11 @@ fn renderer_command(command: &[String]) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Spawn a renderer, feed `input` on stdin (writer thread, avoids a pipe deadlock), read
+/// stdout (reader thread), and bound the wait by `timeout` — a wedged renderer is killed
+/// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
+/// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
+/// content is untrusted, so there is no argument injection.
 fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<String, String> {
     let prog = command.first().cloned().ok_or("empty renderer command")?;
     let mut child = renderer_command(command)?
