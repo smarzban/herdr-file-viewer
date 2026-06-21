@@ -24,6 +24,9 @@ pub struct Node {
     pub depth: usize,
     pub expanded: bool,
     pub status: Option<Status>,
+    /// For a directory: whether any file under it has a git status (so the Presenter can
+    /// color a folder that contains changes). Always `false` for files.
+    pub dir_dirty: bool,
 }
 
 /// Order tree entries: directories first, then files; alphabetical within each group.
@@ -106,12 +109,14 @@ impl TreeModel {
     fn collect(&self, dir: &Path, depth: usize, out: &mut Vec<Node>) {
         for (path, kind) in self.entries(dir) {
             let expanded = kind == NodeKind::Dir && self.expanded.contains(&path);
+            let dir_dirty = kind == NodeKind::Dir && self.dir_contains_change(&path);
             out.push(Node {
                 path: path.clone(),
                 kind,
                 depth,
                 expanded,
                 status: self.status_for(&path),
+                dir_dirty,
             });
             if expanded {
                 self.collect(&path, depth + 1, out);
@@ -161,6 +166,7 @@ impl TreeModel {
                 depth,
                 expanded: true,
                 status: self.status_for(&abs),
+                dir_dirty: self.dir_contains_change(&abs),
             });
             self.emit_synthetic(d, depth + 1, dirs, files, out);
         }
@@ -172,6 +178,7 @@ impl TreeModel {
                 depth,
                 expanded: false,
                 status: self.status_for(&abs),
+                dir_dirty: false,
             });
         }
     }
@@ -185,6 +192,17 @@ impl TreeModel {
                 .or_else(|| self.changed_filter.get(rel))
                 .copied()
         })
+    }
+
+    /// Whether any tracked change lives under directory `path` — used to color a folder that
+    /// contains changes (AC-7). Component-wise prefix match, so `src` is not matched by
+    /// `src2/…`; excludes the directory's own path.
+    fn dir_contains_change(&self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.root) else { return false };
+        self.markers
+            .keys()
+            .chain(self.changed_filter.keys())
+            .any(|k| k != rel && k.starts_with(rel))
     }
 
     /// Immediate children of `dir`: gitignore-filtered (unless `show_ignored`), `.git`

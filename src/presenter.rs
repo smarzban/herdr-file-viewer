@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 /// Which column currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,18 @@ pub struct ViewState {
     /// narrow-split flag). The Presenter lays out from the live frame width, not this, so
     /// the two can never disagree; it is carried for the controller's own use.
     pub width: u16,
+    /// Vertical scroll offset of the content pane, in lines (wrapped lines when `wrap`,
+    /// raw lines otherwise — matching ratatui's `Paragraph::scroll` semantics).
+    pub content_scroll: u16,
+    /// Horizontal scroll offset of the content pane, in columns. Only meaningful when not
+    /// wrapping (ratatui ignores it under wrap); lets long code/diff lines be read sideways.
+    pub content_hscroll: u16,
+    /// Wrap long content lines (prose: markdown / plain text) instead of truncating them.
+    /// Off for diffs and code, whose column alignment must be preserved.
+    pub wrap: bool,
+    /// The tree column's share of the width, as a percentage (the content pane takes the
+    /// rest). Adjustable from the keyboard; used only in the wide two-column layout.
+    pub split_pct: u16,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -71,8 +83,23 @@ fn node_name(node: &Node) -> String {
         .unwrap_or_else(|| node.path.to_string_lossy().into_owned())
 }
 
+/// The status color for a tree row: changes (modified / deleted) are light red, new files
+/// (added / untracked) light green, and a directory containing any change is light red.
+/// Clean rows take the default foreground.
+fn row_color(node: &Node) -> Option<Color> {
+    match node.kind {
+        NodeKind::Dir => node.dir_dirty.then_some(Color::LightRed),
+        NodeKind::File => match node.status {
+            Some(Status::Modified | Status::Deleted) => Some(Color::LightRed),
+            Some(Status::Added | Status::Untracked) => Some(Color::LightGreen),
+            None => None,
+        },
+    }
+}
+
 /// Render one tree row: `<marker> <indent><glyph><name>`. Indentation grows with depth so
-/// the recursion is visible (AC-3); a directory carries an expand/collapse glyph.
+/// the recursion is visible (AC-3); a directory carries an expand/collapse glyph; the row is
+/// tinted by git status (AC-7).
 fn tree_row(node: &Node, selected: bool) -> Line<'static> {
     let glyph = match node.kind {
         NodeKind::Dir if node.expanded => "▾ ",
@@ -86,11 +113,13 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
         glyph,
         sanitize_label(&node_name(node)),
     );
-    let style = if selected {
-        Style::new().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::new()
-    };
+    let mut style = Style::new();
+    if let Some(color) = row_color(node) {
+        style = style.fg(color);
+    }
+    if selected {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
     Line::from(Span::styled(text, style))
 }
 
@@ -120,8 +149,9 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     frame.render_widget(Paragraph::new(rows), inner);
 }
 
-/// Draw the right column: a notices strip (if any) above the content pane.
-fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) {
+/// Draw the right column: a notices strip (if any) above the content pane. Returns the
+/// content viewport `(width, height)` so the controller can clamp scrolling to it.
+fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) {
     let title = state
         .nodes
         .get(state.selected)
@@ -146,31 +176,47 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) {
             .collect();
         frame.render_widget(Paragraph::new(notice_lines), parts[0]);
     }
-    frame.render_widget(Paragraph::new(state.content.clone()), parts[1]);
+    // Scroll the content vertically (AC: read a file beyond the first screenful). Wrap prose
+    // so long lines aren't clipped; keep diffs/code unwrapped to preserve their alignment.
+    let mut content =
+        Paragraph::new(state.content.clone()).scroll((state.content_scroll, state.content_hscroll));
+    if state.wrap {
+        content = content.wrap(Wrap { trim: false });
+    }
+    frame.render_widget(content, parts[1]);
+    (parts[1].width, parts[1].height)
 }
 
 /// Below this pane width the viewer drops to a single, focused column (AC-21).
 const NARROW_SPLIT: u16 = 80;
 
-/// Draw the viewer for the given state.
+/// Draw the viewer for the given state, returning the content viewport `(width, height)`
+/// the content pane was drawn into — `(0, 0)` when the content pane is not visible (narrow
+/// layout with the tree focused). The controller uses it to clamp content scrolling.
 ///
 /// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the
 /// focused column is drawn — full width — so the active content stays readable (AC-21).
 /// The decision is taken from the **live frame width**, so the split can never disagree
 /// with the geometry it is drawn into (a stale `state.width` cannot desync the layout).
-pub fn draw(frame: &mut Frame, state: &ViewState) {
+pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
     let area = frame.area();
     if area.width < NARROW_SPLIT {
-        match state.focus {
-            Focus::Tree => draw_tree(frame, area, state),
+        return match state.focus {
+            Focus::Tree => {
+                draw_tree(frame, area, state);
+                (0, 0)
+            }
             Focus::Content => draw_content(frame, area, state),
-        }
-        return;
+        };
     }
-    let cols =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
+    let tree_pct = state.split_pct.clamp(10, 90);
+    let cols = Layout::horizontal([
+        Constraint::Percentage(tree_pct),
+        Constraint::Percentage(100 - tree_pct),
+    ])
+    .split(area);
     draw_tree(frame, cols[0], state);
-    draw_content(frame, cols[1], state);
+    draw_content(frame, cols[1], state)
 }
 
 #[cfg(test)]

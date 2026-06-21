@@ -10,10 +10,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Decode a key event into an [`Intent`], or `None` if the key is unbound.
 ///
-/// Char bindings require an empty modifier set so reserved chords (e.g. Ctrl+C) stay clear
-/// of the viewer's actions; the dedicated keys (arrows, Tab, Esc) likewise fire unmodified.
+/// Control-style chords (Ctrl/Alt/Super/…) never fire an intent so reserved combos (e.g.
+/// Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
+/// typing — not a chord — and some terminals report them with the Shift bit set.
 pub fn map_key(key: KeyEvent) -> Option<Intent> {
-    if key.modifiers != KeyModifiers::NONE {
+    if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
     match key.code {
@@ -27,6 +28,9 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('v') => Some(Intent::CycleView),
         KeyCode::Char('e') => Some(Intent::OpenInEditor),
         KeyCode::Tab => Some(Intent::ToggleFocus),
+        KeyCode::Char('<') => Some(Intent::ShrinkTree),
+        KeyCode::Char('>') => Some(Intent::GrowTree),
+        KeyCode::Char('w') => Some(Intent::ToggleWrap),
         KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
         _ => None,
     }
@@ -57,6 +61,9 @@ mod tests {
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
         (KeyCode::Tab, Intent::ToggleFocus),
+        (KeyCode::Char('<'), Intent::ShrinkTree),
+        (KeyCode::Char('>'), Intent::GrowTree),
+        (KeyCode::Char('w'), Intent::ToggleWrap),
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
     ];
@@ -93,5 +100,20 @@ mod tests {
         assert_eq!(map_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
         assert_eq!(map_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)), None);
         assert_eq!(map_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)), None);
+    }
+
+    #[test]
+    fn shift_is_allowed_for_shifted_characters() {
+        // '<' / '>' are typed with Shift; the resize keys must fire whether or not the
+        // terminal reports the Shift bit — but a Ctrl chord on the same key must not.
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT)),
+            Some(Intent::ShrinkTree)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE)),
+            Some(Intent::GrowTree)
+        );
+        assert_eq!(map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::CONTROL)), None);
     }
 }
