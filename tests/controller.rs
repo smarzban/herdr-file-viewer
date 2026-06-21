@@ -457,6 +457,54 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
 }
 
 #[test]
+fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
+    // With wrap on (a markdown file), the vertical clamp must count WRAPPED rows so the bottom
+    // of long prose is reachable (regression: a ceil estimate undercounted word-wrap), and
+    // horizontal scrolling is inert (nothing overflows the pane when wrapped).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.md"), "# x\n").unwrap(); // markdown → wraps by default
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(WideContent), // 5 lines × 100 columns
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(25, 10); // 5 lines × (100/25 + 1)=5 rows = 25 wrapped rows; max ≥ 15
+    assert!(ctrl.view_state().wrap, "a .md file wraps");
+
+    ctrl.handle(Intent::ToggleFocus); // focus content
+    for _ in 0..500 {
+        ctrl.handle(Intent::NavDown);
+    }
+    let vmax = ctrl.view_state().content_scroll;
+    assert!(vmax >= 15, "wrapped rows are counted so the bottom is reachable (got {vmax})");
+
+    let h_before = ctrl.view_state().content_hscroll;
+    ctrl.handle(Intent::Expand); // → : would scroll right, but wrap leaves nothing to scroll past
+    assert_eq!(ctrl.view_state().content_hscroll, h_before, "no horizontal scroll while wrapping");
+}
+
+#[test]
+fn shrinking_the_viewport_reclamps_an_existing_scroll_offset() {
+    // Resizing the pane smaller lowers the max scroll; an existing offset must be re-clamped
+    // so it never points past the end (which would leave blank space below the content).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max 40
+    ctrl.handle(Intent::ToggleFocus);
+    for _ in 0..200 {
+        ctrl.handle(Intent::NavDown);
+    }
+    assert_eq!(ctrl.view_state().content_scroll, 40, "scrolled to the bottom");
+
+    ctrl.set_content_viewport(40, 30); // taller viewport → max 20; the offset must re-clamp
+    assert_eq!(ctrl.view_state().content_scroll, 20, "offset re-clamped to the new, smaller max");
+}
+
+#[test]
 fn resize_intents_move_the_tree_content_divider_and_clamp() {
     // The tree/content split is adjustable from the keyboard (the viewer owns both columns,
     // so herdr's pane-resize can't move this internal divider).
