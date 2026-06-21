@@ -399,20 +399,27 @@ impl Controller {
         self.rendered_line_count().saturating_sub(self.content_height)
     }
 
-    /// How many lines the content occupies once laid out. Without wrapping each source line is
-    /// one row; with wrapping a line spans roughly `width / viewport_width` rows. ratatui wraps
-    /// at word boundaries, which can leave a partial row that `ceil` undercounts — making the
-    /// bottom of wrapped prose unreachable — so we use `floor(width / w) + 1` per line, a tight
-    /// upper bound (exact for lines that fit; at most one row generous), so the last line is
-    /// always reachable. Over-shooting only risks a little blank space, which ratatui renders
-    /// harmlessly; undershooting would hide content.
+    /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
+    /// real last row. Without wrapping each source line is one (truncated) row. With wrapping a
+    /// line spans multiple rows: ratatui's exact `line_count` is private, and an arithmetic
+    /// `ceil`/`floor` undercounts word wrapping (words don't pack to the column), which would
+    /// leave the bottom of wrapped prose unreachable — so [`wrapped_rows`] simulates the word
+    /// packing, floored by the all-columns char-wrap count so leading/interior spaces can't
+    /// make it undershoot. Off the per-frame path: only scroll / resize / wrap-toggle keypaths
+    /// reach it (`set_content_viewport` early-returns on an unchanged size).
     fn rendered_line_count(&self) -> u16 {
-        let lines = &self.content.lines;
         let count = if self.effective_wrap() {
             let w = self.content_width.max(1) as usize;
-            lines.iter().map(|l| l.width() / w + 1).sum::<usize>()
+            self.content
+                .lines
+                .iter()
+                .map(|l| {
+                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
+                })
+                .sum::<usize>()
         } else {
-            lines.len()
+            self.content.lines.len()
         };
         count.min(u16::MAX as usize) as u16
     }
@@ -678,4 +685,56 @@ fn is_markdown(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)
+}
+
+/// How many rows one rendered line occupies under ratatui's word wrapper (`Wrap{trim:false}`)
+/// at `width` columns: greedy word packing — fill the row with space-separated words until the
+/// next one doesn't fit, then wrap; a word wider than the row is broken across rows. A plain
+/// `ceil(width/col)` undercounts this (words rarely pack flush to the column), which is what
+/// would make the bottom of wrapped prose unreachable via the scroll clamp. Char counts stand
+/// in for display width — close enough for the clamp, and the caller floors with the
+/// all-columns char-wrap so it never undershoots.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for (i, word) in text.split(' ').enumerate() {
+        let wl = word.chars().count();
+        let sep = usize::from(i > 0);
+        if col != 0 && col + sep + wl > width {
+            rows += 1; // doesn't fit → start a new row
+            col = 0;
+        }
+        if col == 0 {
+            // word starts a fresh row; a word wider than the row breaks across full rows
+            let extra = wl.saturating_sub(1) / width;
+            rows += extra;
+            col = wl - extra * width;
+        } else {
+            col += sep + wl;
+        }
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_rows;
+
+    #[test]
+    fn wrapped_rows_counts_word_wrapping_not_just_char_wrapping() {
+        // Four width-6 words in a 10-col pane pack one per row → 4 rows, even though the
+        // 27-column line char-wraps to only 3. The scroll clamp must use the larger count.
+        assert_eq!(wrapped_rows("aaaaaa aaaaaa aaaaaa aaaaaa", 10), 4);
+        // A single over-long word is broken like char wrapping.
+        assert_eq!(wrapped_rows(&"x".repeat(100), 25), 4);
+        // Words that pack flush share rows.
+        assert_eq!(wrapped_rows("ab cd ef", 8), 1); // "ab cd ef" = 8 cols, fits exactly
+        // Short / empty / zero-width are one row.
+        assert_eq!(wrapped_rows("hello", 80), 1);
+        assert_eq!(wrapped_rows("", 80), 1);
+        assert_eq!(wrapped_rows("anything", 0), 1);
+    }
 }

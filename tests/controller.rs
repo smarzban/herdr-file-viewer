@@ -470,15 +470,17 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
     };
     let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
     await_marker(&mut ctrl, "WIDE");
-    ctrl.set_content_viewport(25, 10); // 5 lines × (100/25 + 1)=5 rows = 25 wrapped rows; max ≥ 15
+    ctrl.set_content_viewport(25, 10); // 5 lines × ceil(100/25)=4 = 20 wrapped rows; max = 10
     assert!(ctrl.view_state().wrap, "a .md file wraps");
 
     ctrl.handle(Intent::ToggleFocus); // focus content
     for _ in 0..500 {
         ctrl.handle(Intent::NavDown);
     }
+    // Wrapped rows (20) are counted, not raw lines (5, which would clamp to 0): the bottom is
+    // reachable. Exact count via ratatui means no over-scroll into blank past row 20.
     let vmax = ctrl.view_state().content_scroll;
-    assert!(vmax >= 15, "wrapped rows are counted so the bottom is reachable (got {vmax})");
+    assert_eq!(vmax, 10, "scrolls to exactly the last wrapped row (20 rows − 10 tall)");
 
     let h_before = ctrl.view_state().content_hscroll;
     ctrl.handle(Intent::Expand); // → : would scroll right, but wrap leaves nothing to scroll past
