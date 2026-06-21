@@ -4,6 +4,7 @@
 # user's current work. The viewer appears ONLY in response to an explicit action
 # (its keybinding) — there are no event hooks and no automatic invocation (AC-N4).
 
+id = "herdr-file-viewer"
 name = "herdr-file-viewer"
 version = "0.1.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
@@ -24,9 +25,10 @@ placement = "split"
 command = ["./target/release/herdr-file-viewer"]
 
 # The action that summons the viewer (bound to a keybinding in herdr config). This is
-# the only way the viewer is opened — there is no [[events]] hook (AC-N4).
+# the only way the viewer is opened — there is no [[events]] hook (AC-N4). herdr actions
+# run a `command`; the launcher script opens the [[panes]] entry below as a split.
 [[actions]]
 id = "open-file-viewer"
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
-pane = "file-viewer"
+command = ["bash", "scripts/open-file-viewer.sh"]

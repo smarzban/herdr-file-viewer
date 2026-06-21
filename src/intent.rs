@@ -28,6 +28,13 @@ pub enum Intent {
     OpenInEditor,
     /// Move focus between the tree and content columns (AC-21).
     ToggleFocus,
+    /// Narrow the tree column (move the tree/content divider left).
+    ShrinkTree,
+    /// Widen the tree column (move the tree/content divider right).
+    GrowTree,
+    /// Force content-line wrapping on/off, overriding the per-mode default (so long lines in
+    /// code and diffs can be wrapped on demand instead of truncated).
+    ToggleWrap,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -35,7 +42,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 11] = [
+    pub const ALL: [Intent; 14] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -46,6 +53,9 @@ impl Intent {
         Intent::CycleView,
         Intent::OpenInEditor,
         Intent::ToggleFocus,
+        Intent::ShrinkTree,
+        Intent::GrowTree,
+        Intent::ToggleWrap,
         Intent::Close,
     ];
 }
@@ -73,6 +83,9 @@ mod tests {
                 | Intent::CycleView
                 | Intent::OpenInEditor
                 | Intent::ToggleFocus
+                | Intent::ShrinkTree
+                | Intent::GrowTree
+                | Intent::ToggleWrap
                 | Intent::Close => false,
             };
             assert!(!mutates_file, "{intent:?} must not mutate file contents (AC-N3)");

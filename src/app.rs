@@ -76,35 +76,47 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
             terminal.draw(|frame| {
                 controller.set_width(frame.area().width);
                 let view: ViewState = controller.view_state();
-                presenter::draw(frame, &view);
+                let (cw, ch) = presenter::draw(frame, &view);
+                // Feed the drawn content viewport back so content scrolling can be clamped to
+                // it on the next intent.
+                controller.set_content_viewport(cw, ch);
             })?;
             dirty = false;
         }
 
-        if event::poll(TICK)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Some(intent) = input::map_key(key)
-        {
-            let fx = controller.handle(intent);
-            if fx.clear {
-                // An external program (an editor) drew over the screen, so force a full
-                // repaint: `terminal.clear()` resets ratatui's back buffer so the next draw
-                // rewrites every cell (a plain redraw would only diff against the stale
-                // buffer and skip cells). `clear()` first issues a cursor-position (DSR)
-                // query to preserve the cursor; a real interactive terminal answers it, so
-                // this succeeds and the repaint is full. We make it best-effort because a
-                // terminal that never answers (e.g. a headless/test pty) must not crash the
-                // viewer — there the repaint is skipped and the pane may stay stale until the
-                // next change, which is strictly better than aborting (constitution: the loop
-                // never crashes). The e2e editor test exercises exactly this failure path.
-                let _ = terminal.clear();
-                dirty = true;
+        if event::poll(TICK)? {
+            match event::read()? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && let Some(intent) = input::map_key(key) =>
+                {
+                    let fx = controller.handle(intent);
+                    if fx.clear {
+                        // An external program (an editor) drew over the screen, so force a
+                        // full repaint: `terminal.clear()` resets ratatui's back buffer so the
+                        // next draw rewrites every cell (a plain redraw would only diff against
+                        // the stale buffer and skip cells). `clear()` first issues a cursor-
+                        // position (DSR) query to preserve the cursor; a real interactive
+                        // terminal answers it, so this succeeds and the repaint is full. We
+                        // make it best-effort because a terminal that never answers (e.g. a
+                        // headless/test pty) must not crash the viewer — there the repaint is
+                        // skipped and the pane may stay stale until the next change, which is
+                        // strictly better than aborting (constitution: the loop never crashes).
+                        // The e2e editor test exercises exactly this failure path.
+                        let _ = terminal.clear();
+                        dirty = true;
+                    }
+                    if fx.quit {
+                        return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
+                // The pane was resized: redraw so the two-column layout and content reflow to
+                // the new geometry. `terminal.draw` autoresizes its buffers before drawing, so
+                // marking the frame dirty is enough.
+                Event::Resize(_, _) => dirty = true,
+                _ => {}
             }
-            if fx.quit {
-                return Ok(());
-            }
-            dirty |= fx.redraw;
         }
         // A render finished by the worker becomes visible on the next draw (AC-23).
         if let Some(fx) = controller.poll() {
@@ -226,16 +238,56 @@ fn resume_tui() -> io::Result<()> {
 /// detection.
 fn default_renderers() -> Renderers {
     Renderers {
-        markdown: vec!["glow".into(), "-".into()],
+        // `-s dark` forces a concrete glamour style (glow's default `auto` downgrades to the
+        // plain "notty" renderer when stdout is a pipe — as the viewer always captures it —
+        // leaving `#`, `**`, etc. as literal text). `-w 0` disables glow's own wrapping/line-
+        // padding: otherwise it pads every line to 80 cols, and in a narrower pane the trailing
+        // padding wraps to a blank row after each line ("gaps"). With `-w 0` the Presenter's
+        // own wrap reflows the text to the actual pane width.
+        markdown: vec!["glow".into(), "-s".into(), "dark".into(), "-w".into(), "0".into(), "-".into()],
+        // delta already colorizes piped output (its default), and has no `--color=always` flag.
         diff: vec!["delta".into()],
         syntax: vec![
             "bat".into(),
             "--color=always".into(),
-            "--style=plain".into(),
+            // `numbers` shows a line-number gutter (still shown when piped, given --color).
+            "--style=numbers".into(),
             "--paging=never".into(),
             "--file-name={name}".into(),
             "-".into(),
         ],
         timeout: RENDER_TIMEOUT,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_renderer_forces_a_concrete_glow_style() {
+        // Regression: glow's default `auto` style degrades to the plain "notty" renderer when
+        // stdout is a pipe (as the viewer always captures it), leaving literal `#`/`**`. A
+        // concrete style must be forced or markdown renders as near-raw text.
+        let r = default_renderers();
+        assert!(r.markdown.iter().any(|a| a == "-s"), "glow style flag present: {:?}", r.markdown);
+        assert!(r.markdown.iter().any(|a| a == "dark"), "a concrete style is named: {:?}", r.markdown);
+        // `-w 0` must follow `-w`: it disables glow's line-padding that otherwise wraps to
+        // blank-row gaps in a narrow pane.
+        let w = r.markdown.iter().position(|a| a == "-w");
+        assert!(
+            w.is_some_and(|i| r.markdown.get(i + 1).is_some_and(|v| v == "0")),
+            "glow width disabled with `-w 0`: {:?}",
+            r.markdown
+        );
+    }
+
+    #[test]
+    fn syntax_renderer_forces_color_and_line_numbers() {
+        // bat, like glow, must be told to colorize since its output is piped, not a TTY; and
+        // `--style=numbers` shows the line-number gutter the viewer wants for code.
+        let r = default_renderers();
+        assert!(r.syntax.iter().any(|a| a == "--color=always"), "bat color forced: {:?}", r.syntax);
+        assert!(r.syntax.iter().any(|a| a == "--style=numbers"), "bat line numbers: {:?}", r.syntax);
     }
 }
