@@ -93,8 +93,28 @@ Summon it by invoking the action:
 herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
 ```
 
-It opens the viewer in a **split** pane beside your current work. Bind the action to a key in
-your herdr configuration for one-press access (see your herdr docs for the keybinding syntax).
+It opens the viewer in a **split** pane beside your current work. The launcher
+(`scripts/open-file-viewer.sh`, used by both the action and any keybinding) is **idempotent**,
+scoped to the current tab — so invoking it repeatedly is *launch-or-focus-or-toggle*:
+
+- no viewer pane open in this tab → open a split (focused)
+- a viewer pane open but not focused → focus it
+- the viewer pane already focused → close it (herdr has no hide-without-close; reopening just
+  re-walks the tree)
+
+**One-press access — bind a key.** herdr's `config.toml` binds keys to commands; point one at the
+action so it runs with the plugin's working directory (no hard-coded paths):
+
+```toml
+[[keys.command]]
+key = "prefix+f"   # any herdr key syntax — e.g. ctrl+b then f
+type = "shell"     # run detached; do NOT use "pane" (it would close when the command exits)
+command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
+```
+
+Reload with `herdr server reload-config`. Pressing the key then opens / focuses / hides the
+viewer via the same idempotent launcher. (Alternatively, `command` may invoke
+`scripts/open-file-viewer.sh` directly using the absolute install path from `herdr plugin list`.)
 
 ## Keys
 
