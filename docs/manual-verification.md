@@ -78,12 +78,26 @@ This procedure verifies the remaining **live-host** behavior.
    - Bind it to a key (README `[[keys.command]]` snippet) and confirm the key drives the same
      open → focus → close cycle.
 
+7. **Mouse (the feel — needs a human; can't be driven over the CLI).** With the viewer open:
+   - **Click** a tree row → it selects (the content pane updates). **Click** in the content
+     column → it takes focus.
+   - **Double-click** a folder → it expands / collapses. **Double-click** a file → your editor
+     opens on it (same as `e`). Single-clicking neither toggles nor opens.
+   - **Wheel** over the content pane → it scrolls; over the tree → the selection moves.
+   - **Drag** the divider between the columns → the split resizes and tracks the cursor.
+   - **`Shift`+drag** to select text → your terminal's native select-and-copy still works (the
+     viewer does not eat `Shift`+mouse).
+   - Confirm the double-click timing and the divider drag feel responsive — tune
+     `DOUBLE_CLICK` / `WHEEL_STEP` in `src/controller.rs` if not.
+
 ## Pass criteria
 
 - [ ] Step 3 — the viewer opened in a **split** pane beside the current work (AC-17).
 - [ ] Step 5 — the close key closed the viewer and returned focus to the origin pane (AC-20).
 - [ ] Step 6 — repeated invocation focuses the existing viewer (no duplicate panes) and toggles
       it closed; a bound key drives the same cycle.
+- [ ] Step 7 — click selects, double-click activates (folder toggle / file editor), the wheel
+      scrolls, the divider drags, and `Shift`+drag still selects text in the terminal.
 
 If either fails, capture the herdr version (`herdr --version`), the platform, and the manifest
 in use, and file an issue — these are the host-integration points most sensitive to herdr

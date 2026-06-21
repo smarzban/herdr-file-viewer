@@ -15,7 +15,7 @@ use crate::presenter::{self, ViewState};
 use crate::render::{self, Prepared, Renderers};
 use crate::view_policy::ViewMode;
 use crate::{host, input, root};
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -61,7 +61,12 @@ pub fn run() -> io::Result<()> {
     );
 
     let mut terminal = ratatui::try_init()?;
+    // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
+    // pane that requests capture, while reserving Shift+mouse for the terminal's own
+    // selection/copy. Best-effort so a terminal without mouse support still runs.
+    let _ = execute!(io::stdout(), EnableMouseCapture);
     let outcome = event_loop(&mut terminal, &mut controller);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::try_restore()?;
     outcome
 }
@@ -78,8 +83,10 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 let view: ViewState = controller.view_state();
                 let (cw, ch) = presenter::draw(frame, &view);
                 // Feed the drawn content viewport back so content scrolling can be clamped to
-                // it on the next intent.
+                // it on the next intent, and the hit-test geometry so a mouse event maps to the
+                // live layout.
                 controller.set_content_viewport(cw, ch);
+                controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
             })?;
             dirty = false;
         }
@@ -108,6 +115,16 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     }
                     if fx.quit {
                         return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
+                // Mouse input (capture is enabled in `run`): clicks select / activate, the
+                // wheel scrolls, dragging the divider resizes. It never quits the viewer.
+                Event::Mouse(me) => {
+                    let fx = controller.handle_mouse(me);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
                     }
                     dirty |= fx.redraw;
                 }
