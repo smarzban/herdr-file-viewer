@@ -246,18 +246,30 @@ fn capability(mode: ViewMode) -> &'static str {
     }
 }
 
+/// Build the (trusted, operator-configured) renderer subprocess: program + args, color forced
+/// for the pipe, stdin/stdout piped, stderr discarded. `CLICOLOR_FORCE=1` stops termenv-based
+/// tools (glow/glamour) from dropping to a no-color profile when stdout is not a TTY — as it
+/// always is here — which would strip all markdown color (headings, inline code, code-block
+/// highlighting). Harmless to delta/bat, which force color via their own flags.
+fn renderer_command(command: &[String]) -> Result<Command, String> {
+    let (prog, args) = command.split_first().ok_or("empty renderer command")?;
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
+        .env("CLICOLOR_FORCE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    Ok(cmd)
+}
+
 /// Spawn a renderer, feed `input` on stdin (writer thread, avoids a pipe deadlock), read
 /// stdout (reader thread), and bound the wait by `timeout` — a wedged renderer is killed
 /// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
 /// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
 /// content is untrusted, so there is no argument injection.
 fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<String, String> {
-    let (prog, args) = command.split_first().ok_or("empty renderer command")?;
-    let mut child = Command::new(prog)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+    let prog = command.first().cloned().ok_or("empty renderer command")?;
+    let mut child = renderer_command(command)?
         .spawn()
         .map_err(|e| format!("{prog}: {e}"))?;
 
@@ -507,5 +519,30 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
         assert_eq!(classify(&root, &sub), Prepared::Binary);
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn renderer_command_forces_color_so_piped_renderers_keep_styling() {
+        // glow/glamour drops to a no-color profile when stdout is a pipe (always, here), so
+        // every renderer subprocess is spawned with CLICOLOR_FORCE=1 — without it markdown
+        // loses all color (headings, inline code, code-block highlighting). Harmless to
+        // delta/bat, which force color via flags already.
+        use std::ffi::OsStr;
+        let cmd = renderer_command(&["glow".into(), "-".into()]).unwrap();
+        let forced = cmd
+            .get_envs()
+            .any(|(k, v)| k == OsStr::new("CLICOLOR_FORCE") && v == Some(OsStr::new("1")));
+        assert!(forced, "CLICOLOR_FORCE=1 must be set on the renderer subprocess");
+    }
+
+    #[test]
+    fn named_ansi_color_survives_to_text_as_a_named_color() {
+        // The markdown palette feature relies on glow's named ANSI colors (e.g. `\e[34m`)
+        // surviving `to_text` as ratatui *named* colors, so the terminal/herdr theme re-themes
+        // them — rather than being flattened to fixed RGB.
+        use ratatui::style::Color;
+        let t = to_text("\u{1b}[34mhi\u{1b}[0m");
+        let fg = t.lines.iter().flat_map(|l| l.spans.iter()).find_map(|s| s.style.fg);
+        assert_eq!(fg, Some(Color::Blue), "SGR 34 must map to the named Blue, not RGB");
     }
 }
