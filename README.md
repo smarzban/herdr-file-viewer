@@ -1,13 +1,39 @@
 # herdr-file-viewer
 
-A git-aware, **read-only** file viewer that runs as a **herdr** plugin (herdr is a terminal
-agent-multiplexer): a keyboard-driven TUI that opens in a split pane beside your current work,
-with a directory
-tree on the left and a content pane on the right (rendered markdown, diffs, or
-syntax-highlighted content).
+[![CI](https://github.com/smarzban/herdr-plugin-file-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/smarzban/herdr-plugin-file-viewer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)
+![herdr 0.7+](https://img.shields.io/badge/herdr-0.7%2B-8a2be2)
+![platforms: linux • macOS](https://img.shields.io/badge/platforms-linux%20%E2%80%A2%20macOS-informational)
 
-It never modifies your files or your git repository. Opening a file in your editor is a
-hand-off to an *external* editor — the viewer itself only reads.
+**Browse your repo without leaving your terminal session — a git-aware, read-only file viewer
+that lives in a herdr pane.** A keyboard-driven TUI with a directory tree
+on the left and, on the right, exactly the view each file deserves: a **diff** if it changed,
+**rendered markdown** if it's markdown, **syntax-highlighted code** otherwise. Git status is woven
+right into the tree. It opens beside whatever you're doing and never touches your files.
+
+<!--
+  DEMO: drop a screenshot or short GIF at assets/demo.png (or .gif) and replace the blockquote
+  below with:  ![herdr-file-viewer: tree + diff view](assets/demo.png)
+  A good ~12s capture: open the viewer → arrow down the tree → land on a changed file (diff) →
+  press v (rendered markdown) → press z (zoom full-screen). asciinema + agg → gif works well.
+-->
+> 📸 _Demo screenshot coming soon — see the comment above to drop one in._
+
+## Why you'd want it
+
+- **The right view, automatically.** Stop `cat`-ing files and squinting at raw diffs. A changed
+  file shows its diff; a README renders; code is highlighted — no mode-switching, no commands.
+- **Git at a glance.** `M`/`A`/`D`/`?` markers, colored so changes pop, a changed-files-only
+  filter, and a baseline you can flip between your branch's merge-base and `HEAD` — all in the
+  tree, not a separate mode.
+- **It sits beside your work.** Opens in a herdr split (or its own tab) with one keypress, and
+  toggles away just as fast. Great next to an agent, a build, or an editor.
+- **Safe on anything.** Read-only by construction and hardened to open *untrusted* repos (an
+  agent's worktree, a fresh clone) without running repo-controlled code or letting hostile file
+  content drive your terminal. See [SECURITY.md](SECURITY.md).
+- **Keyboard-first**, mouse-optional, and it never reinvents rendering — it delegates to
+  `glow` / `delta` / `bat` and degrades gracefully when they're absent.
 
 ## What it does
 
@@ -36,12 +62,12 @@ Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Li
 which the viewer pane launches:
 
 ```bash
-# from a published GitHub repo (owner/repo[/subdir]):
-herdr plugin install <owner>/<repo>
+# from this published GitHub repo (pin the release with --ref):
+herdr plugin install smarzban/herdr-plugin-file-viewer --ref v1.0.0
 
 # or, for local development, link this checkout in place:
 cargo build --release            # plugin link does NOT run the [[build]] step, so build first
-herdr plugin link /path/to/herdr-file-viewer
+herdr plugin link /path/to/herdr-plugin-file-viewer
 ```
 
 Confirm it registered with `herdr plugin list`. To build manually outside herdr:
@@ -60,6 +86,13 @@ dependencies — not Cargo dependencies — and each is **optional**:
 | Rendered markdown | [`glow`](https://github.com/charmbracelet/glow) | `brew install glow` / package manager |
 | Diffs | [`delta`](https://github.com/dandavison/delta) | `brew install git-delta` / `cargo install git-delta` |
 | Syntax-highlighted content | [`bat`](https://github.com/sharkdp/bat) | `brew install bat` / package manager |
+
+Or install all three at once with the bundled helper (best-effort; detects brew/apt/dnf/pacman
+and falls back to `cargo`):
+
+```bash
+./scripts/install-renderers.sh
+```
 
 **If a renderer is not installed, the viewer falls back to plain text** and shows a short
 notice in the content pane naming the missing capability (e.g. *“Markdown renderer
@@ -165,7 +198,7 @@ the same locally and remotely; it's only *which* keymap fires them across `--rem
 | `w` | Toggle line wrapping for the content pane |
 | `z` | Zoom — hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
-| `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane (AC-20) |
+| `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
@@ -183,7 +216,7 @@ never intercepted); `Shift` is permitted, for keys such as `<` and `>`.
 
 ### Mouse
 
-The viewer is keyboard-first (AC-18); the mouse is additive and on by default:
+The viewer is keyboard-first; the mouse is additive and on by default:
 
 | Gesture | Action |
 | --- | --- |
@@ -209,6 +242,15 @@ sideways trackpad swipe. The `←` / `→` keys always scroll the content sidewa
 and resumes when it exits. If `$EDITOR` is unset, a notice is shown — the viewer never edits a
 file itself.
 
+## Architecture & security
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design at a glance: one in-process TUI owning both
+  columns, the component map, off-thread rendering, and the load-bearing decisions (read-only,
+  delegate rendering, git-first).
+- **[SECURITY.md](SECURITY.md)** — the threat model and mitigations for opening untrusted content:
+  read-only by construction, escape-sequence neutralization, hardened git invocations, and how to
+  report a vulnerability.
+
 ## Development
 
 This crate is a library (`src/lib.rs` + modules) plus a thin binary (`src/main.rs` →
@@ -223,3 +265,7 @@ cargo run                  # run the viewer locally, outside herdr
 The e2e tests drive the real binary over a pseudo-terminal; they stub the editor via
 `$EDITOR` and run in temporary directories, so they need neither glow/delta/bat nor a live
 herdr.
+
+## License
+
+[MIT](LICENSE) © Saeed Marzban
