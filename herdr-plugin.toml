@@ -32,3 +32,12 @@ id = "open-file-viewer"
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
 command = ["bash", "scripts/open-file-viewer.sh"]
+
+# The same viewer, opened in its own tab instead of a split. Idempotent across tabs: switches
+# to an existing viewer tab rather than duplicating it, and toggles off when already on it.
+# Bind a key to it (e.g. `prefix+shift+f`) in ~/.config/herdr/config.toml.
+[[actions]]
+id = "open-file-viewer-tab"
+title = "Open file viewer (tab)"
+description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
+command = ["bash", "scripts/open-file-viewer-tab.sh"]
