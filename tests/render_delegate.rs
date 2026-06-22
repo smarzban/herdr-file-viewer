@@ -153,6 +153,17 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
 }
 
 #[test]
+fn an_oversized_full_diff_is_truncated_with_a_notice() {
+    // AC-13 on the FullDiff path: a full-context diff of a large file is bounded with a visible
+    // truncation notice before it is rendered, so it can't blow up the content pane.
+    let big_diff = "+line\n".repeat(6000); // > the 5000-line cap
+    let (text, notice) = render(&cat(), &Prepared::Binary, ViewMode::FullDiff, Some(&big_diff), None);
+    let n = notice.expect("AC-13: an oversized full-context diff gets a truncation notice");
+    assert!(n.to_lowercase().contains("truncat"), "the notice names the truncation: {n}");
+    assert!(flatten(&text).lines().count() <= 5000, "the rendered diff is line-bounded (AC-13)");
+}
+
+#[test]
 fn a_hanging_renderer_times_out_and_falls_back() {
     let renderers = Renderers {
         markdown: vec!["sleep".into(), "30".into()],

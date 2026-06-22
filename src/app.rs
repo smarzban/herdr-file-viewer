@@ -189,10 +189,11 @@ struct LiveContent {
 
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        // Diff mode renders from git's diff text, not the file bytes — so a deleted or binary
-        // file still shows its diff (AC-9); other modes classify first (binary / size guards,
-        // AC-12/13). `Prepared::Binary` is inert for the diff path inside `render`.
-        let prepared = if mode == ViewMode::Diff {
+        // Both diff modes render from git's diff text, not the file bytes — so a deleted or
+        // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
+        // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
+        // `Prepared::Binary` is inert for the diff path inside `render`.
+        let prepared = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             Prepared::Binary
         } else {
             render::classify(&self.root, path)
@@ -415,5 +416,23 @@ mod tests {
         let r = default_renderers();
         assert!(r.syntax.iter().any(|a| a == "--color=always"), "bat color forced: {:?}", r.syntax);
         assert!(r.syntax.iter().any(|a| a == "--style=numbers"), "bat line numbers: {:?}", r.syntax);
+    }
+
+    #[test]
+    fn full_diff_renderer_adds_delta_line_numbers() {
+        // The full-file diff view (AC-11) is delta WITH a line-number gutter — that gutter is
+        // what makes it "the whole file with line numbers". The compact diff omits it.
+        let r = default_renderers();
+        assert_eq!(r.full_diff.first().map(String::as_str), Some("delta"), "full_diff uses delta: {:?}", r.full_diff);
+        assert!(
+            r.full_diff.iter().any(|a| a == "--line-numbers"),
+            "full_diff shows line numbers: {:?}",
+            r.full_diff
+        );
+        assert!(
+            !r.diff.iter().any(|a| a == "--line-numbers"),
+            "the compact diff does NOT add line numbers: {:?}",
+            r.diff
+        );
     }
 }
