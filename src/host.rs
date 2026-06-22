@@ -36,10 +36,13 @@ pub fn parse_context(json: Option<&str>, fallback_cwd: PathBuf) -> LaunchContext
     let raw: RawContext = json
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
+    // Ignore empty-string fields (a malformed host value) so they fall through to the next
+    // candidate / the process-cwd fallback rather than rooting at an empty path.
     let cwd = raw
         .focused_pane_cwd
-        .or(raw.workspace_cwd)
-        .or(raw.cwd)
+        .filter(|s| !s.is_empty())
+        .or(raw.workspace_cwd.filter(|s| !s.is_empty()))
+        .or(raw.cwd.filter(|s| !s.is_empty()))
         .map(PathBuf::from)
         .unwrap_or(fallback_cwd);
     LaunchContext {

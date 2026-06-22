@@ -62,3 +62,23 @@ fn workspace_cwd_is_the_fallback_when_no_focused_pane_cwd() {
     );
     assert_eq!(ctx.cwd, PathBuf::from("/ws"));
 }
+
+#[test]
+fn focused_pane_cwd_wins_over_a_co_present_legacy_cwd() {
+    // Precedence is the whole point of the change: the invoking pane's dir beats a bare `cwd`.
+    let ctx = parse_context(
+        Some(r#"{"focused_pane_cwd":"/a","cwd":"/b"}"#),
+        PathBuf::from("/fallback"),
+    );
+    assert_eq!(ctx.cwd, PathBuf::from("/a"));
+}
+
+#[test]
+fn an_empty_cwd_field_is_ignored_in_favor_of_the_fallback() {
+    // A malformed host value (empty string) must not root at an empty path.
+    let ctx = parse_context(
+        Some(r#"{"focused_pane_cwd":""}"#),
+        PathBuf::from("/fallback"),
+    );
+    assert_eq!(ctx.cwd, PathBuf::from("/fallback"));
+}
