@@ -23,6 +23,11 @@ use std::process::Command;
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+/// Unified-context window for a full-context (whole-file) diff: a value far larger than any
+/// real file, so every unchanged line is emitted as context around the changes. The render
+/// layer caps the result, so an enormous file's diff is still bounded (AC-13).
+const FULL_CONTEXT: &str = "-U1000000";
+
 /// A file's git status against the working tree (AC-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -147,19 +152,30 @@ pub fn changed_set(
 /// Raw unified diff text for one file against `baseline` (AC-9). Empty if unavailable.
 /// An untracked file (or any file in an unborn repo) is diffed against the empty tree so
 /// AC-9 still shows the new file's content rather than an empty pane.
-pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option<&str>) -> String {
+pub fn diff(
+    repo_root: &Path,
+    path: &Path,
+    baseline: Baseline,
+    base_hint: Option<&str>,
+    full_context: bool,
+) -> String {
     // Never resolve a path outside the root — no arbitrary file reads, and the viewer
     // does not navigate above its root (AC-N5).
     if !is_within_root(repo_root, path) {
         return String::new();
     }
+    // For the full-context (whole-file) diff, ask git for a very large unified-context window
+    // so every unchanged line is emitted as context around the changes; the default (3 lines)
+    // gives the compact hunks-only diff. The render layer still bounds the result (AC-13).
+    let unified = full_context.then_some(FULL_CONTEXT);
     // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
     // filenames reach git verbatim and their diffs are not silently empty.
     if is_untracked(repo_root, path) {
-        let mut cmd = git_command(
-            repo_root,
-            &["diff", "--no-ext-diff", "--no-textconv", "--no-index", "--no-color", "--", "/dev/null"],
-        );
+        let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-index", "--no-color"];
+        args.extend(unified);
+        args.push("--");
+        args.push("/dev/null");
+        let mut cmd = git_command(repo_root, &args);
         cmd.arg(path);
         return capture_stdout(cmd);
     }
@@ -169,10 +185,11 @@ pub fn diff(repo_root: &Path, path: &Path, baseline: Baseline, base_hint: Option
             base_fork_point(repo_root, base_hint).unwrap_or_else(|| head_or_empty_tree(repo_root))
         }
     };
-    let mut cmd = git_command(
-        repo_root,
-        &["diff", "--no-ext-diff", "--no-textconv", "--no-color", &against, "--"],
-    );
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
+    args.extend(unified);
+    args.push(&against);
+    args.push("--");
+    let mut cmd = git_command(repo_root, &args);
     cmd.arg(path);
     capture_stdout(cmd)
 }

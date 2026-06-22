@@ -55,8 +55,10 @@ pub trait GitService: Send + Sync {
     /// The set of files changed against `baseline` (drives the changed-only filter, AC-6,
     /// and is recomputed when the baseline toggles, AC-16).
     fn changed_set(&self, baseline: Baseline) -> BTreeMap<PathBuf, Status>;
-    /// Raw unified diff text for one repo-root-relative path against `baseline` (AC-9).
-    fn diff(&self, rel_path: &Path, baseline: Baseline) -> String;
+    /// Raw unified diff text for one repo-root-relative path against `baseline` (AC-9). With
+    /// `full_context`, git emits the whole file as context (for the full-file diff view);
+    /// otherwise it returns the compact hunks-only diff.
+    fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String;
 }
 
 /// The rendered content pane for one file: ingested text plus any non-fatal notices
@@ -204,9 +206,12 @@ impl Controller {
                     job = newer;
                 }
                 // The diff is read here, off the input thread, so a large/slow diff never
-                // blocks input (AC-23). Other modes don't need git.
-                let raw_diff = if job.mode == ViewMode::Diff && job.is_git {
-                    job.rel.as_deref().map(|rel| worker_git.diff(rel, job.baseline))
+                // blocks input (AC-23). Other modes don't need git. The full-file diff view
+                // asks git for whole-file context; the compact diff uses git's default.
+                let raw_diff = if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git
+                {
+                    let full = job.mode == ViewMode::FullDiff;
+                    job.rel.as_deref().map(|rel| worker_git.diff(rel, job.baseline, full))
                 } else {
                     None
                 };
@@ -370,7 +375,9 @@ impl Controller {
         }
         match node {
             Some(n) if n.kind == NodeKind::File => {
-                matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown | ViewMode::RawContent)
+                // Only prose wraps; diffs (compact and full-context) and code keep their lines
+                // so columns and the line-number gutter stay aligned.
+                matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown)
             }
             _ => false,
         }

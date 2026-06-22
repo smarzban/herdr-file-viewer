@@ -176,8 +176,8 @@ impl GitService for LiveGit {
     fn changed_set(&self, baseline: Baseline) -> BTreeMap<PathBuf, Status> {
         git::changed_set(&self.repo_root, baseline, self.base_hint.as_deref())
     }
-    fn diff(&self, rel_path: &Path, baseline: Baseline) -> String {
-        git::diff(&self.repo_root, rel_path, baseline, self.base_hint.as_deref())
+    fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String {
+        git::diff(&self.repo_root, rel_path, baseline, self.base_hint.as_deref(), full_context)
     }
 }
 
@@ -327,6 +327,9 @@ fn default_renderers() -> Renderers {
         ],
         // delta already colorizes piped output (its default), and has no `--color=always` flag.
         diff: vec!["delta".into()],
+        // The full-file diff view adds delta's line-number gutter, so the whole file is shown
+        // with its line numbers and the diff inline (the compact `diff` omits the gutter).
+        full_diff: vec!["delta".into(), "--line-numbers".into()],
         syntax: vec![
             "bat".into(),
             "--color=always".into(),

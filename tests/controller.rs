@@ -48,7 +48,7 @@ impl GitService for StubGit {
         self.changed_calls.lock().unwrap().push(baseline);
         self.changed.clone()
     }
-    fn diff(&self, _rel_path: &Path, _baseline: Baseline) -> String {
+    fn diff(&self, _rel_path: &Path, _baseline: Baseline, _full_context: bool) -> String {
         String::new()
     }
 }
@@ -134,16 +134,36 @@ fn toggle_changed_only_flips_in_a_repo() {
 fn cycle_view_advances_the_selected_files_mode_through_the_applicable_set() {
     // AC-11: the view-mode override steps through applicable_modes and wraps around.
     let dir = TempDir::new();
-    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
-    // Non-git → unchanged, non-markdown: applicable modes are [SyntaxContent, RawContent].
+    std::fs::write(dir.path().join("notes.md"), "# Title\n").unwrap();
+    // Non-git → unchanged markdown: applicable modes are [RenderedMarkdown, SyntaxContent].
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
 
-    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent), "default mode");
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::RenderedMarkdown), "markdown default");
     let fx = ctrl.handle(Intent::CycleView);
-    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::RawContent), "advances to the override");
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent), "advances to the override");
     assert!(fx.redraw);
     ctrl.handle(Intent::CycleView);
-    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent), "cycle wraps around");
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::RenderedMarkdown), "cycle wraps around");
+}
+
+#[test]
+fn cycle_view_on_a_changed_file_reaches_the_full_context_diff() {
+    // PR2 / AC-11: a changed file cycles Diff → FullDiff (whole file + line numbers + the diff
+    // inline) → SyntaxContent → wraps. The full-context diff sits right after the compact diff.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+    let git = StubGit { status: changed.clone(), changed, ..StubGit::default() };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::Diff), "a changed file defaults to diff");
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::FullDiff), "→ full-context diff");
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent), "→ syntax content");
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::Diff), "cycle wraps back to the compact diff");
 }
 
 #[test]
@@ -877,7 +897,7 @@ impl GitService for EvolvingGit {
         *n += 1;
         if *n <= 1 { self.first.clone() } else { self.rest.clone() }
     }
-    fn diff(&self, _p: &Path, _b: Baseline) -> String {
+    fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
         String::new()
     }
 }
