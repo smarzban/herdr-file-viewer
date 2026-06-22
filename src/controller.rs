@@ -405,6 +405,8 @@ impl Controller {
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll_at(col, row, WHEEL_STEP),
             MouseEventKind::ScrollUp => self.scroll_at(col, row, -WHEEL_STEP),
+            MouseEventKind::ScrollRight => self.hscroll_at(col, row, HSCROLL_STEP as i32),
+            MouseEventKind::ScrollLeft => self.hscroll_at(col, row, -(HSCROLL_STEP as i32)),
             MouseEventKind::Down(MouseButton::Left) => {
                 // A press on the divider begins a resize drag; otherwise wait for the release.
                 self.dragging_divider = matches!(self.hit_test(col, row), MouseRegion::Divider);
@@ -480,6 +482,18 @@ impl Controller {
                 Effects::redraw()
             }
             _ => Effects::noop(),
+        }
+    }
+
+    /// Horizontal wheel / trackpad swipe over the content pane scrolls it sideways, like the
+    /// `←`/`→` keys (for unwrapped long lines). Over the tree it does nothing — the tree has no
+    /// horizontal scroll. `scroll_content_h` clamps to `[0, widest − viewport]` (zero while
+    /// wrapping), so it is inert on wrapped prose, matching the keys.
+    fn hscroll_at(&mut self, col: u16, row: u16, delta: i32) -> Effects {
+        if matches!(self.hit_test(col, row), MouseRegion::Content) {
+            self.scroll_content_h(delta)
+        } else {
+            Effects::noop()
         }
     }
 

@@ -728,3 +728,32 @@ fn a_click_below_the_last_row_selects_nothing() {
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 12));
     assert_eq!(ctrl.tree().cursor(), before, "clicking the empty area below the tree is inert");
 }
+
+#[test]
+fn horizontal_wheel_scrolls_the_content_sideways() {
+    // ScrollLeft/ScrollRight (trackpad swipe / horizontal wheel) over the content pane scroll it
+    // sideways for unwrapped long lines — like the ←/→ keys. (Vertical wheel is covered above.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "code\n").unwrap(); // .rs → unwrapped, so hscroll applies
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(WideContent),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(!ctrl.view_state().wrap, "a .rs file is unwrapped, so horizontal scroll applies");
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "starts at the left edge");
+
+    // Wheel right over the content column (no focus change needed — scroll what's under the cursor).
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 5));
+    assert!(ctrl.view_state().content_hscroll > 0, "horizontal wheel-right scrolls the content right");
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollLeft, 50, 5));
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "wheel-left scrolls back to the start");
+
+    // Over the tree, horizontal wheel is inert (the tree has no horizontal scroll).
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 5, 5));
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "horizontal wheel over the tree does nothing");
+}

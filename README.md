@@ -152,11 +152,16 @@ The viewer is keyboard-first (AC-18); the mouse is additive and on by default:
 | **Double-click** a folder | Expand / collapse it |
 | **Double-click** a file | Open it in `$EDITOR` (same as `e`) |
 | **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
+| **Horizontal wheel / swipe** over the content | Scroll it sideways (terminal-dependent — see below) |
 | **Drag** the divider | Resize the tree / content split |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the
 viewer owns ordinary clicks — herdr reserves `Shift`+mouse for exactly this. (herdr forwards
 mouse events to the pane because the viewer requests capture.)
+
+**Horizontal mouse scroll is terminal-dependent** — it works only where your terminal emits
+horizontal-scroll events (`ScrollLeft` / `ScrollRight`); many terminals send nothing for a
+sideways trackpad swipe. The `←` / `→` keys always scroll the content sideways regardless.
 
 ### Opening in an editor
 
