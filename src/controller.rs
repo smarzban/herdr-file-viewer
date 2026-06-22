@@ -722,6 +722,13 @@ impl Controller {
     }
 
     fn toggle_focus(&mut self) -> Effects {
+        // While zoomed the tree is hidden, so there is nothing to switch focus to: keep focus
+        // pinned to the content pane (entering zoom set it there). Without this guard, Tab would
+        // move focus to the invisible tree and route j/k to its cursor — silently re-rendering a
+        // different file behind the full-screen content (review-gate R1, 4-model finding).
+        if self.zoomed {
+            return Effects::noop();
+        }
         self.focus = match self.focus {
             Focus::Tree => Focus::Content,
             Focus::Content => Focus::Tree,

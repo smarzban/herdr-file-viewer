@@ -61,6 +61,17 @@ fn narrow_content_focus_gives_content_full_width_and_hides_tree() {
 }
 
 #[test]
+fn zoom_overrides_narrow_layout_and_fills_with_content() {
+    // review-gate R1: zoom hides the tree even below the 80-col narrow threshold and with the
+    // tree focused — the content pane fills the frame regardless of width or focus.
+    let mut st = state(60, Focus::Tree);
+    st.zoomed = true;
+    let out = render(&st, 60, 20);
+    assert!(out.contains("fn main()"), "content fills the frame when zoomed, even narrow\n{out}");
+    assert!(!out.contains("scratch.log"), "the tree is hidden when zoomed, even narrow\n{out}");
+}
+
+#[test]
 fn wide_shows_both_columns_regardless_of_focus() {
     let out = render(&state(100, Focus::Tree), 100, 20);
     assert!(out.contains("scratch.log"), "tree column present at >= 80 cols\n{out}");
