@@ -208,11 +208,15 @@ pub fn diff(
     capture_stdout(cmd)
 }
 
-/// Build a `git -C <repo> <args>` command hardened for read-only use against an
-/// **untrusted** repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the
-/// index (AC-N2); `core.fsmonitor` / `core.hooksPath` are neutralized so a planted
-/// `.git/config` can't run a program during a query.
-fn git_command(repo_root: &Path, args: &[&str]) -> Command {
+/// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
+/// repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the index (AC-N2);
+/// `core.fsmonitor` / `core.hooksPath` are neutralized so a planted `.git/config` can't run a
+/// program during a query; and inherited repo-redirecting env (`GIT_DIR`/`GIT_WORK_TREE`/…) is
+/// dropped so queries resolve against `-C <dir>`, not a repository the viewer was launched
+/// against. **This is the single source of that hardening** — the Root Resolver
+/// ([`crate::root`]) builds its queries through this same function, so the guards cannot drift
+/// between the two.
+pub(crate) fn git_command(repo_root: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_OPTIONAL_LOCKS", "0")
         // Drop inherited repo-redirecting env so queries resolve against `-C <repo>`, not
@@ -394,5 +398,68 @@ fn classify_name_status(code: &str) -> Option<Status> {
         Some('D') => Some(Status::Deleted),
         Some('M' | 'T' | 'R' | 'C') => Some(Status::Modified),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shared hardened builder must apply *every* untrusted-repo guard. This is the
+    /// regression guard that keeps the Git Service and the Root Resolver — which now build
+    /// their queries through this one function — from silently dropping a protection (AC-N2).
+    #[test]
+    fn git_command_applies_every_untrusted_repo_guard() {
+        let cmd = git_command(Path::new("/some/repo"), &["status"]);
+
+        // CLI guards: -C <dir>, neutralized fsmonitor/hooks, attr-source pinned to empty tree.
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "-C"),
+            "runs with -C <dir>: {args:?}"
+        );
+        assert!(
+            args.contains(&"core.fsmonitor=false".to_string()),
+            "fsmonitor neutralized: {args:?}"
+        );
+        assert!(
+            args.contains(&"core.hooksPath=/dev/null".to_string()),
+            "hooks neutralized: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a.starts_with("--attr-source=")),
+            "attr-source pinned to the empty tree: {args:?}"
+        );
+
+        // GIT_OPTIONAL_LOCKS=0 is set; the repo-redirecting vars are scrubbed (env value None).
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "GIT_OPTIONAL_LOCKS" && v.as_deref() == Some("0")),
+            "optional locks disabled: {envs:?}"
+        );
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ] {
+            assert!(
+                envs.iter().any(|(k, v)| k == var && v.is_none()),
+                "{var} is scrubbed from the child env: {envs:?}"
+            );
+        }
     }
 }

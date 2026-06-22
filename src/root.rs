@@ -6,7 +6,6 @@
 
 use crate::context::LaunchContext;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The resolved root and git facts the Session Controller initializes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,29 +47,15 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
 }
 
 /// Run a read-only `git` query in `dir`; `Some(trimmed stdout)` on success, else `None`.
-/// Hardened like the Git Service runner: no optional index locks, repo-controlled
-/// `core.fsmonitor` / `core.hooksPath` neutralized, and inherited repo-redirecting env
-/// (`GIT_DIR`/`GIT_WORK_TREE`/…) dropped so the *root* resolves against `dir`, not a
-/// repository the viewer happened to be launched against (the root may be untrusted).
+/// Built through the Git Service's shared [`crate::git::git_command`] so the untrusted-repo
+/// hardening (no optional index locks, neutralized `core.fsmonitor`/`core.hooksPath`, dropped
+/// repo-redirecting env so the *root* resolves against `dir`) is applied identically here and
+/// in the Git Service — it cannot drift between the two. The shared builder also pins
+/// `--attr-source`, so root resolution (like the rest of the Git Service) needs git ≥ 2.40;
+/// an older git makes these queries fail and the directory degrades to a plain, non-git
+/// browser (AC-26) rather than a half-working repo view.
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        .args(args)
-        .output()
-        .ok()?;
+    let out = crate::git::git_command(dir, args).output().ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
