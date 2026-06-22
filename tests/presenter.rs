@@ -38,6 +38,7 @@ fn sample_state() -> ViewState {
         content_hscroll: 0,
         wrap: false,
         split_pct: 40,
+        zoomed: false,
     }
 }
 
@@ -271,6 +272,32 @@ fn geometry_matches_the_wide_two_column_layout() {
     assert!(c.x > t.x + t.width, "the content column is to the right of the tree");
     assert!(g.divider_x.is_some(), "a wide layout has a draggable divider");
     assert_eq!((g.area_x, g.area_width), (0, 100));
+}
+
+#[test]
+fn zoomed_layout_hides_the_tree_and_fills_with_content() {
+    // The `z` zoom toggle hides the tree so the content pane fills the whole frame — even at a
+    // wide width that would normally show both columns.
+    let mut state = sample_state();
+    state.zoomed = true;
+    let out = render(&state, 100, 24);
+    assert!(out.contains("fn main()"), "content fills the frame when zoomed\n{out}");
+    // No tree-only rows survive: the directory row and a tree-only file are gone.
+    assert!(!out.contains("scratch.log"), "the tree is hidden when zoomed\n{out}");
+    assert!(!out.contains("added.rs"), "no tree rows are drawn when zoomed\n{out}");
+}
+
+#[test]
+fn geometry_is_content_only_when_zoomed() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let mut st = sample_state();
+    st.zoomed = true;
+    // Even at a wide width (which normally shows both columns), zoom draws content only.
+    let g = geometry(Rect { x: 0, y: 0, width: 100, height: 24 }, &st);
+    assert!(g.tree_inner.is_none(), "no tree interior when zoomed");
+    assert!(g.content_inner.is_some(), "the content pane fills the frame when zoomed");
+    assert!(g.divider_x.is_none(), "no divider when the tree is hidden");
 }
 
 #[test]

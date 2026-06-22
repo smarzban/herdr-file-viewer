@@ -151,6 +151,9 @@ pub struct Controller {
     /// User override forcing content wrap on regardless of view mode (the `w` toggle), so long
     /// lines in code/diffs can be wrapped on demand. `false` ⇒ the per-mode default applies.
     wrap_override: bool,
+    /// Hide the tree so the content pane fills the frame (the `z` zoom toggle). Pure layout
+    /// state — the selection and rendered content are unchanged.
+    zoomed: bool,
     tree: TreeModel,
     /// Changed-set vs the active baseline, cached; recomputed on a baseline toggle (AC-16).
     changed: BTreeMap<PathBuf, Status>,
@@ -238,6 +241,7 @@ impl Controller {
             content_height: 0,
             split_pct: SPLIT_DEFAULT,
             wrap_override: false,
+            zoomed: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
             content: Text::raw(""),
@@ -270,6 +274,9 @@ impl Controller {
     }
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+    pub fn zoomed(&self) -> bool {
+        self.zoomed
     }
     pub fn tree(&self) -> &TreeModel {
         &self.tree
@@ -350,6 +357,7 @@ impl Controller {
             content_hscroll: self.content_hscroll,
             wrap,
             split_pct: self.split_pct,
+            zoomed: self.zoomed,
         }
     }
 
@@ -389,6 +397,7 @@ impl Controller {
             Intent::ShrinkTree => self.resize_split(-(SPLIT_STEP as i16)),
             Intent::GrowTree => self.resize_split(SPLIT_STEP as i16),
             Intent::ToggleWrap => self.toggle_wrap(),
+            Intent::ToggleZoom => self.toggle_zoom(),
             Intent::Refresh => self.refresh(),
             Intent::Close => Effects { quit: true, ..Default::default() },
         }
@@ -713,10 +722,27 @@ impl Controller {
     }
 
     fn toggle_focus(&mut self) -> Effects {
+        // While zoomed the tree is hidden, so there is nothing to switch focus to: keep focus
+        // pinned to the content pane (entering zoom set it there). Without this guard, Tab would
+        // move focus to the invisible tree and route j/k to its cursor — silently re-rendering a
+        // different file behind the full-screen content (review-gate R1, 4-model finding).
+        if self.zoomed {
+            return Effects::noop();
+        }
         self.focus = match self.focus {
             Focus::Tree => Focus::Content,
             Focus::Content => Focus::Tree,
         };
+        Effects::redraw()
+    }
+
+    /// Toggle zoom: hide the tree so the content pane fills the frame, and back. Entering zoom
+    /// moves focus to the content pane so up/down keys scroll the now-full-screen file; leaving
+    /// it returns focus to the tree (back to picking files). Pure layout state — the selection
+    /// and rendered content are unchanged, so no re-render is dispatched.
+    fn toggle_zoom(&mut self) -> Effects {
+        self.zoomed = !self.zoomed;
+        self.focus = if self.zoomed { Focus::Content } else { Focus::Tree };
         Effects::redraw()
     }
 
