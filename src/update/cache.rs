@@ -82,13 +82,22 @@ mod tests {
     #[test]
     fn should_check_respects_the_24h_window() {
         let day = CHECK_INTERVAL_SECS;
-        assert!(should_check(1_000 + day, 1_000), "exactly 24h later → check");
+        assert!(
+            should_check(1_000 + day, 1_000),
+            "exactly 24h later → check"
+        );
         assert!(should_check(1_000 + day + 1, 1_000), "past 24h → check");
         assert!(!should_check(1_000 + day - 1, 1_000), "within 24h → skip");
-        assert!(!should_check(0, 0), "zero elapsed → skip (not a check trigger)");
+        assert!(
+            !should_check(0, 0),
+            "zero elapsed → skip (not a check trigger)"
+        );
         // First run carries no cache, so `decide` checks against last=0 with the real (large)
         // clock — which is well past the window.
-        assert!(should_check(1_700_000_000, 0), "real clock vs last=0 → check");
+        assert!(
+            should_check(1_700_000_000, 0),
+            "real clock vs last=0 → check"
+        );
         assert!(
             should_check(100, 9_999),
             "clock went backwards → check, never overflow"
