@@ -229,9 +229,9 @@ impl Controller {
                     } else {
                         None
                     };
-                // A renderer panic must not kill the worker (rendering would stop forever) nor
-                // fire the global panic hook from this thread (it would reset the main thread's
-                // terminal mid-session). Contain it and surface a placeholder instead.
+                // Contain a renderer panic so the worker survives — otherwise the thread would
+                // die and rendering would stop for the rest of the session. The unwind is caught
+                // here and a placeholder is surfaced in place of the failed render.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     content.render(&job.path, job.mode, raw_diff.as_deref())
                 }))

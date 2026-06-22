@@ -34,12 +34,23 @@ impl ContentProvider for SlowContent {
     }
 }
 
-/// A renderer that always panics — to prove the worker thread *contains* the panic
-/// (`catch_unwind`) and surfaces a placeholder instead of dying or crashing the app.
-struct PanicContent;
-impl ContentProvider for PanicContent {
-    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
-        panic!("renderer blew up");
+/// A renderer that panics only on `panic_file` and renders normally otherwise — so a test can
+/// prove BOTH that a panic is contained (the panic file → placeholder) AND that the worker
+/// survives it (a *different* file still renders real content afterwards, which can only arrive
+/// if the worker thread lived through the panic).
+struct PanicOnContent {
+    panic_file: &'static str,
+}
+impl ContentProvider for PanicOnContent {
+    fn render(&self, path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name == self.panic_file {
+            panic!("renderer blew up on {name}");
+        }
+        RenderResult {
+            content: Text::raw(format!("rendered:{name}")),
+            notices: Vec::new(),
+        }
     }
 }
 
@@ -242,27 +253,25 @@ fn a_superseded_render_does_not_overwrite_a_newer_selection() {
 }
 
 #[test]
-fn a_panicking_renderer_is_contained_and_keeps_the_worker_alive() {
+fn a_panicking_renderer_is_contained_and_the_worker_survives() {
     // AC-23 resilience: a renderer panic must not kill the worker (rendering would stop
-    // forever) nor crash the app — it is caught and a placeholder is surfaced instead.
-    // (The deliberate panic prints to stderr; that is expected — the point is that nothing
-    // unwinds out of the worker.)
+    // forever) nor crash the app. (The deliberate panic prints to stderr; that is expected.)
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
     std::fs::write(dir.path().join("b.rs"), "2\n").unwrap();
     let components = Components {
         git: Arc::new(NoGit),
-        content: Box::new(PanicContent),
+        content: Box::new(PanicOnContent { panic_file: "b.rs" }),
         editor: Box::new(NoEditor),
     };
     let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
 
-    // Select a file → dispatches a render whose worker render() panics.
-    ctrl.handle(Intent::NavDown);
+    // Select b.rs → its render() panics; the worker must catch it and surface a placeholder.
+    ctrl.handle(Intent::NavDown); // b.rs
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         ctrl.poll();
-        if flatten(ctrl.content()).contains("content unavailable") {
+        if flatten(ctrl.content()).contains("[content unavailable — renderer error]") {
             break;
         }
         assert!(
@@ -271,23 +280,20 @@ fn a_panicking_renderer_is_contained_and_keeps_the_worker_alive() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        flatten(ctrl.content()).contains("[content unavailable — renderer error]"),
-        "a panicking renderer surfaces a placeholder, not a crash"
-    );
 
-    // The worker survived the first panic: a second selection still gets processed (it panics
-    // again → another placeholder), proving the worker loop did not break out on the panic.
-    ctrl.handle(Intent::NavUp);
+    // Now select a.rs → a NORMAL render. Its DISTINCT content can only arrive if the worker
+    // survived the earlier panic — a dead worker would leave the placeholder showing forever.
+    // This (not the placeholder, which was already on screen) is what proves survival.
+    ctrl.handle(Intent::NavUp); // a.rs renders normally
     let deadline2 = Instant::now() + Duration::from_secs(5);
     loop {
         ctrl.poll();
-        if flatten(ctrl.content()).contains("content unavailable") {
+        if flatten(ctrl.content()) == "rendered:a.rs" {
             break;
         }
         assert!(
             Instant::now() < deadline2,
-            "the worker did not survive the first panic (no result for the second selection)"
+            "the worker did not survive the panic (the post-panic render never arrived)"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
