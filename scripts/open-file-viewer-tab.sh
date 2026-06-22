@@ -40,7 +40,10 @@ fi
 case "$decision" in
   "SWITCHTAB "*)
     tid="${decision#SWITCHTAB }"
-    exec "$herdr_bin" tab focus "$tid"
+    # If the target tab vanished between the pane-list snapshot and now (a race — the viewer tab
+    # was closed in between), fall back to opening a fresh viewer tab rather than leaving the
+    # keypress a silent no-op. (No `exec`, so the `||` fallback can run.)
+    "$herdr_bin" tab focus "$tid" || open_tab
     ;;
   "FOCUS "*)
     pid="${decision#FOCUS }"
