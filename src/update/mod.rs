@@ -5,4 +5,5 @@
 //! into this binary, and — if behind — surfaces a one-line banner. Disabled entirely by the
 //! `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
 
+pub mod cache;
 pub mod version;
