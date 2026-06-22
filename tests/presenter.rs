@@ -509,11 +509,7 @@ fn update_banner_renders_as_a_bottom_status_line() {
         out.contains("fn main()"),
         "content still shows above the banner\n{out}"
     );
-    let last = out
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
-        .unwrap_or("");
+    let last = out.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("");
     assert!(
         last.contains("u to dismiss"),
         "banner is the bottom line: {last:?}"

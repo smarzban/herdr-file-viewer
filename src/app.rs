@@ -72,6 +72,9 @@ pub fn run() -> io::Result<()> {
             editor,
         },
     );
+    // Kick off the once-a-day update check (off the UI thread; disabled by
+    // HERDR_FILE_VIEWER_NO_UPDATE_CHECK). The banner, if any, appears on a later draw.
+    controller.set_update(crate::update::start_default());
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
