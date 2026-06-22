@@ -16,17 +16,25 @@
 use crate::root::Resolved;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Unified-context window for a full-context (whole-file) diff: a value far larger than any
-/// real file, so every unchanged line is emitted as context around the changes. The render
-/// layer caps the result, so an enormous file's diff is still bounded (AC-13).
+/// real file, so every unchanged line is emitted as context around the changes. The output is
+/// bounded by [`MAX_DIFF_BYTES`] (and the render layer's AC-13 cap), so an enormous file's
+/// diff is never buffered whole.
 const FULL_CONTEXT: &str = "-U1000000";
+
+/// Upper bound on bytes captured from a `git diff`, so a full-context diff of a huge file (or
+/// an untracked whole-file diff) cannot buffer the entire file into memory before the render
+/// layer's display cap (AC-13) runs. Comfortably above that display cap (render's ~1 MB), so
+/// it never reduces what the user sees — only the transient buffer and git's work.
+const MAX_DIFF_BYTES: u64 = 4 * 1024 * 1024; // 4 MB
 
 /// A file's git status against the working tree (AC-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,12 +227,31 @@ fn git_command(repo_root: &Path, args: &[&str]) -> Command {
     cmd
 }
 
-/// Capture a git command's stdout (lossy) regardless of exit code. `git diff` exits 1
-/// under `--no-index` *because* it found differences, so we cannot gate on success.
+/// Capture a git command's stdout (lossy) regardless of exit code, bounded to
+/// [`MAX_DIFF_BYTES`]. `git diff` exits 1 under `--no-index` *because* it found differences,
+/// so we cannot gate on success.
+///
+/// The read is bounded so a full-context diff (`-U1000000`) of a huge file — or an untracked
+/// whole-file diff — cannot buffer the entire file into memory before the render layer's cap
+/// (AC-13) runs: we read at most `MAX_DIFF_BYTES`, then kill git (which is otherwise blocked
+/// writing to the now-unread pipe). The render layer still truncates the visible diff and
+/// shows its notice; this bound is comfortably above that display cap, so it only limits the
+/// transient buffer (and git's work), never what the user sees.
 fn capture_stdout(mut cmd: Command) -> String {
-    cmd.output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let mut buf = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        let _ = out.take(MAX_DIFF_BYTES).read_to_end(&mut buf);
+    }
+    // We may have stopped reading before git finished (output exceeded the cap); kill it so a
+    // git blocked on the full pipe is released, and reap it to avoid a zombie. The exit status
+    // is irrelevant here (see above), so it is ignored.
+    let _ = child.kill();
+    let _ = child.wait();
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Run a read-only `git` command, returning raw stdout bytes (for `-z` parsing).
