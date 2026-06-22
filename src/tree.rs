@@ -85,10 +85,6 @@ impl TreeModel {
         self.markers = status.clone();
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -251,15 +247,6 @@ impl TreeModel {
     pub fn collapse(&mut self, path: &Path) {
         self.expanded.remove(path);
         self.clamp_cursor();
-    }
-
-    /// Toggle a directory's expansion.
-    pub fn toggle(&mut self, path: &Path) {
-        if self.expanded.contains(path) {
-            self.collapse(path);
-        } else {
-            self.expand(path);
-        }
     }
 
     /// Set the cursor to an absolute visible-row index, clamped to the visible range (used by
