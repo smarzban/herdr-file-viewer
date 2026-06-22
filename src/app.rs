@@ -176,8 +176,8 @@ impl GitService for LiveGit {
     fn changed_set(&self, baseline: Baseline) -> BTreeMap<PathBuf, Status> {
         git::changed_set(&self.repo_root, baseline, self.base_hint.as_deref())
     }
-    fn diff(&self, rel_path: &Path, baseline: Baseline) -> String {
-        git::diff(&self.repo_root, rel_path, baseline, self.base_hint.as_deref())
+    fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String {
+        git::diff(&self.repo_root, rel_path, baseline, self.base_hint.as_deref(), full_context)
     }
 }
 
@@ -189,10 +189,11 @@ struct LiveContent {
 
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        // Diff mode renders from git's diff text, not the file bytes — so a deleted or binary
-        // file still shows its diff (AC-9); other modes classify first (binary / size guards,
-        // AC-12/13). `Prepared::Binary` is inert for the diff path inside `render`.
-        let prepared = if mode == ViewMode::Diff {
+        // Both diff modes render from git's diff text, not the file bytes — so a deleted or
+        // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
+        // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
+        // `Prepared::Binary` is inert for the diff path inside `render`.
+        let prepared = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             Prepared::Binary
         } else {
             render::classify(&self.root, path)
@@ -327,6 +328,9 @@ fn default_renderers() -> Renderers {
         ],
         // delta already colorizes piped output (its default), and has no `--color=always` flag.
         diff: vec!["delta".into()],
+        // The full-file diff view adds delta's line-number gutter, so the whole file is shown
+        // with its line numbers and the diff inline (the compact `diff` omits the gutter).
+        full_diff: vec!["delta".into(), "--line-numbers".into()],
         syntax: vec![
             "bat".into(),
             "--color=always".into(),
@@ -412,5 +416,23 @@ mod tests {
         let r = default_renderers();
         assert!(r.syntax.iter().any(|a| a == "--color=always"), "bat color forced: {:?}", r.syntax);
         assert!(r.syntax.iter().any(|a| a == "--style=numbers"), "bat line numbers: {:?}", r.syntax);
+    }
+
+    #[test]
+    fn full_diff_renderer_adds_delta_line_numbers() {
+        // The full-file diff view (AC-11) is delta WITH a line-number gutter — that gutter is
+        // what makes it "the whole file with line numbers". The compact diff omits it.
+        let r = default_renderers();
+        assert_eq!(r.full_diff.first().map(String::as_str), Some("delta"), "full_diff uses delta: {:?}", r.full_diff);
+        assert!(
+            r.full_diff.iter().any(|a| a == "--line-numbers"),
+            "full_diff shows line numbers: {:?}",
+            r.full_diff
+        );
+        assert!(
+            !r.diff.iter().any(|a| a == "--line-numbers"),
+            "the compact diff does NOT add line numbers: {:?}",
+            r.diff
+        );
     }
 }

@@ -18,8 +18,9 @@ hand-off to an *external* editor — the viewer itself only reads.
   changed-files-only filter; and a baseline you can switch between the merge-base of your
   branch and `HEAD`.
 - **The right view per file** — a changed file shows its **diff**; a markdown file renders;
-  anything else is shown as syntax-highlighted content with line numbers. Cycle the view to
-  override.
+  anything else is shown as syntax-highlighted content with line numbers. Cycle the view
+  (`v`) to override — a changed file can also show a **full-file diff**: the whole file with
+  line numbers and the diff shown inline.
 - **Navigable content** — scroll the content pane in all four directions, toggle line
   wrapping, resize the tree/content split, or zoom (`z`) to hide the tree and read a file
   full-screen; the layout reflows when the pane is resized.
