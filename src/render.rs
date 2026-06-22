@@ -1,9 +1,9 @@
 //! Content Renderer — produce the content-pane text for a file, with safety guards.
 //!
 //! The primary trust boundary: all file bytes are untrusted. This module bounds size
-//! (AC-13), refuses to emit raw bytes for binary files (AC-12), and (in later tasks)
-//! neutralizes control/escape sequences (AC-27) and delegates styling to external CLIs
-//! with a plain-text fallback (AC-24/25). Reads only, never writes (AC-N1).
+//! (AC-13), refuses to emit raw bytes for binary files (AC-12), neutralizes control/escape
+//! sequences (AC-27), and delegates styling to external CLIs with a plain-text fallback
+//! (AC-24/25). Reads only, never writes (AC-N1).
 
 use crate::view_policy::ViewMode;
 use ansi_to_tui::IntoText;
