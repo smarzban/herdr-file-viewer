@@ -61,6 +61,54 @@ pub fn launch_decision(pane_list_json: &str) -> String {
     }
 }
 
+/// Decide the launcher action for the **tab** variant (`scripts/open-file-viewer-tab.sh`),
+/// returning one line: `OPEN`, `SWITCHTAB <tab_id>`, `FOCUS <pane_id>`, or `CLOSE <pane_id>`.
+///
+/// Like [`launch_decision`] but tab-scoped: a `"Files"` pane in *another* tab is **switched to**
+/// (`herdr tab focus <tab_id>`) rather than duplicated — the idempotency that makes a single
+/// keystroke reach the one viewer wherever it lives.
+///
+/// - Unparseable JSON, or no focused pane (current tab unknown) → `OPEN`.
+/// - A `"Files"` pane in the **focused** tab: `CLOSE` it when it *is* the focused pane (toggle
+///   off — herdr auto-closes the emptied tab), otherwise `FOCUS` it in place.
+/// - Else a `"Files"` pane in **any other** tab: `SWITCHTAB` to its tab.
+/// - Else `OPEN`.
+/// - A pane/tab id that is not flag-safe is never emitted (→ `OPEN`), so a host-supplied id can
+///   never option-inject when the launcher passes it to `herdr pane`/`herdr tab`.
+pub fn launch_decision_tab(pane_list_json: &str) -> String {
+    let Ok(list) = serde_json::from_str::<PaneList>(pane_list_json) else {
+        return "OPEN".to_string();
+    };
+    let panes = &list.result.panes;
+    let Some(focused) = panes.iter().find(|p| p.focused) else {
+        return "OPEN".to_string();
+    };
+    let is_viewer = |p: &&Pane| p.label.as_deref() == Some("Files");
+
+    // Prefer a viewer in the focused tab (toggle/focus in place) over one elsewhere.
+    if let Some(here) = panes
+        .iter()
+        .find(|p| is_viewer(p) && p.tab_id.as_deref() == focused.tab_id.as_deref())
+    {
+        let Some(id) = here.pane_id.as_deref().filter(|id| is_flag_safe(id)) else {
+            return "OPEN".to_string();
+        };
+        return if Some(id) == focused.pane_id.as_deref() {
+            format!("CLOSE {id}")
+        } else {
+            format!("FOCUS {id}")
+        };
+    }
+
+    // Otherwise switch to a viewer living in another tab, by its (validated) tab id.
+    if let Some(elsewhere) = panes.iter().find(is_viewer)
+        && let Some(tab) = elsewhere.tab_id.as_deref().filter(|t| is_flag_safe(t))
+    {
+        return format!("SWITCHTAB {tab}");
+    }
+    "OPEN".to_string()
+}
+
 /// A pane id is safe to place in an argv iff it is a non-empty token of `[A-Za-z0-9_:.-]` that
 /// does not start with `-` (which would option-inject). Mirrors `host::is_safe_pane_id`'s
 /// anti-option-injection intent, but also allows `:` and `.` because herdr pane ids are
@@ -133,5 +181,61 @@ mod tests {
         assert!(!is_flag_safe("-rf"));
         assert!(!is_flag_safe(""));
         assert!(!is_flag_safe("a b"));
+    }
+
+    // ---- tab launcher (`launch_decision_tab`) -----------------------------------------
+
+    #[test]
+    fn tab_no_files_anywhere_opens() {
+        let j = list(&[pane("wE:p1", "", true, "wE:t1")]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_viewer_focused_closes() {
+        // On the viewer's own tab with it focused → toggle off (close the pane; herdr auto-
+        // closes the now-empty tab).
+        let j = list(&[pane("wE:p1", "", false, "wE:t1"), pane("wE:pD", "Files", true, "wE:t4")]);
+        assert_eq!(launch_decision_tab(&j), "CLOSE wE:pD");
+    }
+
+    #[test]
+    fn tab_viewer_in_another_tab_switches_to_that_tab() {
+        // THE key difference from the pane launcher: a viewer in a different tab is switched to
+        // (by tab id), not duplicated.
+        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "wE:t4")]);
+        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wE:t4");
+    }
+
+    #[test]
+    fn tab_viewer_in_current_tab_unfocused_is_focused() {
+        // Edge: the viewer was split into the current tab and isn't focused → focus it in place.
+        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "wE:t1")]);
+        assert_eq!(launch_decision_tab(&j), "FOCUS wE:pD");
+    }
+
+    #[test]
+    fn tab_no_focused_pane_opens() {
+        let j = list(&[pane("wE:pD", "Files", false, "wE:t4")]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_unsafe_tab_id_is_never_emitted() {
+        // A tab id that could option-inject `herdr tab focus <id>` must degrade to OPEN.
+        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "-rf")]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_unsafe_pane_id_is_never_emitted() {
+        let j = list(&[pane("wE:p1", "", false, "wE:t4"), pane("-rf", "Files", true, "wE:t4")]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_garbage_json_opens() {
+        assert_eq!(launch_decision_tab("not json"), "OPEN");
+        assert_eq!(launch_decision_tab(""), "OPEN");
     }
 }
