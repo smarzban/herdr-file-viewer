@@ -756,11 +756,20 @@ impl Controller {
     }
 
     /// The pane regained focus (the run loop forwards herdr's focus events): re-read git state
-    /// so external changes show in the tree, but do NOT re-render the content — re-rendering on
-    /// every focus change would reset the scroll. The fresh status repaints on the next draw;
-    /// the content re-renders on the next selection (or an explicit `r`). No-op without a repo.
+    /// so external changes show in the tree. No-op without a repo (AC-26) — so an external
+    /// change to a non-git directory costs nothing. In **changed-only** mode the refresh
+    /// re-filters the visible list, which can move the cursor to a different file; if the
+    /// selection actually changed, re-render so the content pane matches the highlighted row —
+    /// otherwise the content (and its scroll) is left untouched, the common case.
     pub fn handle_focus_gained(&mut self) -> Effects {
+        if !self.is_git_repo {
+            return Effects::noop();
+        }
+        let before = self.tree.selected().map(|n| n.path);
         self.refresh_git_state();
+        if self.tree.selected().map(|n| n.path) != before {
+            self.dispatch_render();
+        }
         Effects::redraw()
     }
 
