@@ -15,7 +15,7 @@ use crate::presenter::{self, ViewState};
 use crate::render::{self, Prepared, Renderers};
 use crate::view_policy::ViewMode;
 use crate::{host, input, root};
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -61,7 +61,20 @@ pub fn run() -> io::Result<()> {
     );
 
     let mut terminal = ratatui::try_init()?;
+    // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
+    // pane that requests capture, while reserving Shift+mouse for the terminal's own
+    // selection/copy. Best-effort so a terminal without mouse support still runs.
+    let _ = execute!(io::stdout(), EnableMouseCapture);
+    // ratatui's panic hook restores the terminal but doesn't know we enabled mouse capture, so
+    // chain a disable in front of it — otherwise a panic would leave the host terminal stuck in
+    // mouse-reporting mode.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        prev_hook(info);
+    }));
     let outcome = event_loop(&mut terminal, &mut controller);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::try_restore()?;
     outcome
 }
@@ -78,8 +91,10 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 let view: ViewState = controller.view_state();
                 let (cw, ch) = presenter::draw(frame, &view);
                 // Feed the drawn content viewport back so content scrolling can be clamped to
-                // it on the next intent.
+                // it on the next intent, and the hit-test geometry so a mouse event maps to the
+                // live layout.
                 controller.set_content_viewport(cw, ch);
+                controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
             })?;
             dirty = false;
         }
@@ -108,6 +123,16 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     }
                     if fx.quit {
                         return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
+                // Mouse input (capture is enabled in `run`): clicks select / activate, the
+                // wheel scrolls, dragging the divider resizes. It never quits the viewer.
+                Event::Mouse(me) => {
+                    let fx = controller.handle_mouse(me);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
                     }
                     dirty |= fx.redraw;
                 }
@@ -220,16 +245,22 @@ impl Spawner for ProcessSpawner {
     }
 }
 
-/// Leave raw mode + the alternate screen so an external editor owns a clean terminal.
+/// Leave raw mode + the alternate screen so an external editor owns a clean terminal. Mouse
+/// capture is dropped too: otherwise our capture mode leaks into the editor, which would see
+/// raw mouse escape sequences instead of normal input.
 fn suspend_tui() -> io::Result<()> {
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)
 }
 
-/// Re-enter raw mode + the alternate screen after the editor returns.
+/// Re-enter raw mode + the alternate screen after the editor returns, and re-arm mouse capture
+/// for the viewer (best-effort, matching `run`'s setup).
 fn resume_tui() -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    let _ = execute!(io::stdout(), EnableMouseCapture);
+    Ok(())
 }
 
 /// Resolve glow's `-s` style argument: the bundled palette style if it ships in the

@@ -260,6 +260,13 @@ impl TreeModel {
         }
     }
 
+    /// Set the cursor to an absolute visible-row index, clamped to the visible range (used by
+    /// a mouse click that selects the row it landed on).
+    pub fn set_cursor(&mut self, idx: usize) {
+        let len = self.visible_nodes().len();
+        self.cursor = if len == 0 { 0 } else { idx.min(len - 1) };
+    }
+
     /// Move the cursor by `delta` rows, clamped to the visible range.
     pub fn move_cursor(&mut self, delta: isize) {
         let len = self.visible_nodes().len();

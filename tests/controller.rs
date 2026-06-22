@@ -10,10 +10,12 @@ use common::TempDir;
 use herdr_file_viewer::controller::{
     Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
 };
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
-use herdr_file_viewer::presenter::Focus;
+use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::view_policy::ViewMode;
+use ratatui::layout::Rect;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
 use std::io;
@@ -557,4 +559,201 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     }
     walk(root, &mut out);
     out
+}
+
+// ---- mouse (AC-18 is keyboard-first; mouse is additive) -------------------------------
+
+fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+    MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE }
+}
+
+/// A standard wide two-column layout: tree interior at x=1,y=1 (so visible node `i` is at row
+/// `1 + i`), content interior at x=41, and the draggable divider at column 40, over a 100-wide
+/// pane anchored at x=0.
+fn wide_geometry() -> PaneGeometry {
+    PaneGeometry {
+        area_x: 0,
+        area_width: 100,
+        tree_inner: Some(Rect { x: 1, y: 1, width: 38, height: 20 }),
+        content_inner: Some(Rect { x: 41, y: 1, width: 58, height: 20 }),
+        divider_x: Some(40),
+    }
+}
+
+#[test]
+fn left_click_selects_the_tree_row_it_lands_on() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+
+    // Row 3 = tree_inner.y (1) + index 2 → selects the third visible node and focuses the tree.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
+    assert_eq!(ctrl.tree().cursor(), 2, "clicking row 3 selects visible node index 2");
+    assert_eq!(ctrl.focus(), Focus::Tree, "a tree click focuses the tree");
+    assert!(fx.redraw);
+}
+
+#[test]
+fn left_click_in_the_content_column_focuses_it() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 5));
+    assert_eq!(ctrl.focus(), Focus::Content, "clicking the content column focuses it");
+}
+
+#[test]
+fn double_click_a_folder_toggles_expansion() {
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "only the collapsed folder is visible");
+
+    // Two rapid clicks on row 1 (the folder): the first selects, the second (double) expands.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    assert_eq!(
+        ctrl.tree().visible_nodes().len(),
+        2,
+        "double-clicking the folder expands it to reveal its child"
+    );
+}
+
+#[test]
+fn double_click_a_file_hands_off_to_the_editor_single_click_does_not() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, opened) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1)); // single → select only
+    assert!(opened.lock().unwrap().is_empty(), "a single click does not open the editor");
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1)); // double → editor
+    let opened = opened.lock().unwrap();
+    assert_eq!(opened.len(), 1, "double-clicking a file hands it off to the editor");
+    assert!(opened[0].ends_with("a.txt"));
+}
+
+#[test]
+fn wheel_scrolls_the_pane_under_the_cursor() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll = 40
+    ctrl.set_pane_geometry(wide_geometry());
+
+    // Over the content column → scrolls the content by WHEEL_STEP (3) per notch.
+    assert_eq!(ctrl.content_scroll(), 0);
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(ctrl.content_scroll(), 3, "wheel-down over content scrolls it down");
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert_eq!(ctrl.content_scroll(), 0, "wheel-up scrolls it back to the top");
+}
+
+#[test]
+fn wheel_over_the_tree_moves_the_selection() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().cursor(), 0);
+
+    // The tree does not scroll independently, so the wheel moves the selection (its equivalent).
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5));
+    assert_eq!(ctrl.tree().cursor(), 1, "wheel-down over the tree moves the selection down");
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 5));
+    assert_eq!(ctrl.tree().cursor(), 0, "wheel-up moves it back up");
+}
+
+#[test]
+fn dragging_the_divider_resizes_the_split() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry()); // divider at col 40, pane x=0 width=100
+
+    assert_eq!(ctrl.view_state().split_pct, 40, "default split");
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0)); // grab the divider
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 0)); // drag right
+    assert_eq!(ctrl.view_state().split_pct, 60, "the divider tracks the cursor → 60% tree");
+
+    // Releasing ends the drag; a later move is not a resize.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 60, 0));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 0));
+    assert_eq!(ctrl.view_state().split_pct, 60, "no drag in progress → no resize");
+}
+
+#[test]
+fn shift_mouse_is_left_to_the_terminal_for_selection() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    let before = ctrl.tree().cursor();
+
+    let ev = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 6,
+        row: 2,
+        modifiers: KeyModifiers::SHIFT,
+    };
+    let fx = ctrl.handle_mouse(ev);
+    assert_eq!(ctrl.tree().cursor(), before, "Shift+click is the terminal's selection, not ours");
+    assert!(!fx.redraw && !fx.quit, "Shift+mouse is a no-op for the viewer");
+}
+
+#[test]
+fn a_click_below_the_last_row_selects_nothing() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    let before = ctrl.tree().cursor();
+
+    // Row 12 maps to index 11, past the 2 visible nodes → no selection change.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 12));
+    assert_eq!(ctrl.tree().cursor(), before, "clicking the empty area below the tree is inert");
+}
+
+#[test]
+fn horizontal_wheel_scrolls_the_content_sideways() {
+    // ScrollLeft/ScrollRight (trackpad swipe / horizontal wheel) over the content pane scroll it
+    // sideways for unwrapped long lines — like the ←/→ keys. (Vertical wheel is covered above.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "code\n").unwrap(); // .rs → unwrapped, so hscroll applies
+    let components = Components {
+        git: Arc::new(StubGit::default()),
+        content: Box::new(WideContent),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(!ctrl.view_state().wrap, "a .rs file is unwrapped, so horizontal scroll applies");
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "starts at the left edge");
+
+    // Wheel right over the content column (no focus change needed — scroll what's under the cursor).
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 5));
+    assert!(ctrl.view_state().content_hscroll > 0, "horizontal wheel-right scrolls the content right");
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollLeft, 50, 5));
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "wheel-left scrolls back to the start");
+
+    // Over the tree, horizontal wheel is inert (the tree has no horizontal scroll).
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 5, 5));
+    assert_eq!(ctrl.view_state().content_hscroll, 0, "horizontal wheel over the tree does nothing");
 }

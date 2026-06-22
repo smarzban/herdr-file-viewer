@@ -257,3 +257,31 @@ fn split_ratio_controls_the_tree_column_width() {
 fn wide_layout_snapshot() {
     insta::assert_snapshot!("presenter_wide", render(&sample_state(), 100, 24));
 }
+
+#[test]
+fn geometry_matches_the_wide_two_column_layout() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let g = geometry(Rect { x: 0, y: 0, width: 100, height: 24 }, &sample_state());
+    let t = g.tree_inner.expect("tree interior present in a wide layout");
+    let c = g.content_inner.expect("content interior present in a wide layout");
+    // Tree rows begin just inside the block border, so node `i` is at row `tree_inner.y + i`.
+    assert_eq!(t.x, 1);
+    assert_eq!(t.y, 1, "tree rows start just inside the top border");
+    assert!(c.x > t.x + t.width, "the content column is to the right of the tree");
+    assert!(g.divider_x.is_some(), "a wide layout has a draggable divider");
+    assert_eq!((g.area_x, g.area_width), (0, 100));
+}
+
+#[test]
+fn geometry_is_single_column_when_narrow() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let mut st = sample_state();
+    st.focus = Focus::Tree;
+    // Below the 80-col narrow threshold only the focused column is drawn (AC-21).
+    let g = geometry(Rect { x: 0, y: 0, width: 60, height: 24 }, &st);
+    assert!(g.tree_inner.is_some(), "narrow + tree focus draws the tree");
+    assert!(g.content_inner.is_none(), "the content column is not drawn when narrow");
+    assert!(g.divider_x.is_none(), "no divider in a single-column layout");
+}

@@ -190,23 +190,14 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
 /// Below this pane width the viewer drops to a single, focused column (AC-21).
 const NARROW_SPLIT: u16 = 80;
 
-/// Draw the viewer for the given state, returning the content viewport `(width, height)`
-/// the content pane was drawn into — `(0, 0)` when the content pane is not visible (narrow
-/// layout with the tree focused). The controller uses it to clamp content scrolling.
-///
-/// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the
-/// focused column is drawn — full width — so the active content stays readable (AC-21).
-/// The decision is taken from the **live frame width**, so the split can never disagree
-/// with the geometry it is drawn into (a stale `state.width` cannot desync the layout).
-pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
-    let area = frame.area();
+/// The column split for the current frame: `(tree_area, content_area, divider_x)`. A column
+/// is `None` when not drawn (narrow layout shows only the focused one). Shared by [`draw`] and
+/// [`geometry`] so the drawn layout and the hit-test geometry can never disagree.
+fn columns(area: Rect, state: &ViewState) -> (Option<Rect>, Option<Rect>, Option<u16>) {
     if area.width < NARROW_SPLIT {
         return match state.focus {
-            Focus::Tree => {
-                draw_tree(frame, area, state);
-                (0, 0)
-            }
-            Focus::Content => draw_content(frame, area, state),
+            Focus::Tree => (Some(area), None, None),
+            Focus::Content => (None, Some(area), None),
         };
     }
     let tree_pct = state.split_pct.clamp(10, 90);
@@ -215,8 +206,56 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
         Constraint::Percentage(100 - tree_pct),
     ])
     .split(area);
-    draw_tree(frame, cols[0], state);
-    draw_content(frame, cols[1], state)
+    // The divider is the boundary column where the tree's right border meets the content's
+    // left border (the two bordered blocks abut here).
+    (Some(cols[0]), Some(cols[1]), Some(cols[1].x))
+}
+
+/// Hit-test geometry for mouse input, derived from the same split [`draw`] renders.
+/// `tree_inner` is the interior where tree rows are drawn — visible node `i` is at row
+/// `tree_inner.y + i` (the tree does not scroll). `content_inner` is the content column
+/// interior. `divider_x` is the draggable boundary column (wide layout only).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct PaneGeometry {
+    pub area_x: u16,
+    pub area_width: u16,
+    pub tree_inner: Option<Rect>,
+    pub content_inner: Option<Rect>,
+    pub divider_x: Option<u16>,
+}
+
+/// Compute the [`PaneGeometry`] for hit-testing the current frame — the same layout [`draw`]
+/// renders, so a click is never mapped against stale geometry. The interior of a bordered
+/// block is its area inset by one cell on each side (the title does not change it).
+pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
+    let (tree, content, divider_x) = columns(area, state);
+    let inner = |r: Rect| Block::bordered().inner(r);
+    PaneGeometry {
+        area_x: area.x,
+        area_width: area.width,
+        tree_inner: tree.map(inner),
+        content_inner: content.map(inner),
+        divider_x,
+    }
+}
+
+/// Draw the viewer for the given state, returning the content viewport `(width, height)`
+/// the content pane was drawn into — `(0, 0)` when the content pane is not visible (narrow
+/// layout with the tree focused). The controller uses it to clamp content scrolling.
+///
+/// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the focused
+/// column is drawn — full width — so the active content stays readable (AC-21). The split is
+/// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
+/// geometry it is drawn into (a stale `state.width` cannot desync the layout).
+pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
+    let (tree, content, _divider) = columns(frame.area(), state);
+    if let Some(area) = tree {
+        draw_tree(frame, area, state);
+    }
+    match content {
+        Some(area) => draw_content(frame, area, state),
+        None => (0, 0),
+    }
 }
 
 #[cfg(test)]
