@@ -60,6 +60,8 @@ This procedure verifies the remaining **live-host** behavior.
      select a changed file to see its diff.
    - Press `Tab` to focus the content pane, then scroll with the arrows (`←`/`→` horizontally,
      `↑`/`↓` vertically), `w` to toggle wrapping, and `<`/`>` to resize the split.
+   - Press `z` to zoom: the tree disappears and the content pane fills the whole frame (focus
+     moves to it, so `↑`/`↓` scroll the file); press `z` again to restore the two columns.
    - Press `e` on a file (with `$EDITOR` set) and confirm your editor opens on that file, then
      exit the editor and confirm the viewer redraws cleanly.
    - Resize the pane (e.g. `herdr pane resize`) and confirm the layout reflows to the new size.

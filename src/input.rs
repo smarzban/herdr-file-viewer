@@ -31,6 +31,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('<') => Some(Intent::ShrinkTree),
         KeyCode::Char('>') => Some(Intent::GrowTree),
         KeyCode::Char('w') => Some(Intent::ToggleWrap),
+        KeyCode::Char('z') => Some(Intent::ToggleZoom),
         KeyCode::Char('r') => Some(Intent::Refresh),
         KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
         _ => None,
@@ -65,6 +66,7 @@ mod tests {
         (KeyCode::Char('<'), Intent::ShrinkTree),
         (KeyCode::Char('>'), Intent::GrowTree),
         (KeyCode::Char('w'), Intent::ToggleWrap),
+        (KeyCode::Char('z'), Intent::ToggleZoom),
         (KeyCode::Char('r'), Intent::Refresh),
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
@@ -89,7 +91,7 @@ mod tests {
 
     #[test]
     fn unmapped_keys_are_a_noop() {
-        assert_eq!(map_key(k(KeyCode::Char('z'))), None);
+        assert_eq!(map_key(k(KeyCode::Char('g'))), None);
         assert_eq!(map_key(k(KeyCode::Char('x'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);

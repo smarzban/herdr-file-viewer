@@ -53,6 +53,9 @@ pub struct ViewState {
     /// The tree column's share of the width, as a percentage (the content pane takes the
     /// rest). Adjustable from the keyboard; used only in the wide two-column layout.
     pub split_pct: u16,
+    /// Hide the tree and let the content pane fill the whole frame (the `z` zoom toggle).
+    /// Overrides the split — and the narrow-layout focus rule — to draw content only.
+    pub zoomed: bool,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -194,6 +197,11 @@ const NARROW_SPLIT: u16 = 80;
 /// is `None` when not drawn (narrow layout shows only the focused one). Shared by [`draw`] and
 /// [`geometry`] so the drawn layout and the hit-test geometry can never disagree.
 fn columns(area: Rect, state: &ViewState) -> (Option<Rect>, Option<Rect>, Option<u16>) {
+    // Zoom hides the tree entirely: the content pane fills the frame regardless of width or
+    // focus, so there is no tree interior and no divider to hit-test.
+    if state.zoomed {
+        return (None, Some(area), None);
+    }
     if area.width < NARROW_SPLIT {
         return match state.focus {
             Focus::Tree => (Some(area), None, None),

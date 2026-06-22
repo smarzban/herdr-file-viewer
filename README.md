@@ -21,7 +21,8 @@ hand-off to an *external* editor — the viewer itself only reads.
   anything else is shown as syntax-highlighted content with line numbers. Cycle the view to
   override.
 - **Navigable content** — scroll the content pane in all four directions, toggle line
-  wrapping, and resize the tree/content split; the layout reflows when the pane is resized.
+  wrapping, resize the tree/content split, or zoom (`z`) to hide the tree and read a file
+  full-screen; the layout reflows when the pane is resized.
 - **Keyboard-first** — every function has a key; no mouse required.
 
 ## Install
@@ -142,6 +143,7 @@ the same locally and remotely; it's only *which* keymap fires them across `--rem
 | `Tab` | Move focus between the tree and content columns |
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
 | `w` | Toggle line wrapping for the content pane |
+| `z` | Zoom — hide the tree so the content pane fills the frame; press again to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `q` / `Esc` | Close the viewer and return to the prior pane |
 

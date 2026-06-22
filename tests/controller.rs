@@ -224,6 +224,30 @@ fn toggle_focus_switches_columns() {
 }
 
 #[test]
+fn zoom_toggle_hides_tree_and_pins_content_focus() {
+    // The `z` zoom toggle collapses the tree so the content pane fills the frame. Entering
+    // zoom moves focus to the content pane (so j/k scroll the now-full-screen file); leaving
+    // zoom returns focus to the tree (back to picking files). It is pure layout state — the
+    // selection and content are unchanged.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(!ctrl.zoomed(), "the viewer is not zoomed by default");
+    assert_eq!(ctrl.focus(), Focus::Tree, "the tree holds focus initially");
+
+    let fx = ctrl.handle(Intent::ToggleZoom);
+    assert!(fx.redraw, "toggling zoom redraws");
+    assert!(ctrl.zoomed(), "the viewer is zoomed after the toggle");
+    assert_eq!(ctrl.focus(), Focus::Content, "entering zoom focuses the content pane");
+    assert!(ctrl.view_state().zoomed, "the view state reflects the zoom for the Presenter");
+
+    ctrl.handle(Intent::ToggleZoom);
+    assert!(!ctrl.zoomed(), "the toggle un-zooms");
+    assert_eq!(ctrl.focus(), Focus::Tree, "leaving zoom returns focus to the tree");
+    assert!(!ctrl.view_state().zoomed, "the view state reflects the un-zoom");
+}
+
+#[test]
 fn close_intent_signals_quit() {
     // AC-20: the close key ends the session.
     let dir = TempDir::new();

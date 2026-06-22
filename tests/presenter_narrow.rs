@@ -30,6 +30,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         content_hscroll: 0,
         wrap: false,
         split_pct: 40,
+        zoomed: false,
     }
 }
 
