@@ -33,4 +33,4 @@ First public release: a git-aware, read-only file viewer that runs as a herdr pl
   on stdin; every `git` invocation is hardened for untrusted repositories. See
   [SECURITY.md](SECURITY.md).
 
-[1.0.0]: https://github.com/smarzban/herdr-plugin-file-viewer/releases/tag/v1.0.0
+[1.0.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.0.0

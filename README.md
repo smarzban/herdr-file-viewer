@@ -1,6 +1,6 @@
 # herdr-file-viewer
 
-[![CI](https://github.com/smarzban/herdr-plugin-file-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/smarzban/herdr-plugin-file-viewer/actions/workflows/ci.yml)
+[![CI](https://github.com/smarzban/herdr-file-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/smarzban/herdr-file-viewer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)
 ![herdr 0.7+](https://img.shields.io/badge/herdr-0.7%2B-8a2be2)
@@ -56,7 +56,7 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ```bash
 # 1. Install the plugin (herdr builds it from source at install time):
-herdr plugin install smarzban/herdr-plugin-file-viewer
+herdr plugin install smarzban/herdr-file-viewer
 
 # 2. (recommended) install the renderers, so markdown / diffs / code are styled, not plain text:
 brew install glow git-delta bat     # macOS — or use your package manager
@@ -155,13 +155,13 @@ which the viewer pane launches:
 
 ```bash
 # install from this GitHub repo (latest main):
-herdr plugin install smarzban/herdr-plugin-file-viewer
+herdr plugin install smarzban/herdr-file-viewer
 # …or pin a specific release for reproducibility:
-herdr plugin install smarzban/herdr-plugin-file-viewer --ref v1.0.0
+herdr plugin install smarzban/herdr-file-viewer --ref v1.0.0
 
 # or, for local development, link this checkout in place:
 cargo build --release            # plugin link does NOT run the [[build]] step, so build first
-herdr plugin link /path/to/herdr-plugin-file-viewer
+herdr plugin link /path/to/herdr-file-viewer
 ```
 
 Confirm it registered with `herdr plugin list`. To build manually outside herdr:
