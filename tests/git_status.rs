@@ -91,3 +91,38 @@ fn untracked_directory_is_listed_per_file_not_collapsed() {
     assert!(!map.contains_key(&PathBuf::from("newdir")));
     assert!(!map.contains_key(&PathBuf::from("newdir/")));
 }
+
+#[test]
+fn staged_rename_reports_the_new_path_and_does_not_desync_the_parser() {
+    // A renamed file appears in `-z` porcelain as a record (`R…`) followed by a SEPARATE NUL
+    // field carrying the original path. The parser must consume that extra field so the new
+    // path is reported AND the entries after it are not mis-parsed (a desync would shift every
+    // following code/path pair). This is the most fragile parse in the Git Service.
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    fs::write(repo.path().join("old.txt"), "content\n").unwrap();
+    git(repo.path(), &["add", "old.txt"]);
+    git(repo.path(), &["commit", "-q", "-m", "add old"]);
+
+    // Stage a rename, plus an untracked file that sorts AFTER it: if the rename's extra NUL
+    // field were not consumed, this trailing entry would be mis-parsed.
+    git(repo.path(), &["mv", "old.txt", "new.txt"]);
+    fs::write(repo.path().join("zzz.txt"), "z\n").unwrap();
+
+    let map = status(repo.path());
+
+    assert_eq!(
+        map.get(&PathBuf::from("new.txt")),
+        Some(&Status::Modified),
+        "the rename's new path is reported (R → Modified)"
+    );
+    assert!(
+        !map.contains_key(&PathBuf::from("old.txt")),
+        "the rename source is consumed, not reported as its own entry"
+    );
+    assert_eq!(
+        map.get(&PathBuf::from("zzz.txt")),
+        Some(&Status::Untracked),
+        "the entry after the rename parses correctly — the extra NUL field was consumed"
+    );
+}
