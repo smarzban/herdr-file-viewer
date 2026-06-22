@@ -95,7 +95,9 @@ pub fn open_pane(
     cli: &mut impl HerdrCli,
 ) -> io::Result<()> {
     if !is_safe_pane_id(current_pane_id) {
-        return Err(invalid(format!("unsafe current pane id: {current_pane_id:?}")));
+        return Err(invalid(format!(
+            "unsafe current pane id: {current_pane_id:?}"
+        )));
     }
 
     let split_out = cli.run(&osv([
@@ -111,7 +113,9 @@ pub fn open_pane(
         .map_err(|e| invalid(format!("could not parse pane split result: {e}")))?;
     let new_pane = parsed.result.pane.pane_id;
     if !is_safe_pane_id(&new_pane) {
-        return Err(invalid(format!("unsafe new pane id from split: {new_pane:?}")));
+        return Err(invalid(format!(
+            "unsafe new pane id from split: {new_pane:?}"
+        )));
     }
 
     // Trust boundary: `editor` is application configuration ($EDITOR / user config), treated
@@ -148,7 +152,8 @@ fn is_safe_pane_id(id: &str) -> bool {
         Some(c) if c.is_ascii_alphanumeric() || c == '_' => {}
         _ => return false,
     }
-    id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Render `file` for the `pane run` shell command: POSIX single-quoted so any metacharacter

@@ -46,8 +46,14 @@ fn editor_target_spawns_configured_editor_with_the_selected_file() {
     launcher.open(&file, Target::Editor, &mut sp).unwrap();
 
     // AC-19: the configured editor is launched on exactly the selected file.
-    assert_eq!(sp.spawned, vec![vec![OsString::from("vim"), file.clone().into_os_string()]]);
-    assert!(sp.panes.is_empty(), "the editor path must not open a herdr pane");
+    assert_eq!(
+        sp.spawned,
+        vec![vec![OsString::from("vim"), file.clone().into_os_string()]]
+    );
+    assert!(
+        sp.panes.is_empty(),
+        "the editor path must not open a herdr pane"
+    );
     // AC-N1: the hand-off never writes the file.
     assert_eq!(fs::read_to_string(&file).unwrap(), "content");
 }
@@ -86,7 +92,10 @@ fn new_pane_target_requests_a_herdr_pane_carrying_the_file() {
 
     // AC-19: a new-pane request carries the exact file (and the editor to run there).
     assert_eq!(sp.panes, vec![(OsString::from("nano"), file.clone())]);
-    assert!(sp.spawned.is_empty(), "the new-pane path must not spawn a local editor");
+    assert!(
+        sp.spawned.is_empty(),
+        "the new-pane path must not spawn a local editor"
+    );
     // AC-N1: still no write.
     assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() {}");
 }
@@ -100,7 +109,10 @@ fn launch_failure_is_an_error_not_a_panic_and_leaves_the_file_intact() {
     fs::write(&file, "x").unwrap();
 
     let launcher = EditorLauncher::new("editor");
-    let mut sp = FakeSpawner { fail: true, ..Default::default() };
+    let mut sp = FakeSpawner {
+        fail: true,
+        ..Default::default()
+    };
     assert!(launcher.open(&file, Target::Editor, &mut sp).is_err());
     assert_eq!(fs::read_to_string(&file).unwrap(), "x");
 }

@@ -5,8 +5,8 @@
 //! the viewer keeps working as a plain browser (AC-26).
 //!
 //! The viewer opens *untrusted* repositories (e.g. an agent's worktree, a clone), so
-//! every invocation is hardened against repo-controlled code execution: `--no-ext-diff`
-//! + `--no-textconv` refuse repo-configured diff/textconv programs, `core.fsmonitor` and
+//! every invocation is hardened against repo-controlled code execution: `--no-ext-diff` +
+//! `--no-textconv` refuse repo-configured diff/textconv programs, `core.fsmonitor` and
 //! `core.hooksPath` are neutralized, and `GIT_OPTIONAL_LOCKS=0` keeps status/diff from
 //! writing the index (AC-N2). Paths are parsed from NUL-delimited (`-z`) output as raw
 //! bytes, so any filename — spaces, control chars, non-ASCII — maps to the real
@@ -179,7 +179,13 @@ pub fn diff(
     // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
     // filenames reach git verbatim and their diffs are not silently empty.
     if is_untracked(repo_root, path) {
-        let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-index", "--no-color"];
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-index",
+            "--no-color",
+        ];
         args.extend(unified);
         args.push("--");
         args.push("/dev/null");
@@ -222,7 +228,12 @@ fn git_command(repo_root: &Path, args: &[&str]) -> Command {
         // repo-planted `filter=<driver>` (clean/smudge) or `diff=<driver>` (textconv)
         // cannot run a configured program during a read-only query.
         .arg(format!("--attr-source={EMPTY_TREE}"))
-        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args);
     cmd
 }
@@ -297,7 +308,10 @@ fn is_within_root(repo_root: &Path, path: &Path) -> bool {
         return false;
     }
     // If the target resolves (exists), ensure symlinks didn't lead outside the root.
-    match (repo_root.join(path).canonicalize(), repo_root.canonicalize()) {
+    match (
+        repo_root.join(path).canonicalize(),
+        repo_root.canonicalize(),
+    ) {
         (Ok(full), Ok(root)) => full.starts_with(root),
         // Non-existent target (e.g. a deleted file): the lexical checks already bound it.
         _ => true,
@@ -339,10 +353,11 @@ fn is_safe_ref(name: &str) -> bool {
 /// conventional fallback. Remote-tracking refs are included so a freshly-cloned repo or
 /// worktree whose base exists only as `origin/main` still resolves a base (AC-14).
 fn resolve_base_branch(repo_root: &Path, hint: Option<&str>) -> Option<String> {
-    if let Some(h) = hint {
-        if is_safe_ref(h) && ref_exists(repo_root, h) {
-            return Some(h.to_string());
-        }
+    if let Some(h) = hint
+        && is_safe_ref(h)
+        && ref_exists(repo_root, h)
+    {
+        return Some(h.to_string());
     }
     ["main", "master", "origin/main", "origin/master"]
         .into_iter()

@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{git, init_repo_with_commit, TempDir};
-use herdr_file_viewer::git::{status, Status};
+use common::{TempDir, git, init_repo_with_commit};
+use herdr_file_viewer::git::{Status, status};
 use std::fs;
 use std::path::PathBuf;
 
@@ -51,8 +51,14 @@ fn status_does_not_mutate_the_repo() {
 
     let after = git(repo.path(), &["status", "--porcelain"]);
     let head_after = git(repo.path(), &["rev-parse", "HEAD"]);
-    assert_eq!(before, after, "AC-N2: working state unchanged after status()");
-    assert_eq!(head_before, head_after, "AC-N2: HEAD unchanged after status()");
+    assert_eq!(
+        before, after,
+        "AC-N2: working state unchanged after status()"
+    );
+    assert_eq!(
+        head_before, head_after,
+        "AC-N2: HEAD unchanged after status()"
+    );
 }
 
 #[test]
@@ -82,6 +88,6 @@ fn untracked_directory_is_listed_per_file_not_collapsed() {
         Some(&Status::Untracked)
     );
     // The collapsed directory form must NOT be present.
-    assert!(map.get(&PathBuf::from("newdir")).is_none());
-    assert!(map.get(&PathBuf::from("newdir/")).is_none());
+    assert!(!map.contains_key(&PathBuf::from("newdir")));
+    assert!(!map.contains_key(&PathBuf::from("newdir/")));
 }
