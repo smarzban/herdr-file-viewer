@@ -31,7 +31,8 @@ as a bolt-on preview mode.
   - rendered markdown for markdown files,
   - diff for a changed file,
   - syntax-highlighted content otherwise.
-- A key cycles modes, so the user can always force raw content or the diff.
+- A key cycles modes, so the user can always force a different view — the rendered,
+  syntax-highlighted, compact-diff, or full-context (whole-file, line-numbered) diff view.
 
 **Git / diff**
 - "The diff" and the meaning of "changed" compare against a context-smart baseline:

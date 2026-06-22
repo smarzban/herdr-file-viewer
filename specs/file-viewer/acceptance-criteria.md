@@ -51,8 +51,9 @@ handles; do not renumber.
   syntax-highlighted content in the content pane by default.
   *(test-backed: integration)*
 - **AC-11** — A dedicated key cycles the content pane among the view modes applicable
-  to the selected file (raw content / rendered / diff), overriding the auto-selected
-  default.
+  to the selected file — rendered markdown, the compact diff, syntax-highlighted content,
+  and (for a changed file) a full-context diff that shows the whole file with line numbers
+  and the diff inline — overriding the auto-selected default.
   *(test-backed: integration)*
 - **AC-12** — Selecting a binary file shows a placeholder identifying it as binary and
   does not emit its raw bytes into the pane.

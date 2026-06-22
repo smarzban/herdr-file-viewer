@@ -106,6 +106,9 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
 pub struct Renderers {
     pub markdown: Vec<String>,
     pub diff: Vec<String>,
+    /// Renders a full-context diff (whole file) — same delegate as `diff` but configured to
+    /// show a line-number gutter, so the file's lines are numbered with the diff shown inline.
+    pub full_diff: Vec<String>,
     pub syntax: Vec<String>,
     /// Per-invocation wall-clock bound; a renderer exceeding it is killed and the plain-
     /// text fallback is used, so a wedged delegate can never hang rendering.
@@ -127,10 +130,14 @@ pub fn render(
     let name = sanitize_name(file_name.unwrap_or(""));
     let name = name.as_str();
     // A diff is derived from git, not from the file's bytes, so it renders even for a
-    // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder.
-    if mode == ViewMode::Diff {
+    // deleted or binary file (AC-9) — never short-circuit it to the binary placeholder. Both
+    // the compact diff and the full-context diff render from the git diff text on `raw_diff`;
+    // they differ only in the diff git produced (default vs. whole-file context) and the
+    // delegate used (the full-context one numbers lines).
+    if mode == ViewMode::Diff || mode == ViewMode::FullDiff {
+        let cmd = if mode == ViewMode::FullDiff { &renderers.full_diff } else { &renderers.diff };
         let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
-        return delegate(&with_name(&renderers.diff, name), &diff, mode, renderers.timeout, notice);
+        return delegate(&with_name(cmd, name), &diff, mode, renderers.timeout, notice);
     }
 
     // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
@@ -155,8 +162,7 @@ pub fn render(
             renderers.timeout,
             base_notice,
         ),
-        ViewMode::RawContent => (to_text(content), base_notice),
-        ViewMode::Diff => unreachable!("handled above"),
+        ViewMode::Diff | ViewMode::FullDiff => unreachable!("handled above"),
     }
 }
 
@@ -240,9 +246,9 @@ fn delegate(
 fn capability(mode: ViewMode) -> &'static str {
     match mode {
         ViewMode::Diff => "Diff",
+        ViewMode::FullDiff => "Full-file diff",
         ViewMode::RenderedMarkdown => "Markdown",
         ViewMode::SyntaxContent => "Syntax",
-        ViewMode::RawContent => "Plain",
     }
 }
 

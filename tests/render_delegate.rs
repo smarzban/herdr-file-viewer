@@ -13,6 +13,7 @@ fn cat() -> Renderers {
     Renderers {
         markdown: vec!["cat".into()],
         diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
         timeout: Duration::from_secs(5),
     }
@@ -72,6 +73,7 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
     let renderers = Renderers {
         markdown: vec!["herdr-no-such-binary-xyz".into()],
         diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
         timeout: Duration::from_secs(5),
     };
@@ -98,6 +100,7 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
     let renderers = Renderers {
         markdown: vec!["cat".into()],
         diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
         timeout: Duration::from_secs(5),
     };
@@ -115,6 +118,7 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
     let renderers = Renderers {
         markdown: vec!["cat".into()],
         diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
         timeout: Duration::from_secs(5),
     };
@@ -127,17 +131,25 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
 }
 
 #[test]
-fn raw_content_mode_does_not_invoke_a_renderer() {
+fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
+    // FullDiff renders from git's (full-context) diff text on raw_diff — not the file bytes —
+    // and delegates to the dedicated `full_diff` renderer, NOT the compact `diff` one. A
+    // renderer that fails for `diff` but succeeds for `full_diff` proves the right one is used.
     let renderers = Renderers {
-        markdown: vec!["nope-xyz".into()],
-        diff: vec!["nope-xyz".into()],
-        syntax: vec!["nope-xyz".into()],
+        markdown: vec!["cat".into()],
+        diff: vec!["herdr-no-such-binary-xyz".into()], // would fail if FullDiff used it
+        full_diff: vec!["cat".into()],
+        syntax: vec!["cat".into()],
         timeout: Duration::from_secs(5),
     };
-    let prepared = Prepared::Full { text: "plain text here".into() };
-    let (text, notice) = render(&renderers, &prepared, ViewMode::RawContent, None, None);
-    assert!(flatten(&text).contains("plain text here"));
-    assert!(notice.is_none(), "raw content needs no renderer → no fallback notice");
+    let full = "@@ -1,2 +1,2 @@\n fn main() {\n-    old();\n+    new();\n }";
+    // Prepared::Binary on purpose: like Diff, FullDiff renders from git, so a deleted/binary
+    // file still shows its diff (AC-9) rather than the binary placeholder.
+    let (text, notice) = render(&renderers, &Prepared::Binary, ViewMode::FullDiff, Some(full), None);
+    let s = flatten(&text);
+    assert!(s.contains("fn main()") && s.contains("new()"), "full-context diff is shown: {s}");
+    assert!(!s.to_lowercase().contains("binary file"), "no binary placeholder in full-diff mode");
+    assert!(notice.is_none(), "the full_diff renderer succeeded → no fallback notice");
 }
 
 #[test]
@@ -145,6 +157,7 @@ fn a_hanging_renderer_times_out_and_falls_back() {
     let renderers = Renderers {
         markdown: vec!["sleep".into(), "30".into()],
         diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
         timeout: Duration::from_millis(150),
     };

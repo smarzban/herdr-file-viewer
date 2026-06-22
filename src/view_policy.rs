@@ -2,8 +2,8 @@
 //!
 //! Precedence (design.md): changed → diff (even for markdown, AC-9); else markdown →
 //! rendered (AC-8); else → syntax-highlighted content (AC-10). The applicable set
-//! (AC-11) is what a mode-cycle key steps through, always including raw content so the
-//! user can override the auto-selected default. No I/O.
+//! (AC-11) is what a mode-cycle key steps through; for a changed file it also offers a
+//! full-context diff (the whole file with line numbers and the diff shown inline). No I/O.
 
 use std::path::PathBuf;
 
@@ -12,12 +12,13 @@ use std::path::PathBuf;
 pub enum ViewMode {
     /// Markdown rendered to formatted text.
     RenderedMarkdown,
-    /// Unified diff against the active baseline.
+    /// Unified diff against the active baseline — only the changed hunks.
     Diff,
+    /// Full-context diff against the active baseline: the whole file with a line-number
+    /// gutter, syntax highlighting on unchanged lines, and the diff shown inline.
+    FullDiff,
     /// Syntax-highlighted file content.
     SyntaxContent,
-    /// Plain, unstyled file content (the override floor).
-    RawContent,
 }
 
 /// The facts the policy needs about a file — no path I/O is performed here.
@@ -39,8 +40,9 @@ pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
     }
 }
 
-/// The modes a cycle key steps through for a file, default first, always ending with
-/// a raw-content override (AC-11).
+/// The modes a cycle key steps through for a file, default first (AC-11). A changed file
+/// also offers a full-context diff (whole file + line numbers + inline diff) right after
+/// the compact diff; markdown adds its rendered view; every file ends with syntax content.
 pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
     let mut modes = vec![default_mode(fd)];
     let add = |modes: &mut Vec<ViewMode>, m: ViewMode| {
@@ -50,12 +52,12 @@ pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
     };
     if fd.is_changed {
         add(&mut modes, ViewMode::Diff);
+        add(&mut modes, ViewMode::FullDiff);
     }
     if fd.is_markdown {
         add(&mut modes, ViewMode::RenderedMarkdown);
     }
     add(&mut modes, ViewMode::SyntaxContent);
-    add(&mut modes, ViewMode::RawContent);
     modes
 }
 
@@ -84,13 +86,32 @@ mod tests {
     }
 
     #[test]
-    fn applicable_modes_always_include_raw_content_for_override() {
-        for (md, ch) in [(true, false), (true, true), (false, false), (false, true)] {
-            let modes = applicable_modes(&fd("x", md, ch));
-            assert!(
-                modes.contains(&ViewMode::RawContent),
-                "RawContent must be cyclable (md={md}, changed={ch})"
-            );
+    fn changed_file_cycle_offers_a_full_context_diff_right_after_the_compact_diff() {
+        // AC-11: a changed file can cycle from the compact diff to a full-context diff
+        // (whole file + line numbers + inline diff) before the content views.
+        let modes = applicable_modes(&fd("main.rs", false, true));
+        assert_eq!(modes, vec![ViewMode::Diff, ViewMode::FullDiff, ViewMode::SyntaxContent]);
+        // For a changed markdown file the rendered view sits after the two diff views.
+        let md = applicable_modes(&fd("README.md", true, true));
+        assert_eq!(
+            md,
+            vec![
+                ViewMode::Diff,
+                ViewMode::FullDiff,
+                ViewMode::RenderedMarkdown,
+                ViewMode::SyntaxContent
+            ]
+        );
+    }
+
+    #[test]
+    fn unchanged_file_has_no_diff_views_in_its_cycle() {
+        // A full-context (or compact) diff only makes sense for a changed file — there is no
+        // diff for an unchanged one, so neither diff mode is offered.
+        for md in [true, false] {
+            let modes = applicable_modes(&fd("x", md, false));
+            assert!(!modes.contains(&ViewMode::Diff), "no compact diff when unchanged (md={md})");
+            assert!(!modes.contains(&ViewMode::FullDiff), "no full diff when unchanged (md={md})");
         }
     }
 
