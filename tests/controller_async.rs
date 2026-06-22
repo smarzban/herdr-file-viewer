@@ -16,7 +16,7 @@ use ratatui::text::Text;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A renderer that sleeps before producing output — the stand-in for a slow external CLI.
@@ -39,7 +39,7 @@ impl GitService for NoGit {
     fn changed_set(&self, _: Baseline) -> BTreeMap<PathBuf, Status> {
         BTreeMap::new()
     }
-    fn diff(&self, _: &Path, _: Baseline) -> String {
+    fn diff(&self, _: &Path, _: Baseline, _full: bool) -> String {
         String::new()
     }
 }
@@ -48,6 +48,26 @@ struct NoEditor;
 impl EditorHandoff for NoEditor {
     fn open(&mut self, _: &Path) -> io::Result<bool> {
         Ok(false)
+    }
+}
+
+/// A Git stub that records the `full_context` flag of every `diff()` call (made on the render
+/// worker thread) and reports one changed file — so a test can prove the FullDiff view asks
+/// git for whole-file context rather than the compact hunks-only diff.
+struct RecordingGit {
+    changed: BTreeMap<PathBuf, Status>,
+    diff_full_calls: Arc<Mutex<Vec<bool>>>,
+}
+impl GitService for RecordingGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        self.changed.clone()
+    }
+    fn changed_set(&self, _: Baseline) -> BTreeMap<PathBuf, Status> {
+        self.changed.clone()
+    }
+    fn diff(&self, _: &Path, _: Baseline, full_context: bool) -> String {
+        self.diff_full_calls.lock().unwrap().push(full_context);
+        if full_context { "FULL".into() } else { "COMPACT".into() }
     }
 }
 
@@ -108,6 +128,41 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
     }
     assert!(redrew, "the arriving content signalled a redraw via poll()");
     assert_eq!(flatten(ctrl.content()), "rendered:b.rs", "the selected file rendered");
+}
+
+#[test]
+fn full_diff_mode_asks_git_for_whole_file_context() {
+    // PR2 (AC-23 path): cycling a changed file to FullDiff dispatches a render whose worker
+    // reads the diff with full_context=true — so the whole file (not just hunks) is diffed.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("c.rs"), "fn main() {}\n").unwrap();
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("c.rs"), Status::Modified);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let components = Components {
+        git: Arc::new(RecordingGit { changed, diff_full_calls: calls.clone() }),
+        content: Box::new(SlowContent { delay: Duration::from_millis(0) }),
+        editor: Box::new(NoEditor),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+
+    // The changed file defaults to the compact Diff; one cycle advances to FullDiff, which
+    // dispatches a render whose worker requests a full-context diff.
+    ctrl.handle(Intent::CycleView);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if calls.lock().unwrap().iter().any(|&full| full) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the worker never requested a full-context diff");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        calls.lock().unwrap().contains(&true),
+        "FullDiff mode must ask git for whole-file context (full_context=true)"
+    );
 }
 
 #[test]

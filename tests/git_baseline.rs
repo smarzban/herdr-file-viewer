@@ -78,14 +78,47 @@ fn diff_returns_unified_text_and_varies_with_baseline() {
     git(repo.path(), &["add", "."]);
     git(repo.path(), &["commit", "-q", "-m", "extend seed"]);
 
-    let base_diff = diff(repo.path(), Path::new("seed.txt"), Baseline::Base, None);
+    let base_diff = diff(repo.path(), Path::new("seed.txt"), Baseline::Base, None, false);
     assert!(base_diff.contains("@@"), "base diff is a unified diff (AC-9)");
     assert!(base_diff.contains("+2"), "base diff shows the committed addition");
 
     // No uncommitted change → empty HEAD diff; the two baselines differ (AC-16).
-    let head_diff = diff(repo.path(), Path::new("seed.txt"), Baseline::Head, None);
+    let head_diff = diff(repo.path(), Path::new("seed.txt"), Baseline::Head, None, false);
     assert!(!head_diff.contains("@@"), "HEAD diff is empty (no uncommitted change)");
     assert_ne!(base_diff, head_diff);
+}
+
+#[test]
+fn full_context_diff_includes_whole_file_context_the_compact_diff_omits() {
+    // PR2 / AC-9: full_context=true asks git for whole-file context, so lines far from the
+    // change (outside the default 3-line hunk window) are present — the compact diff omits them.
+    let repo = make_repo();
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("TOP_MARKER".into());
+    for n in 1..=20 {
+        lines.push(format!("body{n}"));
+    }
+    lines.push("BOTTOM_MARKER".into());
+    let write = |ls: &[String]| fs::write(repo.path().join("big.txt"), format!("{}\n", ls.join("\n"))).unwrap();
+    write(&lines);
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "add big"]);
+    // Change one middle line; the markers are far from it (> 3 lines away).
+    lines[10] = "CHANGED".into();
+    write(&lines);
+
+    let compact = diff(repo.path(), Path::new("big.txt"), Baseline::Head, None, false);
+    let full = diff(repo.path(), Path::new("big.txt"), Baseline::Head, None, true);
+
+    assert!(compact.contains("CHANGED") && full.contains("CHANGED"), "both show the change");
+    assert!(
+        !compact.contains("TOP_MARKER") && !compact.contains("BOTTOM_MARKER"),
+        "the compact (3-line) hunk omits distant context:\n{compact}"
+    );
+    assert!(
+        full.contains("TOP_MARKER") && full.contains("BOTTOM_MARKER"),
+        "the full-context diff carries the whole file as context:\n{full}"
+    );
 }
 
 #[test]
@@ -111,7 +144,7 @@ fn base_branch_hint_drives_base_queries_for_non_main_master_repos() {
     // With the hint, committed feature work is in the base set...
     let hinted = changed_set(repo.path(), Baseline::Base, Some("trunk"));
     assert!(hinted.contains_key(&PathBuf::from("feat.txt")));
-    assert!(diff(repo.path(), Path::new("feat.txt"), Baseline::Base, Some("trunk")).contains("@@"));
+    assert!(diff(repo.path(), Path::new("feat.txt"), Baseline::Base, Some("trunk"), false).contains("@@"));
 
     // ...without it (and with no main/master fallback), the Base query degrades to a
     // HEAD comparison, where the committed file is clean — proving the hint is honored.
@@ -125,7 +158,7 @@ fn untracked_file_diff_shows_added_content() {
     let repo = make_repo();
     fs::write(repo.path().join("brand_new.txt"), "hello\nworld\n").unwrap();
 
-    let d = diff(repo.path(), Path::new("brand_new.txt"), Baseline::Head, None);
+    let d = diff(repo.path(), Path::new("brand_new.txt"), Baseline::Head, None, false);
     assert!(d.contains("+hello"), "untracked file diff shows its content as added");
     assert!(d.contains("+world"));
 }
@@ -197,7 +230,7 @@ fn non_ascii_filename_round_trips_through_status_and_diff() {
         set.get(&PathBuf::from("résumé.txt")),
         Some(&Status::Modified)
     );
-    let d = diff(repo.path(), Path::new("résumé.txt"), Baseline::Head, None);
+    let d = diff(repo.path(), Path::new("résumé.txt"), Baseline::Head, None, false);
     assert!(d.contains("+noël"), "diff of a non-ASCII path is not empty");
 }
 
@@ -211,7 +244,7 @@ fn staged_file_in_unborn_repo_diffs_as_added() {
     fs::write(repo.path().join("first.txt"), "hello\n").unwrap();
     git(repo.path(), &["add", "first.txt"]);
 
-    let d = diff(repo.path(), Path::new("first.txt"), Baseline::Head, None);
+    let d = diff(repo.path(), Path::new("first.txt"), Baseline::Head, None, false);
     assert!(d.contains("+hello"), "unborn-repo staged file shows an added diff (AC-9)");
 }
 
@@ -219,8 +252,8 @@ fn staged_file_in_unborn_repo_diffs_as_added() {
 fn diff_refuses_paths_outside_the_root() {
     // No arbitrary file reads; the viewer never resolves above its root (AC-N5).
     let repo = make_repo();
-    assert!(diff(repo.path(), Path::new("/etc/hostname"), Baseline::Head, None).is_empty());
-    assert!(diff(repo.path(), Path::new("../../etc/hostname"), Baseline::Head, None).is_empty());
+    assert!(diff(repo.path(), Path::new("/etc/hostname"), Baseline::Head, None, false).is_empty());
+    assert!(diff(repo.path(), Path::new("../../etc/hostname"), Baseline::Head, None, false).is_empty());
 }
 
 #[test]
@@ -246,7 +279,7 @@ fn malicious_repo_config_is_not_executed_during_queries() {
 
     let _ = status(repo.path());
     let _ = changed_set(repo.path(), Baseline::Head, None);
-    let _ = diff(repo.path(), Path::new("seed.txt"), Baseline::Head, None);
+    let _ = diff(repo.path(), Path::new("seed.txt"), Baseline::Head, None, false);
 
     assert!(
         !marker.exists(),
@@ -262,7 +295,7 @@ fn diff_refuses_symlink_escaping_the_root() {
     fs::write(outside.path().join("secret.txt"), "TOPSECRET\n").unwrap();
     std::os::unix::fs::symlink(outside.path(), repo.path().join("escape")).unwrap();
 
-    let d = diff(repo.path(), Path::new("escape/secret.txt"), Baseline::Head, None);
+    let d = diff(repo.path(), Path::new("escape/secret.txt"), Baseline::Head, None, false);
     assert!(d.is_empty(), "must not read files via a symlink escaping the root (AC-N5)");
     assert!(!d.contains("TOPSECRET"));
 }
@@ -282,8 +315,8 @@ fn baseline_queries_do_not_mutate_the_repo() {
     let _ = default_baseline(&resolved(repo.path()));
     let _ = changed_set(repo.path(), Baseline::Base, None);
     let _ = changed_set(repo.path(), Baseline::Head, None);
-    let _ = diff(repo.path(), Path::new("seed.txt"), Baseline::Base, None);
-    let _ = diff(repo.path(), Path::new("feat.txt"), Baseline::Head, None);
+    let _ = diff(repo.path(), Path::new("seed.txt"), Baseline::Base, None, false);
+    let _ = diff(repo.path(), Path::new("feat.txt"), Baseline::Head, None, false);
 
     assert_eq!(before, git(repo.path(), &["status", "--porcelain"]), "AC-N2");
     assert_eq!(head_before, git(repo.path(), &["rev-parse", "HEAD"]), "AC-N2");

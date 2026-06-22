@@ -59,10 +59,11 @@ Each component has one responsibility (one reason to change) and an explicit con
 - **Responsibility:** choose the default content view mode for a file.
 - **Kind:** pure decision function.
 - **Inputs:** `{ path, isMarkdown, isChanged }` + optional user override.
-- **Outputs:** chosen mode ∈ `{ rendered-markdown, diff, syntax-content, raw-content }`
+- **Outputs:** chosen default mode ∈ `{ rendered-markdown, diff, syntax-content }`
   by precedence — changed → diff (incl. markdown, AC-9); else markdown → rendered
-  (AC-8); else → syntax-content (AC-10) — plus the applicable set for cycling (AC-11).
-- **Errors:** unknown type → `syntax-content`/`raw-content`. No I/O.
+  (AC-8); else → syntax-content (AC-10) — plus the applicable set for cycling (AC-11),
+  which for a changed file also offers `full-diff` (a whole-file, line-numbered diff).
+- **Errors:** unknown type → `syntax-content`. No I/O.
 
 ### Content Renderer
 - **Responsibility:** produce the content-pane text for `(file, mode)` via delegated

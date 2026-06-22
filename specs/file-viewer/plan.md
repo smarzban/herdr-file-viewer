@@ -37,8 +37,8 @@ adds its `pub mod` to `src/lib.rs` as it lands.
 ### T-2 — View Policy: default mode + applicable set
 - **Files:** `src/view_policy.rs`
 - **Test first:** inline unit tests: unchanged markdown → `RenderedMarkdown`; changed file →
-  `Diff` even when markdown; non-changed non-markdown → `SyntaxContent`; `applicable_modes`
-  includes `RawContent` for override.
+  `Diff` even when markdown; non-changed non-markdown → `SyntaxContent`; a changed file's
+  `applicable_modes` offers `FullDiff` (full-context diff) after the compact `Diff`.
 - **Implements:** `enum ViewMode`, `struct FileDescriptor { path, is_markdown, is_changed }`,
   `fn default_mode(&FileDescriptor) -> ViewMode`, `fn applicable_modes(&FileDescriptor) -> Vec<ViewMode>`.
 - **AC:** AC-8, AC-9, AC-10, AC-11. **Component:** View Policy. **Deps:** T-1.

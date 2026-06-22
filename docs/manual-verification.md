@@ -57,7 +57,9 @@ This procedure verifies the remaining **live-host** behavior.
    - Navigate with `j`/`k`; the content pane updates to the selected file.
    - If this is a git worktree: confirm colored status markers (`M`/`A`/`D`/`?` — changed
      red, new green, folders-with-changes red), press `c` to filter to changed files, and
-     select a changed file to see its diff.
+     select a changed file to see its diff. Press `v` to cycle the view: the compact diff →
+     the **full-file diff** (the whole file with a line-number gutter and the changes shown
+     inline) → syntax-highlighted content, then back.
    - Press `Tab` to focus the content pane, then scroll with the arrows (`←`/`→` horizontally,
      `↑`/`↓` vertically), `w` to toggle wrapping, and `<`/`>` to resize the split.
    - Press `z` to zoom: the tree disappears and the content pane fills the whole frame (focus
