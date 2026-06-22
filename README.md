@@ -116,6 +116,21 @@ Reload with `herdr server reload-config`. Pressing the key then opens / focuses 
 viewer via the same idempotent launcher. (Alternatively, `command` may invoke
 `scripts/open-file-viewer.sh` directly using the absolute install path from `herdr plugin list`.)
 
+**Limitation over `herdr --remote`.** `--remote` attaches with **local** keybindings by
+default, and herdr has no way to fire a plugin action into the *attached* (remote) session from
+a local key: a `type = "shell"` command runs against your **local** herdr (wrong session), and a
+`type = "pane"` command runs in a throwaway pane that closes the instant it exits (so the viewer
+doesn't persist). To drive the viewer on the remote, either:
+
+- attach with **`herdr --remote <host> --remote-keybindings server`** — the binding then lives in
+  the *server's* `config.toml` and behaves fully (open / focus / close-toggle); or
+- bind a `type = "shell"` command that SSHes in:
+  `command = "ssh <host> 'herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer'"`
+  (needs passwordless SSH; the host is baked into the binding).
+
+This is a herdr keybinding/remote limitation, not the plugin's — the action and launcher work
+the same locally and remotely; it's only *which* keymap fires them across `--remote` that differs.
+
 ## Keys
 
 | Key | Action |
