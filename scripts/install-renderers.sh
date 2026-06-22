@@ -58,16 +58,33 @@ install_one() {
   fi
   local pkg; pkg="$(pkg_name "$tool")"
   if [ -n "$PM" ] && [ -n "$pkg" ] && pm_install "$pkg"; then
-    echo "✓ installed $tool via $PM ($pkg)"
-    return 0
+    # On Debian/Ubuntu the bat package installs its binary as `batcat`, not `bat` (the name
+    # the viewer looks for). Bridge it via a symlink in ~/.local/bin.
+    if [ "$tool" = "bat" ] && ! have bat && have batcat; then
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$(command -v batcat)" "$HOME/.local/bin/bat"
+      if have bat; then
+        echo "✓ installed bat via $PM (bridged 'batcat' → ~/.local/bin/bat)"
+      else
+        echo "✓ installed bat via $PM as 'batcat', symlinked to ~/.local/bin/bat — add ~/.local/bin to PATH to use it"
+      fi
+      return 0
+    fi
+    # Confirm the binary is actually on PATH before claiming success (a package can install
+    # under a different name, as bat does above).
+    if have "$bin"; then
+      echo "✓ installed $tool via $PM ($pkg)"
+      return 0
+    fi
+    echo "… '$pkg' installed via $PM but '$bin' is not on PATH; trying alternatives"
   fi
   # Fall back to cargo where possible.
   local cp; cp="$(cargo_pkg "$tool")"
   if [ -n "$cp" ] && have cargo; then
-    echo "… $tool not available via ${PM:-a system package manager}; trying cargo install $cp"
-    if cargo install "$cp"; then echo "✓ installed $tool via cargo ($cp)"; return 0; fi
+    echo "… trying cargo install $cp"
+    if cargo install "$cp" && have "$bin"; then echo "✓ installed $tool via cargo ($cp)"; return 0; fi
   fi
-  echo "✗ could not auto-install $tool — install it manually:"
+  echo "✗ could not put '$bin' on PATH for $tool — install it manually:"
   case "$tool" in
     glow)  echo "    https://github.com/charmbracelet/glow#installation" ;;
     delta) echo "    https://github.com/dandavison/delta#installation  (or: cargo install git-delta)" ;;
