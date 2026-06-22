@@ -20,6 +20,7 @@ use crate::git::{Baseline, Status};
 use crate::intent::Intent;
 use crate::presenter::{Focus, PaneGeometry, ViewState};
 use crate::tree::{Node, NodeKind, TreeModel};
+use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
@@ -185,6 +186,14 @@ pub struct Controller {
     /// True while the left button is held after pressing on the divider (a resize drag), so the
     /// release is treated as the end of the drag, not a click.
     dragging_divider: bool,
+    /// The newer version to advertise, if any (set from the cached value at startup and
+    /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
+    update_available: Option<Version>,
+    /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
+    /// next launch while still behind.
+    update_dismissed: bool,
+    /// One-shot receiver for the background update check's result (`None` when no check ran).
+    update_rx: Option<mpsc::Receiver<Option<Version>>>,
 }
 
 impl Controller {
@@ -274,6 +283,9 @@ impl Controller {
             geom: PaneGeometry::default(),
             last_click: None,
             dragging_divider: false,
+            update_available: None,
+            update_dismissed: false,
+            update_rx: None,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -330,6 +342,14 @@ impl Controller {
         self.width = width;
     }
 
+    /// Install the update-check result: the initial (cached) banner value plus the receiver the
+    /// background probe will deliver a refreshed result on. Called once by the run loop after
+    /// construction; absent ⇒ no banner (so existing call sites/tests are unaffected).
+    pub fn set_update(&mut self, state: UpdateState) {
+        self.update_available = state.initial;
+        self.update_rx = state.rx;
+    }
+
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
     pub fn set_content_viewport(&mut self, width: u16, height: u16) {
@@ -377,6 +397,7 @@ impl Controller {
             wrap,
             split_pct: self.split_pct,
             zoomed: self.zoomed,
+            update_banner: self.update_banner(),
         }
     }
 
@@ -421,6 +442,7 @@ impl Controller {
             Intent::ToggleWrap => self.toggle_wrap(),
             Intent::ToggleZoom => self.toggle_zoom(),
             Intent::Refresh => self.refresh(),
+            Intent::DismissUpdate => self.dismiss_update(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -864,6 +886,24 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// Hide the update banner for this session (the `u` key). Inert when no banner is showing,
+    /// so the key does nothing (no wasted repaint) until an update is actually available.
+    fn dismiss_update(&mut self) -> Effects {
+        if self.update_available.is_some() && !self.update_dismissed {
+            self.update_dismissed = true;
+            return Effects::redraw();
+        }
+        Effects::noop()
+    }
+
+    /// The update-banner text to display, or `None` when up-to-date, dismissed, or unknown.
+    fn update_banner(&self) -> Option<String> {
+        if self.update_dismissed {
+            return None;
+        }
+        self.update_available.as_ref().map(update::banner_text)
+    }
+
     /// The pane regained focus (the run loop forwards herdr's focus events): re-read git state
     /// so external changes show in the tree. No-op without a repo (AC-26) — so an external
     /// change to a non-git directory costs nothing. In **changed-only** mode the refresh
@@ -950,6 +990,16 @@ impl Controller {
                 applied = true;
             }
             // else: a superseded selection's render — drop it.
+        }
+        // A finished background update check (one-shot): adopt its verdict and drop the
+        // receiver. `Some(v)` shows/refreshes the banner; `None` (a successful check that found
+        // nothing newer) clears a now-stale cached banner.
+        if let Some(rx) = &self.update_rx
+            && let Ok(version) = rx.try_recv()
+        {
+            self.update_available = version;
+            self.update_rx = None;
+            applied = true;
         }
         applied.then(Effects::redraw)
     }

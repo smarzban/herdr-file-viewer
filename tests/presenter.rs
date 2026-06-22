@@ -70,6 +70,7 @@ fn sample_state() -> ViewState {
         wrap: false,
         split_pct: 40,
         zoomed: false,
+        update_banner: None,
     }
 }
 
@@ -486,5 +487,71 @@ fn geometry_is_single_column_when_narrow() {
     assert!(
         g.divider_x.is_none(),
         "no divider in a single-column layout"
+    );
+}
+
+#[test]
+fn update_banner_renders_as_a_bottom_status_line() {
+    // AC-U1: when behind, the bottom row carries the version + the install command.
+    let mut state = sample_state();
+    state.update_banner = Some(
+        "↑ v1.1.0 available · herdr plugin install smarzban/herdr-file-viewer · u to dismiss"
+            .to_string(),
+    );
+    let out = render(&state, 100, 24);
+    assert!(out.contains("v1.1.0 available"), "names the version\n{out}");
+    assert!(
+        out.contains("herdr plugin install smarzban/herdr-file-viewer"),
+        "shows the install command\n{out}"
+    );
+    // The banner sits on the last interior row; the tree/content are still drawn above it.
+    assert!(
+        out.contains("fn main()"),
+        "content still shows above the banner\n{out}"
+    );
+    let last = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .next_back()
+        .unwrap_or("");
+    assert!(
+        last.contains("u to dismiss"),
+        "banner is the bottom line: {last:?}"
+    );
+}
+
+#[test]
+fn no_banner_reserves_no_row_and_shows_nothing() {
+    // AC-U2: up-to-date users see no banner text at all.
+    let out = render(&sample_state(), 100, 24); // update_banner: None
+    assert!(
+        !out.contains("available"),
+        "no update text when up-to-date\n{out}"
+    );
+}
+
+#[test]
+fn banner_carves_exactly_one_row_off_the_columns() {
+    // AC-U2: showing the banner shrinks the content interior by exactly one row vs. no banner,
+    // so mouse hit-testing (which reads the same geometry) stays correct.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+
+    let plain = sample_state();
+    let mut withbanner = sample_state();
+    withbanner.update_banner = Some("↑ v1.1.0 available · u to dismiss".to_string());
+
+    let h_plain = geometry(area, &plain).content_inner.unwrap().height;
+    let h_banner = geometry(area, &withbanner).content_inner.unwrap().height;
+    assert_eq!(
+        h_plain - h_banner,
+        1,
+        "the banner takes exactly one row from the body"
     );
 }

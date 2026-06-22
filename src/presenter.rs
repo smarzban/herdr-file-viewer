@@ -56,6 +56,9 @@ pub struct ViewState {
     /// Hide the tree and let the content pane fill the whole frame (the `z` zoom toggle).
     /// Overrides the split — and the narrow-layout focus rule — to draw content only.
     pub zoomed: bool,
+    /// When `Some`, a one-row "update available" status line is drawn across the bottom of the
+    /// frame (the columns take the remaining rows). `None` ⇒ no footer, layout unchanged.
+    pub update_banner: Option<String>,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -191,6 +194,31 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     (parts[1].width, parts[1].height)
 }
 
+/// Split the frame into the body (the two columns) and an optional one-row footer. The footer
+/// is present exactly when an update banner is to be shown (and the frame is tall enough to
+/// spare a row). Shared by [`draw`] and [`geometry`] so the drawn layout and the hit-test
+/// geometry carve the same body rect — a mouse click is never mapped against stale geometry.
+fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
+    if state.update_banner.is_none() || area.height < 2 {
+        return (area, None);
+    }
+    let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+    (parts[0], Some(parts[1]))
+}
+
+/// Draw the one-row "update available" status line. Reversed-ish (dark-on-cyan) so it reads as
+/// a status bar; sanitized (defense-in-depth, AC-27) and clipped to its row by ratatui.
+fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
+    let line = Line::styled(
+        sanitize_label(banner),
+        Style::new()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 /// Below this pane width the viewer drops to a single, focused column (AC-21).
 const NARROW_SPLIT: u16 = 80;
 
@@ -237,11 +265,12 @@ pub struct PaneGeometry {
 /// renders, so a click is never mapped against stale geometry. The interior of a bordered
 /// block is its area inset by one cell on each side (the title does not change it).
 pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
-    let (tree, content, divider_x) = columns(area, state);
+    let (body, _footer) = body_and_footer(area, state);
+    let (tree, content, divider_x) = columns(body, state);
     let inner = |r: Rect| Block::bordered().inner(r);
     PaneGeometry {
-        area_x: area.x,
-        area_width: area.width,
+        area_x: body.x,
+        area_width: body.width,
         tree_inner: tree.map(inner),
         content_inner: content.map(inner),
         divider_x,
@@ -257,7 +286,11 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 /// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
 /// geometry it is drawn into (a stale `state.width` cannot desync the layout).
 pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
-    let (tree, content, _divider) = columns(frame.area(), state);
+    let (body, footer) = body_and_footer(frame.area(), state);
+    if let (Some(area), Some(banner)) = (footer, state.update_banner.as_deref()) {
+        draw_update_footer(frame, area, banner);
+    }
+    let (tree, content, _divider) = columns(body, state);
     if let Some(area) = tree {
         draw_tree(frame, area, state);
     }

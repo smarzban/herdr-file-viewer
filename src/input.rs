@@ -34,6 +34,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('w') => Some(Intent::ToggleWrap),
         KeyCode::Char('z') => Some(Intent::ToggleZoom),
         KeyCode::Char('r') => Some(Intent::Refresh),
+        KeyCode::Char('u') => Some(Intent::DismissUpdate),
         KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
         _ => None,
     }
@@ -70,6 +71,7 @@ mod tests {
         (KeyCode::Char('w'), Intent::ToggleWrap),
         (KeyCode::Char('z'), Intent::ToggleZoom),
         (KeyCode::Char('r'), Intent::Refresh),
+        (KeyCode::Char('u'), Intent::DismissUpdate),
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
     ];

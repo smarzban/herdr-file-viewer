@@ -45,6 +45,9 @@ pub enum Intent {
     /// Re-read git state (working-tree status + changed-set) and re-render, so the viewer picks
     /// up changes made outside it — a merge, pull, or commit in another pane. Read-only.
     Refresh,
+    /// Dismiss the "update available" banner for this session (it returns next launch while
+    /// still behind). Read-only — touches only in-memory UI state.
+    DismissUpdate,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -52,7 +55,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 17] = [
+    pub const ALL: [Intent; 18] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -69,6 +72,7 @@ impl Intent {
         Intent::ToggleWrap,
         Intent::ToggleZoom,
         Intent::Refresh,
+        Intent::DismissUpdate,
         Intent::Close,
     ];
 }
@@ -102,6 +106,7 @@ mod tests {
                 | Intent::ToggleWrap
                 | Intent::ToggleZoom
                 | Intent::Refresh
+                | Intent::DismissUpdate
                 | Intent::Close => false,
             };
             assert!(
