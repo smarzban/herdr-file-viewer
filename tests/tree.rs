@@ -27,10 +27,19 @@ fn a_directory_with_a_changed_descendant_is_flagged_dirty() {
 
     let nodes = model.visible_nodes();
     let find = |name: &str| {
-        nodes.iter().find(|n| n.path.file_name().unwrap() == name).expect("node present")
+        nodes
+            .iter()
+            .find(|n| n.path.file_name().unwrap() == name)
+            .expect("node present")
     };
-    assert!(find("changed").dir_dirty, "a directory with a modified descendant is dirty");
-    assert!(!find("clean").dir_dirty, "a directory with no changes is not dirty");
+    assert!(
+        find("changed").dir_dirty,
+        "a directory with a modified descendant is dirty"
+    );
+    assert!(
+        !find("clean").dir_dirty,
+        "a directory with no changes is not dirty"
+    );
 }
 
 fn names(model: &TreeModel) -> Vec<String> {
@@ -53,12 +62,18 @@ fn enumerates_immediate_children_and_expands_recursively() {
     let top = names(&model);
     assert!(top.contains(&"src".to_string()));
     assert!(top.contains(&"a.txt".to_string()));
-    assert!(!top.contains(&"b.rs".to_string()), "nested files hidden until expand");
+    assert!(
+        !top.contains(&"b.rs".to_string()),
+        "nested files hidden until expand"
+    );
 
     model.expand(&dir.path().join("src")); // AC-3
     let after = names(&model);
     assert!(after.contains(&"b.rs".to_string()));
-    assert!(!after.contains(&"c.rs".to_string()), "deeper level still collapsed");
+    assert!(
+        !after.contains(&"c.rs".to_string()),
+        "deeper level still collapsed"
+    );
 
     model.expand(&dir.path().join("src/inner"));
     assert!(names(&model).contains(&"c.rs".to_string()));
@@ -75,8 +90,14 @@ fn gitignored_entries_are_absent_by_default() {
 
     let n = names(&TreeModel::new(dir.path()));
     assert!(n.contains(&"kept.txt".to_string()));
-    assert!(!n.contains(&"ignored.txt".to_string()), "AC-4: gitignored file absent");
-    assert!(!n.contains(&"target".to_string()), "AC-4: gitignored dir absent");
+    assert!(
+        !n.contains(&"ignored.txt".to_string()),
+        "AC-4: gitignored file absent"
+    );
+    assert!(
+        !n.contains(&"target".to_string()),
+        "AC-4: gitignored dir absent"
+    );
 }
 
 #[test]
@@ -89,7 +110,10 @@ fn never_lists_paths_outside_the_root() {
     let mut model = TreeModel::new(&root);
     model.expand(&root);
     assert!(
-        model.visible_nodes().iter().all(|n| n.path.starts_with(&root)),
+        model
+            .visible_nodes()
+            .iter()
+            .all(|n| n.path.starts_with(&root)),
         "a node escaped the root"
     );
 }

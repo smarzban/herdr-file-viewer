@@ -116,7 +116,9 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
 fn is_flag_safe(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
 }
 
 #[cfg(test)]
@@ -138,20 +140,29 @@ mod tests {
 
     #[test]
     fn files_pane_focused_closes() {
-        let j = list(&[pane("wE:p1", "", false, "wE:t1"), pane("wE:pD", "Files", true, "wE:t1")]);
+        let j = list(&[
+            pane("wE:p1", "", false, "wE:t1"),
+            pane("wE:pD", "Files", true, "wE:t1"),
+        ]);
         assert_eq!(launch_decision(&j), "CLOSE wE:pD");
     }
 
     #[test]
     fn files_pane_unfocused_in_current_tab_is_focused() {
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "wE:t1")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("wE:pD", "Files", false, "wE:t1"),
+        ]);
         assert_eq!(launch_decision(&j), "FOCUS wE:pD");
     }
 
     #[test]
     fn files_pane_in_another_tab_is_ignored() {
         // The focused pane is in tab wE:t1; a Files pane in wC:t1 must not be touched.
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wC:pD", "Files", false, "wC:t1")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("wC:pD", "Files", false, "wC:t1"),
+        ]);
         assert_eq!(launch_decision(&j), "OPEN");
     }
 
@@ -165,7 +176,10 @@ mod tests {
     fn unsafe_pane_id_is_never_emitted() {
         // A pane id beginning with '-' could option-inject `herdr pane zoom <id>`; it must
         // degrade to OPEN, never FOCUS/CLOSE.
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("-rf", "Files", false, "wE:t1")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("-rf", "Files", false, "wE:t1"),
+        ]);
         assert_eq!(launch_decision(&j), "OPEN");
     }
 
@@ -195,7 +209,10 @@ mod tests {
     fn tab_viewer_focused_closes() {
         // On the viewer's own tab with it focused → toggle off (close the pane; herdr auto-
         // closes the now-empty tab).
-        let j = list(&[pane("wE:p1", "", false, "wE:t1"), pane("wE:pD", "Files", true, "wE:t4")]);
+        let j = list(&[
+            pane("wE:p1", "", false, "wE:t1"),
+            pane("wE:pD", "Files", true, "wE:t4"),
+        ]);
         assert_eq!(launch_decision_tab(&j), "CLOSE wE:pD");
     }
 
@@ -203,14 +220,20 @@ mod tests {
     fn tab_viewer_in_another_tab_switches_to_that_tab() {
         // THE key difference from the pane launcher: a viewer in a different tab is switched to
         // (by tab id), not duplicated.
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "wE:t4")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("wE:pD", "Files", false, "wE:t4"),
+        ]);
         assert_eq!(launch_decision_tab(&j), "SWITCHTAB wE:t4");
     }
 
     #[test]
     fn tab_viewer_in_current_tab_unfocused_is_focused() {
         // Edge: the viewer was split into the current tab and isn't focused → focus it in place.
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "wE:t1")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("wE:pD", "Files", false, "wE:t1"),
+        ]);
         assert_eq!(launch_decision_tab(&j), "FOCUS wE:pD");
     }
 
@@ -223,13 +246,19 @@ mod tests {
     #[test]
     fn tab_unsafe_tab_id_is_never_emitted() {
         // A tab id that could option-inject `herdr tab focus <id>` must degrade to OPEN.
-        let j = list(&[pane("wE:p1", "", true, "wE:t1"), pane("wE:pD", "Files", false, "-rf")]);
+        let j = list(&[
+            pane("wE:p1", "", true, "wE:t1"),
+            pane("wE:pD", "Files", false, "-rf"),
+        ]);
         assert_eq!(launch_decision_tab(&j), "OPEN");
     }
 
     #[test]
     fn tab_unsafe_pane_id_is_never_emitted() {
-        let j = list(&[pane("wE:p1", "", false, "wE:t4"), pane("-rf", "Files", true, "wE:t4")]);
+        let j = list(&[
+            pane("wE:p1", "", false, "wE:t4"),
+            pane("-rf", "Files", true, "wE:t4"),
+        ]);
         assert_eq!(launch_decision_tab(&j), "OPEN");
     }
 

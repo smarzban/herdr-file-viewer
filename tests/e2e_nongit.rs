@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{viewer_command, TempDir};
+use common::{TempDir, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
 use std::time::Duration;
@@ -21,9 +21,11 @@ fn non_git_directory_browses_and_renders_with_git_keys_inert() {
     s.set_expect_timeout(Some(Duration::from_secs(15)));
 
     // Tree browsing works without git (AC-2 / AC-26).
-    s.expect("notes.txt").expect("tree should list files in a non-git directory");
+    s.expect("notes.txt")
+        .expect("tree should list files in a non-git directory");
     // A file renders (content pane fills from empty with the selected file).
-    s.expect("PLAINVIEW").expect("a file renders in a non-git directory");
+    s.expect("PLAINVIEW")
+        .expect("a file renders in a non-git directory");
 
     // The git-only keys must be inert here — no panic, no error. Driving them then exiting
     // cleanly proves they degrade gracefully (AC-26).
@@ -32,10 +34,14 @@ fn non_git_directory_browses_and_renders_with_git_keys_inert() {
     }
 
     s.send("q").expect("send close");
-    s.expect(Eof).expect("the viewer terminates after the close key");
+    s.expect(Eof)
+        .expect("the viewer terminates after the close key");
     match s.get_process().wait().expect("reap the viewer") {
         WaitStatus::Exited(_, code) => {
-            assert_eq!(code, 0, "AC-26: git keys are inert in a non-git dir, no crash")
+            assert_eq!(
+                code, 0,
+                "AC-26: git keys are inert in a non-git dir, no crash"
+            )
         }
         other => panic!("expected a clean exit, got {other:?}"),
     }

@@ -66,12 +66,19 @@ mod tests {
     use super::*;
 
     fn fd(name: &str, is_markdown: bool, is_changed: bool) -> FileDescriptor {
-        FileDescriptor { path: PathBuf::from(name), is_markdown, is_changed }
+        FileDescriptor {
+            path: PathBuf::from(name),
+            is_markdown,
+            is_changed,
+        }
     }
 
     #[test]
     fn unchanged_markdown_defaults_to_rendered_markdown() {
-        assert_eq!(default_mode(&fd("README.md", true, false)), ViewMode::RenderedMarkdown);
+        assert_eq!(
+            default_mode(&fd("README.md", true, false)),
+            ViewMode::RenderedMarkdown
+        );
     }
 
     #[test]
@@ -82,7 +89,10 @@ mod tests {
 
     #[test]
     fn unchanged_non_markdown_defaults_to_syntax_content() {
-        assert_eq!(default_mode(&fd("main.rs", false, false)), ViewMode::SyntaxContent);
+        assert_eq!(
+            default_mode(&fd("main.rs", false, false)),
+            ViewMode::SyntaxContent
+        );
     }
 
     #[test]
@@ -90,7 +100,10 @@ mod tests {
         // AC-11: a changed file can cycle from the compact diff to a full-context diff
         // (whole file + line numbers + inline diff) before the content views.
         let modes = applicable_modes(&fd("main.rs", false, true));
-        assert_eq!(modes, vec![ViewMode::Diff, ViewMode::FullDiff, ViewMode::SyntaxContent]);
+        assert_eq!(
+            modes,
+            vec![ViewMode::Diff, ViewMode::FullDiff, ViewMode::SyntaxContent]
+        );
         // For a changed markdown file the rendered view sits after the two diff views.
         let md = applicable_modes(&fd("README.md", true, true));
         assert_eq!(
@@ -110,8 +123,14 @@ mod tests {
         // diff for an unchanged one, so neither diff mode is offered.
         for md in [true, false] {
             let modes = applicable_modes(&fd("x", md, false));
-            assert!(!modes.contains(&ViewMode::Diff), "no compact diff when unchanged (md={md})");
-            assert!(!modes.contains(&ViewMode::FullDiff), "no full diff when unchanged (md={md})");
+            assert!(
+                !modes.contains(&ViewMode::Diff),
+                "no compact diff when unchanged (md={md})"
+            );
+            assert!(
+                !modes.contains(&ViewMode::FullDiff),
+                "no full diff when unchanged (md={md})"
+            );
         }
     }
 

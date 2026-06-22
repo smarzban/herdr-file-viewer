@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{viewer_command, TempDir};
+use common::{TempDir, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
 use std::os::unix::fs::PermissionsExt;
@@ -49,19 +49,30 @@ fn open_in_editor_invokes_the_editor_on_the_selected_file_without_modifying_it()
         if contents.ends_with("edit.txt") {
             break contents;
         }
-        assert!(Instant::now() < deadline, "editor was never invoked on the selected file");
+        assert!(
+            Instant::now() < deadline,
+            "editor was never invoked on the selected file"
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
-    assert!(recorded.ends_with("edit.txt"), "editor invoked on the selected file: {recorded:?}");
+    assert!(
+        recorded.ends_with("edit.txt"),
+        "editor invoked on the selected file: {recorded:?}"
+    );
 
     // AC-N1: the hand-off must not have modified the file.
-    assert_eq!(std::fs::read_to_string(p.join("edit.txt")).unwrap(), "EDITME\n", "file unchanged");
+    assert_eq!(
+        std::fs::read_to_string(p.join("edit.txt")).unwrap(),
+        "EDITME\n",
+        "file unchanged"
+    );
 
     // The recorder is written before the editor exits, and the viewer re-enables raw mode
     // only after it returns; give that a moment so the close key is read in raw mode.
     std::thread::sleep(Duration::from_millis(150));
     s.send("q").expect("send close");
-    s.expect(Eof).expect("the viewer terminates after the close key");
+    s.expect(Eof)
+        .expect("the viewer terminates after the close key");
     match s.get_process().wait().expect("reap the viewer") {
         // exit==0 also guards the best-effort post-editor clear (see the module doc).
         WaitStatus::Exited(_, code) => assert_eq!(code, 0, "clean exit after editor hand-off"),
@@ -83,11 +94,17 @@ fn a_missing_editor_is_a_non_fatal_notice_not_a_crash() {
     s.set_expect_timeout(Some(Duration::from_secs(15)));
 
     s.expect("edit.txt").expect("tree should list the file");
-    s.send("e").expect("send open-in-editor with no editor configured");
+    s.send("e")
+        .expect("send open-in-editor with no editor configured");
     // The file must still be intact, and the viewer must still close cleanly.
     s.send("q").expect("send close");
-    s.expect(Eof).expect("viewer terminates after a failed hand-off + close");
-    assert_eq!(std::fs::read_to_string(p.join("edit.txt")).unwrap(), "EDITME\n", "file unchanged");
+    s.expect(Eof)
+        .expect("viewer terminates after a failed hand-off + close");
+    assert_eq!(
+        std::fs::read_to_string(p.join("edit.txt")).unwrap(),
+        "EDITME\n",
+        "file unchanged"
+    );
     match s.get_process().wait().expect("reap the viewer") {
         WaitStatus::Exited(_, code) => assert_eq!(code, 0, "a missing editor does not crash"),
         other => panic!("expected a clean exit, got {other:?}"),

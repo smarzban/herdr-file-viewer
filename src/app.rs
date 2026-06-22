@@ -48,19 +48,29 @@ pub fn run() -> io::Result<()> {
     let git: Arc<dyn GitService> = Arc::new(LiveGit {
         // In a non-repo there is no repo_root; git is never queried then, but a path is still
         // required, so fall back to the tree root.
-        repo_root: resolved.repo_root.clone().unwrap_or_else(|| resolved.root.clone()),
+        repo_root: resolved
+            .repo_root
+            .clone()
+            .unwrap_or_else(|| resolved.root.clone()),
         base_hint: resolved.base_branch.clone(),
     });
-    let content: Box<dyn ContentProvider> =
-        Box::new(LiveContent { root: resolved.root.clone(), renderers: default_renderers() });
-    let editor: Box<dyn EditorHandoff> =
-        Box::new(LiveEditor { editor: std::env::var_os("EDITOR") });
+    let content: Box<dyn ContentProvider> = Box::new(LiveContent {
+        root: resolved.root.clone(),
+        renderers: default_renderers(),
+    });
+    let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
+        editor: std::env::var_os("EDITOR"),
+    });
 
     let mut controller = Controller::new(
         resolved.root.clone(),
         resolved.is_git_repo,
         baseline,
-        Components { git, content, editor },
+        Components {
+            git,
+            content,
+            editor,
+        },
     );
 
     let mut terminal = ratatui::try_init()?;
@@ -177,7 +187,13 @@ impl GitService for LiveGit {
         git::changed_set(&self.repo_root, baseline, self.base_hint.as_deref())
     }
     fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String {
-        git::diff(&self.repo_root, rel_path, baseline, self.base_hint.as_deref(), full_context)
+        git::diff(
+            &self.repo_root,
+            rel_path,
+            baseline,
+            self.base_hint.as_deref(),
+            full_context,
+        )
     }
 }
 
@@ -200,7 +216,10 @@ impl ContentProvider for LiveContent {
         };
         let name = path.file_name().and_then(OsStr::to_str);
         let (content, notice) = render::render(&self.renderers, &prepared, mode, raw_diff, name);
-        RenderResult { content, notices: notice.into_iter().collect() }
+        RenderResult {
+            content,
+            notices: notice.into_iter().collect(),
+        }
     }
 }
 
@@ -243,8 +262,9 @@ struct ProcessSpawner;
 
 impl Spawner for ProcessSpawner {
     fn spawn(&mut self, argv: &[OsString]) -> io::Result<()> {
-        let (prog, args) =
-            argv.split_first().ok_or_else(|| io::Error::other("empty editor command"))?;
+        let (prog, args) = argv
+            .split_first()
+            .ok_or_else(|| io::Error::other("empty editor command"))?;
         let status = Command::new(prog).args(args).status()?;
         if status.success() {
             Ok(())
@@ -255,7 +275,9 @@ impl Spawner for ProcessSpawner {
     fn open_pane(&mut self, _editor: &OsStr, _file: &Path) -> io::Result<()> {
         // v1's keyboard OpenInEditor uses the configured-editor path (Target::Editor); the
         // new-pane sequence is implemented and tested in the Host Adapter (host.rs).
-        Err(io::Error::other("new-pane hand-off is not on the v1 keyboard path"))
+        Err(io::Error::other(
+            "new-pane hand-off is not on the v1 keyboard path",
+        ))
     }
 }
 
@@ -366,8 +388,14 @@ mod tests {
         std::fs::write(root.join("assets/markdown-style.json"), "{}").unwrap();
         let exe = root.join("target/release/herdr-file-viewer");
         let s = bundled_style_path(Some(&exe)).expect("style found in the install tree");
-        assert!(s.ends_with("markdown-style.json"), "points at the bundled style: {s}");
-        assert!(Path::new(&s).is_file(), "the referenced style file exists: {s}");
+        assert!(
+            s.ends_with("markdown-style.json"),
+            "points at the bundled style: {s}"
+        );
+        assert!(
+            Path::new(&s).is_file(),
+            "the referenced style file exists: {s}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -379,7 +407,11 @@ mod tests {
         // one. `markdown_style()` then falls back to glow's built-in `dark`.
         let root = tmp("bundled-absent"); // deliberately no assets/ created
         let exe = root.join("target/release/herdr-file-viewer");
-        assert_eq!(bundled_style_path(Some(&exe)), None, "no asset in the install tree → None");
+        assert_eq!(
+            bundled_style_path(Some(&exe)),
+            None,
+            "no asset in the install tree → None"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -414,8 +446,16 @@ mod tests {
         // bat, like glow, must be told to colorize since its output is piped, not a TTY; and
         // `--style=numbers` shows the line-number gutter the viewer wants for code.
         let r = default_renderers();
-        assert!(r.syntax.iter().any(|a| a == "--color=always"), "bat color forced: {:?}", r.syntax);
-        assert!(r.syntax.iter().any(|a| a == "--style=numbers"), "bat line numbers: {:?}", r.syntax);
+        assert!(
+            r.syntax.iter().any(|a| a == "--color=always"),
+            "bat color forced: {:?}",
+            r.syntax
+        );
+        assert!(
+            r.syntax.iter().any(|a| a == "--style=numbers"),
+            "bat line numbers: {:?}",
+            r.syntax
+        );
     }
 
     #[test]
@@ -423,7 +463,12 @@ mod tests {
         // The full-file diff view (AC-11) is delta WITH a line-number gutter — that gutter is
         // what makes it "the whole file with line numbers". The compact diff omits it.
         let r = default_renderers();
-        assert_eq!(r.full_diff.first().map(String::as_str), Some("delta"), "full_diff uses delta: {:?}", r.full_diff);
+        assert_eq!(
+            r.full_diff.first().map(String::as_str),
+            Some("delta"),
+            "full_diff uses delta: {:?}",
+            r.full_diff
+        );
         assert!(
             r.full_diff.iter().any(|a| a == "--line-numbers"),
             "full_diff shows line numbers: {:?}",

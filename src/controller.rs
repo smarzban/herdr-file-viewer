@@ -105,7 +105,10 @@ pub struct Effects {
 
 impl Effects {
     fn redraw() -> Self {
-        Effects { redraw: true, ..Default::default() }
+        Effects {
+            redraw: true,
+            ..Default::default()
+        }
     }
     fn noop() -> Self {
         Effects::default()
@@ -189,8 +192,17 @@ impl Controller {
     /// status (tree markers, AC-7) and the changed-set against `baseline` are loaded from
     /// git; otherwise the viewer is a plain browser (AC-26). The initial selection's content
     /// is rendered so the first frame is populated.
-    pub fn new(root: PathBuf, is_git_repo: bool, baseline: Baseline, components: Components) -> Self {
-        let Components { git, content, editor } = components;
+    pub fn new(
+        root: PathBuf,
+        is_git_repo: bool,
+        baseline: Baseline,
+        components: Components,
+    ) -> Self {
+        let Components {
+            git,
+            content,
+            editor,
+        } = components;
         // The Content Renderer (and the diff query it needs) live on a worker thread; the
         // controller talks to it over a job channel and reads finished renders off a result
         // channel (AC-23). The worker exits when the job sender (held by the controller) is
@@ -208,13 +220,15 @@ impl Controller {
                 // The diff is read here, off the input thread, so a large/slow diff never
                 // blocks input (AC-23). Other modes don't need git. The full-file diff view
                 // asks git for whole-file context; the compact diff uses git's default.
-                let raw_diff = if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git
-                {
-                    let full = job.mode == ViewMode::FullDiff;
-                    job.rel.as_deref().map(|rel| worker_git.diff(rel, job.baseline, full))
-                } else {
-                    None
-                };
+                let raw_diff =
+                    if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
+                        let full = job.mode == ViewMode::FullDiff;
+                        job.rel
+                            .as_deref()
+                            .map(|rel| worker_git.diff(rel, job.baseline, full))
+                    } else {
+                        None
+                    };
                 // A renderer panic must not kill the worker (rendering would stop forever) nor
                 // fire the global panic hook from this thread (it would reset the main thread's
                 // terminal mid-session). Contain it and surface a placeholder instead.
@@ -519,8 +533,8 @@ impl Controller {
             return Effects::noop();
         }
         let tree_w = col.saturating_sub(self.geom.area_x) as i32;
-        let pct = (tree_w * 100 / self.geom.area_width as i32)
-            .clamp(SPLIT_MIN as i32, SPLIT_MAX as i32);
+        let pct =
+            (tree_w * 100 / self.geom.area_width as i32).clamp(SPLIT_MIN as i32, SPLIT_MAX as i32);
         self.split_pct = pct as u16;
         Effects::redraw()
     }
@@ -576,7 +590,8 @@ impl Controller {
 
     /// The largest valid scroll offset: total rendered lines minus the viewport height.
     fn max_content_scroll(&self) -> u16 {
-        self.rendered_line_count().saturating_sub(self.content_height)
+        self.rendered_line_count()
+            .saturating_sub(self.content_height)
     }
 
     /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
@@ -618,7 +633,13 @@ impl Controller {
         if self.effective_wrap() {
             return 0;
         }
-        let widest = self.content.lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        let widest = self
+            .content
+            .lines
+            .iter()
+            .map(|l| l.width())
+            .max()
+            .unwrap_or(0);
         (widest.min(u16::MAX as usize) as u16).saturating_sub(self.content_width)
     }
 
@@ -658,7 +679,9 @@ impl Controller {
     /// ([`Intent::OpenInEditor`]). The content was already rendered when the file was selected,
     /// so this only flips the layout/focus — no re-render is dispatched.
     fn activate(&mut self) -> Effects {
-        let Some(node) = self.tree.selected() else { return Effects::noop() };
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
         match node.kind {
             NodeKind::Dir => {
                 if node.expanded {
@@ -713,7 +736,9 @@ impl Controller {
     }
 
     fn cycle_view(&mut self) -> Effects {
-        let Some(node) = self.tree.selected() else { return Effects::noop() };
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
         if node.kind != NodeKind::File {
             return Effects::noop();
         }
@@ -727,7 +752,9 @@ impl Controller {
     }
 
     fn open_in_editor(&mut self) -> Effects {
-        let Some(node) = self.tree.selected() else { return Effects::noop() };
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
         if node.kind != NodeKind::File {
             return Effects::noop();
         }
@@ -738,14 +765,22 @@ impl Controller {
                 // force a full repaint (the external program drew over the screen).
                 self.refresh_git_state();
                 self.dispatch_render();
-                Effects { redraw: true, clear: true, ..Default::default() }
+                Effects {
+                    redraw: true,
+                    clear: true,
+                    ..Default::default()
+                }
             }
             Ok(false) => Effects::redraw(), // off-screen hand-off (new pane) — no takeover
             Err(e) => {
                 self.action_notice = Some(format!("Could not open editor: {e}"));
                 // The hand-off may have suspended the terminal before failing, so force a full
                 // repaint to recover from any partial screen state.
-                Effects { redraw: true, clear: true, ..Default::default() }
+                Effects {
+                    redraw: true,
+                    clear: true,
+                    ..Default::default()
+                }
             }
         }
     }
@@ -771,7 +806,11 @@ impl Controller {
     /// and rendered content are unchanged, so no re-render is dispatched.
     fn toggle_zoom(&mut self) -> Effects {
         self.zoomed = !self.zoomed;
-        self.focus = if self.zoomed { Focus::Content } else { Focus::Tree };
+        self.focus = if self.zoomed {
+            Focus::Content
+        } else {
+            Focus::Tree
+        };
         Effects::redraw()
     }
 
@@ -784,7 +823,10 @@ impl Controller {
             self.focus = Focus::Tree;
             return Effects::redraw();
         }
-        Effects { quit: true, ..Default::default() }
+        Effects {
+            quit: true,
+            ..Default::default()
+        }
     }
 
     /// Move the tree/content divider by `delta` percentage points, clamped so neither column
@@ -870,7 +912,9 @@ impl Controller {
         self.content_scroll = 0;
         self.content_hscroll = 0;
 
-        let Some(node) = self.tree.selected() else { return self.clear_content() };
+        let Some(node) = self.tree.selected() else {
+            return self.clear_content();
+        };
         if node.kind != NodeKind::File {
             return self.clear_content();
         }
@@ -929,7 +973,9 @@ impl Controller {
     }
 
     fn is_changed(&self, path: &Path) -> bool {
-        self.rel(path).map(|rel| self.changed.contains_key(&rel)).unwrap_or(false)
+        self.rel(path)
+            .map(|rel| self.changed.contains_key(&rel))
+            .unwrap_or(false)
     }
 
     /// `path` made relative to the tree root (how git keys its maps); `None` if outside it.
