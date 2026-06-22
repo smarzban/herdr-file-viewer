@@ -713,6 +713,28 @@ fn double_click_a_folder_toggles_expansion() {
 }
 
 #[test]
+fn a_content_click_then_a_same_row_tree_click_is_not_a_double_click() {
+    // Regression (opus review of PR #16): the tree and content panes share row numbers, so with
+    // the column-agnostic double-click match a content click followed by a tree click on the
+    // SAME row must NOT register as a double-click (no spurious activation). A non-tree click
+    // clears the pending double-click.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "folder starts collapsed");
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 1)); // content pane, row 1
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 4, 1)); // tree folder, same row
+    assert_eq!(
+        ctrl.tree().visible_nodes().len(),
+        1,
+        "a content→tree same-row sequence must NOT activate (no spurious expand)"
+    );
+}
+
+#[test]
 fn double_tap_on_the_same_row_activates_even_with_column_jitter() {
     // A touchpad double-tap often lands a column or two apart between taps; as long as both
     // taps are on the same row within the double-click window, it activates (here: expands a

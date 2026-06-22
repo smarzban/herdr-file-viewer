@@ -449,13 +449,18 @@ impl Controller {
     fn handle_click(&mut self, col: u16, row: u16) -> Effects {
         let region = self.hit_test(col, row);
         let now = Instant::now();
-        let double = is_double_click(self.last_click, (col, row), now);
-        self.last_click = Some((col, row, now));
         match region {
             MouseRegion::TreeRow(idx) => {
                 if idx >= self.tree.visible_nodes().len() {
-                    return Effects::noop(); // the empty area below the last node — inert
+                    self.last_click = None; // empty area below the nodes — inert, and breaks any
+                    return Effects::noop(); // pending double-click sequence
                 }
+                // A double-click is two clicks on the SAME tree row within the window. Because
+                // every non-tree-row click clears `last_click` (below), it only ever holds prior
+                // tree-row clicks — so the column-agnostic same-row match in `is_double_click`
+                // can never be tripped by a click in another pane that happens to share a row.
+                let double = is_double_click(self.last_click, (col, row), now);
+                self.last_click = Some((col, row, now));
                 self.action_notice = None;
                 self.focus = Focus::Tree;
                 self.tree.set_cursor(idx);
@@ -466,10 +471,14 @@ impl Controller {
                 Effects::redraw()
             }
             MouseRegion::Content => {
+                self.last_click = None; // a non-tree click breaks any pending double-click
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
-            MouseRegion::Divider | MouseRegion::Outside => Effects::noop(),
+            MouseRegion::Divider | MouseRegion::Outside => {
+                self.last_click = None;
+                Effects::noop()
+            }
         }
     }
 
