@@ -113,7 +113,7 @@ This procedure verifies the remaining **live-host** behavior.
       it closed; a bound key drives the same cycle.
 - [ ] Step 6b — `open-file-viewer-tab` opens the viewer in its own tab, switches to it from
       another tab (no duplicate), and toggles it closed when on it.
-- [ ] Step 7 — click selects, double-click activates (folder toggle / file editor), the wheel
+- [ ] Step 7 — click selects, double-click activates (folder toggle / file zoom), the wheel
       scrolls, the divider drags, and `Shift`+drag still selects text in the terminal.
 
 If either fails, capture the herdr version (`herdr --version`), the platform, and the manifest

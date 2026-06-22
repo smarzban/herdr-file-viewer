@@ -43,7 +43,7 @@ const HSCROLL_STEP: u16 = 8;
 /// How many content lines one mouse-wheel notch scrolls (matches herdr's default).
 const WHEEL_STEP: isize = 3;
 /// Two left-clicks at the same cell within this window are a double-click (a folder toggles
-/// expand/collapse; a file hands off to the editor).
+/// expand/collapse; a file opens in zoom mode — the editor hand-off is the `e` key).
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
