@@ -51,6 +51,17 @@ fn declares_at_least_one_action() {
 }
 
 #[test]
+fn declares_split_and_tab_open_actions() {
+    // The viewer can be summoned as a split pane or in its own tab; each action runs its
+    // dedicated launcher script.
+    let m = manifest();
+    assert!(m.contains(r#"id = "open-file-viewer""#), "split-pane action present");
+    assert!(m.contains(r#"id = "open-file-viewer-tab""#), "tab action present");
+    assert!(m.contains("scripts/open-file-viewer.sh"), "split action runs its launcher");
+    assert!(m.contains("scripts/open-file-viewer-tab.sh"), "tab action runs its launcher");
+}
+
+#[test]
 fn pins_minimum_herdr_version() {
     assert!(
         manifest().contains(r#"min_herdr_version = "0.7.0""#),
