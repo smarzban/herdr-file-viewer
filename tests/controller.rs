@@ -757,3 +757,49 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 5, 5));
     assert_eq!(ctrl.view_state().content_hscroll, 0, "horizontal wheel over the tree does nothing");
 }
+
+// ---- refresh: pick up external git changes (the `r` key + focus-gain) ------------------
+
+#[test]
+fn refresh_re_queries_git_state_and_redraws() {
+    // `r` re-reads git so a change made outside the viewer (merge/pull/commit elsewhere) shows.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, changed_calls, _) = controller(dir.path(), true, StubGit::default(), false);
+    let before = changed_calls.lock().unwrap().len();
+
+    let fx = ctrl.handle(Intent::Refresh);
+    assert!(fx.redraw, "Refresh redraws");
+    assert!(
+        changed_calls.lock().unwrap().len() > before,
+        "Refresh re-queries git for the changed-set"
+    );
+}
+
+#[test]
+fn focus_gained_re_queries_git_but_preserves_content_scroll() {
+    // Regaining focus refreshes the tree's git state (external changes show) WITHOUT re-rendering
+    // the content — so the user's scroll position is not reset on every focus change.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let git = StubGit::default();
+    let changed_calls = git.changed_calls.clone();
+    let components = Components {
+        git: Arc::new(git),
+        content: Box::new(LinesContent { n: 50 }),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus); // focus the content pane
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().content_scroll, 2, "scrolled down two lines");
+    let before = changed_calls.lock().unwrap().len();
+
+    let fx = ctrl.handle_focus_gained();
+    assert!(fx.redraw, "focus-gain redraws (fresh tree colours)");
+    assert!(changed_calls.lock().unwrap().len() > before, "focus-gain re-queries git");
+    assert_eq!(ctrl.view_state().content_scroll, 2, "focus-gain does NOT reset the content scroll");
+}

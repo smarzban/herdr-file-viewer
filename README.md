@@ -142,6 +142,7 @@ the same locally and remotely; it's only *which* keymap fires them across `--rem
 | `Tab` | Move focus between the tree and content columns |
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
 | `w` | Toggle line wrapping for the content pane |
+| `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `q` / `Esc` | Close the viewer and return to the prior pane |
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
@@ -149,6 +150,11 @@ directions; `Tab` back to the tree to move between files. Long lines wrap in pro
 plain text); diffs and code keep their original lines so columns stay aligned — scroll
 sideways with `←`/`→`, or press `w` to wrap them instead. The layout reflows automatically
 when the pane is resized.
+
+**Git state stays current.** The viewer re-reads git status when the pane **regains focus**, so
+changes you make outside it (a merge, pull, or commit in another pane) show up automatically; `r`
+forces a full refresh on demand. (Focus-refresh updates the tree's status without disturbing your
+content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
 never intercepted); `Shift` is permitted, for keys such as `<` and `>`.

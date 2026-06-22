@@ -15,7 +15,10 @@ use crate::presenter::{self, ViewState};
 use crate::render::{self, Prepared, Renderers};
 use crate::view_policy::ViewMode;
 use crate::{host, input, root};
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use crossterm::event::{
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+    KeyEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -65,16 +68,21 @@ pub fn run() -> io::Result<()> {
     // pane that requests capture, while reserving Shift+mouse for the terminal's own
     // selection/copy. Best-effort so a terminal without mouse support still runs.
     let _ = execute!(io::stdout(), EnableMouseCapture);
+    // Request focus-change reporting so the viewer can refresh git state when it regains focus
+    // (herdr forwards FocusGained/FocusLost to a pane that opts in). Best-effort.
+    let _ = execute!(io::stdout(), EnableFocusChange);
     // ratatui's panic hook restores the terminal but doesn't know we enabled mouse capture, so
     // chain a disable in front of it — otherwise a panic would leave the host terminal stuck in
     // mouse-reporting mode.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableFocusChange);
         prev_hook(info);
     }));
     let outcome = event_loop(&mut terminal, &mut controller);
     let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableFocusChange);
     ratatui::try_restore()?;
     outcome
 }
@@ -136,6 +144,11 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     }
                     dirty |= fx.redraw;
                 }
+                // The pane regained focus (herdr forwards focus events to a pane that opts in):
+                // re-read git state so external changes — a merge, pull, or commit in another
+                // pane — show in the tree without a relaunch. FocusLost needs no action.
+                Event::FocusGained => dirty |= controller.handle_focus_gained().redraw,
+                Event::FocusLost => {}
                 // The pane was resized: redraw so the two-column layout and content reflow to
                 // the new geometry. `terminal.draw` autoresizes its buffers before drawing, so
                 // marking the frame dirty is enough.
@@ -250,6 +263,7 @@ impl Spawner for ProcessSpawner {
 /// raw mouse escape sequences instead of normal input.
 fn suspend_tui() -> io::Result<()> {
     let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableFocusChange);
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)
 }
@@ -260,6 +274,7 @@ fn resume_tui() -> io::Result<()> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let _ = execute!(io::stdout(), EnableMouseCapture);
+    let _ = execute!(io::stdout(), EnableFocusChange);
     Ok(())
 }
 
