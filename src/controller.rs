@@ -389,6 +389,7 @@ impl Controller {
             Intent::ShrinkTree => self.resize_split(-(SPLIT_STEP as i16)),
             Intent::GrowTree => self.resize_split(SPLIT_STEP as i16),
             Intent::ToggleWrap => self.toggle_wrap(),
+            Intent::Refresh => self.refresh(),
             Intent::Close => Effects { quit: true, ..Default::default() },
         }
     }
@@ -745,12 +746,29 @@ impl Controller {
         self.wrap_for(self.tree.selected().as_ref())
     }
 
+    /// `r` — explicitly re-read git state and re-render the current selection, so the viewer
+    /// picks up changes made outside it (a merge, pull, or commit in another pane). A full
+    /// refresh: it re-renders the content (resetting its scroll), since the user asked for it.
+    fn refresh(&mut self) -> Effects {
+        self.refresh_git_state();
+        self.dispatch_render();
+        Effects::redraw()
+    }
+
+    /// The pane regained focus (the run loop forwards herdr's focus events): re-read git state
+    /// so external changes show in the tree, but do NOT re-render the content — re-rendering on
+    /// every focus change would reset the scroll. The fresh status repaints on the next draw;
+    /// the content re-renders on the next selection (or an explicit `r`). No-op without a repo.
+    pub fn handle_focus_gained(&mut self) -> Effects {
+        self.refresh_git_state();
+        Effects::redraw()
+    }
+
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
-    /// against the active baseline (AC-16), updating the tree caches. Used at launch and
-    /// after an editor hand-off returns (the file may have changed). No-op without a repo
-    /// (AC-26). This runs on the calling thread, but only on deliberate, infrequent actions
-    /// (launch, editor return, baseline toggle) — never the hot navigation path, where the
-    /// diff is fetched off-thread (AC-23).
+    /// against the active baseline (AC-16), updating the tree caches. No-op without a repo
+    /// (AC-26). Runs on the calling thread, but only on deliberate, infrequent actions —
+    /// launch, editor return, baseline toggle, the `r` refresh key, and focus-gain — never the
+    /// hot navigation path, where the diff is fetched off-thread (AC-23).
     fn refresh_git_state(&mut self) {
         if !self.is_git_repo {
             return;

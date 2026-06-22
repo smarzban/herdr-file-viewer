@@ -35,6 +35,9 @@ pub enum Intent {
     /// Force content-line wrapping on/off, overriding the per-mode default (so long lines in
     /// code and diffs can be wrapped on demand instead of truncated).
     ToggleWrap,
+    /// Re-read git state (working-tree status + changed-set) and re-render, so the viewer picks
+    /// up changes made outside it — a merge, pull, or commit in another pane. Read-only.
+    Refresh,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -42,7 +45,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 14] = [
+    pub const ALL: [Intent; 15] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -56,6 +59,7 @@ impl Intent {
         Intent::ShrinkTree,
         Intent::GrowTree,
         Intent::ToggleWrap,
+        Intent::Refresh,
         Intent::Close,
     ];
 }
@@ -86,6 +90,7 @@ mod tests {
                 | Intent::ShrinkTree
                 | Intent::GrowTree
                 | Intent::ToggleWrap
+                | Intent::Refresh
                 | Intent::Close => false,
             };
             assert!(!mutates_file, "{intent:?} must not mutate file contents (AC-N3)");
