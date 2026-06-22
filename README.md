@@ -52,6 +52,36 @@ right into the tree. It opens beside whatever you're doing and never touches you
   full-screen; the layout reflows when the pane is resized.
 - **Keyboard-first** — every function has a key; no mouse required.
 
+## Quick start
+
+```bash
+# 1. Install the plugin (herdr builds it from source at install time):
+herdr plugin install smarzban/herdr-plugin-file-viewer
+
+# 2. (recommended) install the renderers, so markdown / diffs / code are styled, not plain text:
+brew install glow git-delta bat     # macOS — or use your package manager
+#   Linux / cross-platform: run scripts/install-renderers.sh from the plugin dir (`herdr plugin list`)
+```
+
+Then **bind a key** in your herdr config (`~/.config/herdr/config.toml`) so one press summons it:
+
+```toml
+[[keys.command]]              # open in a split beside your work
+key = "prefix+f"
+type = "shell"
+command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
+
+[[keys.command]]              # …or in its own tab
+key = "prefix+shift+f"
+type = "shell"
+command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
+```
+
+Run `herdr server reload-config`, then press your key. That's the whole setup — the split-pane
+viewer and its open actions ship **inside** the plugin and register automatically on install, so
+you only add the keybinding. Everything below is detail: pinning a release, the renderer fallback,
+the launcher's open/focus/toggle behavior, the full key map, and the `--remote` caveat.
+
 ## Install
 
 Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Linux** or
@@ -62,7 +92,9 @@ Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Li
 which the viewer pane launches:
 
 ```bash
-# from this published GitHub repo (pin the release with --ref):
+# install from this GitHub repo (latest main):
+herdr plugin install smarzban/herdr-plugin-file-viewer
+# …or pin a specific release for reproducibility:
 herdr plugin install smarzban/herdr-plugin-file-viewer --ref v1.0.0
 
 # or, for local development, link this checkout in place:
