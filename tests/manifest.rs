@@ -95,6 +95,10 @@ fn declares_a_release_build_command() {
         m.contains("cargo build --release"),
         "the build step must run `cargo build --release`"
     );
+    assert!(
+        m.contains(".cargo/env"),
+        "the build step must source ~/.cargo/env so it finds cargo regardless of how herdr launched it"
+    );
 }
 
 #[test]

@@ -54,6 +54,11 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ## Quick start
 
+> **Prerequisite: [Rust](https://rustup.rs) 1.96+.** The plugin compiles from source at install
+> time, so `cargo` must be on your PATH. No Rust yet?
+> `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` (or `brew install rust`).
+> If it's missing, the install fails with a message telling you exactly this.
+
 ```bash
 # 1. Install the plugin (herdr builds it from source at install time):
 herdr plugin install smarzban/herdr-file-viewer

@@ -11,12 +11,13 @@ description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a he
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 
-# Build step herdr runs at install time to produce the binary the pane launches. It is wrapped
-# in a shell that sources ~/.cargo/env first, so the build finds `cargo` even when herdr was
-# launched from a context that doesn't have ~/.cargo/bin on PATH (e.g. a GUI / login-less
-# launch) — otherwise `cargo build` fails to start with "No such file or directory".
+# Build step herdr runs at install time to produce the binary the pane launches. Wrapped in a
+# shell that (1) sources ~/.cargo/env if present, so the build finds `cargo` even when herdr was
+# launched without ~/.cargo/bin on PATH (e.g. a GUI / login-less launch) — the `[ -f ]` guard
+# means a missing env file can't abort the build; and (2) if `cargo` still isn't found, prints a
+# clear "install Rust" message and exits, instead of a cryptic failure.
 [[build]]
-command = ["/bin/sh", "-c", ". \"$HOME/.cargo/env\" 2>/dev/null; cargo build --release"]
+command = ["/bin/sh", "-c", "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; command -v cargo >/dev/null 2>&1 || { echo 'herdr-file-viewer needs Rust 1.96+ to build, but cargo was not found. Install Rust from https://rustup.rs then re-run: herdr plugin install smarzban/herdr-file-viewer' >&2; exit 1; }; exec cargo build --release"]
 
 # The viewer pane. herdr performs the split placement on launch (AC-17); no runtime
 # command is issued to open the viewer — declaring placement = "split" is what opens
