@@ -64,6 +64,8 @@ This procedure verifies the remaining **live-host** behavior.
      `↑`/`↓` vertically), `w` to toggle wrapping, and `<`/`>` to resize the split.
    - Press `z` to zoom: the tree disappears and the content pane fills the whole frame (focus
      moves to it, so `↑`/`↓` scroll the file); press `z` again to restore the two columns.
+   - Press `Enter` on a folder → it expands/collapses; press `Enter` on a file → it opens in
+     zoom mode (content full-screen). `z` returns to the two columns.
    - Press `e` on a file (with `$EDITOR` set) and confirm your editor opens on that file, then
      exit the editor and confirm the viewer redraws cleanly.
    - Resize the pane (e.g. `herdr pane resize`) and confirm the layout reflows to the new size.
@@ -93,8 +95,9 @@ This procedure verifies the remaining **live-host** behavior.
 7. **Mouse (the feel — needs a human; can't be driven over the CLI).** With the viewer open:
    - **Click** a tree row → it selects (the content pane updates). **Click** in the content
      column → it takes focus.
-   - **Double-click** a folder → it expands / collapses. **Double-click** a file → your editor
-     opens on it (same as `e`). Single-clicking neither toggles nor opens.
+   - **Double-click** a folder → it expands / collapses. **Double-click** a file → it opens in
+     **zoom mode** (content full-screen, same as `Enter`); the editor is the `e` key. Single-
+     clicking neither toggles nor zooms.
    - **Wheel** over the content pane → it scrolls; over the tree → the selection moves.
    - **Drag** the divider between the columns → the split resizes and tracks the cursor.
    - **`Shift`+drag** to select text → your terminal's native select-and-copy still works (the
