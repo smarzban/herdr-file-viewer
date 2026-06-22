@@ -407,7 +407,7 @@ impl Controller {
             Intent::ToggleWrap => self.toggle_wrap(),
             Intent::ToggleZoom => self.toggle_zoom(),
             Intent::Refresh => self.refresh(),
-            Intent::Close => Effects { quit: true, ..Default::default() },
+            Intent::Close => self.close_or_unzoom(),
         }
     }
 
@@ -766,6 +766,18 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// The close key (`q`/`Esc`): when zoomed, back out of zoom first (the instinctive "escape
+    /// the full-screen view") and stay in the viewer; otherwise quit (AC-20). So from a zoomed
+    /// file it takes two presses to leave — one to un-zoom, one to close.
+    fn close_or_unzoom(&mut self) -> Effects {
+        if self.zoomed {
+            self.zoomed = false;
+            self.focus = Focus::Tree;
+            return Effects::redraw();
+        }
+        Effects { quit: true, ..Default::default() }
+    }
+
     /// Move the tree/content divider by `delta` percentage points, clamped so neither column
     /// can collapse. Pure layout state — no re-render is needed (the content is unchanged).
     fn resize_split(&mut self, delta: i16) -> Effects {
@@ -926,10 +938,14 @@ enum MouseRegion {
     Outside,
 }
 
-/// Two left-clicks at the same cell within [`DOUBLE_CLICK`] are a double-click. Pure over its
-/// timestamps so the timing rule is unit-testable without sleeping.
+/// Two left-clicks on the same **row** within [`DOUBLE_CLICK`] are a double-click. The column
+/// is ignored on purpose: a tree row is a single node end-to-end, so a click anywhere along it
+/// targets that node, and a touchpad double-tap commonly lands a column or two apart between
+/// taps — requiring the exact cell would silently drop those. (The column still matters for
+/// *which* node a click selects; that is the caller's hit-test, not this timing rule.) Pure over
+/// its timestamps so the timing rule is unit-testable without sleeping.
 fn is_double_click(prev: Option<(u16, u16, Instant)>, pos: (u16, u16), now: Instant) -> bool {
-    matches!(prev, Some((px, py, t)) if (px, py) == pos && now.saturating_duration_since(t) <= DOUBLE_CLICK)
+    matches!(prev, Some((_px, py, t)) if py == pos.1 && now.saturating_duration_since(t) <= DOUBLE_CLICK)
 }
 
 /// Whether a path names a markdown file (by extension, case-insensitive).
@@ -978,16 +994,20 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn is_double_click_requires_same_cell_within_the_window() {
+    fn is_double_click_requires_the_same_row_within_the_window() {
         let t0 = Instant::now();
         let within = t0 + DOUBLE_CLICK / 2;
         let after = t0 + DOUBLE_CLICK * 2;
         // Same cell, inside the window → double-click.
         assert!(is_double_click(Some((5, 5, t0)), (5, 5), within));
+        // Same ROW, different column, inside the window → still a double-click. A tree row is
+        // one node end-to-end, and a touchpad double-tap often lands a column or two apart, so
+        // requiring the exact cell would drop legitimate double-taps.
+        assert!(is_double_click(Some((5, 5, t0)), (40, 5), within));
         // Too slow → not a double-click.
         assert!(!is_double_click(Some((5, 5, t0)), (5, 5), after));
-        // A different cell → not a double-click (even if fast).
-        assert!(!is_double_click(Some((5, 5, t0)), (6, 5), within));
+        // A different ROW → not a double-click (it would target a different node).
+        assert!(!is_double_click(Some((5, 5, t0)), (5, 6), within));
         // No previous click → never a double-click.
         assert!(!is_double_click(None, (5, 5), within));
     }
