@@ -18,15 +18,18 @@
 
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
-use crate::presenter::{Focus, ViewState};
+use crate::presenter::{Focus, PaneGeometry, ViewState};
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 /// Tree-column width as a percentage of the pane: its default and the bounds the resize keys
 /// clamp to, so neither column can be squeezed to nothing.
@@ -37,6 +40,11 @@ const SPLIT_MAX: u16 = 80;
 const SPLIT_STEP: u16 = 5;
 /// How many columns one horizontal-scroll keypress moves the content pane.
 const HSCROLL_STEP: u16 = 8;
+/// How many content lines one mouse-wheel notch scrolls (matches herdr's default).
+const WHEEL_STEP: isize = 3;
+/// Two left-clicks at the same cell within this window are a double-click (a folder toggles
+/// expand/collapse; a file hands off to the editor).
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
 /// the run loop injects an implementation bound to the real repository. `Send + Sync` so the
@@ -161,6 +169,14 @@ pub struct Controller {
     job_tx: mpsc::Sender<RenderJob>,
     result_rx: mpsc::Receiver<(u64, RenderResult)>,
     latest_seq: u64,
+    /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
+    /// event can be mapped to a tree row / the content pane / the divider.
+    geom: PaneGeometry,
+    /// The previous left-click `(col, row, time)`, for double-click detection.
+    last_click: Option<(u16, u16, Instant)>,
+    /// True while the left button is held after pressing on the divider (a resize drag), so the
+    /// release is treated as the end of the drag, not a click.
+    dragging_divider: bool,
 }
 
 impl Controller {
@@ -232,6 +248,9 @@ impl Controller {
             job_tx,
             result_rx,
             latest_seq: 0,
+            geom: PaneGeometry::default(),
+            last_click: None,
+            dragging_divider: false,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -297,6 +316,12 @@ impl Controller {
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+    }
+
+    /// Receive the hit-test geometry the Presenter drew this frame (fed back from the draw
+    /// closure), so the next mouse event is mapped against the live layout.
+    pub fn set_pane_geometry(&mut self, geom: PaneGeometry) {
+        self.geom = geom;
     }
 
     /// The content scroll offset (lines). Exposed for the Presenter wiring and tests.
@@ -366,6 +391,146 @@ impl Controller {
             Intent::ToggleWrap => self.toggle_wrap(),
             Intent::Close => Effects { quit: true, ..Default::default() },
         }
+    }
+
+    /// Map a mouse event to a state change. Mouse is additive to the keyboard-first design
+    /// (AC-18). A `Shift`+mouse event is left untouched so the terminal's own selection/copy
+    /// still works (herdr reserves Shift+mouse for exactly that). Selection/activation happen
+    /// on button *release*, so a divider drag is never mistaken for a click.
+    pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
+        if ev.modifiers.contains(KeyModifiers::SHIFT) {
+            return Effects::noop();
+        }
+        let (col, row) = (ev.column, ev.row);
+        match ev.kind {
+            MouseEventKind::ScrollDown => self.scroll_at(col, row, WHEEL_STEP),
+            MouseEventKind::ScrollUp => self.scroll_at(col, row, -WHEEL_STEP),
+            MouseEventKind::ScrollRight => self.hscroll_at(col, row, HSCROLL_STEP as i32),
+            MouseEventKind::ScrollLeft => self.hscroll_at(col, row, -(HSCROLL_STEP as i32)),
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A press on the divider begins a resize drag; otherwise wait for the release.
+                self.dragging_divider = matches!(self.hit_test(col, row), MouseRegion::Divider);
+                Effects::noop()
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging_divider => {
+                self.resize_split_to_col(col)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if std::mem::take(&mut self.dragging_divider) {
+                    return Effects::noop(); // end of a resize drag, not a click
+                }
+                self.handle_click(col, row)
+            }
+            _ => Effects::noop(),
+        }
+    }
+
+    /// A completed left-click: select the tree row it landed on (or focus the content pane). A
+    /// double-click activates — a directory toggles expand/collapse, a file hands off to the
+    /// editor (mirrors the `e` key).
+    fn handle_click(&mut self, col: u16, row: u16) -> Effects {
+        let region = self.hit_test(col, row);
+        let now = Instant::now();
+        let double = is_double_click(self.last_click, (col, row), now);
+        self.last_click = Some((col, row, now));
+        match region {
+            MouseRegion::TreeRow(idx) => {
+                if idx >= self.tree.visible_nodes().len() {
+                    return Effects::noop(); // the empty area below the last node — inert
+                }
+                self.action_notice = None;
+                self.focus = Focus::Tree;
+                self.tree.set_cursor(idx);
+                self.dispatch_render(); // selection changed → re-render the content pane
+                if double
+                    && let Some(node) = self.tree.selected()
+                {
+                    return match node.kind {
+                        NodeKind::Dir => {
+                            if node.expanded {
+                                self.tree.collapse(&node.path);
+                            } else {
+                                self.tree.expand(&node.path);
+                            }
+                            Effects::redraw()
+                        }
+                        NodeKind::File => self.open_in_editor(),
+                    };
+                }
+                Effects::redraw()
+            }
+            MouseRegion::Content => {
+                self.focus = Focus::Content;
+                Effects::redraw()
+            }
+            MouseRegion::Divider | MouseRegion::Outside => Effects::noop(),
+        }
+    }
+
+    /// Scroll the pane under the cursor: the content pane scrolls vertically; over the tree
+    /// (which does not scroll) the wheel moves the selection — the closest equivalent.
+    fn scroll_at(&mut self, col: u16, row: u16, delta: isize) -> Effects {
+        match self.hit_test(col, row) {
+            MouseRegion::Content => {
+                self.scroll_content(delta);
+                Effects::redraw()
+            }
+            MouseRegion::TreeRow(_) => {
+                self.focus = Focus::Tree;
+                self.tree.move_cursor(delta.signum());
+                self.dispatch_render();
+                Effects::redraw()
+            }
+            _ => Effects::noop(),
+        }
+    }
+
+    /// Horizontal wheel / trackpad swipe over the content pane scrolls it sideways, like the
+    /// `←`/`→` keys (for unwrapped long lines). Over the tree it does nothing — the tree has no
+    /// horizontal scroll. `scroll_content_h` clamps to `[0, widest − viewport]` (zero while
+    /// wrapping), so it is inert on wrapped prose, matching the keys.
+    fn hscroll_at(&mut self, col: u16, row: u16, delta: i32) -> Effects {
+        if matches!(self.hit_test(col, row), MouseRegion::Content) {
+            self.scroll_content_h(delta)
+        } else {
+            Effects::noop()
+        }
+    }
+
+    /// During a divider drag, set the split so the divider tracks the cursor column — clamped
+    /// like the keyboard resize so neither column can collapse.
+    fn resize_split_to_col(&mut self, col: u16) -> Effects {
+        if self.geom.area_width == 0 {
+            return Effects::noop();
+        }
+        let tree_w = col.saturating_sub(self.geom.area_x) as i32;
+        let pct = (tree_w * 100 / self.geom.area_width as i32)
+            .clamp(SPLIT_MIN as i32, SPLIT_MAX as i32);
+        self.split_pct = pct as u16;
+        Effects::redraw()
+    }
+
+    /// Which region of the last-drawn frame a cell falls in. The divider is checked first (it
+    /// sits between the columns); a tree click maps to a visible node index by its row.
+    fn hit_test(&self, col: u16, row: u16) -> MouseRegion {
+        if let Some(dx) = self.geom.divider_x
+            && (col == dx || col + 1 == dx)
+        {
+            return MouseRegion::Divider;
+        }
+        if let Some(t) = self.geom.tree_inner
+            && t.contains(Position { x: col, y: row })
+        {
+            // The row index may exceed the node count (the empty area below the last node): the
+            // click handler treats that as inert, while the wheel still scrolls the column.
+            return MouseRegion::TreeRow((row - t.y) as usize);
+        }
+        if let Some(c) = self.geom.content_inner
+            && c.contains(Position { x: col, y: row })
+        {
+            return MouseRegion::Content;
+        }
+        MouseRegion::Outside
     }
 
     /// Up/down navigation is focus-aware: it moves the tree cursor when the tree is focused
@@ -679,6 +844,21 @@ impl Controller {
     }
 }
 
+/// Where a mouse cell falls in the drawn layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MouseRegion {
+    TreeRow(usize),
+    Content,
+    Divider,
+    Outside,
+}
+
+/// Two left-clicks at the same cell within [`DOUBLE_CLICK`] are a double-click. Pure over its
+/// timestamps so the timing rule is unit-testable without sleeping.
+fn is_double_click(prev: Option<(u16, u16, Instant)>, pos: (u16, u16), now: Instant) -> bool {
+    matches!(prev, Some((px, py, t)) if (px, py) == pos && now.saturating_duration_since(t) <= DOUBLE_CLICK)
+}
+
 /// Whether a path names a markdown file (by extension, case-insensitive).
 fn is_markdown(path: &Path) -> bool {
     path.extension()
@@ -721,7 +901,23 @@ fn wrapped_rows(text: &str, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::wrapped_rows;
+    use super::{DOUBLE_CLICK, is_double_click, wrapped_rows};
+    use std::time::Instant;
+
+    #[test]
+    fn is_double_click_requires_same_cell_within_the_window() {
+        let t0 = Instant::now();
+        let within = t0 + DOUBLE_CLICK / 2;
+        let after = t0 + DOUBLE_CLICK * 2;
+        // Same cell, inside the window → double-click.
+        assert!(is_double_click(Some((5, 5, t0)), (5, 5), within));
+        // Too slow → not a double-click.
+        assert!(!is_double_click(Some((5, 5, t0)), (5, 5), after));
+        // A different cell → not a double-click (even if fast).
+        assert!(!is_double_click(Some((5, 5, t0)), (6, 5), within));
+        // No previous click → never a double-click.
+        assert!(!is_double_click(None, (5, 5), within));
+    }
 
     #[test]
     fn wrapped_rows_counts_word_wrapping_not_just_char_wrapping() {
