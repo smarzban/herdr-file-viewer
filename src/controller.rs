@@ -76,8 +76,8 @@ pub trait ContentProvider: Send {
 
 /// Hand the selected file to an external editor (AC-19). Returns `Ok(true)` when the
 /// hand-off took over the terminal (the run loop must force a full repaint afterwards),
-/// `Ok(false)` for an off-screen hand-off (e.g. a new herdr pane). Behind a trait so the
-/// controller never edits or even spawns directly — and tests launch nothing.
+/// `Ok(false)` if it did not. Behind a trait so the controller never edits or even spawns
+/// directly — and tests launch nothing.
 pub trait EditorHandoff {
     fn open(&mut self, file: &Path) -> io::Result<bool>;
 }
@@ -771,7 +771,7 @@ impl Controller {
                     ..Default::default()
                 }
             }
-            Ok(false) => Effects::redraw(), // off-screen hand-off (new pane) — no takeover
+            Ok(false) => Effects::redraw(), // hand-off without a terminal takeover
             Err(e) => {
                 self.action_notice = Some(format!("Could not open editor: {e}"));
                 // The hand-off may have suspended the terminal before failing, so force a full

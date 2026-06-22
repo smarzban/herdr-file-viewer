@@ -1,8 +1,7 @@
 //! Launcher decision — the "launch-or-focus-or-toggle" logic behind
 //! `scripts/open-file-viewer.sh`, kept in Rust (not inline shell) so it is hermetically
 //! testable and so pane ids extracted from the host's `pane list` JSON are validated before
-//! they reach an argv (option-injection guard), mirroring the editor hand-off's discipline in
-//! [`crate::host`].
+//! they reach an argv (option-injection guard).
 
 use serde::Deserialize;
 
@@ -110,9 +109,8 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
 }
 
 /// A pane id is safe to place in an argv iff it is a non-empty token of `[A-Za-z0-9_:.-]` that
-/// does not start with `-` (which would option-inject). Mirrors `host::is_safe_pane_id`'s
-/// anti-option-injection intent, but also allows `:` and `.` because herdr pane ids are
-/// `workspace:pane` tokens (e.g. `wE:pD`).
+/// does not start with `-` (which would option-inject). `:` and `.` are allowed because herdr
+/// pane ids are `workspace:pane` tokens (e.g. `wE:pD`).
 fn is_flag_safe(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')

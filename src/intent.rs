@@ -28,7 +28,7 @@ pub enum Intent {
     ToggleBaseline,
     /// Cycle the content pane's view mode over the applicable set (AC-11).
     CycleView,
-    /// Hand the selected file off to an external editor / new pane (AC-19).
+    /// Hand the selected file off to an external editor (AC-19).
     OpenInEditor,
     /// Move focus between the tree and content columns (AC-21).
     ToggleFocus,
