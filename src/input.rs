@@ -31,6 +31,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('<') => Some(Intent::ShrinkTree),
         KeyCode::Char('>') => Some(Intent::GrowTree),
         KeyCode::Char('w') => Some(Intent::ToggleWrap),
+        KeyCode::Char('r') => Some(Intent::Refresh),
         KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
         _ => None,
     }
@@ -64,6 +65,7 @@ mod tests {
         (KeyCode::Char('<'), Intent::ShrinkTree),
         (KeyCode::Char('>'), Intent::GrowTree),
         (KeyCode::Char('w'), Intent::ToggleWrap),
+        (KeyCode::Char('r'), Intent::Refresh),
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
     ];
