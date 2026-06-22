@@ -1,0 +1,36 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2026-06-22
+
+First public release: a git-aware, read-only file viewer that runs as a herdr plugin pane.
+
+### Added
+- **Tree, scoped to your work** — rooted at the git worktree top-level (else the launch
+  directory), honoring `.gitignore` with a toggle to reveal ignored files.
+- **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`) with color, a changed-files-only
+  filter, and a baseline you can toggle between your branch's merge-base and `HEAD`.
+- **The right view per file** — a changed file shows its diff; markdown renders; everything else
+  is syntax-highlighted with line numbers. Cycle the view (`v`), including a **full-file diff**
+  (whole file + line numbers + inline change).
+- **Navigable content** — scroll all four directions, toggle line wrapping (`w`), resize the
+  split (`<` / `>`), and **zoom** (`z`) to hide the tree for a full-screen read.
+- **Activate** (`Enter` / double-click) — expand a folder, or open a file in zoom mode.
+- **Open in `$EDITOR`** (`e`) — a read-only hand-off; the viewer never edits the file itself.
+- **Keyboard-first**, with additive mouse support (click, double-click, wheel, divider drag).
+- **Two ways to summon it** — a split-pane action and an idempotent tab action
+  (open-or-switch-or-toggle).
+- **Delegated rendering** to `glow` / `delta` / `bat`, each optional with graceful plain-text
+  fallback and a notice when a renderer is absent.
+- **Refresh** (`r`) and automatic git re-read on focus-gain, so external changes (a merge, pull,
+  or commit elsewhere) show up.
+
+### Security
+- Read-only by construction; untrusted file content is escape-neutralized and fed to renderers
+  on stdin; every `git` invocation is hardened for untrusted repositories. See
+  [SECURITY.md](SECURITY.md).
+
+[1.0.0]: https://github.com/smarzban/herdr-plugin-file-viewer/releases/tag/v1.0.0

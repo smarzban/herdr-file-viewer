@@ -1,10 +1,16 @@
 [package]
 name = "herdr-file-viewer"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.96"
 description = "A git-aware, read-only file viewer that runs as a herdr TUI pane"
 license = "MIT"
+authors = ["Saeed Marzban <git@smarzban.com>"]
+repository = "https://github.com/smarzban/herdr-plugin-file-viewer"
+homepage = "https://github.com/smarzban/herdr-plugin-file-viewer"
+readme = "README.md"
+keywords = ["herdr", "tui", "git", "viewer", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "herdr_file_viewer"
