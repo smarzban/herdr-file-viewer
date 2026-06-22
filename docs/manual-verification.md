@@ -65,7 +65,8 @@ This procedure verifies the remaining **live-host** behavior.
    - Press `z` to zoom: the tree disappears and the content pane fills the whole frame (focus
      moves to it, so `↑`/`↓` scroll the file); press `z` again to restore the two columns.
    - Press `Enter` on a folder → it expands/collapses; press `Enter` on a file → it opens in
-     zoom mode (content full-screen). `z` returns to the two columns.
+     zoom mode (content full-screen). `z` — or `q`/`Esc` — returns to the two columns; pressing
+     `q`/`Esc` again (now un-zoomed) closes the viewer.
    - Press `e` on a file (with `$EDITOR` set) and confirm your editor opens on that file, then
      exit the editor and confirm the viewer redraws cleanly.
    - Resize the pane (e.g. `herdr pane resize`) and confirm the layout reflows to the new size.

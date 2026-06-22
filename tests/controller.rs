@@ -291,11 +291,31 @@ fn tab_is_inert_while_zoomed_so_focus_stays_on_content() {
 
 #[test]
 fn close_intent_signals_quit() {
-    // AC-20: the close key ends the session.
+    // AC-20: the close key ends the session (when not zoomed).
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
     let fx = ctrl.handle(Intent::Close);
     assert!(fx.quit, "Close signals the run loop to exit (AC-20)");
+}
+
+#[test]
+fn close_backs_out_of_zoom_first_then_quits() {
+    // When zoomed, the close key (q/Esc) backs out of zoom rather than quitting — the
+    // instinctive "escape the full-screen view". A second press (now un-zoomed) quits (AC-20).
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::ToggleZoom);
+    assert!(ctrl.zoomed());
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(!fx.quit, "Close while zoomed does NOT quit");
+    assert!(fx.redraw, "it redraws (the tree reappears)");
+    assert!(!ctrl.zoomed(), "Close while zoomed un-zooms");
+    assert_eq!(ctrl.focus(), Focus::Tree, "un-zoom returns focus to the tree");
+
+    let fx2 = ctrl.handle(Intent::Close);
+    assert!(fx2.quit, "Close again (no longer zoomed) quits (AC-20)");
 }
 
 #[test]
@@ -689,6 +709,49 @@ fn double_click_a_folder_toggles_expansion() {
         ctrl.tree().visible_nodes().len(),
         2,
         "double-clicking the folder expands it to reveal its child"
+    );
+}
+
+#[test]
+fn a_content_click_then_a_same_row_tree_click_is_not_a_double_click() {
+    // Regression (opus review of PR #16): the tree and content panes share row numbers, so with
+    // the column-agnostic double-click match a content click followed by a tree click on the
+    // SAME row must NOT register as a double-click (no spurious activation). A non-tree click
+    // clears the pending double-click.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "folder starts collapsed");
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 1)); // content pane, row 1
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 4, 1)); // tree folder, same row
+    assert_eq!(
+        ctrl.tree().visible_nodes().len(),
+        1,
+        "a content→tree same-row sequence must NOT activate (no spurious expand)"
+    );
+}
+
+#[test]
+fn double_tap_on_the_same_row_activates_even_with_column_jitter() {
+    // A touchpad double-tap often lands a column or two apart between taps; as long as both
+    // taps are on the same row within the double-click window, it activates (here: expands a
+    // folder) just like an exact double-click.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "folder starts collapsed");
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 4, 1)); // tap 1, column 4
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 9, 1)); // tap 2, column 9 (jitter)
+    assert_eq!(
+        ctrl.tree().visible_nodes().len(),
+        2,
+        "a same-row double-tap with column jitter still expands the folder"
     );
 }
 
