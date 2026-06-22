@@ -163,9 +163,9 @@ the same locally and remotely; it's only *which* keymap fires them across `--rem
 | `Tab` | Move focus between the tree and content columns |
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
 | `w` | Toggle line wrapping for the content pane |
-| `z` | Zoom — hide the tree so the content pane fills the frame; press again to restore the two-column layout |
+| `z` | Zoom — hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
-| `q` / `Esc` | Close the viewer and return to the prior pane |
+| `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane (AC-20) |
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
