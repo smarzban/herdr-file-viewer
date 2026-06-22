@@ -154,6 +154,7 @@ the same locally and remotely; it's only *which* keymap fires them across `--rem
 | `↑` / `k`, `↓` / `j` | Move the tree cursor — or **scroll the content pane** vertically when it is focused |
 | `→` / `l` | Expand the selected directory — or **scroll the content pane right** when it is focused |
 | `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
+| `Enter` | Activate the selection — expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `c` | Toggle changed-files-only |
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
@@ -187,8 +188,8 @@ The viewer is keyboard-first (AC-18); the mouse is additive and on by default:
 | Gesture | Action |
 | --- | --- |
 | **Click** a tree row | Select it (focus the tree) |
-| **Double-click** a folder | Expand / collapse it |
-| **Double-click** a file | Open it in `$EDITOR` (same as `e`) |
+| **Double-click** a folder | Expand / collapse it (same as `Enter`) |
+| **Double-click** a file | Open it in **zoom mode** — content full-screen (same as `Enter`); the editor is the `e` key |
 | **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
 | **Horizontal wheel / swipe** over the content | Scroll it sideways (terminal-dependent — see below) |
 | **Drag** the divider | Resize the tree / content split |

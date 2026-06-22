@@ -43,7 +43,7 @@ const HSCROLL_STEP: u16 = 8;
 /// How many content lines one mouse-wheel notch scrolls (matches herdr's default).
 const WHEEL_STEP: isize = 3;
 /// Two left-clicks at the same cell within this window are a double-click (a folder toggles
-/// expand/collapse; a file hands off to the editor).
+/// expand/collapse; a file opens in zoom mode — the editor hand-off is the `e` key).
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
@@ -395,6 +395,7 @@ impl Controller {
             Intent::NavDown => self.navigate(1),
             Intent::Expand => self.expand(),
             Intent::Collapse => self.collapse(),
+            Intent::Activate => self.activate(),
             Intent::ToggleIgnore => self.toggle_ignore(),
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
             Intent::ToggleBaseline => self.toggle_baseline(),
@@ -443,8 +444,8 @@ impl Controller {
     }
 
     /// A completed left-click: select the tree row it landed on (or focus the content pane). A
-    /// double-click activates — a directory toggles expand/collapse, a file hands off to the
-    /// editor (mirrors the `e` key).
+    /// double-click [`activate`](Self::activate)s the row — a directory toggles expand/collapse,
+    /// a file opens in zoom mode (the editor hand-off is the `e` key, not the mouse).
     fn handle_click(&mut self, col: u16, row: u16) -> Effects {
         let region = self.hit_test(col, row);
         let now = Instant::now();
@@ -459,20 +460,8 @@ impl Controller {
                 self.focus = Focus::Tree;
                 self.tree.set_cursor(idx);
                 self.dispatch_render(); // selection changed → re-render the content pane
-                if double
-                    && let Some(node) = self.tree.selected()
-                {
-                    return match node.kind {
-                        NodeKind::Dir => {
-                            if node.expanded {
-                                self.tree.collapse(&node.path);
-                            } else {
-                                self.tree.expand(&node.path);
-                            }
-                            Effects::redraw()
-                        }
-                        NodeKind::File => self.open_in_editor(),
-                    };
+                if double {
+                    return self.activate(); // folder → expand/collapse, file → zoom mode
                 }
                 Effects::redraw()
             }
@@ -652,6 +641,30 @@ impl Controller {
             return Effects::redraw();
         }
         Effects::noop()
+    }
+
+    /// Activate the selected node (Enter / double-click): a directory toggles expand/collapse;
+    /// a file opens in **zoom mode** — the content pane fills the frame (focused), so the file
+    /// is read full-screen. Read-only: opening in an external editor stays on `e`
+    /// ([`Intent::OpenInEditor`]). The content was already rendered when the file was selected,
+    /// so this only flips the layout/focus — no re-render is dispatched.
+    fn activate(&mut self) -> Effects {
+        let Some(node) = self.tree.selected() else { return Effects::noop() };
+        match node.kind {
+            NodeKind::Dir => {
+                if node.expanded {
+                    self.tree.collapse(&node.path);
+                } else {
+                    self.tree.expand(&node.path);
+                }
+                Effects::redraw()
+            }
+            NodeKind::File => {
+                self.zoomed = true;
+                self.focus = Focus::Content;
+                Effects::redraw()
+            }
+        }
     }
 
     fn toggle_ignore(&mut self) -> Effects {

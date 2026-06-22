@@ -693,19 +693,53 @@ fn double_click_a_folder_toggles_expansion() {
 }
 
 #[test]
-fn double_click_a_file_hands_off_to_the_editor_single_click_does_not() {
+fn double_click_a_file_opens_it_in_zoom_mode_single_click_does_not() {
+    // Activate (double-click / Enter) on a file opens it in zoom mode — content full-screen —
+    // NOT the editor (the editor hand-off is the `e` key only).
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
     let (mut ctrl, _, opened) = controller(dir.path(), false, StubGit::default(), false);
     ctrl.set_pane_geometry(wide_geometry());
 
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1)); // single → select only
+    assert!(!ctrl.zoomed(), "a single click does not zoom");
     assert!(opened.lock().unwrap().is_empty(), "a single click does not open the editor");
 
-    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1)); // double → editor
-    let opened = opened.lock().unwrap();
-    assert_eq!(opened.len(), 1, "double-clicking a file hands it off to the editor");
-    assert!(opened[0].ends_with("a.txt"));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1)); // double → zoom
+    assert!(ctrl.zoomed(), "double-clicking a file opens it in zoom mode");
+    assert_eq!(ctrl.focus(), Focus::Content, "zoom focuses the content pane");
+    assert!(opened.lock().unwrap().is_empty(), "double-clicking a file does NOT open the editor");
+}
+
+#[test]
+fn activate_a_folder_toggles_expansion() {
+    // Enter on a directory expands it (and collapses it again) — same as double-click / `l`.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "folder starts collapsed");
+
+    ctrl.handle(Intent::Activate); // cursor is on the folder (only node)
+    assert_eq!(ctrl.tree().visible_nodes().len(), 2, "Enter on a folder expands it");
+    ctrl.handle(Intent::Activate);
+    assert_eq!(ctrl.tree().visible_nodes().len(), 1, "Enter again collapses it");
+    assert!(!ctrl.zoomed(), "activating a folder never zooms");
+}
+
+#[test]
+fn activate_a_file_opens_it_in_zoom_mode() {
+    // Enter on a file opens it in zoom mode (content pane full-screen, focused) — no editor.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, opened) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(!ctrl.zoomed());
+    let fx = ctrl.handle(Intent::Activate); // cursor on the file
+    assert!(fx.redraw, "activating redraws");
+    assert!(ctrl.zoomed(), "Enter on a file opens it in zoom mode");
+    assert_eq!(ctrl.focus(), Focus::Content, "zoom focuses the content pane");
+    assert!(opened.lock().unwrap().is_empty(), "activating a file does NOT open the editor");
 }
 
 #[test]
