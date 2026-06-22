@@ -82,6 +82,14 @@ This procedure verifies the remaining **live-host** behavior.
    - Bind it to a key (README `[[keys.command]]` snippet) and confirm the key drives the same
      open → focus → close cycle.
 
+6b. **Tab launcher (open-or-switch-or-toggle across tabs).**
+   Invoke `open-file-viewer-tab` (or bind `prefix+shift+f`):
+   - With no viewer open → it opens in a **new tab** (focused), not a split.
+   - From a different tab while a viewer tab exists → it **switches to** the viewer tab (no
+     second viewer spawns).
+   - On the viewer tab with the viewer focused → invoking again **closes** it (the now-empty
+     tab disappears).
+
 7. **Mouse (the feel — needs a human; can't be driven over the CLI).** With the viewer open:
    - **Click** a tree row → it selects (the content pane updates). **Click** in the content
      column → it takes focus.
@@ -100,6 +108,8 @@ This procedure verifies the remaining **live-host** behavior.
 - [ ] Step 5 — the close key closed the viewer and returned focus to the origin pane (AC-20).
 - [ ] Step 6 — repeated invocation focuses the existing viewer (no duplicate panes) and toggles
       it closed; a bound key drives the same cycle.
+- [ ] Step 6b — `open-file-viewer-tab` opens the viewer in its own tab, switches to it from
+      another tab (no duplicate), and toggles it closed when on it.
 - [ ] Step 7 — click selects, double-click activates (folder toggle / file editor), the wheel
       scrolls, the divider drags, and `Shift`+drag still selects text in the terminal.
 
