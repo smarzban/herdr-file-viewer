@@ -12,13 +12,13 @@ on the left and, on the right, exactly the view each file deserves: a **diff** i
 **rendered markdown** if it's markdown, **syntax-highlighted code** otherwise. Git status is woven
 right into the tree. It opens beside whatever you're doing and never touches your files.
 
-<!--
-  DEMO: drop a screenshot or short GIF at assets/demo.png (or .gif) and replace the blockquote
-  below with:  ![herdr-file-viewer: tree + diff view](assets/demo.png)
-  A good ~12s capture: open the viewer → arrow down the tree → land on a changed file (diff) →
-  press v (rendered markdown) → press z (zoom full-screen). asciinema + agg → gif works well.
--->
-> 📸 _Demo screenshot coming soon — see the comment above to drop one in._
+![herdr-file-viewer open in a herdr split beside your work — the directory tree on the left, syntax-highlighted content on the right](assets/File-viewer.png)
+
+*…and running full-screen — the same tree + content, filling the terminal:*
+
+![herdr-file-viewer running full-screen](assets/File-Viewer-FS.png)
+
+<!-- TODO: swap these stills for a short GIF (open → arrow to a changed file (diff) → `v` rendered markdown → `z` zoom). asciinema + agg → gif. -->
 
 ## Why you'd want it
 
