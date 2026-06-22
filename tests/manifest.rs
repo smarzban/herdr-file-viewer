@@ -31,7 +31,10 @@ fn manifest() -> String {
 #[test]
 fn declares_split_pane_launching_the_release_binary() {
     let m = manifest();
-    assert!(m.contains("[[panes]]"), "manifest must declare a [[panes]] entry");
+    assert!(
+        m.contains("[[panes]]"),
+        "manifest must declare a [[panes]] entry"
+    );
     assert!(
         m.contains(r#"placement = "split""#),
         "AC-17: the pane must declare placement = \"split\""
@@ -55,10 +58,22 @@ fn declares_split_and_tab_open_actions() {
     // The viewer can be summoned as a split pane or in its own tab; each action runs its
     // dedicated launcher script.
     let m = manifest();
-    assert!(m.contains(r#"id = "open-file-viewer""#), "split-pane action present");
-    assert!(m.contains(r#"id = "open-file-viewer-tab""#), "tab action present");
-    assert!(m.contains("scripts/open-file-viewer.sh"), "split action runs its launcher");
-    assert!(m.contains("scripts/open-file-viewer-tab.sh"), "tab action runs its launcher");
+    assert!(
+        m.contains(r#"id = "open-file-viewer""#),
+        "split-pane action present"
+    );
+    assert!(
+        m.contains(r#"id = "open-file-viewer-tab""#),
+        "tab action present"
+    );
+    assert!(
+        m.contains("scripts/open-file-viewer.sh"),
+        "split action runs its launcher"
+    );
+    assert!(
+        m.contains("scripts/open-file-viewer-tab.sh"),
+        "tab action runs its launcher"
+    );
 }
 
 #[test]
@@ -72,7 +87,10 @@ fn pins_minimum_herdr_version() {
 #[test]
 fn declares_a_release_build_command() {
     let m = manifest();
-    assert!(m.contains("[[build]]"), "manifest must declare a [[build]] step");
+    assert!(
+        m.contains("[[build]]"),
+        "manifest must declare a [[build]] step"
+    );
     assert!(
         m.contains(r#"command = ["cargo", "build", "--release"]"#),
         "the build step must run `cargo build --release`"

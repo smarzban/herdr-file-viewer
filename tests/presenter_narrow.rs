@@ -11,7 +11,14 @@ use ratatui::backend::TestBackend;
 use std::path::PathBuf;
 
 fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Node {
-    Node { path: PathBuf::from(path), kind, depth, expanded: true, status, dir_dirty: false }
+    Node {
+        path: PathBuf::from(path),
+        kind,
+        depth,
+        expanded: true,
+        status,
+        dir_dirty: false,
+    }
 }
 
 fn state(width: u16, focus: Focus) -> ViewState {
@@ -48,16 +55,28 @@ fn render(state: &ViewState, w: u16, h: u16) -> String {
 fn narrow_tree_focus_gives_tree_full_width_and_hides_content() {
     let out = render(&state(60, Focus::Tree), 60, 20);
     assert!(out.contains("scratch.log"), "tree shown full-width\n{out}");
-    assert!(!out.contains("fn main()"), "AC-21: content hidden when tree focused\n{out}");
-    assert!(!out.contains("delta not found"), "AC-21: content notices hidden too\n{out}");
+    assert!(
+        !out.contains("fn main()"),
+        "AC-21: content hidden when tree focused\n{out}"
+    );
+    assert!(
+        !out.contains("delta not found"),
+        "AC-21: content notices hidden too\n{out}"
+    );
 }
 
 #[test]
 fn narrow_content_focus_gives_content_full_width_and_hides_tree() {
     let out = render(&state(60, Focus::Content), 60, 20);
     assert!(out.contains("fn main()"), "content shown full-width\n{out}");
-    assert!(out.contains("delta not found"), "notices shown with content\n{out}");
-    assert!(!out.contains("scratch.log"), "AC-21: tree hidden when content focused\n{out}");
+    assert!(
+        out.contains("delta not found"),
+        "notices shown with content\n{out}"
+    );
+    assert!(
+        !out.contains("scratch.log"),
+        "AC-21: tree hidden when content focused\n{out}"
+    );
 }
 
 #[test]
@@ -67,15 +86,27 @@ fn zoom_overrides_narrow_layout_and_fills_with_content() {
     let mut st = state(60, Focus::Tree);
     st.zoomed = true;
     let out = render(&st, 60, 20);
-    assert!(out.contains("fn main()"), "content fills the frame when zoomed, even narrow\n{out}");
-    assert!(!out.contains("scratch.log"), "the tree is hidden when zoomed, even narrow\n{out}");
+    assert!(
+        out.contains("fn main()"),
+        "content fills the frame when zoomed, even narrow\n{out}"
+    );
+    assert!(
+        !out.contains("scratch.log"),
+        "the tree is hidden when zoomed, even narrow\n{out}"
+    );
 }
 
 #[test]
 fn wide_shows_both_columns_regardless_of_focus() {
     let out = render(&state(100, Focus::Tree), 100, 20);
-    assert!(out.contains("scratch.log"), "tree column present at >= 80 cols\n{out}");
-    assert!(out.contains("fn main()"), "content column present at >= 80 cols\n{out}");
+    assert!(
+        out.contains("scratch.log"),
+        "tree column present at >= 80 cols\n{out}"
+    );
+    assert!(
+        out.contains("fn main()"),
+        "content column present at >= 80 cols\n{out}"
+    );
 }
 
 #[test]
@@ -86,20 +117,32 @@ fn split_decision_follows_the_live_frame_not_a_stale_state_width() {
     let mut st = state(100, Focus::Tree);
     let out = render(&st, 60, 20);
     assert!(out.contains("scratch.log"), "tree shown\n{out}");
-    assert!(!out.contains("fn main()"), "narrow layout follows the 60-col frame, content hidden\n{out}");
+    assert!(
+        !out.contains("fn main()"),
+        "narrow layout follows the 60-col frame, content hidden\n{out}"
+    );
 
     // Conversely, a stale "narrow" width with a wide frame must show both columns.
     st.width = 40;
     let out = render(&st, 100, 20);
-    assert!(out.contains("scratch.log") && out.contains("fn main()"), "wide frame → both columns\n{out}");
+    assert!(
+        out.contains("scratch.log") && out.contains("fn main()"),
+        "wide frame → both columns\n{out}"
+    );
 }
 
 #[test]
 fn narrow_tree_snapshot() {
-    insta::assert_snapshot!("presenter_narrow_tree", render(&state(60, Focus::Tree), 60, 20));
+    insta::assert_snapshot!(
+        "presenter_narrow_tree",
+        render(&state(60, Focus::Tree), 60, 20)
+    );
 }
 
 #[test]
 fn narrow_content_snapshot() {
-    insta::assert_snapshot!("presenter_narrow_content", render(&state(60, Focus::Content), 60, 20));
+    insta::assert_snapshot!(
+        "presenter_narrow_content",
+        render(&state(60, Focus::Content), 60, 20)
+    );
 }

@@ -5,7 +5,7 @@
 mod common;
 
 use common::TempDir;
-use herdr_file_viewer::render::{classify, to_text, Prepared};
+use herdr_file_viewer::render::{Prepared, classify, to_text};
 use std::fs;
 use std::time::Instant;
 

@@ -198,7 +198,9 @@ impl TreeModel {
     /// contains changes (AC-7). Component-wise prefix match, so `src` is not matched by
     /// `src2/…`; excludes the directory's own path.
     fn dir_contains_change(&self, path: &Path) -> bool {
-        let Ok(rel) = path.strip_prefix(&self.root) else { return false };
+        let Ok(rel) = path.strip_prefix(&self.root) else {
+            return false;
+        };
         self.markers
             .keys()
             .chain(self.changed_filter.keys())

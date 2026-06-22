@@ -27,7 +27,10 @@ impl ContentProvider for SlowContent {
     fn render(&self, path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
         std::thread::sleep(self.delay);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        RenderResult { content: Text::raw(format!("rendered:{name}")), notices: Vec::new() }
+        RenderResult {
+            content: Text::raw(format!("rendered:{name}")),
+            notices: Vec::new(),
+        }
     }
 }
 
@@ -67,7 +70,11 @@ impl GitService for RecordingGit {
     }
     fn diff(&self, _: &Path, _: Baseline, full_context: bool) -> String {
         self.diff_full_calls.lock().unwrap().push(full_context);
-        if full_context { "FULL".into() } else { "COMPACT".into() }
+        if full_context {
+            "FULL".into()
+        } else {
+            "COMPACT".into()
+        }
     }
 }
 
@@ -75,7 +82,12 @@ impl GitService for RecordingGit {
 fn flatten(text: &Text) -> String {
     text.lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -92,14 +104,16 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
         content: Box::new(SlowContent { delay }),
         editor: Box::new(NoEditor),
     };
-    let mut ctrl =
-        Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
 
     // A select intent must return far faster than the render takes — it only dispatches.
     let start = Instant::now();
     let fx = ctrl.handle(Intent::NavDown);
     let handle_took = start.elapsed();
-    assert!(fx.redraw, "the select still asks for a redraw (stale content shown meanwhile)");
+    assert!(
+        fx.redraw,
+        "the select still asks for a redraw (stale content shown meanwhile)"
+    );
     // Non-blocking proof: had handle() waited for the render it would take at least `delay`
     // (the worker's sleep). The dispatch is an in-process channel send (sub-millisecond), so
     // a comfortable margin below `delay` is a robust, non-flaky bound.
@@ -127,7 +141,11 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(redrew, "the arriving content signalled a redraw via poll()");
-    assert_eq!(flatten(ctrl.content()), "rendered:b.rs", "the selected file rendered");
+    assert_eq!(
+        flatten(ctrl.content()),
+        "rendered:b.rs",
+        "the selected file rendered"
+    );
 }
 
 #[test]
@@ -140,8 +158,13 @@ fn full_diff_mode_asks_git_for_whole_file_context() {
     changed.insert(PathBuf::from("c.rs"), Status::Modified);
     let calls = Arc::new(Mutex::new(Vec::new()));
     let components = Components {
-        git: Arc::new(RecordingGit { changed, diff_full_calls: calls.clone() }),
-        content: Box::new(SlowContent { delay: Duration::from_millis(0) }),
+        git: Arc::new(RecordingGit {
+            changed,
+            diff_full_calls: calls.clone(),
+        }),
+        content: Box::new(SlowContent {
+            delay: Duration::from_millis(0),
+        }),
         editor: Box::new(NoEditor),
     };
     let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
@@ -156,7 +179,10 @@ fn full_diff_mode_asks_git_for_whole_file_context() {
         if calls.lock().unwrap().iter().any(|&full| full) {
             break;
         }
-        assert!(Instant::now() < deadline, "the worker never requested a full-context diff");
+        assert!(
+            Instant::now() < deadline,
+            "the worker never requested a full-context diff"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
@@ -176,11 +202,12 @@ fn a_superseded_render_does_not_overwrite_a_newer_selection() {
 
     let components = Components {
         git: Arc::new(NoGit),
-        content: Box::new(SlowContent { delay: Duration::from_millis(80) }),
+        content: Box::new(SlowContent {
+            delay: Duration::from_millis(80),
+        }),
         editor: Box::new(NoEditor),
     };
-    let mut ctrl =
-        Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
 
     // Fire several selections back-to-back; only the last (c.rs) should win.
     ctrl.handle(Intent::NavDown); // b.rs

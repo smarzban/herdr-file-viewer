@@ -2,7 +2,7 @@
 //! The herdr CLI is injected and records calls; nothing real is launched.
 
 use herdr_file_viewer::host::{HerdrCli, current_pane_id, from_env, open_pane, parse_context};
-use std::ffi::{OsString, OsStr};
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::PathBuf;
 
@@ -14,7 +14,10 @@ struct FakeCli {
 
 impl FakeCli {
     fn new(split_response: &str) -> Self {
-        Self { calls: Vec::new(), split_response: split_response.to_string() }
+        Self {
+            calls: Vec::new(),
+            split_response: split_response.to_string(),
+        }
     }
 }
 
@@ -107,7 +110,10 @@ fn from_env_without_context_is_cwd_only() {
 
 #[test]
 fn current_pane_id_read_from_context() {
-    assert_eq!(current_pane_id(Some(r#"{"pane_id":"p9"}"#)), Some("p9".to_string()));
+    assert_eq!(
+        current_pane_id(Some(r#"{"pane_id":"p9"}"#)),
+        Some("p9".to_string())
+    );
     assert_eq!(current_pane_id(Some("garbage")), None);
     assert_eq!(current_pane_id(None), None);
 }
@@ -117,15 +123,35 @@ fn current_pane_id_read_from_context() {
 #[test]
 fn open_pane_splits_then_runs_editor_in_the_new_pane() {
     let mut cli = FakeCli::new(r#"{"result":{"pane":{"pane_id":"pane-77"}}}"#);
-    open_pane(&PathBuf::from("/work/src/main.rs"), OsStr::new("vim"), "pane-12", &mut cli).unwrap();
+    open_pane(
+        &PathBuf::from("/work/src/main.rs"),
+        OsStr::new("vim"),
+        "pane-12",
+        &mut cli,
+    )
+    .unwrap();
 
-    assert_eq!(cli.calls.len(), 2, "exactly two herdr CLI calls (split, run)");
+    assert_eq!(
+        cli.calls.len(),
+        2,
+        "exactly two herdr CLI calls (split, run)"
+    );
     assert_eq!(
         cli.calls[0],
-        osv(&["pane", "split", "pane-12", "--direction", "right", "--no-focus"]),
+        osv(&[
+            "pane",
+            "split",
+            "pane-12",
+            "--direction",
+            "right",
+            "--no-focus"
+        ]),
     );
     // The new pane id is parsed from the split's result.pane.pane_id and used for run.
-    assert_eq!(cli.calls[1], osv(&["pane", "run", "pane-77", "vim '/work/src/main.rs'"]));
+    assert_eq!(
+        cli.calls[1],
+        osv(&["pane", "run", "pane-77", "vim '/work/src/main.rs'"])
+    );
 }
 
 #[test]
@@ -173,7 +199,15 @@ fn flag_like_pane_id_from_split_is_rejected() {
 #[test]
 fn flag_like_current_pane_id_is_rejected_before_any_call() {
     let mut cli = FakeCli::new("{}");
-    let r = open_pane(&PathBuf::from("/w/f"), OsStr::new("vim"), "--evil", &mut cli);
+    let r = open_pane(
+        &PathBuf::from("/w/f"),
+        OsStr::new("vim"),
+        "--evil",
+        &mut cli,
+    );
     assert!(r.is_err());
-    assert!(cli.calls.is_empty(), "no split with an unsafe current pane id");
+    assert!(
+        cli.calls.is_empty(),
+        "no split with an unsafe current pane id"
+    );
 }

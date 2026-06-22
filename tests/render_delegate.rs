@@ -4,7 +4,7 @@
 //! Renderer commands are injected: `cat` echoes stdin (a working renderer), a nonexistent
 //! program simulates a missing one — so the tests never depend on glow/delta/bat.
 
-use herdr_file_viewer::render::{render, Prepared, Renderers};
+use herdr_file_viewer::render::{Prepared, Renderers, render};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::time::{Duration, Instant};
@@ -29,7 +29,9 @@ fn flatten(t: &Text) -> String {
 
 #[test]
 fn syntax_mode_invokes_the_syntax_renderer_and_ingests_output() {
-    let prepared = Prepared::Full { text: "fn main() {}".into() };
+    let prepared = Prepared::Full {
+        text: "fn main() {}".into(),
+    };
     let (text, notice) = render(&cat(), &prepared, ViewMode::SyntaxContent, None, None);
     assert!(flatten(&text).contains("fn main"), "AC-10");
     assert!(notice.is_none());
@@ -37,15 +39,25 @@ fn syntax_mode_invokes_the_syntax_renderer_and_ingests_output() {
 
 #[test]
 fn markdown_mode_invokes_the_markdown_renderer() {
-    let prepared = Prepared::Full { text: "# Title".into() };
+    let prepared = Prepared::Full {
+        text: "# Title".into(),
+    };
     let (text, _) = render(&cat(), &prepared, ViewMode::RenderedMarkdown, None, None);
     assert!(flatten(&text).contains("# Title"), "AC-8");
 }
 
 #[test]
 fn diff_mode_renders_the_supplied_raw_diff() {
-    let prepared = Prepared::Full { text: "ignored".into() };
-    let (text, _) = render(&cat(), &prepared, ViewMode::Diff, Some("@@ -1 +1 @@\n+new line"), None);
+    let prepared = Prepared::Full {
+        text: "ignored".into(),
+    };
+    let (text, _) = render(
+        &cat(),
+        &prepared,
+        ViewMode::Diff,
+        Some("@@ -1 +1 @@\n+new line"),
+        None,
+    );
     assert!(flatten(&text).contains("+new line"), "AC-9");
 }
 
@@ -54,7 +66,10 @@ fn an_oversized_diff_is_truncated_with_a_notice() {
     let huge = "+line\n".repeat(6000); // > 5000 lines
     let prepared = Prepared::Full { text: "x".into() };
     let (text, notice) = render(&cat(), &prepared, ViewMode::Diff, Some(&huge), None);
-    assert!(notice.unwrap().to_lowercase().contains("truncated"), "AC-13: large diff bounded");
+    assert!(
+        notice.unwrap().to_lowercase().contains("truncated"),
+        "AC-13: large diff bounded"
+    );
     assert!(text.lines.len() <= 5000, "diff preview is line-bounded");
 }
 
@@ -62,10 +77,19 @@ fn an_oversized_diff_is_truncated_with_a_notice() {
 fn diff_mode_renders_even_for_a_binary_or_deleted_file() {
     // A deleted file classifies as Binary (gone from disk), but its diff comes from git,
     // so Diff mode must still show the diff — not the binary placeholder (AC-9).
-    let (text, _) = render(&cat(), &Prepared::Binary, ViewMode::Diff, Some("@@ -1 +0 @@\n-removed"), None);
+    let (text, _) = render(
+        &cat(),
+        &Prepared::Binary,
+        ViewMode::Diff,
+        Some("@@ -1 +0 @@\n-removed"),
+        None,
+    );
     let s = flatten(&text);
     assert!(s.contains("-removed"), "deletion diff is shown");
-    assert!(!s.to_lowercase().contains("binary file"), "no binary placeholder in diff mode");
+    assert!(
+        !s.to_lowercase().contains("binary file"),
+        "no binary placeholder in diff mode"
+    );
 }
 
 #[test]
@@ -77,9 +101,20 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         syntax: vec!["cat".into()],
         timeout: Duration::from_secs(5),
     };
-    let prepared = Prepared::Full { text: "# Title".into() };
-    let (text, notice) = render(&renderers, &prepared, ViewMode::RenderedMarkdown, None, None);
-    assert!(flatten(&text).contains("# Title"), "AC-24: plain-text fallback, not empty/crash");
+    let prepared = Prepared::Full {
+        text: "# Title".into(),
+    };
+    let (text, notice) = render(
+        &renderers,
+        &prepared,
+        ViewMode::RenderedMarkdown,
+        None,
+        None,
+    );
+    assert!(
+        flatten(&text).contains("# Title"),
+        "AC-24: plain-text fallback, not empty/crash"
+    );
     let notice = notice.expect("AC-25: a non-fatal fallback notice");
     assert!(
         notice.to_lowercase().contains("markdown") || notice.to_lowercase().contains("unavailable"),
@@ -89,8 +124,17 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
 
 #[test]
 fn binary_shows_a_placeholder_not_raw_bytes() {
-    let (text, _) = render(&cat(), &Prepared::Binary, ViewMode::SyntaxContent, None, None);
-    assert!(flatten(&text).to_lowercase().contains("binary"), "AC-12 placeholder");
+    let (text, _) = render(
+        &cat(),
+        &Prepared::Binary,
+        ViewMode::SyntaxContent,
+        None,
+        None,
+    );
+    assert!(
+        flatten(&text).to_lowercase().contains("binary"),
+        "AC-12 placeholder"
+    );
 }
 
 #[test]
@@ -104,9 +148,20 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
         timeout: Duration::from_secs(5),
     };
-    let prepared = Prepared::Full { text: "code".into() };
-    let (text, _) = render(&renderers, &prepared, ViewMode::SyntaxContent, None, Some("main.rs"));
-    assert!(flatten(&text).contains("main.rs"), "file name passed to the syntax renderer");
+    let prepared = Prepared::Full {
+        text: "code".into(),
+    };
+    let (text, _) = render(
+        &renderers,
+        &prepared,
+        ViewMode::SyntaxContent,
+        None,
+        Some("main.rs"),
+    );
+    assert!(
+        flatten(&text).contains("main.rs"),
+        "file name passed to the syntax renderer"
+    );
 }
 
 #[test]
@@ -122,12 +177,23 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
         timeout: Duration::from_secs(5),
     };
-    let prepared = Prepared::Full { text: "code".into() };
+    let prepared = Prepared::Full {
+        text: "code".into(),
+    };
     let evil = format!("$(touch {}).rs", marker.display());
-    let (text, _) = render(&renderers, &prepared, ViewMode::SyntaxContent, None, Some(&evil));
+    let (text, _) = render(
+        &renderers,
+        &prepared,
+        ViewMode::SyntaxContent,
+        None,
+        Some(&evil),
+    );
     assert!(!marker.exists(), "command substitution must not execute");
     let out = flatten(&text);
-    assert!(!out.contains('$') && !out.contains('('), "metacharacters sanitized: {out}");
+    assert!(
+        !out.contains('$') && !out.contains('('),
+        "metacharacters sanitized: {out}"
+    );
 }
 
 #[test]
@@ -145,11 +211,26 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
     let full = "@@ -1,2 +1,2 @@\n fn main() {\n-    old();\n+    new();\n }";
     // Prepared::Binary on purpose: like Diff, FullDiff renders from git, so a deleted/binary
     // file still shows its diff (AC-9) rather than the binary placeholder.
-    let (text, notice) = render(&renderers, &Prepared::Binary, ViewMode::FullDiff, Some(full), None);
+    let (text, notice) = render(
+        &renderers,
+        &Prepared::Binary,
+        ViewMode::FullDiff,
+        Some(full),
+        None,
+    );
     let s = flatten(&text);
-    assert!(s.contains("fn main()") && s.contains("new()"), "full-context diff is shown: {s}");
-    assert!(!s.to_lowercase().contains("binary file"), "no binary placeholder in full-diff mode");
-    assert!(notice.is_none(), "the full_diff renderer succeeded → no fallback notice");
+    assert!(
+        s.contains("fn main()") && s.contains("new()"),
+        "full-context diff is shown: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("binary file"),
+        "no binary placeholder in full-diff mode"
+    );
+    assert!(
+        notice.is_none(),
+        "the full_diff renderer succeeded → no fallback notice"
+    );
 }
 
 #[test]
@@ -157,10 +238,22 @@ fn an_oversized_full_diff_is_truncated_with_a_notice() {
     // AC-13 on the FullDiff path: a full-context diff of a large file is bounded with a visible
     // truncation notice before it is rendered, so it can't blow up the content pane.
     let big_diff = "+line\n".repeat(6000); // > the 5000-line cap
-    let (text, notice) = render(&cat(), &Prepared::Binary, ViewMode::FullDiff, Some(&big_diff), None);
+    let (text, notice) = render(
+        &cat(),
+        &Prepared::Binary,
+        ViewMode::FullDiff,
+        Some(&big_diff),
+        None,
+    );
     let n = notice.expect("AC-13: an oversized full-context diff gets a truncation notice");
-    assert!(n.to_lowercase().contains("truncat"), "the notice names the truncation: {n}");
-    assert!(flatten(&text).lines().count() <= 5000, "the rendered diff is line-bounded (AC-13)");
+    assert!(
+        n.to_lowercase().contains("truncat"),
+        "the notice names the truncation: {n}"
+    );
+    assert!(
+        flatten(&text).lines().count() <= 5000,
+        "the rendered diff is line-bounded (AC-13)"
+    );
 }
 
 #[test]
@@ -172,12 +265,29 @@ fn a_hanging_renderer_times_out_and_falls_back() {
         syntax: vec!["cat".into()],
         timeout: Duration::from_millis(150),
     };
-    let prepared = Prepared::Full { text: "# Title".into() };
+    let prepared = Prepared::Full {
+        text: "# Title".into(),
+    };
     let start = Instant::now();
-    let (text, notice) = render(&renderers, &prepared, ViewMode::RenderedMarkdown, None, None);
-    assert!(start.elapsed() < Duration::from_secs(3), "must not block on a wedged renderer");
-    assert!(flatten(&text).contains("# Title"), "AC-24: plain-text fallback after timeout");
-    assert!(notice.unwrap().to_lowercase().contains("timed out"), "notice reports the timeout");
+    let (text, notice) = render(
+        &renderers,
+        &prepared,
+        ViewMode::RenderedMarkdown,
+        None,
+        None,
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "must not block on a wedged renderer"
+    );
+    assert!(
+        flatten(&text).contains("# Title"),
+        "AC-24: plain-text fallback after timeout"
+    );
+    assert!(
+        notice.unwrap().to_lowercase().contains("timed out"),
+        "notice reports the timeout"
+    );
 }
 
 #[test]
@@ -187,5 +297,8 @@ fn truncation_notice_is_preserved_through_rendering() {
         notice: "truncated-preview".into(),
     };
     let (_, notice) = render(&cat(), &prepared, ViewMode::SyntaxContent, None, None);
-    assert!(notice.unwrap().contains("truncated-preview"), "AC-13 notice survives");
+    assert!(
+        notice.unwrap().contains("truncated-preview"),
+        "AC-13 notice survives"
+    );
 }

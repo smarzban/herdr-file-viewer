@@ -59,7 +59,9 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
     // Bounded read: at most MAX_BYTES, so a giant/hostile file is never slurped whole.
     let mut buf = Vec::new();
     if file.take(MAX_BYTES).read_to_end(&mut buf).is_err() {
-        return Prepared::Full { text: String::new() };
+        return Prepared::Full {
+            text: String::new(),
+        };
     }
 
     // Binary: a NUL byte anywhere in the (bounded) content. No raw bytes are emitted.
@@ -82,11 +84,7 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
     let line_count = text.lines().count();
     let over_lines = line_count >= MAX_LINES;
     if over_bytes || over_lines {
-        let preview: String = text
-            .lines()
-            .take(MAX_LINES)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let preview: String = text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
         let cap = if over_bytes { "1 MB size" } else { "5000-line" };
         let notice = format!(
             "⚠ Truncated preview — showing {} lines ({} of {} bytes); file exceeds the {} cap.",
@@ -95,7 +93,10 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
             byte_len,
             cap
         );
-        return Prepared::Truncated { text: preview, notice };
+        return Prepared::Truncated {
+            text: preview,
+            notice,
+        };
     }
     Prepared::Full { text }
 }
@@ -135,9 +136,19 @@ pub fn render(
     // they differ only in the diff git produced (default vs. whole-file context) and the
     // delegate used (the full-context one numbers lines).
     if mode == ViewMode::Diff || mode == ViewMode::FullDiff {
-        let cmd = if mode == ViewMode::FullDiff { &renderers.full_diff } else { &renderers.diff };
+        let cmd = if mode == ViewMode::FullDiff {
+            &renderers.full_diff
+        } else {
+            &renderers.diff
+        };
         let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
-        return delegate(&with_name(cmd, name), &diff, mode, renderers.timeout, notice);
+        return delegate(
+            &with_name(cmd, name),
+            &diff,
+            mode,
+            renderers.timeout,
+            notice,
+        );
     }
 
     // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
@@ -170,7 +181,10 @@ pub fn render(
 /// so a stdin-fed renderer (e.g. `bat --file-name={name}`) can still infer the language —
 /// keeping the secure stdin design while enabling syntax highlighting (AC-10).
 fn with_name(command: &[String], name: &str) -> Vec<String> {
-    command.iter().map(|arg| arg.replace("{name}", name)).collect()
+    command
+        .iter()
+        .map(|arg| arg.replace("{name}", name))
+        .collect()
 }
 
 /// Bound a text block to the size cap, returning a preview plus a truncation notice when
@@ -191,7 +205,10 @@ fn cap_preview(text: &str) -> (String, Option<String>) {
             .unwrap_or(0);
         preview.truncate(end);
     }
-    (preview, Some("⚠ Truncated diff preview — diff exceeds the size cap.".into()))
+    (
+        preview,
+        Some("⚠ Truncated diff preview — diff exceeds the size cap.".into()),
+    )
 }
 
 /// Reduce an untrusted file name to a safe basename — directory parts stripped, only
@@ -205,7 +222,13 @@ fn sanitize_name(name: &str) -> String {
         .unwrap_or("");
     let safe: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     // A leading '-' would be parsed as an option by a renderer (e.g. `bat -rf.rs`); prefix
     // it so the value is always treated as a file name.
@@ -316,7 +339,10 @@ fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<St
 }
 
 /// Wait for a child to exit within `grace`, polling; kill and reap it if it overruns.
-fn wait_bounded(child: &mut std::process::Child, grace: Duration) -> Option<std::process::ExitStatus> {
+fn wait_bounded(
+    child: &mut std::process::Child,
+    grace: Duration,
+) -> Option<std::process::ExitStatus> {
     let deadline = std::time::Instant::now() + grace;
     loop {
         match child.try_wait() {
@@ -463,7 +489,10 @@ mod tests {
         let p = tmp("many.txt", many.as_bytes());
         match classify(&std::env::temp_dir(), &p) {
             Prepared::Truncated { text, notice } => {
-                assert!(text.lines().count() <= MAX_LINES, "AC-13: preview line-bounded");
+                assert!(
+                    text.lines().count() <= MAX_LINES,
+                    "AC-13: preview line-bounded"
+                );
                 assert!(notice.contains("line"), "notice describes the line cap");
             }
             other => panic!("expected Truncated, got {other:?}"),
@@ -497,7 +526,11 @@ mod tests {
         let outside = tmp("secret", b"TOPSECRET"); // lives in temp_dir, outside `root`
         let link = root.join("link.txt");
         symlink(&outside, &link).unwrap();
-        assert_eq!(classify(&root, &link), Prepared::Binary, "AC-N5: no out-of-root read");
+        assert_eq!(
+            classify(&root, &link),
+            Prepared::Binary,
+            "AC-N5: no out-of-root read"
+        );
         fs::remove_dir_all(&root).ok();
         fs::remove_file(&outside).ok();
     }
@@ -538,7 +571,10 @@ mod tests {
         let forced = cmd
             .get_envs()
             .any(|(k, v)| k == OsStr::new("CLICOLOR_FORCE") && v == Some(OsStr::new("1")));
-        assert!(forced, "CLICOLOR_FORCE=1 must be set on the renderer subprocess");
+        assert!(
+            forced,
+            "CLICOLOR_FORCE=1 must be set on the renderer subprocess"
+        );
     }
 
     #[test]
@@ -548,7 +584,15 @@ mod tests {
         // them — rather than being flattened to fixed RGB.
         use ratatui::style::Color;
         let t = to_text("\u{1b}[34mhi\u{1b}[0m");
-        let fg = t.lines.iter().flat_map(|l| l.spans.iter()).find_map(|s| s.style.fg);
-        assert_eq!(fg, Some(Color::Blue), "SGR 34 must map to the named Blue, not RGB");
+        let fg = t
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find_map(|s| s.style.fg);
+        assert_eq!(
+            fg,
+            Some(Color::Blue),
+            "SGR 34 must map to the named Blue, not RGB"
+        );
     }
 }

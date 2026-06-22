@@ -15,6 +15,9 @@
 # Review-gate run logs / dismissal records — local audit trail, not part of the plugin
 .review-gate/
 
+# Repo-audit backlog — internal triage snapshot, kept local only
+/AUDIT.md
+
 # Spec / process / meta docs — kept local only, not tracked in the plugin repo (per owner)
 /CLAUDE.md
 /CONTEXT.md

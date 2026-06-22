@@ -28,9 +28,15 @@ fn show_ignored_toggle_reveals_then_hides_ignored_files() {
     let mut model = TreeModel::new(dir.path());
     assert!(!names(&model).contains(&"secret.log".to_string()));
     model.set_show_ignored(true);
-    assert!(names(&model).contains(&"secret.log".to_string()), "AC-5: revealed");
+    assert!(
+        names(&model).contains(&"secret.log".to_string()),
+        "AC-5: revealed"
+    );
     model.set_show_ignored(false);
-    assert!(!names(&model).contains(&"secret.log".to_string()), "AC-5: restored");
+    assert!(
+        !names(&model).contains(&"secret.log".to_string()),
+        "AC-5: restored"
+    );
 }
 
 #[test]
@@ -46,14 +52,29 @@ fn changed_only_restricts_then_restores_full_tree() {
     let mut model = TreeModel::new(dir.path());
     model.set_changed_only(true, &changed);
     let n = names(&model);
-    assert!(n.contains(&"src".to_string()), "ancestor dir of a change is shown");
-    assert!(n.contains(&"changed.rs".to_string()), "AC-6: changed file shown");
-    assert!(!n.contains(&"unchanged.rs".to_string()), "AC-6: unchanged sibling hidden");
-    assert!(!n.contains(&"README.md".to_string()), "AC-6: unchanged top-level file hidden");
+    assert!(
+        n.contains(&"src".to_string()),
+        "ancestor dir of a change is shown"
+    );
+    assert!(
+        n.contains(&"changed.rs".to_string()),
+        "AC-6: changed file shown"
+    );
+    assert!(
+        !n.contains(&"unchanged.rs".to_string()),
+        "AC-6: unchanged sibling hidden"
+    );
+    assert!(
+        !n.contains(&"README.md".to_string()),
+        "AC-6: unchanged top-level file hidden"
+    );
 
     model.set_changed_only(false, &changed);
     let restored = names(&model);
-    assert!(restored.contains(&"README.md".to_string()), "AC-6: full tree restored");
+    assert!(
+        restored.contains(&"README.md".to_string()),
+        "AC-6: full tree restored"
+    );
     assert!(restored.contains(&"src".to_string()));
 }
 
@@ -98,9 +119,15 @@ fn changed_only_shows_files_under_a_deleted_directory() {
         .iter()
         .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert!(names.contains(&"old".to_string()), "the deleted directory is synthesized");
+    assert!(
+        names.contains(&"old".to_string()),
+        "the deleted directory is synthesized"
+    );
     assert!(names.contains(&"a.rs".to_string()));
-    assert!(names.contains(&"b.rs".to_string()), "files under a deleted dir are shown");
+    assert!(
+        names.contains(&"b.rs".to_string()),
+        "files under a deleted dir are shown"
+    );
 }
 
 #[test]
@@ -123,7 +150,10 @@ fn cursor_moves_and_stays_in_bounds_when_filters_shrink_the_list() {
     let mut changed = BTreeMap::new();
     changed.insert(PathBuf::from("a.txt"), Status::Modified);
     model.set_changed_only(true, &changed);
-    assert!(model.cursor() < model.visible_nodes().len(), "cursor clamped after filtering");
+    assert!(
+        model.cursor() < model.visible_nodes().len(),
+        "cursor clamped after filtering"
+    );
     assert!(model.selected().is_some());
 }
 

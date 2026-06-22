@@ -77,17 +77,26 @@ mod tests {
     #[test]
     fn bound_keys_map_to_their_intents() {
         for &(code, want) in BINDINGS {
-            assert_eq!(map_key(k(code)), Some(want), "{code:?} should map to {want:?}");
+            assert_eq!(
+                map_key(k(code)),
+                Some(want),
+                "{code:?} should map to {want:?}"
+            );
         }
     }
 
     #[test]
     fn every_intent_has_at_least_one_key() {
         // AC-18: keyboard-complete — no viewer function is unreachable from the keyboard.
-        let reachable: HashSet<Intent> =
-            BINDINGS.iter().filter_map(|&(c, _)| map_key(k(c))).collect();
+        let reachable: HashSet<Intent> = BINDINGS
+            .iter()
+            .filter_map(|&(c, _)| map_key(k(c)))
+            .collect();
         for intent in Intent::ALL {
-            assert!(reachable.contains(&intent), "{intent:?} has no bound key (AC-18)");
+            assert!(
+                reachable.contains(&intent),
+                "{intent:?} has no bound key (AC-18)"
+            );
         }
     }
 
@@ -103,9 +112,18 @@ mod tests {
     fn modified_char_keys_do_not_trigger_intents() {
         // Ctrl+C is the terminal interrupt, not "changed-only"; Alt-chords are unbound too.
         // Accidental or reserved chords must not fire a viewer action.
-        assert_eq!(map_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
-        assert_eq!(map_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)), None);
-        assert_eq!(map_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)), None);
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 
     #[test]
@@ -120,6 +138,9 @@ mod tests {
             map_key(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE)),
             Some(Intent::GrowTree)
         );
-        assert_eq!(map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::CONTROL)), None);
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 }
