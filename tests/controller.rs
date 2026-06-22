@@ -757,3 +757,125 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 5, 5));
     assert_eq!(ctrl.view_state().content_hscroll, 0, "horizontal wheel over the tree does nothing");
 }
+
+// ---- refresh: pick up external git changes (the `r` key + focus-gain) ------------------
+
+#[test]
+fn refresh_re_queries_git_state_and_redraws() {
+    // `r` re-reads git so a change made outside the viewer (merge/pull/commit elsewhere) shows.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, changed_calls, _) = controller(dir.path(), true, StubGit::default(), false);
+    let before = changed_calls.lock().unwrap().len();
+
+    let fx = ctrl.handle(Intent::Refresh);
+    assert!(fx.redraw, "Refresh redraws");
+    assert!(
+        changed_calls.lock().unwrap().len() > before,
+        "Refresh re-queries git for the changed-set"
+    );
+}
+
+#[test]
+fn focus_gained_re_queries_git_but_preserves_content_scroll() {
+    // Regaining focus refreshes the tree's git state (external changes show) WITHOUT re-rendering
+    // the content — so the user's scroll position is not reset on every focus change.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let git = StubGit::default();
+    let changed_calls = git.changed_calls.clone();
+    let components = Components {
+        git: Arc::new(git),
+        content: Box::new(LinesContent { n: 50 }),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus); // focus the content pane
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().content_scroll, 2, "scrolled down two lines");
+    let before = changed_calls.lock().unwrap().len();
+
+    let fx = ctrl.handle_focus_gained();
+    assert!(fx.redraw, "focus-gain redraws (fresh tree colours)");
+    assert!(changed_calls.lock().unwrap().len() > before, "focus-gain re-queries git");
+    assert_eq!(ctrl.view_state().content_scroll, 2, "focus-gain does NOT reset the content scroll");
+}
+
+#[test]
+fn focus_gained_without_a_repo_is_inert() {
+    // No repo → nothing to refresh (AC-26); focus-gain must not force a redraw or a git query.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let fx = ctrl.handle_focus_gained();
+    assert!(!fx.redraw && !fx.quit, "no repo → focus-gain is a no-op");
+}
+
+/// A Git stub whose changed-set flips from `first` to `rest` after the first query — so a
+/// changed-only re-filter on focus-gain moves the selection. `status` is fixed.
+struct EvolvingGit {
+    status: BTreeMap<PathBuf, Status>,
+    first: BTreeMap<PathBuf, Status>,
+    rest: BTreeMap<PathBuf, Status>,
+    calls: Arc<Mutex<usize>>,
+}
+impl GitService for EvolvingGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        self.status.clone()
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        let mut n = self.calls.lock().unwrap();
+        *n += 1;
+        if *n <= 1 { self.first.clone() } else { self.rest.clone() }
+    }
+    fn diff(&self, _p: &Path, _b: Baseline) -> String {
+        String::new()
+    }
+}
+
+/// A Content Renderer that renders the file's path, so a test can see which file the content
+/// pane is showing (and thus catch a tree/content desync).
+struct PathContent;
+impl ContentProvider for PathContent {
+    fn render(&self, path: &Path, _m: ViewMode, _d: Option<&str>) -> RenderResult {
+        RenderResult { content: Text::raw(format!("showing {}", path.display())), notices: Vec::new() }
+    }
+}
+
+#[test]
+fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
+    // Regression (the gate's medium): in changed-only mode, an external change that drops the
+    // selected file from the changed-set re-filters the tree on focus-gain and moves the cursor.
+    // The content pane must FOLLOW the new selection (pre-fix it stayed on the old file → desync).
+    // A single changed file at each step makes the selection deterministic.
+    let dir = TempDir::new();
+    for f in ["a.rs", "b.rs"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let (a, b) = (PathBuf::from("a.rs"), PathBuf::from("b.rs"));
+    let git = EvolvingGit {
+        status: BTreeMap::from([(a.clone(), Status::Modified), (b.clone(), Status::Modified)]),
+        first: BTreeMap::from([(a.clone(), Status::Modified)]), // only a.rs changed → it's selected
+        rest: BTreeMap::from([(b.clone(), Status::Modified)]),  // now only b.rs is changed
+        calls: Arc::new(Mutex::new(0)),
+    };
+    let components = Components {
+        git: Arc::new(git),
+        content: Box::new(PathContent),
+        editor: Box::new(StubEditor { fail: false, opened: Arc::new(Mutex::new(Vec::new())) }),
+    };
+    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    ctrl.handle(Intent::ToggleChangedOnly); // changed-only: only a.rs visible → it's selected
+    await_marker(&mut ctrl, "a.rs");
+    assert_eq!(ctrl.tree().selected().unwrap().path.file_name().unwrap(), "a.rs");
+
+    // Focus-gain: the changed-set is now {b.rs}, so a.rs filters out and the cursor moves to
+    // b.rs. The render is async — await it; pre-fix the content stayed on a.rs and this times out.
+    ctrl.handle_focus_gained();
+    await_marker(&mut ctrl, "b.rs");
+    assert_eq!(ctrl.tree().selected().unwrap().path.file_name().unwrap(), "b.rs", "cursor moved to b.rs");
+    assert!(flatten(ctrl.content()).contains("b.rs"), "content pane shows the selected file — in sync");
+}
