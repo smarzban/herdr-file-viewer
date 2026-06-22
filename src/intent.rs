@@ -16,6 +16,10 @@ pub enum Intent {
     Expand,
     /// Collapse the selected directory (AC-3).
     Collapse,
+    /// Activate the selected node (Enter / double-click): expand/collapse a directory, or open
+    /// a file in zoom mode (content pane full-screen). Never an edit — the editor hand-off
+    /// stays on [`Intent::OpenInEditor`] (AC-N3).
+    Activate,
     /// Reveal/hide gitignored files (AC-5).
     ToggleIgnore,
     /// Restrict the tree to changed files / restore the full tree (AC-6).
@@ -48,11 +52,12 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 16] = [
+    pub const ALL: [Intent; 17] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
         Intent::Collapse,
+        Intent::Activate,
         Intent::ToggleIgnore,
         Intent::ToggleChangedOnly,
         Intent::ToggleBaseline,
@@ -85,6 +90,7 @@ mod tests {
                 | Intent::NavDown
                 | Intent::Expand
                 | Intent::Collapse
+                | Intent::Activate
                 | Intent::ToggleIgnore
                 | Intent::ToggleChangedOnly
                 | Intent::ToggleBaseline
