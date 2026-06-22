@@ -9,7 +9,7 @@
 use crate::controller::{
     Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
 };
-use crate::editor::{EditorLauncher, Spawner, Target};
+use crate::editor::{EditorLauncher, Spawner};
 use crate::git::{self, Baseline, Status};
 use crate::presenter::{self, ViewState};
 use crate::render::{self, Prepared, Renderers};
@@ -241,7 +241,7 @@ impl EditorHandoff for LiveEditor {
         // or outside the alternate screen.
         let suspended = suspend_tui();
         let launched = if suspended.is_ok() {
-            EditorLauncher::new(editor).open(file, Target::Editor, &mut ProcessSpawner)
+            EditorLauncher::new(editor).open(file, &mut ProcessSpawner)
         } else {
             // Don't run the editor over a half-suspended terminal.
             Ok(())
@@ -256,8 +256,7 @@ impl EditorHandoff for LiveEditor {
 }
 
 /// Runs the editor command and waits for it (the hand-off is synchronous, as for a terminal
-/// editor like vim). Only the local-spawn path is used by the keyboard intent; the new-pane
-/// hand-off lives in the Host Adapter (T-17) and is not reached here.
+/// editor like vim).
 struct ProcessSpawner;
 
 impl Spawner for ProcessSpawner {
@@ -271,13 +270,6 @@ impl Spawner for ProcessSpawner {
         } else {
             Err(io::Error::other(format!("editor exited with {status}")))
         }
-    }
-    fn open_pane(&mut self, _editor: &OsStr, _file: &Path) -> io::Result<()> {
-        // v1's keyboard OpenInEditor uses the configured-editor path (Target::Editor); the
-        // new-pane sequence is implemented and tested in the Host Adapter (host.rs).
-        Err(io::Error::other(
-            "new-pane hand-off is not on the v1 keyboard path",
-        ))
     }
 }
 

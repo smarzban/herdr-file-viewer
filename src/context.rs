@@ -10,10 +10,6 @@ use std::path::PathBuf;
 pub struct LaunchContext {
     /// The invoking pane's working directory.
     pub cwd: PathBuf,
-    /// The worktree root, when herdr launched us inside a managed worktree.
-    pub worktree_root: Option<PathBuf>,
     /// A base-branch hint from herdr (the branch a worktree forked from).
     pub base_branch: Option<String>,
-    /// Whether herdr says this is a worktree launch.
-    pub is_worktree: bool,
 }
