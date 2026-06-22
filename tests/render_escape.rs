@@ -75,3 +75,65 @@ fn sgr_styling_is_mapped_to_style_not_left_as_raw_codes() {
         .any(|s| s.style.fg.is_some());
     assert!(has_color, "SGR color is applied as a ratatui style");
 }
+
+#[test]
+fn osc_sequences_are_dropped_through_both_terminators() {
+    // OSC (ESC ]) can set the window title, define hyperlinks, etc. It must be dropped whole,
+    // through either terminator: BEL (\x07) or ST (ESC \). (AC-27)
+    let bel = "before\x1b]0;hijack the title\x07after"; // OSC ... BEL
+    let st = "x\x1b]8;;http://evil/\x1b\\y"; // OSC-8 hyperlink ... ST (ESC \)
+    for hostile in [bel, st] {
+        let rendered = flatten(&to_text(hostile));
+        assert!(
+            !rendered.contains('\u{1b}'),
+            "no ESC survives: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("hijack"),
+            "OSC payload not reproduced: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("http://evil"),
+            "OSC-8 target not reproduced: {rendered:?}"
+        );
+    }
+    // The surrounding plain text on each side is preserved.
+    assert!(flatten(&to_text(bel)).contains("before") && flatten(&to_text(bel)).contains("after"));
+    assert!(flatten(&to_text(st)).contains('x') && flatten(&to_text(st)).contains('y'));
+}
+
+#[test]
+fn c1_control_codepoints_are_dropped() {
+    // C1 controls (U+0080–U+009F, e.g. U+009B = a single-byte CSI introducer) are acted on by
+    // some terminals, so each is dropped. (AC-27)
+    let hostile = "a\u{9b}b\u{85}c"; // U+009B (CSI), U+0085 (NEL)
+    let rendered = flatten(&to_text(hostile));
+    assert!(!rendered.contains('\u{9b}'), "C1 CSI dropped: {rendered:?}");
+    assert!(!rendered.contains('\u{85}'), "C1 NEL dropped: {rendered:?}");
+    assert!(rendered.contains('a') && rendered.contains('b') && rendered.contains('c'));
+}
+
+#[test]
+fn a_lone_trailing_esc_is_dropped() {
+    // A bare ESC at the end of input (no following byte to form a sequence) must still be
+    // dropped, never emitted. (AC-27)
+    let rendered = flatten(&to_text("text\x1b"));
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "trailing ESC dropped: {rendered:?}"
+    );
+    assert!(rendered.contains("text"));
+}
+
+#[test]
+fn esc_plus_single_byte_escape_is_dropped() {
+    // A two-byte ESC + single-char escape (e.g. ESC c = RIS, a full terminal reset) must be
+    // dropped whole — both the ESC and its command byte. (AC-27)
+    let rendered = flatten(&to_text("a\x1bcb")); // ESC c (RIS) between 'a' and 'b'
+    assert!(!rendered.contains('\u{1b}'), "ESC dropped: {rendered:?}");
+    assert!(rendered.contains('a') && rendered.contains('b'));
+    assert!(
+        !rendered.contains('c'),
+        "the RIS command byte is consumed with its ESC: {rendered:?}"
+    );
+}
