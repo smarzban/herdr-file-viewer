@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{canon, git, init_repo_with_commit, TempDir};
+use common::{TempDir, canon, git, init_repo_with_commit};
 use herdr_file_viewer::context::LaunchContext;
 use herdr_file_viewer::root::resolve;
 use std::fs;
@@ -46,10 +46,20 @@ fn linked_worktree_root_is_the_worktree_and_is_flagged() {
     let wt = main.path().join("wt");
     git(
         main.path(),
-        &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "feature"],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            wt.to_str().unwrap(),
+            "-b",
+            "feature",
+        ],
     );
     let r = resolve(&ctx(&wt));
     assert!(r.is_git_repo);
-    assert!(r.is_worktree, "a linked worktree must be flagged is_worktree"); // AC-1
+    assert!(
+        r.is_worktree,
+        "a linked worktree must be flagged is_worktree"
+    ); // AC-1
     assert_eq!(canon(&r.root), canon(&wt));
 }

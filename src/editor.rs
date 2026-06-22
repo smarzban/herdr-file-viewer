@@ -36,7 +36,9 @@ pub struct EditorLauncher {
 impl EditorLauncher {
     /// Create a launcher for the given editor command (e.g. from `$EDITOR`).
     pub fn new(editor: impl Into<OsString>) -> Self {
-        Self { editor: editor.into() }
+        Self {
+            editor: editor.into(),
+        }
     }
 
     /// Hand `file` off per `target` — spawn the configured editor on it, or ask the host to
@@ -56,8 +58,12 @@ impl EditorLauncher {
     /// new-pane path, which runs the editor as shell text). An empty/whitespace-only editor
     /// falls back to the raw value so the launch fails loudly rather than exec-ing the file.
     fn editor_argv(&self, file: &Path) -> Vec<OsString> {
-        let mut argv: Vec<OsString> =
-            self.editor.to_string_lossy().split_whitespace().map(OsString::from).collect();
+        let mut argv: Vec<OsString> = self
+            .editor
+            .to_string_lossy()
+            .split_whitespace()
+            .map(OsString::from)
+            .collect();
         if argv.is_empty() {
             argv.push(self.editor.clone());
         }

@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::{git, init_repo_with_commit, viewer_command, TempDir};
+use common::{TempDir, git, init_repo_with_commit, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
 use std::time::Duration;
@@ -43,13 +43,15 @@ fn every_keyboard_function_drives_the_viewer_and_it_exits_cleanly() {
     s.set_expect_timeout(Some(Duration::from_secs(15)));
 
     // Initial full draw lists the tree (AC-3 display, AC-17 launch).
-    s.expect("aaa.txt").expect("tree should list files on launch");
+    s.expect("aaa.txt")
+        .expect("tree should list files on launch");
 
     // Expand the selected directory, then navigate onto the revealed child: its content fills
     // the empty pane — proving expand (l) AND navigation (j) AND content render functionally.
     s.send("l").expect("send expand");
     s.send("j").expect("send nav-down onto the revealed child");
-    s.expect("GRANDCHILD").expect("expand revealed the child and navigation rendered it");
+    s.expect("GRANDCHILD")
+        .expect("expand revealed the child and navigation rendered it");
 
     // Back up onto the directory and collapse it (h acts on the selected directory).
     s.send("k").expect("send nav-up to the directory");
@@ -71,10 +73,14 @@ fn every_keyboard_function_drives_the_viewer_and_it_exits_cleanly() {
 
     // The close key returns control and exits cleanly (AC-20).
     s.send("q").expect("send close");
-    s.expect(Eof).expect("the viewer terminates after the close key");
+    s.expect(Eof)
+        .expect("the viewer terminates after the close key");
     match s.get_process().wait().expect("reap the viewer") {
         WaitStatus::Exited(_, code) => {
-            assert_eq!(code, 0, "AC-18/AC-20: no keyboard action crashed the viewer")
+            assert_eq!(
+                code, 0,
+                "AC-18/AC-20: no keyboard action crashed the viewer"
+            )
         }
         other => panic!("expected a clean exit, got {other:?}"),
     }

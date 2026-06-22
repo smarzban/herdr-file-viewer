@@ -62,7 +62,12 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
         .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args)
         .output()
         .ok()?;
@@ -77,7 +82,10 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
 /// common dir (`.git`); the main working tree's are the same.
 fn is_linked_worktree(dir: &Path) -> bool {
     let git_dir = git_output(dir, &["rev-parse", "--path-format=absolute", "--git-dir"]);
-    let common = git_output(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let common = git_output(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
     match (git_dir, common) {
         (Some(g), Some(c)) => g != c,
         _ => false,

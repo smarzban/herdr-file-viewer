@@ -104,13 +104,20 @@ mod tests {
                 | Intent::Refresh
                 | Intent::Close => false,
             };
-            assert!(!mutates_file, "{intent:?} must not mutate file contents (AC-N3)");
+            assert!(
+                !mutates_file,
+                "{intent:?} must not mutate file contents (AC-N3)"
+            );
         }
     }
 
     #[test]
     fn all_lists_every_variant_once() {
         let set: HashSet<&Intent> = Intent::ALL.iter().collect();
-        assert_eq!(set.len(), Intent::ALL.len(), "Intent::ALL must have no duplicates");
+        assert_eq!(
+            set.len(),
+            Intent::ALL.len(),
+            "Intent::ALL must have no duplicates"
+        );
     }
 }

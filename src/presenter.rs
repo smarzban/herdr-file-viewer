@@ -169,7 +169,8 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // A notice strip (truncation AC-13, fallback AC-25) sits above the content, bounded so
     // it can never crowd out the file itself.
     let max_notices = (inner.height.saturating_sub(1)).min(state.notices.len() as u16);
-    let parts = Layout::vertical([Constraint::Length(max_notices), Constraint::Min(0)]).split(inner);
+    let parts =
+        Layout::vertical([Constraint::Length(max_notices), Constraint::Min(0)]).split(inner);
 
     if max_notices > 0 {
         let notice_lines: Vec<Line> = state
@@ -273,13 +274,20 @@ mod tests {
     #[test]
     fn sanitize_label_strips_control_bytes_keeps_printable() {
         // ESC + CSI + C0 controls removed; the printable remainder (incl. unicode) survives.
-        assert_eq!(sanitize_label("evil\u{1b}[2J\u{1b}[10;10Hpwned"), "evil[2J[10;10Hpwned");
+        assert_eq!(
+            sanitize_label("evil\u{1b}[2J\u{1b}[10;10Hpwned"),
+            "evil[2J[10;10Hpwned"
+        );
         assert_eq!(sanitize_label("a\u{07}\u{08}\rb\tc"), "abc");
         assert_eq!(sanitize_label("plain_name.rs"), "plain_name.rs");
         assert_eq!(sanitize_label("café—ok"), "café—ok");
         // C1 controls (U+0080..U+009F) are also dropped.
         assert_eq!(sanitize_label("x\u{0090}y"), "xy");
         // No control codepoint survives, ever.
-        assert!(!sanitize_label("\u{1b}\u{07}\u{7f}\u{9b}z").chars().any(|c| c.is_control()));
+        assert!(
+            !sanitize_label("\u{1b}\u{07}\u{7f}\u{9b}z")
+                .chars()
+                .any(|c| c.is_control())
+        );
     }
 }

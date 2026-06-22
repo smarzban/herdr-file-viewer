@@ -24,11 +24,13 @@ fn viewer_draws_a_filename_then_exits_zero_on_close() {
     p.set_expect_timeout(Some(Duration::from_secs(10)));
 
     // The tree column lists the file in the launch directory (AC-3 display / AC-17 launch).
-    p.expect("hello.txt").expect("viewer should draw the file tree");
+    p.expect("hello.txt")
+        .expect("viewer should draw the file tree");
 
     // The close key returns control and exits the process (AC-20).
     p.send("q").expect("send the close key");
-    p.expect(Eof).expect("process should terminate after the close key");
+    p.expect(Eof)
+        .expect("process should terminate after the close key");
 
     match p.get_process().wait().expect("reap the viewer process") {
         WaitStatus::Exited(_, code) => assert_eq!(code, 0, "AC-20: clean exit on close"),
