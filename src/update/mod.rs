@@ -98,13 +98,45 @@ fn ls_remote_command(repo_url: &str, run_dir: &Path) -> Command {
 /// afterwards. The whole invocation is bounded by [`PROBE_TIMEOUT`] so a connect/DNS hang can't
 /// wedge or orphan the `git` child. `Err` on any failure — all of which degrade to "no banner".
 pub fn run_git_ls_remote(repo_url: &str) -> io::Result<String> {
-    let probe_dir = std::env::temp_dir().join(format!("herdr-fv-probe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe_dir); // clear any stale dir from a prior crashed run
-    std::fs::create_dir_all(&probe_dir)?; // no clean dir → abort the probe (no banner)
+    let probe_dir = make_private_dir()?; // fresh, exclusively-created, empty, owned by us
     let result = run_ls_remote_in(repo_url, &probe_dir);
     let _ = std::fs::remove_dir_all(&probe_dir);
     result
 }
+
+/// Create a fresh, private, empty directory under the system temp dir and return its path.
+///
+/// Uses **exclusive** creation (`create_dir`, which fails if the path already exists) with an
+/// unpredictable, never-reused name (pid + a nanosecond stamp + a probe counter), retrying on the
+/// rare collision. So the returned directory is guaranteed to be one we just created — never a
+/// pre-existing or attacker-planted path (which `create_dir_all` would silently reuse, letting a
+/// `.git/config` in it influence the probe). The caller removes it when done. `Err` (→ no banner)
+/// if no fresh directory can be made.
+fn make_private_dir() -> io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    for attempt in 0..1024 {
+        let dir = base.join(format!(
+            "herdr-fv-probe-{}-{nanos}-{seq}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(
+        "could not create a private probe directory",
+    ))
+}
+
+/// Distinguishes successive private-probe-dir names within one process.
+static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Spawn the hardened `ls-remote` in `run_dir` and read its stdout, bounded by [`PROBE_TIMEOUT`].
 fn run_ls_remote_in(repo_url: &str, run_dir: &Path) -> io::Result<String> {
@@ -333,6 +365,30 @@ mod tests {
             Some("0"),
             "a credential prompt must never block the probe"
         );
+    }
+
+    #[test]
+    fn make_private_dir_is_fresh_empty_and_unique() {
+        // The probe dir must be freshly created (exclusive), empty, and never the same path twice
+        // — so a pre-existing/planted directory can't be reused as the probe cwd.
+        let a = make_private_dir().expect("first private dir");
+        let b = make_private_dir().expect("second private dir");
+        assert_ne!(a, b, "successive calls return distinct, never-reused paths");
+        for d in [&a, &b] {
+            assert!(d.is_dir(), "exists as a directory: {d:?}");
+            assert_eq!(
+                std::fs::read_dir(d).unwrap().count(),
+                0,
+                "freshly created → empty (no planted .git): {d:?}"
+            );
+        }
+        // Exclusive creation: creating the same path again must fail, not silently reuse it.
+        assert_eq!(
+            std::fs::create_dir(&a).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 
     #[test]
