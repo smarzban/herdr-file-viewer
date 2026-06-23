@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-23
+
+### Added
+- Prebuilt-binary install path: tagged releases now ship SHA-256-verified binaries for macOS
+  (arm64 + x86_64) and Linux x86_64 (static/musl). The install step downloads the binary matching
+  the source's version + platform and falls back to a `cargo` source build on any miss, so no Rust
+  toolchain is needed for supported platforms. The install command is unchanged.
+
 ## [1.1.0] - 2026-06-22
 
 ### Added

@@ -6,7 +6,7 @@
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
-version = "1.1.0"
+version = "1.2.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
