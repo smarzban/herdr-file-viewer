@@ -105,6 +105,7 @@ the launcher's open/focus/toggle behavior, the full key map, and the `--remote` 
 | `w` | Toggle line wrapping for the content pane |
 | `z` | Zoom — hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
+| `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
@@ -159,9 +160,9 @@ Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Li
 which the viewer pane launches:
 
 ```bash
-# install from this GitHub repo (latest main):
+# install (and update — re-run any time to get the latest):
 herdr plugin install smarzban/herdr-file-viewer
-# …or pin a specific release for reproducibility:
+# …optional: pin a specific older version for reproducibility:
 herdr plugin install smarzban/herdr-file-viewer --ref v1.0.0
 
 # or, for local development, link this checkout in place:
@@ -169,11 +170,34 @@ cargo build --release            # plugin link does NOT run the [[build]] step, 
 herdr plugin link /path/to/herdr-file-viewer
 ```
 
+> You don't need `--ref` to stay current — a bare install pulls the latest. See
+> [Updating](#updating).
+
 Confirm it registered with `herdr plugin list`. To build manually outside herdr:
 
 ```bash
 cargo build --release
 ```
+
+## Updating
+
+herdr has no plugin auto-update, so the viewer tells you when a new release exists: open it
+(`prefix+f`) and, if you're behind, a status line appears at the bottom naming the new version
+and the command to update. Press `u` to dismiss it for the session.
+
+To update, just re-run the install — it pulls the latest:
+
+```bash
+herdr plugin install smarzban/herdr-file-viewer
+```
+
+- You **don't** need `--ref` to stay current; it only *pins* a specific version (and a pin stays
+  pinned until you change it).
+- Want a heads-up the moment a release ships? On GitHub, **Watch → Custom → Releases**.
+- Prefer no network check? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK=1` in the pane's environment —
+  the check (and banner) are disabled entirely. The check otherwise runs at most once per 24h,
+  off the UI thread, over a read-only `git ls-remote`, and never blocks or fails the viewer when
+  offline.
 
 ## Optional runtime dependencies (external renderers)
 

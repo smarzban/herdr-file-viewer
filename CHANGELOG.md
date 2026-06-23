@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-22
+
+### Added
+- **Update-available notification** — the viewer checks for a newer release (at most once per
+  day, off the UI thread, over a read-only `git ls-remote`) and, when you're behind, shows a
+  dismissable bottom status-line banner with the one-line update command. Press `u` to dismiss
+  it for the session. Opt out entirely with `HERDR_FILE_VIEWER_NO_UPDATE_CHECK=1`. No new
+  dependencies, no telemetry.
+
+### Docs
+- Clarified updating: re-running `herdr plugin install …` pulls the latest; `--ref` only pins a
+  specific version and is no longer presented as part of the normal install.
+
 ## [1.0.0] - 2026-06-22
 
 First public release: a git-aware, read-only file viewer that runs as a herdr plugin pane.

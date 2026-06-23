@@ -38,6 +38,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         wrap: false,
         split_pct: 40,
         zoomed: false,
+        update_banner: None,
     }
 }
 

@@ -16,6 +16,7 @@ pub mod presenter;
 pub mod render;
 pub mod root;
 pub mod tree;
+pub mod update;
 pub mod view_policy;
 
 /// Entry point invoked by the binary. Wires the components and runs the event loop.
