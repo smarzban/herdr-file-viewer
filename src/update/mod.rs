@@ -12,7 +12,7 @@ pub use version::Version;
 
 use cache::{Cache, next_cache, should_check};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -55,31 +55,36 @@ pub fn banner_text(v: &Version) -> String {
     )
 }
 
-/// Build the hardened `git ls-remote --tags <url>` command. Constructed separately from
-/// [`run_git_ls_remote`] so the security boundary is unit-testable without shelling out.
+/// Apply the security boundary for invoking `git` against an untrusted environment.
 ///
-/// The viewed repository is **untrusted**, and a `git` process reads the repo-local `.git/config`
-/// of whatever working directory it discovers (URL `insteadOf` rewrites, credential helpers, …) —
-/// so an attacker-planted `.git/config` could otherwise redirect or hijack this once-a-day probe.
-/// We close that hole the way the rest of the viewer treats the repo as untrusted:
-/// - run from a **neutral, non-repo directory** and set `GIT_CEILING_DIRECTORIES` so git never
-///   walks up to *discover* a repo — no repo-local config is read, regardless of where herdr
-///   launched the pane;
-/// - pin the transport to `https` via `GIT_ALLOW_PROTOCOL`, so even a (user-global) URL rewrite
+/// The viewed repository is **untrusted**, and `git` reads the repo-local `.git/config` of
+/// whatever working directory it is in (URL `insteadOf` rewrites, credential helpers, …) — so an
+/// attacker-planted `.git/config` could otherwise redirect or hijack this once-a-day probe. We:
+/// - run in `run_dir`, which the caller guarantees is a **freshly-created private empty dir**
+///   (so it cannot itself contain a `.git/config`), and ceiling discovery to it
+///   (`GIT_CEILING_DIRECTORIES`) so git never walks up to find one — no repo-local config is read,
+///   regardless of where herdr launched the pane;
+/// - pin the transport to `https` (`GIT_ALLOW_PROTOCOL`), so even a (user-global) URL rewrite
 ///   can't redirect to a command-capable transport like `ext::` or `file://`;
-/// - `GIT_TERMINAL_PROMPT=0` so a credential prompt can never block.
+/// - never prompt (`GIT_TERMINAL_PROMPT=0`).
 ///
 /// The user's own global/system config is intentionally kept — it carries legitimate proxy / CA
 /// settings and is in the user's own trust domain (only the *viewed repo* is untrusted).
-fn ls_remote_command(repo_url: &str) -> Command {
-    let neutral = std::env::temp_dir();
-    let mut cmd = Command::new("git");
-    cmd.args(["ls-remote", "--tags", repo_url])
-        .current_dir(&neutral)
-        .env("GIT_CEILING_DIRECTORIES", &neutral)
+fn harden_git(cmd: &mut Command, run_dir: &Path) {
+    cmd.current_dir(run_dir)
+        .env("GIT_CEILING_DIRECTORIES", run_dir)
         .env("GIT_ALLOW_PROTOCOL", "https")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
+        .env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// Build the hardened `git ls-remote --tags <url>` command, run from `run_dir` (see
+/// [`harden_git`]). Constructed separately from [`run_git_ls_remote`] so the security boundary is
+/// unit-testable without shelling out.
+fn ls_remote_command(repo_url: &str, run_dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-remote", "--tags", repo_url]);
+    harden_git(&mut cmd, run_dir);
+    cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
         .env("GIT_HTTP_LOW_SPEED_TIME", PROBE_LOW_SPEED_TIME)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -87,11 +92,23 @@ fn ls_remote_command(repo_url: &str) -> Command {
     cmd
 }
 
-/// Production probe runner: run the hardened [`ls_remote_command`] and return its stdout, bounded
-/// by [`PROBE_TIMEOUT`] so a connect/DNS hang can't wedge or orphan the `git` child. `Err` on
-/// spawn failure, non-zero exit, or timeout — all of which degrade to "no banner".
+/// Production probe runner. Runs the hardened `git ls-remote` from a **freshly-created private,
+/// empty directory** — git reads a `.git/config` in its own cwd, so even the system temp dir
+/// could (in principle) carry one; a directory we just made cannot. The directory is removed
+/// afterwards. The whole invocation is bounded by [`PROBE_TIMEOUT`] so a connect/DNS hang can't
+/// wedge or orphan the `git` child. `Err` on any failure — all of which degrade to "no banner".
 pub fn run_git_ls_remote(repo_url: &str) -> io::Result<String> {
-    let mut child = ls_remote_command(repo_url).spawn()?;
+    let probe_dir = std::env::temp_dir().join(format!("herdr-fv-probe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe_dir); // clear any stale dir from a prior crashed run
+    std::fs::create_dir_all(&probe_dir)?; // no clean dir → abort the probe (no banner)
+    let result = run_ls_remote_in(repo_url, &probe_dir);
+    let _ = std::fs::remove_dir_all(&probe_dir);
+    result
+}
+
+/// Spawn the hardened `ls-remote` in `run_dir` and read its stdout, bounded by [`PROBE_TIMEOUT`].
+fn run_ls_remote_in(repo_url: &str, run_dir: &Path) -> io::Result<String> {
+    let mut child = ls_remote_command(repo_url, run_dir).spawn()?;
     // Read stdout on a worker thread so the wait can be bounded (a hung connect never writes).
     let stdout = child.stdout.take();
     let (tx, rx) = mpsc::channel();
@@ -283,25 +300,26 @@ mod tests {
     #[test]
     fn ls_remote_command_is_hardened_against_untrusted_repo_config() {
         // Security regression: the probe must not let the (untrusted) viewed repo's git config
-        // influence it. It runs from a neutral non-repo dir with repo discovery ceilinged, pins
-        // the transport to https, and never prompts — so no repo-local `.git/config` is read.
+        // influence it. It runs from the given private run-dir with repo discovery ceilinged to
+        // it, pins the transport to https, and never prompts — so no repo-local `.git/config` is
+        // read (and the run-dir itself is a fresh empty dir, so it can't carry one either).
         use std::ffi::OsStr;
-        let cmd = ls_remote_command(repo_url());
+        let run_dir = std::path::Path::new("/some/private/probe-dir");
+        let cmd = ls_remote_command(repo_url(), run_dir);
         let env: std::collections::HashMap<_, _> = cmd
             .get_envs()
             .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
             .collect();
-        let neutral = std::env::temp_dir();
         assert_eq!(
             cmd.get_current_dir(),
-            Some(neutral.as_path()),
-            "probe runs from a neutral non-repo directory, never the viewed repo"
+            Some(run_dir),
+            "probe runs from its private run-dir, never the viewed repo / process cwd"
         );
         assert_eq!(
             env.get(OsStr::new("GIT_CEILING_DIRECTORIES"))
                 .map(|v| v.as_os_str()),
-            Some(neutral.as_os_str()),
-            "git must not walk up to discover (and read the config of) any repo"
+            Some(run_dir.as_os_str()),
+            "git must not walk up out of the run-dir to discover (and read) any repo's config"
         );
         assert_eq!(
             env.get(OsStr::new("GIT_ALLOW_PROTOCOL"))
@@ -315,6 +333,66 @@ mod tests {
             Some("0"),
             "a credential prompt must never block the probe"
         );
+    }
+
+    #[test]
+    fn hardened_git_ignores_a_malicious_repo_local_insteadof() {
+        // Round-2 regression: a malicious repo-local `url.*.insteadOf` must NOT rewrite the probe
+        // URL when git runs under `harden_git` (fresh private dir + ceiling). `git ls-remote
+        // --get-url` resolves the URL *without any network*, so this is hermetic.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "hfv-insteadof-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let evil = base.join("evil-repo");
+        let clean = base.join("clean");
+        std::fs::create_dir_all(&evil).unwrap();
+        std::fs::create_dir_all(&clean).unwrap();
+
+        // Make `evil` a repo whose config rewrites our GitHub URL to an attacker host.
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&evil)
+            .status();
+        if init.map(|s| !s.success()).unwrap_or(true) {
+            let _ = std::fs::remove_dir_all(&base);
+            return; // git unavailable → the construction test still covers the boundary
+        }
+        let _ = Command::new("git")
+            .args([
+                "config",
+                "url.https://evil.invalid/.insteadOf",
+                "https://github.com/",
+            ])
+            .current_dir(&evil)
+            .status();
+
+        let url = repo_url();
+        let get_url = |cmd: &mut Command| -> String {
+            cmd.args(["ls-remote", "--get-url", url]);
+            let out = cmd.output().expect("git --get-url");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // Precondition: run *inside* the evil repo with no hardening → the rewrite DOES apply.
+        let mut unhardened = Command::new("git");
+        unhardened.current_dir(&evil);
+        assert!(
+            get_url(&mut unhardened).contains("evil.invalid"),
+            "precondition: the malicious repo-local insteadOf rewrites the URL"
+        );
+        // Hardened (fresh private dir): the rewrite must NOT apply — the URL is unchanged.
+        let mut hardened = Command::new("git");
+        harden_git(&mut hardened, &clean);
+        assert_eq!(
+            get_url(&mut hardened),
+            url,
+            "harden_git must ignore the repo-local insteadOf and keep the trusted URL"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
