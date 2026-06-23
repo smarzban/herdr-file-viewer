@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-06-23
+
+### Docs
+- Slimmed the README to the essentials (pitch, quick start, keys, links) and moved the longer
+  guides into dedicated files: `docs/install.md` (install & updating), `docs/renderers.md`
+  (the optional `glow`/`delta`/`bat` integrations), and `docs/usage.md` (summoning & keybindings).
+- Added a **Roadmap** section (in-app help overlay, settings, go-to-file) and an invitation to
+  open issues for bugs and feature requests.
+- Documented `$EDITOR` setup for the `e` key: the editor is read from the herdr **server's**
+  environment, so export it in the right shell startup file and restart the server
+  (`herdr server stop` + relaunch) — `reload-config` and quitting the client are not enough.
+- Added a rendered-markdown screenshot to the README; trimmed `SECURITY.md` to the GitHub private
+  advisory channel.
+
+This is a docs-only release; the binary is unchanged from 1.2.1 in behavior — it is re-tagged so a
+normal `herdr plugin install` uses the prebuilt fast path again instead of building from source.
+
 ## [1.2.1] - 2026-06-23
 
 ### Fixed

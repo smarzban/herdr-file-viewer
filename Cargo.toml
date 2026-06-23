@@ -1,6 +1,6 @@
 [package]
 name = "herdr-file-viewer"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 rust-version = "1.96"
 description = "A git-aware, read-only file viewer that runs as a herdr TUI pane"
