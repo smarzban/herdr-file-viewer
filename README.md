@@ -14,6 +14,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ![herdr-file-viewer open in a herdr split beside your work — the directory tree on the left, syntax-highlighted content on the right](assets/File-viewer.png)
 
+*The right view per file — here a markdown file rendered (headings, inline code, tables) in your terminal's theme:*
+
+![herdr-file-viewer rendering a markdown file — colored headings and styled inline code on the right, the git-status tree on the left](assets/Markdown-view.png)
+
 *…and running full-screen — the same tree + content, filling the terminal:*
 
 ![herdr-file-viewer running full-screen](assets/File-Viewer-FS.png)
