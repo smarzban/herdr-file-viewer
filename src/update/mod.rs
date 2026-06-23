@@ -11,10 +11,11 @@ pub mod version;
 pub use version::Version;
 
 use cache::{Cache, next_cache, should_check};
-use std::io;
+use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
+use std::time::Duration;
 use version::{latest_stable, newer_than_current};
 
 /// Setting this env var (to anything) disables the update check and banner entirely.
@@ -24,9 +25,14 @@ pub const DISABLE_ENV: &str = "HERDR_FILE_VIEWER_NO_UPDATE_CHECK";
 /// + `Send` so the background thread owns it; a type alias keeps signatures readable.
 pub type ProbeRunner = Box<dyn Fn(&str) -> io::Result<String> + Send>;
 
-/// How long `git ls-remote` may stall on a dead network before it aborts (seconds), so a
-/// background probe can't leave a `git` child hanging indefinitely.
+/// How long `git ls-remote` may stall mid-transfer before git itself aborts (seconds).
 const PROBE_LOW_SPEED_TIME: &str = "5";
+
+/// Hard wall-clock bound on the whole `git ls-remote` invocation. The low-speed settings only
+/// cover a stalled HTTP *transfer*, not TCP connect / DNS — so a black-holed network could
+/// otherwise hang (and orphan) the `git` child indefinitely. On overrun the child is killed and
+/// the probe fails (→ no banner), matching the fail-silent contract.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The repository URL the probe queries (and the source of [`repo_slug`]).
 pub fn repo_url() -> &'static str {
@@ -49,30 +55,87 @@ pub fn banner_text(v: &Version) -> String {
     )
 }
 
-/// Run the injected probe and return its stdout, or `None` on any error. The runner is a seam
-/// so tests never shell out / hit the network.
-pub fn probe(run: impl Fn(&str) -> io::Result<String>, repo_url: &str) -> Option<String> {
-    run(repo_url).ok()
-}
-
-/// Production probe runner: `git ls-remote --tags <url>`, with git's low-speed abort set so a
-/// stalled network connection can't hang the background thread (and its child) forever. stderr
-/// is discarded; a non-zero exit is an error (→ no banner).
-pub fn run_git_ls_remote(repo_url: &str) -> io::Result<String> {
-    let out = Command::new("git")
-        .args(["ls-remote", "--tags", repo_url])
-        .env("GIT_TERMINAL_PROMPT", "0") // never block on a credential prompt
+/// Build the hardened `git ls-remote --tags <url>` command. Constructed separately from
+/// [`run_git_ls_remote`] so the security boundary is unit-testable without shelling out.
+///
+/// The viewed repository is **untrusted**, and a `git` process reads the repo-local `.git/config`
+/// of whatever working directory it discovers (URL `insteadOf` rewrites, credential helpers, …) —
+/// so an attacker-planted `.git/config` could otherwise redirect or hijack this once-a-day probe.
+/// We close that hole the way the rest of the viewer treats the repo as untrusted:
+/// - run from a **neutral, non-repo directory** and set `GIT_CEILING_DIRECTORIES` so git never
+///   walks up to *discover* a repo — no repo-local config is read, regardless of where herdr
+///   launched the pane;
+/// - pin the transport to `https` via `GIT_ALLOW_PROTOCOL`, so even a (user-global) URL rewrite
+///   can't redirect to a command-capable transport like `ext::` or `file://`;
+/// - `GIT_TERMINAL_PROMPT=0` so a credential prompt can never block.
+///
+/// The user's own global/system config is intentionally kept — it carries legitimate proxy / CA
+/// settings and is in the user's own trust domain (only the *viewed repo* is untrusted).
+fn ls_remote_command(repo_url: &str) -> Command {
+    let neutral = std::env::temp_dir();
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-remote", "--tags", repo_url])
+        .current_dir(&neutral)
+        .env("GIT_CEILING_DIRECTORIES", &neutral)
+        .env("GIT_ALLOW_PROTOCOL", "https")
+        .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
         .env("GIT_HTTP_LOW_SPEED_TIME", PROBE_LOW_SPEED_TIME)
-        .stderr(std::process::Stdio::null())
-        .output()?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(io::Error::other(format!(
-            "git ls-remote exited with {}",
-            out.status
-        )))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    cmd
+}
+
+/// Production probe runner: run the hardened [`ls_remote_command`] and return its stdout, bounded
+/// by [`PROBE_TIMEOUT`] so a connect/DNS hang can't wedge or orphan the `git` child. `Err` on
+/// spawn failure, non-zero exit, or timeout — all of which degrade to "no banner".
+pub fn run_git_ls_remote(repo_url: &str) -> io::Result<String> {
+    let mut child = ls_remote_command(repo_url).spawn()?;
+    // Read stdout on a worker thread so the wait can be bounded (a hung connect never writes).
+    let stdout = child.stdout.take();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    match rx.recv_timeout(PROBE_TIMEOUT) {
+        Ok(buf) => match wait_bounded(&mut child, PROBE_TIMEOUT) {
+            Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
+            Some(status) => Err(io::Error::other(format!(
+                "git ls-remote exited with {status}"
+            ))),
+            None => Err(io::Error::other("git ls-remote did not exit")),
+        },
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(io::Error::other("git ls-remote timed out"))
+        }
+    }
+}
+
+/// Wait for a child to exit within `grace`, killing and reaping it if it overruns.
+fn wait_bounded(
+    child: &mut std::process::Child,
+    grace: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 
@@ -129,10 +192,11 @@ pub struct StartDeps {
     pub run: ProbeRunner,
 }
 
-/// Decide, then (if warranted) spawn the background probe. The thread probes, persists the
-/// throttle cache, and sends the "version to show" (`Some` when newer, `None` when a successful
-/// check found nothing) over the channel. On a probe *failure* it persists the advanced
-/// timestamp but sends nothing, leaving any cached banner in place.
+/// Decide, then (if warranted) spawn the background probe. On a **successful** probe the thread
+/// persists the throttle cache (advancing the 24h window + the latest version seen) and sends the
+/// "version to show" (`Some` when newer, `None` when nothing newer) over the channel. On a probe
+/// **failure** it leaves the cache untouched — so the check simply retries next launch — and sends
+/// nothing (the receiver then disconnects, which `Controller::poll` cleans up).
 pub fn start_with(deps: StartDeps) -> UpdateState {
     let StartDeps {
         disabled,
@@ -151,13 +215,12 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let stdout = probe(|url| run(url), &repo_url);
-        let succeeded = stdout.is_some();
-        let latest = stdout.as_deref().and_then(latest_stable);
-        if let Some(dir) = &cache_dir {
-            cache::store(dir, &next_cache(now_unix, &cache, succeeded, latest));
-        }
-        if succeeded {
+        // A probe failure leaves the cache as-is (retry next launch) and sends nothing.
+        if let Ok(stdout) = run(&repo_url) {
+            let latest = latest_stable(&stdout);
+            if let Some(dir) = &cache_dir {
+                cache::store(dir, &next_cache(now_unix, latest));
+            }
             let _ = tx.send(latest.and_then(newer_than_current));
         }
     });
@@ -218,14 +281,68 @@ mod tests {
     }
 
     #[test]
-    fn probe_returns_stdout_on_success_and_none_on_error() {
-        let ok = probe(|_url| Ok("aaa\trefs/tags/v1.1.0\n".to_string()), "url");
+    fn ls_remote_command_is_hardened_against_untrusted_repo_config() {
+        // Security regression: the probe must not let the (untrusted) viewed repo's git config
+        // influence it. It runs from a neutral non-repo dir with repo discovery ceilinged, pins
+        // the transport to https, and never prompts — so no repo-local `.git/config` is read.
+        use std::ffi::OsStr;
+        let cmd = ls_remote_command(repo_url());
+        let env: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
+            .collect();
+        let neutral = std::env::temp_dir();
         assert_eq!(
-            latest_stable(ok.as_deref().unwrap_or("")),
-            Version::parse("1.1.0")
+            cmd.get_current_dir(),
+            Some(neutral.as_path()),
+            "probe runs from a neutral non-repo directory, never the viewed repo"
         );
-        let err = probe(|_url| Err(io::Error::other("offline")), "url");
-        assert_eq!(err, None);
+        assert_eq!(
+            env.get(OsStr::new("GIT_CEILING_DIRECTORIES"))
+                .map(|v| v.as_os_str()),
+            Some(neutral.as_os_str()),
+            "git must not walk up to discover (and read the config of) any repo"
+        );
+        assert_eq!(
+            env.get(OsStr::new("GIT_ALLOW_PROTOCOL"))
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("https"),
+            "transport pinned to https so a URL rewrite can't reach ext::/file://"
+        );
+        assert_eq!(
+            env.get(OsStr::new("GIT_TERMINAL_PROMPT"))
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("0"),
+            "a credential prompt must never block the probe"
+        );
+    }
+
+    #[test]
+    fn fresh_cache_shows_the_banner_without_probing() {
+        // AC-U4: a fresh cache (within 24h) shows the cached banner and performs NO network call —
+        // the probe runner must never be invoked, and no background check is scheduled.
+        let newer = format!("{}.0.0", current().major + 1);
+        let cache = Some(Cache {
+            last_check_unix: 1_000,
+            latest_seen: Some(newer.clone()),
+        });
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: 1_000 + 10, // well within the 24h window
+            cache,
+            cache_dir: None,
+            repo_url: "x".into(),
+            run: Box::new(|_| panic!("must not probe when the cache is fresh")),
+        });
+        assert_eq!(
+            state.initial,
+            Version::parse(&newer),
+            "banner shown from cache"
+        );
+        assert!(
+            state.rx.is_none(),
+            "fresh cache → no background check scheduled"
+        );
     }
 
     #[test]

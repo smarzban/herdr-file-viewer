@@ -991,15 +991,20 @@ impl Controller {
             }
             // else: a superseded selection's render — drop it.
         }
-        // A finished background update check (one-shot): adopt its verdict and drop the
-        // receiver. `Some(v)` shows/refreshes the banner; `None` (a successful check that found
-        // nothing newer) clears a now-stale cached banner.
-        if let Some(rx) = &self.update_rx
-            && let Ok(version) = rx.try_recv()
-        {
-            self.update_available = version;
-            self.update_rx = None;
-            applied = true;
+        // A finished background update check (one-shot): adopt its verdict and drop the receiver.
+        // `Some(v)` shows/refreshes the banner; `None` (a successful check that found nothing
+        // newer) clears a now-stale cached banner. A *disconnected* channel means the probe failed
+        // and sent nothing — drop the receiver too, so we stop polling a dead channel every tick.
+        if let Some(rx) = &self.update_rx {
+            match rx.try_recv() {
+                Ok(version) => {
+                    self.update_available = version;
+                    self.update_rx = None;
+                    applied = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.update_rx = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
         }
         applied.then(Effects::redraw)
     }

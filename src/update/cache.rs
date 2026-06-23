@@ -27,23 +27,14 @@ pub fn should_check(now_unix: u64, last_check_unix: u64) -> bool {
     last_check_unix > now_unix || now_unix - last_check_unix >= CHECK_INTERVAL_SECS
 }
 
-/// The cache to persist after a check attempt. The timestamp always advances (so the 24h
-/// throttle holds even when the network is down); `latest_seen` records the probed version on
-/// success and otherwise preserves whatever was last seen.
-pub fn next_cache(
-    now_unix: u64,
-    previous: &Option<Cache>,
-    probe_succeeded: bool,
-    latest: Option<Version>,
-) -> Cache {
-    let latest_seen = if probe_succeeded {
-        latest.map(|v| v.to_string())
-    } else {
-        previous.as_ref().and_then(|c| c.latest_seen.clone())
-    };
+/// The cache to persist after a **successful** probe: the check time plus the latest version
+/// seen (`None` when the repo has no stable tags — which clears any stale cached banner). A
+/// *failed* probe must not call this: the cache is left untouched so the check retries next
+/// launch rather than being suppressed for 24h by a transient network blip.
+pub fn next_cache(now_unix: u64, latest: Option<Version>) -> Cache {
     Cache {
         last_check_unix: now_unix,
-        latest_seen,
+        latest_seen: latest.map(|v| v.to_string()),
     }
 }
 
@@ -66,10 +57,18 @@ pub fn load(dir: &Path) -> Option<Cache> {
 
 /// Best-effort persist; creates `dir` if needed. Any error is ignored — a cache we cannot
 /// write just means we check again next launch.
+///
+/// Atomic publish: write a per-process temp file in the same dir, then `rename` it over the
+/// target. herdr is multi-pane, so two viewer instances can write concurrently — a plain
+/// truncating write could be read torn; with rename each reader sees either the old or the new
+/// complete file (last writer wins, never a partial one).
 pub fn store(dir: &Path, cache: &Cache) {
     let _ = std::fs::create_dir_all(dir);
     if let Ok(json) = serde_json::to_string(cache) {
-        let _ = std::fs::write(dir.join(CACHE_FILE), json);
+        let tmp = dir.join(format!("{CACHE_FILE}.{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, dir.join(CACHE_FILE));
+        }
     }
 }
 
@@ -105,13 +104,9 @@ mod tests {
     }
 
     #[test]
-    fn next_cache_always_advances_the_timestamp() {
-        let prev = Some(Cache {
-            last_check_unix: 1,
-            latest_seen: Some("1.1.0".into()),
-        });
-        // success with a new version → record it
-        let c = next_cache(500, &prev, true, Version::parse("1.2.0"));
+    fn next_cache_records_the_check_time_and_version() {
+        // A successful probe with a version → record the time and the version.
+        let c = next_cache(500, Version::parse("1.2.0"));
         assert_eq!(
             c,
             Cache {
@@ -119,20 +114,9 @@ mod tests {
                 latest_seen: Some("1.2.0".into())
             }
         );
-        // success with no tags → latest_seen cleared
-        let c = next_cache(500, &prev, true, None);
-        assert_eq!(c.latest_seen, None);
-        // probe failure → timestamp advances (throttle holds) but the prior seen value is kept
-        let c = next_cache(500, &prev, false, None);
-        assert_eq!(
-            c,
-            Cache {
-                last_check_unix: 500,
-                latest_seen: Some("1.1.0".into())
-            }
-        );
-        // failure with no prior cache → empty seen
-        let c = next_cache(500, &None, false, None);
+        // A successful probe that found no stable tag → latest_seen cleared (clears a stale
+        // cached banner). (A *failed* probe never reaches here — the caller leaves the cache.)
+        let c = next_cache(500, None);
         assert_eq!(
             c,
             Cache {
