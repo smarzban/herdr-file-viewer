@@ -79,8 +79,9 @@ command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-v
 
 Run `herdr server reload-config`, then press your key. That's the whole setup — the split-pane
 viewer and its open actions ship **inside** the plugin and register automatically on install, so
-you only add the keybinding. Everything below is detail: pinning a release, the renderer fallback,
-the launcher's open/focus/toggle behavior, the full key map, and the `--remote` caveat.
+you only add the keybinding. The [keys](#keys) are below; deeper detail lives in the docs:
+[install & updating](docs/install.md), [external renderers](docs/renderers.md), and
+[summoning & keybindings](docs/usage.md).
 
 ## Keys
 
@@ -145,172 +146,23 @@ sideways trackpad swipe. The `←` / `→` keys always scroll the content sidewa
 and resumes when it exits. If `$EDITOR` is unset, a notice is shown — the viewer never edits a
 file itself.
 
-## Install
+## Documentation
 
-Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**.
+- **[Install & updating](docs/install.md)** — prebuilt vs. source, pinning a version, local-dev linking, and how updates surface (the in-app "update available" banner).
+- **[External renderers](docs/renderers.md)** — the optional `glow` / `delta` / `bat` integrations and the plain-text fallback when they're absent.
+- **[Summoning & keybindings](docs/usage.md)** — the open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat.
+- **[Architecture](ARCHITECTURE.md)** — one in-process TUI owning both columns, the component map, off-thread rendering, and the load-bearing decisions (read-only, delegate rendering, git-first).
+- **[Security](SECURITY.md)** — the threat model and mitigations for opening untrusted content, and how to report a vulnerability.
 
-> **No Rust toolchain needed for tagged releases.** `herdr plugin install smarzban/herdr-file-viewer`
-> downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64).
-> If no matching prebuilt is available — an unsupported platform, or installing from a `main` that is
-> ahead of the latest release — it automatically builds from source with `cargo` instead (Rust 1.96+).
-> The install command is the same either way.
+## Roadmap
 
-**Install through herdr** — herdr runs the manifest's `[[build]]` step at install time, either
-downloading a prebuilt binary or compiling from source, producing `./target/release/herdr-file-viewer`,
-which the viewer pane launches:
+A few things on the way:
 
-```bash
-# install (and update — re-run any time to get the latest):
-herdr plugin install smarzban/herdr-file-viewer
-# …optional: pin a specific older version for reproducibility:
-herdr plugin install smarzban/herdr-file-viewer --ref v1.0.0
+- **In-app help overlay** — a `?` key to show every keybinding (and setup tips) without leaving the viewer.
+- **Settings & customization** — a config file for keymaps, the default split, themes, and your own renderer/editor commands.
+- **Go to file** — fuzzy-find a file by name and jump straight to it.
 
-# or, for local development, link this checkout in place:
-cargo build --release            # plugin link does NOT run the [[build]] step, so build first
-herdr plugin link /path/to/herdr-file-viewer
-```
-
-> You don't need `--ref` to stay current — a bare install pulls the latest. See
-> [Updating](#updating).
-
-Confirm it registered with `herdr plugin list`. To build manually outside herdr:
-
-```bash
-cargo build --release
-```
-
-## Updating
-
-herdr has no plugin auto-update, so the viewer tells you when a new release exists: open it
-(`prefix+f`) and, if you're behind, a status line appears at the bottom naming the new version
-and the command to update. Press `u` to dismiss it for the session.
-
-To update, just re-run the install — it pulls the latest:
-
-```bash
-herdr plugin install smarzban/herdr-file-viewer
-```
-
-- You **don't** need `--ref` to stay current; it only *pins* a specific version (and a pin stays
-  pinned until you change it).
-- Want a heads-up the moment a release ships? On GitHub, **Watch → Custom → Releases**.
-- Prefer no network check? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK=1` in the pane's environment —
-  the check (and banner) are disabled entirely. The check otherwise runs at most once per 24h,
-  off the UI thread, over a read-only `git ls-remote`, and never blocks or fails the viewer when
-  offline.
-
-## Optional runtime dependencies (external renderers)
-
-Rendering is **delegated** to best-in-class external CLIs. These are *runtime, install-time*
-dependencies — not Cargo dependencies — and each is **optional**:
-
-| View | Renderer | Install |
-| --- | --- | --- |
-| Rendered markdown | [`glow`](https://github.com/charmbracelet/glow) | `brew install glow` / package manager |
-| Diffs | [`delta`](https://github.com/dandavison/delta) | `brew install git-delta` / `cargo install git-delta` |
-| Syntax-highlighted content | [`bat`](https://github.com/sharkdp/bat) | `brew install bat` / package manager |
-
-Or install all three at once with the bundled helper (best-effort; detects brew/apt/dnf/pacman
-and falls back to `cargo`):
-
-```bash
-./scripts/install-renderers.sh
-```
-
-**If a renderer is not installed, the viewer falls back to plain text** and shows a short
-notice in the content pane naming the missing capability (e.g. *“Markdown renderer
-unavailable (glow: …); showing plain text.”*). The viewer never crashes or shows an empty
-pane when a renderer is absent — it degrades gracefully. So the renderers are recommended for
-the best experience but not required to use the viewer.
-
-Untrusted file content is always fed to a renderer on **stdin** (never as a command argument),
-and the renderer's output is re-sanitized before display, so a hostile file name or file
-content cannot inject a command or drive the terminal.
-
-## Summoning the viewer
-
-The viewer opens **only** in response to an explicit action — there are no event hooks and no
-automatic invocation. The manifest declares a `[[panes]]` entry (the split-pane viewer) and an
-`[[actions]]` whose command opens it:
-
-```toml
-[[panes]]
-id = "file-viewer"
-placement = "split"
-command = ["./target/release/herdr-file-viewer"]
-
-[[actions]]
-id = "open-file-viewer"
-title = "Open file viewer"
-command = ["bash", "scripts/open-file-viewer.sh"]   # opens the pane via the herdr CLI
-```
-
-Summon it by invoking the action:
-
-```bash
-herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
-```
-
-It opens the viewer in a **split** pane beside your current work. The launcher
-(`scripts/open-file-viewer.sh`, used by both the action and any keybinding) is **idempotent**,
-scoped to the current tab — so invoking it repeatedly is *launch-or-focus-or-toggle*:
-
-- no viewer pane open in this tab → open a split (focused)
-- a viewer pane open but not focused → focus it
-- the viewer pane already focused → close it (herdr has no hide-without-close; reopening just
-  re-walks the tree)
-
-**One-press access — bind a key.** herdr's `config.toml` binds keys to commands; point one at the
-action so it runs with the plugin's working directory (no hard-coded paths):
-
-```toml
-[[keys.command]]
-key = "prefix+f"   # any herdr key syntax — e.g. ctrl+b then f
-type = "shell"     # run detached; do NOT use "pane" (it would close when the command exits)
-command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
-```
-
-Reload with `herdr server reload-config`. Pressing the key then opens / focuses / hides the
-viewer via the same idempotent launcher. (Alternatively, `command` may invoke
-`scripts/open-file-viewer.sh` directly using the absolute install path from `herdr plugin list`.)
-
-**Open in a tab instead of a split.** A second action, `open-file-viewer-tab`, opens the viewer
-in its **own tab** (`scripts/open-file-viewer-tab.sh`, `--placement tab`). Its launcher is
-idempotent *across tabs* — *open-or-switch-or-toggle*:
-
-- no viewer anywhere → open it in a new tab (focused)
-- a viewer in another tab → **switch to that tab** (never a duplicate)
-- a viewer in the current tab, not focused → focus it in place
-- the viewer already focused → close it (herdr auto-closes the emptied tab)
-
-Bind it to its own key — e.g. `prefix+shift+f` alongside `prefix+f` for the split:
-
-```toml
-[[keys.command]]
-key = "prefix+shift+f"
-type = "shell"
-command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
-```
-
-**Limitation over `herdr --remote`.** `--remote` attaches with **local** keybindings by
-default, and herdr has no way to fire a plugin action into the *attached* (remote) session from
-a local key: a `type = "shell"` command runs against your **local** herdr (wrong session), and a
-`type = "pane"` command runs in a throwaway pane that closes the instant it exits (so the viewer
-doesn't persist). To drive the viewer on the remote, attach with
-**`herdr --remote <host> --remote-keybindings server`** — the binding then lives in the
-*server's* `config.toml` and behaves fully (open / focus / close-toggle).
-
-This is a herdr keybinding/remote limitation, not the plugin's — the action and launcher work
-the same locally and remotely; it's only *which* keymap fires them across `--remote` that differs.
-
-## Architecture & security
-
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design at a glance: one in-process TUI owning both
-  columns, the component map, off-thread rendering, and the load-bearing decisions (read-only,
-  delegate rendering, git-first).
-- **[SECURITY.md](SECURITY.md)** — the threat model and mitigations for opening untrusted content:
-  read-only by construction, escape-sequence neutralization, hardened git invocations, and how to
-  report a vulnerability.
+**Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) — bug reports and feature requests are very welcome.
 
 ## Development
 

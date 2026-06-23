@@ -39,11 +39,8 @@ collaborator handed you. Its security posture is built around that.
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately rather than opening a public issue:
-
-- Open a **GitHub private security advisory** ("Security" → "Report a vulnerability") on this
-  repository, **or**
-- Email **git@smarzban.com** with details and reproduction steps.
+Please report suspected vulnerabilities privately rather than opening a public issue: open a
+**GitHub private security advisory** ("Security" → "Report a vulnerability") on this repository.
 
 You'll get an acknowledgement, and a fix or mitigation plan once the report is triaged. Thank you
 for helping keep the viewer safe.
