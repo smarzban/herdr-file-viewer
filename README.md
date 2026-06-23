@@ -54,13 +54,8 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ## Quick start
 
-> **Prerequisite: [Rust](https://rustup.rs) 1.96+.** The plugin compiles from source at install
-> time, so `cargo` must be on your PATH. No Rust yet?
-> `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` (or `brew install rust`).
-> If it's missing, the install fails with a message telling you exactly this.
-
 ```bash
-# 1. Install the plugin (herdr builds it from source at install time):
+# 1. Install the plugin (tagged releases download a prebuilt binary; otherwise builds from source):
 herdr plugin install smarzban/herdr-file-viewer
 
 # 2. (recommended) install the renderers, so markdown / diffs / code are styled, not plain text:
@@ -152,11 +147,16 @@ file itself.
 
 ## Install
 
-Requirements: **Rust 1.96+** (edition 2024) and Cargo; **herdr 0.7.0+**, on **Linux** or
-**macOS**.
+Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**.
 
-**Install through herdr** — herdr runs the manifest's `[[build]]` step
-(`cargo build --release`) at install time, producing `./target/release/herdr-file-viewer`,
+> **No Rust toolchain needed for tagged releases.** `herdr plugin install smarzban/herdr-file-viewer`
+> downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64).
+> If no matching prebuilt is available — an unsupported platform, or installing from a `main` that is
+> ahead of the latest release — it automatically builds from source with `cargo` instead (Rust 1.96+).
+> The install command is the same either way.
+
+**Install through herdr** — herdr runs the manifest's `[[build]]` step at install time, either
+downloading a prebuilt binary or compiling from source, producing `./target/release/herdr-file-viewer`,
 which the viewer pane launches:
 
 ```bash

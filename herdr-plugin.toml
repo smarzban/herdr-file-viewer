@@ -6,18 +6,18 @@
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
-version = "1.1.0"
+version = "1.2.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 
-# Build step herdr runs at install time to produce the binary the pane launches. Wrapped in a
-# shell that (1) sources ~/.cargo/env if present, so the build finds `cargo` even when herdr was
-# launched without ~/.cargo/bin on PATH (e.g. a GUI / login-less launch) — the `[ -f ]` guard
-# means a missing env file can't abort the build; and (2) if `cargo` still isn't found, prints a
-# clear "install Rust" message and exits, instead of a cryptic failure.
+# Build step herdr runs at install time. Fast path: scripts/fetch-or-build.sh downloads the
+# prebuilt binary matching this source's version + platform and verifies its SHA-256. On ANY miss
+# (no matching release, download/checksum failure, unsupported platform) it falls back to building
+# from source with cargo — so installing never gets harder than before, and no Rust toolchain is
+# needed when a matching prebuilt release exists.
 [[build]]
-command = ["/bin/sh", "-c", "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; command -v cargo >/dev/null 2>&1 || { echo 'herdr-file-viewer needs Rust 1.96+ to build, but cargo was not found. Install Rust from https://rustup.rs then re-run: herdr plugin install smarzban/herdr-file-viewer' >&2; exit 1; }; exec cargo build --release"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
 
 # The viewer pane. herdr performs the split placement on launch (AC-17); no runtime
 # command is issued to open the viewer — declaring placement = "split" is what opens

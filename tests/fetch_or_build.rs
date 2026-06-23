@@ -1,0 +1,357 @@
+//! Hermetic test for scripts/fetch-or-build.sh — the install-time [[build]] step.
+//! Stubs uname/curl/cargo via PATH and serves a local fixture "release"; uses the real
+//! sha256sum/shasum, mktemp, grep, etc. No network, no real cargo build, no new deps.
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static N: AtomicU64 = AtomicU64::new(0);
+
+fn script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/fetch-or-build.sh")
+}
+
+fn tmp(label: &str) -> PathBuf {
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("fv-fob-{}-{}-{}", std::process::id(), label, n));
+    fs::create_dir_all(&p).unwrap();
+    p
+}
+
+fn write_exec(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    let mut perm = fs::metadata(path).unwrap().permissions();
+    perm.set_mode(0o755);
+    fs::set_permissions(path, perm).unwrap();
+}
+
+/// Hex sha-256 of a file using whatever tool exists (matches the script's preference order).
+fn sha256_of(file: &Path) -> String {
+    if let Ok(out) = Command::new("sha256sum").arg(file).output()
+        && out.status.success()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        return s.split_whitespace().next().unwrap().to_string();
+    }
+    let out = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(file)
+        .output()
+        .expect("need sha256sum or shasum to run this test");
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split_whitespace().next().unwrap().to_string()
+}
+
+struct Outcome {
+    stdout: String,
+    stderr: String,
+    placed: Option<Vec<u8>>,
+    urls: Vec<String>,
+}
+
+impl Outcome {
+    fn installed_prebuilt(&self) -> bool {
+        self.stdout.contains("installed prebuilt")
+    }
+    fn fell_back(&self) -> bool {
+        self.stdout.contains("FAKE_CARGO_BUILD")
+    }
+}
+
+/// Run the script with stubbed uname/curl/cargo.
+/// - `serve_binary == false` → fake curl fails the binary fetch (simulates a 404 / missing asset).
+/// - `corrupt_sums == true`  → the published SHA256SUMS holds a wrong hash (checksum mismatch).
+fn run_impl(
+    os: &str,
+    arch: &str,
+    version: &str,
+    serve_binary: bool,
+    corrupt_sums: bool,
+    repo_root: Option<&Path>,
+) -> Outcome {
+    let root = tmp("root");
+    let stub = root.join("bin");
+    let server = root.join("server");
+    let out = root.join("target/release/herdr-file-viewer");
+    let urllog = root.join("urls.log");
+    fs::create_dir_all(&stub).unwrap();
+    fs::create_dir_all(&server).unwrap();
+
+    let cargo_toml = root.join("Cargo.toml");
+    fs::write(
+        &cargo_toml,
+        format!("[package]\nname = \"herdr-file-viewer\"\nversion = \"{version}\"\n"),
+    )
+    .unwrap();
+
+    // The triple the script will resolve — kept in lockstep with the script's mapping.
+    let triple = match (os, arch) {
+        ("Darwin", "arm64") | ("Darwin", "aarch64") => "aarch64-apple-darwin",
+        ("Darwin", "x86_64") => "x86_64-apple-darwin",
+        ("Linux", "x86_64") => "x86_64-unknown-linux-musl",
+        _ => "",
+    };
+
+    let bin_blob: &[u8] = b"#!/bin/sh\necho prebuilt-viewer\n";
+    fs::write(server.join("bin"), bin_blob).unwrap();
+    if !triple.is_empty() {
+        let real = sha256_of(&server.join("bin"));
+        let hash = if corrupt_sums { "0".repeat(64) } else { real };
+        fs::write(
+            server.join("SHA256SUMS"),
+            format!("{hash}  herdr-file-viewer-{triple}\n"),
+        )
+        .unwrap();
+    }
+
+    write_exec(
+        &stub.join("uname"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  -s) echo {os} ;;\n  -m) echo {arch} ;;\n  *) echo {os} ;;\nesac\n"
+        ),
+    );
+
+    let bin_rule = if serve_binary {
+        format!("cp \"{}/bin\" \"$dest\"", server.display())
+    } else {
+        "exit 22".to_string() // curl -f exits 22 on HTTP >= 400
+    };
+    write_exec(
+        &stub.join("curl"),
+        &format!(
+            "#!/bin/sh\ndest=\"\"; url=\"\"\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) dest=\"$2\"; shift 2 ;; -*) shift ;; *) url=\"$1\"; shift ;; esac; done\n\
+             echo \"$url\" >> \"{log}\"\n\
+             case \"$url\" in\n  */SHA256SUMS) cp \"{srv}/SHA256SUMS\" \"$dest\" ;;\n  *) {bin_rule} ;;\nesac\n",
+            log = urllog.display(),
+            srv = server.display(),
+        ),
+    );
+
+    write_exec(
+        &stub.join("cargo"),
+        "#!/bin/sh\necho FAKE_CARGO_BUILD \"$@\"\nexit 0\n",
+    );
+
+    // The release-tag gate inspects FV_REPO_ROOT as a git work tree. By default point it at the
+    // (non-git) temp root so the gate is skipped and the platform/download/verify logic is what's
+    // under test; the gate's own tests pass a real git repo here.
+    let fv_repo_root: &Path = repo_root.unwrap_or(root.as_path());
+    let path = format!("{}:{}", stub.display(), std::env::var("PATH").unwrap());
+    let output = Command::new("sh")
+        .arg(script_path())
+        .env("PATH", path)
+        .env("HOME", &root) // no ~/.cargo/env here, so the fallback uses the stubbed cargo
+        .env("FV_REPO_ROOT", fv_repo_root)
+        .env("FV_CARGO_TOML", &cargo_toml)
+        .env("FV_OUT", &out)
+        .env("FV_BASE_URL", "https://example.invalid/releases/download")
+        .output()
+        .expect("run fetch-or-build.sh");
+
+    let urls = fs::read_to_string(&urllog)
+        .unwrap_or_default()
+        .lines()
+        .map(|s| s.to_string())
+        .collect();
+    let placed = fs::read(&out).ok();
+    let o = Outcome {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        placed,
+        urls,
+    };
+    let _ = fs::remove_dir_all(&root);
+    o
+}
+
+/// Default runner: no git work tree at FV_REPO_ROOT, so the release-tag gate is skipped and the
+/// platform/download/verify path is exercised directly.
+fn run(os: &str, arch: &str, version: &str, serve_binary: bool, corrupt_sums: bool) -> Outcome {
+    run_impl(os, arch, version, serve_binary, corrupt_sums, None)
+}
+
+/// Throwaway git repo at `dir`: one commit tagged `v<version>`, plus (if `head_ahead`) a second
+/// commit so HEAD is past the tag. Drives the release-tag gate.
+fn make_git_repo(dir: &Path, version: &str, head_ahead: bool) {
+    fs::create_dir_all(dir).unwrap();
+    let g = |args: &[&str]| {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    g(&["init", "-q"]);
+    fs::write(dir.join("f.txt"), "1").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-q", "-m", "release"]);
+    g(&["tag", &format!("v{version}")]);
+    if head_ahead {
+        fs::write(dir.join("f.txt"), "2").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "post-release"]);
+    }
+}
+
+#[test]
+fn fast_path_installs_verified_binary_on_apple_silicon() {
+    let o = run("Darwin", "arm64", "1.2.0", true, false);
+    assert!(
+        o.installed_prebuilt(),
+        "stdout: {}\nstderr: {}",
+        o.stdout,
+        o.stderr
+    );
+    assert!(
+        !o.fell_back(),
+        "must not build from source on the fast path"
+    );
+    assert_eq!(
+        o.placed.as_deref(),
+        Some(&b"#!/bin/sh\necho prebuilt-viewer\n"[..])
+    );
+    assert!(
+        o.urls
+            .iter()
+            .any(|u| u.ends_with("/v1.2.0/herdr-file-viewer-aarch64-apple-darwin")),
+        "fetched exactly the version+triple asset, never 'latest'; urls: {:?}",
+        o.urls
+    );
+    assert!(
+        o.urls.iter().any(|u| u.ends_with("/v1.2.0/SHA256SUMS")),
+        "urls: {:?}",
+        o.urls
+    );
+}
+
+#[test]
+fn maps_intel_mac_to_x86_64_apple_darwin() {
+    let o = run("Darwin", "x86_64", "1.2.0", true, false);
+    assert!(o.installed_prebuilt(), "{}", o.stderr);
+    assert!(
+        o.urls
+            .iter()
+            .any(|u| u.ends_with("/v1.2.0/herdr-file-viewer-x86_64-apple-darwin")),
+        "urls: {:?}",
+        o.urls
+    );
+}
+
+#[test]
+fn maps_linux_to_static_musl_triple() {
+    let o = run("Linux", "x86_64", "1.2.0", true, false);
+    assert!(o.installed_prebuilt(), "{}", o.stderr);
+    assert!(
+        o.urls
+            .iter()
+            .any(|u| u.ends_with("/v1.2.0/herdr-file-viewer-x86_64-unknown-linux-musl")),
+        "urls: {:?}",
+        o.urls
+    );
+}
+
+#[test]
+fn checksum_mismatch_falls_back_and_installs_nothing() {
+    let o = run("Linux", "x86_64", "1.2.0", true, true);
+    assert!(o.fell_back(), "stdout: {}", o.stdout);
+    assert!(o.placed.is_none(), "must not install an unverified binary");
+    assert!(
+        o.stderr.contains("checksum mismatch"),
+        "stderr: {}",
+        o.stderr
+    );
+}
+
+#[test]
+fn missing_release_asset_falls_back_to_source_build() {
+    let o = run("Linux", "x86_64", "9.9.9", false, false);
+    assert!(o.fell_back(), "stdout: {}", o.stdout);
+    assert!(o.placed.is_none());
+    assert!(o.stderr.contains("not available"), "stderr: {}", o.stderr);
+}
+
+#[test]
+fn unmapped_platform_falls_back_without_downloading() {
+    let o = run("Linux", "riscv64", "1.2.0", true, false);
+    assert!(o.fell_back(), "stdout: {}", o.stdout);
+    assert!(
+        o.urls.is_empty(),
+        "must not download for an unsupported platform; urls: {:?}",
+        o.urls
+    );
+    assert!(
+        o.stderr.contains("no prebuilt binary"),
+        "stderr: {}",
+        o.stderr
+    );
+}
+
+#[test]
+fn script_preserves_the_cargo_source_build_fallback() {
+    let s = fs::read_to_string(script_path()).unwrap();
+    assert!(
+        s.contains("cargo build --release"),
+        "fallback must still build from source"
+    );
+    assert!(
+        s.contains(".cargo/env"),
+        "fallback must source ~/.cargo/env like the original build step"
+    );
+}
+
+#[test]
+fn gate_uses_prebuilt_when_checkout_is_exactly_the_release_tag() {
+    let gitdir = tmp("gitrepo-attag");
+    make_git_repo(&gitdir, "1.2.0", false); // HEAD == v1.2.0 tag
+    let o = run_impl("Linux", "x86_64", "1.2.0", true, false, Some(&gitdir));
+    assert!(
+        o.installed_prebuilt(),
+        "at the release tag the prebuilt should be used\nstdout:{}\nstderr:{}",
+        o.stdout,
+        o.stderr
+    );
+    assert!(
+        !o.fell_back(),
+        "must not build from source at the exact release commit"
+    );
+    let _ = fs::remove_dir_all(&gitdir);
+}
+
+#[test]
+fn gate_falls_back_when_checkout_is_ahead_of_the_release_tag() {
+    let gitdir = tmp("gitrepo-ahead");
+    make_git_repo(&gitdir, "1.2.0", true); // HEAD one commit past v1.2.0
+    let o = run_impl("Linux", "x86_64", "1.2.0", true, false, Some(&gitdir));
+    assert!(
+        o.fell_back(),
+        "source ahead of the tag must build from source\nstdout:{}\nstderr:{}",
+        o.stdout,
+        o.stderr
+    );
+    assert!(
+        o.placed.is_none(),
+        "must not install the stale tagged binary"
+    );
+    assert!(
+        o.urls.is_empty(),
+        "the gate must fire before any download; urls: {:?}",
+        o.urls
+    );
+    let _ = fs::remove_dir_all(&gitdir);
+}

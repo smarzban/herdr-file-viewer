@@ -92,12 +92,8 @@ fn declares_a_release_build_command() {
         "manifest must declare a [[build]] step"
     );
     assert!(
-        m.contains("cargo build --release"),
-        "the build step must run `cargo build --release`"
-    );
-    assert!(
-        m.contains(".cargo/env"),
-        "the build step must source ~/.cargo/env so it finds cargo regardless of how herdr launched it"
+        m.contains("scripts/fetch-or-build.sh"),
+        "the build step must run the fetch-or-build script (prebuilt binary, cargo fallback)"
     );
 }
 

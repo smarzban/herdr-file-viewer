@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.triple }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+          - os: macos-latest
+            triple: x86_64-apple-darwin
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail fast if the pushed tag disagrees with the crate version, so we never publish a release
+      # whose assets don't match the source the install step clones.
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -E '^version *= *"' Cargo.toml | head -n1 | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          if [ "$tag" != "$crate" ]; then
+            echo "tag $GITHUB_REF_NAME ($tag) != Cargo.toml version ($crate)" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install musl tools
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.triple }}
+
+      - name: Stage asset + checksum
+        shell: bash
+        run: |
+          mkdir -p dist
+          asset="herdr-file-viewer-${{ matrix.triple }}"
+          cp "target/${{ matrix.triple }}/release/herdr-file-viewer" "dist/$asset"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.triple }}
+          path: dist/*
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble release assets + SHA256SUMS
+        shell: bash
+        run: |
+          mkdir -p release
+          # Flatten the per-target binaries and concatenate their checksum lines into one file.
+          find artifacts -type f -name 'herdr-file-viewer-*' ! -name '*.sha256' -exec cp {} release/ \;
+          cat artifacts/*/*.sha256 > release/SHA256SUMS
+          echo "Publishing:"; ls -l release; echo "---"; cat release/SHA256SUMS
+
+      - name: Create-or-update the release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber --repo "$GITHUB_REPOSITORY"
