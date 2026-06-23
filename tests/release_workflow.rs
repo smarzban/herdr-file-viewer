@@ -45,3 +45,14 @@ fn guards_the_tag_against_the_crate_version() {
         "release must verify the pushed tag matches Cargo.toml's version"
     );
 }
+
+#[test]
+fn publishes_a_commit_marker() {
+    let w = workflow();
+    // The install gate compares the checkout's HEAD to this marker (herdr's checkout lacks tags),
+    // so the release must publish the built commit as a COMMIT asset.
+    assert!(
+        w.contains("release/COMMIT") && w.contains("GITHUB_SHA"),
+        "release must publish a COMMIT marker (the GITHUB_SHA it was built from)"
+    );
+}

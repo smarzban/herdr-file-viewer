@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-06-23
+
+### Fixed
+- Prebuilt install path now works for a normal `herdr plugin install`. v1.2.0 gated the prebuilt on
+  a local `v<version>` tag ref, but herdr's install checkout clones the commit *without* tags, so the
+  gate always fell back to a source build (failing when Rust was absent). The gate now compares the
+  checkout's `HEAD` to a `COMMIT` marker published in the release — so the prebuilt is used whenever
+  the source is exactly the released commit, while a `main` ahead of the tag still builds from source.
+
 ## [1.2.0] - 2026-06-23
 
 ### Added

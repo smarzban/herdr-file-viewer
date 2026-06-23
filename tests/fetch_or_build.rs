@@ -71,6 +71,7 @@ fn run_impl(
     serve_binary: bool,
     corrupt_sums: bool,
     repo_root: Option<&Path>,
+    commit_marker: Option<&str>,
 ) -> Outcome {
     let root = tmp("root");
     let stub = root.join("bin");
@@ -107,6 +108,11 @@ fn run_impl(
         .unwrap();
     }
 
+    // The COMMIT marker the release publishes; the gate compares the checkout's HEAD to it.
+    if let Some(c) = commit_marker {
+        fs::write(server.join("COMMIT"), format!("{c}\n")).unwrap();
+    }
+
     write_exec(
         &stub.join("uname"),
         &format!(
@@ -125,7 +131,7 @@ fn run_impl(
             "#!/bin/sh\ndest=\"\"; url=\"\"\n\
              while [ $# -gt 0 ]; do case \"$1\" in -o) dest=\"$2\"; shift 2 ;; -*) shift ;; *) url=\"$1\"; shift ;; esac; done\n\
              echo \"$url\" >> \"{log}\"\n\
-             case \"$url\" in\n  */SHA256SUMS) cp \"{srv}/SHA256SUMS\" \"$dest\" ;;\n  *) {bin_rule} ;;\nesac\n",
+             case \"$url\" in\n  */COMMIT) cp \"{srv}/COMMIT\" \"$dest\" ;;\n  */SHA256SUMS) cp \"{srv}/SHA256SUMS\" \"$dest\" ;;\n  *) {bin_rule} ;;\nesac\n",
             log = urllog.display(),
             srv = server.display(),
         ),
@@ -171,14 +177,15 @@ fn run_impl(
 /// Default runner: no git work tree at FV_REPO_ROOT, so the release-tag gate is skipped and the
 /// platform/download/verify path is exercised directly.
 fn run(os: &str, arch: &str, version: &str, serve_binary: bool, corrupt_sums: bool) -> Outcome {
-    run_impl(os, arch, version, serve_binary, corrupt_sums, None)
+    run_impl(os, arch, version, serve_binary, corrupt_sums, None, None)
 }
 
-/// Throwaway git repo at `dir`: one commit tagged `v<version>`, plus (if `head_ahead`) a second
-/// commit so HEAD is past the tag. Drives the release-tag gate.
-fn make_git_repo(dir: &Path, version: &str, head_ahead: bool) {
+/// Throwaway git repo at `dir` with a single commit and NO tag — exactly like herdr's install
+/// checkout (a work tree at the cloned commit, without local tags). Returns the HEAD commit SHA,
+/// which the COMMIT-gate compares against the release's published marker.
+fn make_git_repo(dir: &Path) -> String {
     fs::create_dir_all(dir).unwrap();
-    let g = |args: &[&str]| {
+    let g = |args: &[&str]| -> std::process::Output {
         let o = Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -196,17 +203,14 @@ fn make_git_repo(dir: &Path, version: &str, head_ahead: bool) {
             "git {args:?}: {}",
             String::from_utf8_lossy(&o.stderr)
         );
+        o
     };
     g(&["init", "-q"]);
     fs::write(dir.join("f.txt"), "1").unwrap();
     g(&["add", "-A"]);
     g(&["commit", "-q", "-m", "release"]);
-    g(&["tag", &format!("v{version}")]);
-    if head_ahead {
-        fs::write(dir.join("f.txt"), "2").unwrap();
-        g(&["add", "-A"]);
-        g(&["commit", "-q", "-m", "post-release"]);
-    }
+    let head = g(&["rev-parse", "HEAD"]);
+    String::from_utf8_lossy(&head.stdout).trim().to_string()
 }
 
 #[test]
@@ -315,42 +319,66 @@ fn script_preserves_the_cargo_source_build_fallback() {
     );
 }
 
+// Regression test for the v1.2.0 install failure: herdr's checkout is a git work tree at the
+// release commit but WITHOUT local tags. The gate must confirm the match via the published COMMIT
+// marker (HEAD == COMMIT), not a local tag ref, and use the prebuilt.
 #[test]
-fn gate_uses_prebuilt_when_checkout_is_exactly_the_release_tag() {
-    let gitdir = tmp("gitrepo-attag");
-    make_git_repo(&gitdir, "1.2.0", false); // HEAD == v1.2.0 tag
-    let o = run_impl("Linux", "x86_64", "1.2.0", true, false, Some(&gitdir));
+fn gate_uses_prebuilt_when_head_matches_the_release_commit() {
+    let gitdir = tmp("gitrepo-match");
+    let head = make_git_repo(&gitdir); // tagless work tree, like herdr's install checkout
+    let o = run_impl(
+        "Linux",
+        "x86_64",
+        "1.2.0",
+        true,
+        false,
+        Some(&gitdir),
+        Some(&head),
+    );
     assert!(
         o.installed_prebuilt(),
-        "at the release tag the prebuilt should be used\nstdout:{}\nstderr:{}",
+        "HEAD matches the release COMMIT → prebuilt must be used\nstdout:{}\nstderr:{}",
         o.stdout,
         o.stderr
     );
     assert!(
         !o.fell_back(),
-        "must not build from source at the exact release commit"
+        "must not build from source when HEAD is the released commit"
+    );
+    assert!(
+        o.urls.iter().any(|u| u.ends_with("/v1.2.0/COMMIT")),
+        "gate must fetch the COMMIT marker; urls: {:?}",
+        o.urls
     );
     let _ = fs::remove_dir_all(&gitdir);
 }
 
+// When the checkout's HEAD differs from the release commit (e.g. main has advanced past the tag),
+// the gate must fall back to a source build and never install the stale binary.
 #[test]
-fn gate_falls_back_when_checkout_is_ahead_of_the_release_tag() {
+fn gate_falls_back_when_head_differs_from_the_release_commit() {
     let gitdir = tmp("gitrepo-ahead");
-    make_git_repo(&gitdir, "1.2.0", true); // HEAD one commit past v1.2.0
-    let o = run_impl("Linux", "x86_64", "1.2.0", true, false, Some(&gitdir));
+    let _head = make_git_repo(&gitdir);
+    let other = "0000000000000000000000000000000000000000"; // a commit this checkout is NOT at
+    let o = run_impl(
+        "Linux",
+        "x86_64",
+        "1.2.0",
+        true,
+        false,
+        Some(&gitdir),
+        Some(other),
+    );
     assert!(
         o.fell_back(),
-        "source ahead of the tag must build from source\nstdout:{}\nstderr:{}",
+        "HEAD != release commit must build from source\nstdout:{}\nstderr:{}",
         o.stdout,
         o.stderr
     );
+    assert!(o.placed.is_none(), "must not install the stale binary");
     assert!(
-        o.placed.is_none(),
-        "must not install the stale tagged binary"
-    );
-    assert!(
-        o.urls.is_empty(),
-        "the gate must fire before any download; urls: {:?}",
+        !o.urls.iter().any(|u| u.contains("herdr-file-viewer-")),
+        "the gate must fire before the binary download; urls: {:?}",
         o.urls
     );
     let _ = fs::remove_dir_all(&gitdir);
