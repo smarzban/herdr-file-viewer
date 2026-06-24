@@ -831,14 +831,22 @@ impl Controller {
         let Some(node) = self.tree.selected() else {
             return Effects::noop();
         };
-        let text = match kind {
+        let raw = match kind {
             PathKind::Absolute => node.path.to_string_lossy().into_owned(),
             PathKind::Repo => self
                 .rel(&node.path)
-                .unwrap_or(node.path.clone())
+                .unwrap_or_else(|| node.path.clone())
                 .to_string_lossy()
                 .into_owned(),
         };
+        // A filename is untrusted — an attacker can craft one in a browsed repo, and a path may
+        // legally contain control bytes: ESC/BEL (a terminal escape, e.g. a forged OSC 52) or a
+        // newline that would paste-inject into a shell. Strip them before the path reaches the
+        // clipboard *or* the notice — the same defense `sanitize_label` applies to every other
+        // filesystem-derived string we display. (The OSC 52 payload is base64-encoded only for
+        // transport; the terminal decodes it back to this exact string onto the clipboard, so the
+        // encoding alone does not make a control-bearing path safe to paste.)
+        let text: String = raw.chars().filter(|c| !c.is_control()).collect();
         self.action_notice = Some(match self.clipboard.copy(&text) {
             Ok(()) => format!("Copied {text}"),
             Err(e) => format!("Could not copy path: {e}"),

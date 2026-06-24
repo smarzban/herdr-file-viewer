@@ -1487,3 +1487,36 @@ fn copy_abs_path_copies_the_absolute_path() {
         log[0]
     );
 }
+
+#[test]
+fn copy_path_strips_control_bytes_from_a_hostile_filename() {
+    // A filename is attacker-controllable in a browsed repo and may legally contain control bytes —
+    // ESC/BEL (a terminal escape, e.g. a forged OSC 52) or a newline (a shell paste-injection when
+    // the copied path is later pasted). Both the clipboard payload and the confirmation notice must
+    // be stripped of control characters, matching the `sanitize_label` defense the tree and update
+    // banner already apply to filesystem-derived strings.
+    let dir = TempDir::new();
+    let hostile = "a\u{1b}]52;c;evil\u{07}\nrm -rf b";
+    std::fs::write(dir.path().join(hostile), "x\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), false);
+
+    ctrl.handle(Intent::CopyRepoPath);
+    let log = copied.lock().unwrap();
+    assert_eq!(log.len(), 1, "exactly one copy");
+    assert_eq!(
+        log[0], "a]52;c;evilrm -rf b",
+        "control bytes (ESC/BEL/newline) are stripped, printable chars kept"
+    );
+    assert!(
+        !log[0].chars().any(|c| c.is_control()),
+        "the copied path carries no control bytes: {:?}",
+        log[0]
+    );
+    assert!(
+        ctrl.notices()
+            .iter()
+            .all(|n| !n.chars().any(|c| c.is_control())),
+        "the confirmation notice carries no control bytes: {:?}",
+        ctrl.notices()
+    );
+}
