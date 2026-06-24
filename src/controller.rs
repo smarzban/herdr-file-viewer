@@ -193,6 +193,9 @@ pub struct Controller {
     git: Arc<dyn GitService>,
     editor: Box<dyn EditorHandoff>,
     clipboard: Box<dyn Clipboard>,
+    /// The provider factory (ADR-0004), kept so a re-root can rebuild the root-bound providers
+    /// (Git Service + Content Renderer) against the new root.
+    providers: Box<dyn Fn(&Resolved) -> RootProviders>,
     /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
     /// dispatched job; a `poll`ed result with a smaller seq is stale and dropped.
     job_tx: mpsc::Sender<RenderJob>,
@@ -232,49 +235,11 @@ impl Controller {
         let RootProviders { git, content } = providers(&resolved);
         let root = resolved.root.clone();
         let is_git_repo = resolved.is_git_repo;
-        // `providers` is intentionally NOT stored in T-6 (no reader yet → would warn). T-7 adds
-        // the field + `re_root` together; here the factory is consumed once and dropped.
         // The Content Renderer (and the diff query it needs) live on a worker thread; the
         // controller talks to it over a job channel and reads finished renders off a result
         // channel (AC-23). The worker exits when the job sender (held by the controller) is
-        // dropped.
-        let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
-        let (result_tx, result_rx) = mpsc::channel::<(u64, RenderResult)>();
-        let worker_git = Arc::clone(&git);
-        std::thread::spawn(move || {
-            while let Ok(mut job) = job_rx.recv() {
-                // Collapse any backlog: under rapid navigation only the most recent selection
-                // matters, so skip superseded jobs rather than render each in turn.
-                while let Ok(newer) = job_rx.try_recv() {
-                    job = newer;
-                }
-                // The diff is read here, off the input thread, so a large/slow diff never
-                // blocks input (AC-23). Other modes don't need git. The full-file diff view
-                // asks git for whole-file context; the compact diff uses git's default.
-                let raw_diff =
-                    if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
-                        let full = job.mode == ViewMode::FullDiff;
-                        job.rel
-                            .as_deref()
-                            .map(|rel| worker_git.diff(rel, job.baseline, full))
-                    } else {
-                        None
-                    };
-                // Contain a renderer panic so the worker survives — otherwise the thread would
-                // die and rendering would stop for the rest of the session. The unwind is caught
-                // here and a placeholder is surfaced in place of the failed render.
-                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    content.render(&job.path, job.mode, raw_diff.as_deref())
-                }))
-                .unwrap_or_else(|_| RenderResult {
-                    content: Text::raw("[content unavailable — renderer error]"),
-                    notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
-                });
-                if result_tx.send((job.seq, result)).is_err() {
-                    break; // controller gone
-                }
-            }
-        });
+        // dropped — which is also how a re-root retires the old worker.
+        let (job_tx, result_rx) = Self::spawn_worker(Arc::clone(&git), content);
 
         let mut ctrl = Controller {
             tree: TreeModel::new(root.clone()),
@@ -300,6 +265,7 @@ impl Controller {
             git,
             editor,
             clipboard,
+            providers,
             job_tx,
             result_rx,
             latest_seq: 0,
@@ -313,6 +279,106 @@ impl Controller {
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
         ctrl
+    }
+
+    /// Spawn the off-thread render worker that owns `git` (for the diff query) and `content`
+    /// (the Content Renderer), returning the job sender and result receiver the controller keeps
+    /// (AC-23). The worker runs until the job sender is dropped — so `new` spawns it once, and a
+    /// re-root spawns a fresh one and drops the old sender to retire the old worker. The loop
+    /// body is the same one `new` used inline before T-7 extracted it; behavior is unchanged.
+    fn spawn_worker(
+        git: Arc<dyn GitService>,
+        content: Box<dyn ContentProvider>,
+    ) -> (mpsc::Sender<RenderJob>, mpsc::Receiver<(u64, RenderResult)>) {
+        let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
+        let (result_tx, result_rx) = mpsc::channel::<(u64, RenderResult)>();
+        std::thread::spawn(move || {
+            while let Ok(mut job) = job_rx.recv() {
+                // Collapse any backlog: under rapid navigation only the most recent selection
+                // matters, so skip superseded jobs rather than render each in turn.
+                while let Ok(newer) = job_rx.try_recv() {
+                    job = newer;
+                }
+                // The diff is read here, off the input thread, so a large/slow diff never
+                // blocks input (AC-23). Other modes don't need git. The full-file diff view
+                // asks git for whole-file context; the compact diff uses git's default.
+                let raw_diff =
+                    if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
+                        let full = job.mode == ViewMode::FullDiff;
+                        job.rel
+                            .as_deref()
+                            .map(|rel| git.diff(rel, job.baseline, full))
+                    } else {
+                        None
+                    };
+                // Contain a renderer panic so the worker survives — otherwise the thread would
+                // die and rendering would stop for the rest of the session. The unwind is caught
+                // here and a placeholder is surfaced in place of the failed render.
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    content.render(&job.path, job.mode, raw_diff.as_deref())
+                }))
+                .unwrap_or_else(|_| RenderResult {
+                    content: Text::raw("[content unavailable — renderer error]"),
+                    notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
+                });
+                if result_tx.send((job.seq, result)).is_err() {
+                    break; // controller gone
+                }
+            }
+        });
+        (job_tx, result_rx)
+    }
+
+    /// Re-root the running session to `target`: re-resolve it through the same Root Resolver used
+    /// at launch, rebuild the root-bound providers (Git Service + Content Renderer) via the stored
+    /// factory (ADR-0004), and respawn the render worker — overwriting `job_tx`/`result_rx` drops
+    /// the old sender, so the previous worker (which owns the old providers) exits. A fresh
+    /// [`TreeModel`] and reset navigation/view state follow (AC-13), while the user's *preferences*
+    /// — `show_ignored`, `changed_only`, `split_pct`, `wrap_override`, `baseline` — are carried
+    /// across unchanged (AC-12). Finally git state is re-applied to the new tree (AC-7) and the
+    /// first frame is rendered. Assumes `target` is a valid, usable directory — failure/no-op
+    /// handling is a later task.
+    pub fn re_root(&mut self, target: &Path) {
+        let resolved = crate::root::resolve(&crate::context::LaunchContext {
+            cwd: target.to_path_buf(),
+            ..Default::default()
+        });
+
+        // Rebuild the root-bound providers for the new root and respawn the worker. Overwriting
+        // `job_tx` drops the old sender, so the old worker (holding the old git Arc + content)
+        // exits; the new worker owns the new providers.
+        let RootProviders { git, content } = (self.providers)(&resolved);
+        let (job_tx, result_rx) = Self::spawn_worker(Arc::clone(&git), content);
+        self.git = git;
+        self.job_tx = job_tx;
+        self.result_rx = result_rx;
+
+        // New root + fresh tree (this alone clears the cursor + expansions).
+        self.root = resolved.root.clone();
+        self.is_git_repo = resolved.is_git_repo;
+        self.tree = TreeModel::new(resolved.root.clone());
+
+        // Reset navigation/view state (AC-13).
+        self.focus = Focus::Tree;
+        self.zoomed = false;
+        self.content_scroll = 0;
+        self.content_hscroll = 0;
+        self.overrides.clear();
+        self.action_notice = None;
+        self.changed = BTreeMap::new();
+
+        // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, changed_only,
+        // split_pct, wrap_override, baseline keep their current values. The fresh TreeModel starts
+        // with default filter flags, so push the carried filter prefs onto it so the new tree
+        // actually honors them (the controller's flags alone don't reach the tree). `changed_only`
+        // is re-applied with the changed-set `refresh_git_state` recomputes below.
+        self.tree.set_show_ignored(self.show_ignored);
+        self.tree.set_changed_only(self.changed_only, &self.changed);
+
+        // Re-apply git state to the new tree (status markers + the changed-only filter, which
+        // `refresh_git_state` re-derives from the carried `changed_only` + `baseline`), then render.
+        self.refresh_git_state();
+        self.dispatch_render();
     }
 
     // ---- state accessors (used by the Presenter wiring and tests) ----------------------
@@ -331,6 +397,14 @@ impl Controller {
     }
     pub fn zoomed(&self) -> bool {
         self.zoomed
+    }
+    /// The tree column's width as a percentage of the pane (carried across a re-root, AC-12).
+    pub fn split_pct(&self) -> u16 {
+        self.split_pct
+    }
+    /// Whether the `w` content-wrap override is on (carried across a re-root, AC-12).
+    pub fn wrap_override(&self) -> bool {
+        self.wrap_override
     }
     pub fn tree(&self) -> &TreeModel {
         &self.tree
