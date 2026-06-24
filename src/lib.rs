@@ -8,6 +8,7 @@ pub mod context;
 pub mod controller;
 pub mod editor;
 pub mod git;
+pub mod herdr;
 pub mod host;
 pub mod input;
 pub mod intent;
