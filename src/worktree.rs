@@ -1,8 +1,11 @@
-//! Worktree Provider — data model and `git worktree list --porcelain -z` parser.
+//! Worktree Provider — data model, `git worktree list --porcelain -z` parser, and live
+//! enumeration.
 //!
-//! This module is a **pure parser**: it performs no filesystem access and spawns no processes.
-//! Live git shelling is handled by the caller (T-2). (AC-1, AC-2, AC-N4)
+//! [`parse_porcelain`] is a **pure parser**: it performs no filesystem access and spawns no
+//! processes. [`list`] is the live entry point that shells out to git and feeds the result to
+//! the parser. (AC-1, AC-2, AC-N4)
 
+use crate::git::git_command;
 use std::path::{Path, PathBuf};
 
 /// A single git worktree record.
@@ -20,6 +23,31 @@ pub struct Worktree {
     pub is_current: bool,
     /// `true` when git reports this worktree as prunable.
     pub is_prunable: bool,
+}
+
+/// Enumerate the live worktrees by shelling `git worktree list --porcelain -z` and feeding
+/// the output to [`parse_porcelain`].
+///
+/// `repo_root` is the directory passed to `git -C`; `current_root` is the path that should be
+/// marked [`Worktree::is_current`] — it is canonicalized here (symlink-stable) before the
+/// comparison inside the pure parser.
+///
+/// Returns an **empty `Vec`** on any failure (git missing, non-zero exit, spawn error) — the
+/// caller is responsible for degrading gracefully (AC-26). Never panics or mutates the repo
+/// (AC-N1, AC-N2).
+pub fn list(repo_root: &Path, current_root: &Path) -> Vec<Worktree> {
+    let canonical_current = current_root
+        .canonicalize()
+        .unwrap_or_else(|_| current_root.to_path_buf());
+
+    let out = git_command(repo_root, &["worktree", "list", "--porcelain", "-z"])
+        .output()
+        .ok();
+
+    match out {
+        Some(o) if o.status.success() => parse_porcelain(&o.stdout, &canonical_current),
+        _ => Vec::new(),
+    }
 }
 
 /// Parse the raw bytes from `git worktree list --porcelain -z` into a `Vec<Worktree>`.

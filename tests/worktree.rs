@@ -1,9 +1,10 @@
 //! T-1 — Worktree model + porcelain parser (AC-1, AC-2, AC-N4).
-//!
-//! Feeds canned `git worktree list --porcelain -z` bytes and asserts the parser's output.
-//! No git process is spawned; no filesystem is touched.
+//! T-2 — Worktree Provider: live enumeration (AC-1, AC-2, AC-11, AC-N1, AC-N2).
 
-use herdr_file_viewer::worktree::parse_porcelain;
+mod common;
+
+use common::{TempDir, git, init_repo_with_commit};
+use herdr_file_viewer::worktree::{list, parse_porcelain};
 use std::path::Path;
 
 /// Canned `-z` output covering: main (current_root), linked, detached, bare, prunable.
@@ -158,4 +159,117 @@ fn parses_porcelain_worktrees_real_framing() {
         "prunable worktree has is_prunable == true"
     );
     assert!(prun.detached, "prunable worktree is also detached");
+}
+
+// ---------------------------------------------------------------------------
+// T-2 — live enumeration via `list()` against a real temp git repo
+// ---------------------------------------------------------------------------
+
+/// `list` returns both the main and linked worktree, and marks `is_current` correctly
+/// (AC-1, AC-2, AC-11).
+#[test]
+fn list_returns_main_and_linked_worktrees_with_current_flag() {
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+
+    // Create a linked worktree alongside the main one.
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "linked-branch",
+        ],
+    );
+
+    // Call list with current_root = the main repo root (canonical).
+    let worktrees = list(repo.path(), repo.path());
+
+    // Both the main worktree and the linked one must appear.
+    assert!(
+        worktrees.len() >= 2,
+        "expected at least 2 worktrees, got {}: {worktrees:#?}",
+        worktrees.len()
+    );
+
+    // The row matching the main repo root has is_current == true (AC-11).
+    let canon_repo = common::canon(repo.path());
+    let current_rows: Vec<_> = worktrees.iter().filter(|w| w.is_current).collect();
+    assert_eq!(
+        current_rows.len(),
+        1,
+        "exactly one worktree should be marked is_current"
+    );
+    assert_eq!(
+        common::canon(&current_rows[0].path),
+        canon_repo,
+        "is_current row path must match current_root"
+    );
+
+    // The linked worktree also appears (AC-1, AC-2).
+    let canon_linked = common::canon(linked.path());
+    let linked_row = worktrees
+        .iter()
+        .find(|w| common::canon(&w.path) == canon_linked)
+        .expect("linked worktree should appear in list output");
+    assert!(!linked_row.is_current, "linked worktree must not be current");
+    assert_eq!(
+        linked_row.branch,
+        Some("linked-branch".to_string()),
+        "linked worktree should report its branch name"
+    );
+}
+
+/// `list` does not mutate the worktree set or the filesystem (AC-N1, AC-N2): the set of
+/// worktrees reported by `git worktree list` is identical before and after the call.
+#[test]
+fn list_does_not_mutate_worktree_set() {
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+
+    // One linked worktree so there's something interesting to not mutate.
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "mut-test-branch",
+        ],
+    );
+
+    // Snapshot the worktree list before the call.
+    let before = git(repo.path(), &["worktree", "list", "--porcelain"]);
+    let head_before = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let _ = list(repo.path(), repo.path());
+
+    // The worktree list and HEAD must be unchanged.
+    let after = git(repo.path(), &["worktree", "list", "--porcelain"]);
+    let head_after = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    assert_eq!(
+        before, after,
+        "AC-N1: worktree list unchanged after list()"
+    );
+    assert_eq!(
+        head_before, head_after,
+        "AC-N2: HEAD unchanged after list()"
+    );
+}
+
+/// `list` degrades gracefully (returns empty Vec) when called on a non-repo directory.
+#[test]
+fn list_returns_empty_vec_for_non_repo() {
+    let dir = TempDir::new();
+    let result = list(dir.path(), dir.path());
+    assert!(
+        result.is_empty(),
+        "expected empty Vec for non-repo, got: {result:#?}"
+    );
 }
