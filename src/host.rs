@@ -20,6 +20,7 @@ struct RawContext {
     workspace_cwd: Option<String>,
     cwd: Option<String>,
     base_branch: Option<String>,
+    workspace_id: Option<String>,
 }
 
 /// Build a `LaunchContext` from the process environment: the injected context JSON, falling
@@ -48,5 +49,6 @@ pub fn parse_context(json: Option<&str>, fallback_cwd: PathBuf) -> LaunchContext
     LaunchContext {
         cwd,
         base_branch: raw.base_branch,
+        workspace_id: raw.workspace_id.filter(|s| !s.is_empty()),
     }
 }

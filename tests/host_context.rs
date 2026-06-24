@@ -82,3 +82,36 @@ fn an_empty_cwd_field_is_ignored_in_favor_of_the_fallback() {
     );
     assert_eq!(ctx.cwd, PathBuf::from("/fallback"));
 }
+
+// T-3 — workspace_id parsing (AC-3, AC-15)
+
+#[test]
+fn workspace_id_is_parsed_from_json() {
+    // AC-3: the workspace_id field is threaded through to LaunchContext.
+    let json = r#"{"cwd":"/w","workspace_id":"ws-abc123"}"#;
+    let ctx = parse_context(Some(json), PathBuf::from("/fallback"));
+    assert_eq!(ctx.workspace_id, Some("ws-abc123".to_string()));
+}
+
+#[test]
+fn absent_workspace_id_degrades_to_none() {
+    // AC-15: missing workspace_id must degrade silently to None.
+    let json = r#"{"cwd":"/w","base_branch":"main"}"#;
+    let ctx = parse_context(Some(json), PathBuf::from("/fallback"));
+    assert_eq!(ctx.workspace_id, None);
+}
+
+#[test]
+fn empty_workspace_id_is_treated_as_none() {
+    // An empty string from the host is treated as absent, consistent with cwd filtering.
+    let json = r#"{"cwd":"/w","workspace_id":""}"#;
+    let ctx = parse_context(Some(json), PathBuf::from("/fallback"));
+    assert_eq!(ctx.workspace_id, None);
+}
+
+#[test]
+fn malformed_json_still_yields_none_workspace_id() {
+    // AC-26: malformed JSON → minimal context with no workspace_id, no panic.
+    let ctx = parse_context(Some("{ this is not json"), PathBuf::from("/fallback"));
+    assert_eq!(ctx.workspace_id, None);
+}

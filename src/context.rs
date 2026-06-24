@@ -12,4 +12,7 @@ pub struct LaunchContext {
     pub cwd: PathBuf,
     /// A base-branch hint from herdr (the branch a worktree forked from).
     pub base_branch: Option<String>,
+    /// The herdr workspace id the viewer was launched from (used for the agent-active overlay).
+    /// Absent when herdr did not inject one; must degrade silently to `None` (AC-15).
+    pub workspace_id: Option<String>,
 }
