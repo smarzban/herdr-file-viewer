@@ -9,7 +9,7 @@ mod common;
 use common::TempDir;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
+    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -92,16 +92,23 @@ fn controller(
 ) -> (Controller, Recorder<Baseline>, Recorder<PathBuf>) {
     let changed_calls = git.changed_calls.clone();
     let opened = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(git); // build the stub Arc once; clone it inside the factory
     let components = Components {
-        git: Arc::new(git),
-        content: Box::new(StubContent),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
         editor: Box::new(StubEditor {
             fail: editor_fails,
             opened: opened.clone(),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let ctrl = Controller::new(root.to_path_buf(), is_git_repo, Baseline::Head, components);
+    let ctrl = Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    );
     (ctrl, changed_calls, opened)
 }
 
@@ -528,15 +535,21 @@ fn await_marker(ctrl: &mut Controller, marker: &str) {
 /// Build a controller over `root` whose Content Renderer returns `n` lines.
 fn controller_with_lines(root: &Path, n: usize) -> Controller {
     let components = Components {
-        git: Arc::new(StubGit::default()),
-        content: Box::new(LinesContent { n }),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(LinesContent { n }), // `n` is Copy → fresh each call
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    Controller::new(root.to_path_buf(), false, Baseline::Head, components)
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
 }
 
 #[test]
@@ -674,15 +687,21 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "code\n").unwrap();
     let components = Components {
-        git: Arc::new(StubGit::default()),
-        content: Box::new(WideContent),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WideContent),
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
     await_marker(&mut ctrl, "WIDE");
     ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
     assert!(
@@ -739,15 +758,21 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.md"), "# x\n").unwrap(); // markdown → wraps by default
     let components = Components {
-        git: Arc::new(StubGit::default()),
-        content: Box::new(WideContent), // 5 lines × 100 columns
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WideContent), // 5 lines × 100 columns
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
     await_marker(&mut ctrl, "WIDE");
     ctrl.set_content_viewport(25, 10); // 5 lines × ceil(100/25)=4 = 20 wrapped rows; max = 10
     assert!(ctrl.view_state().wrap, "a .md file wraps");
@@ -1227,15 +1252,21 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "code\n").unwrap(); // .rs → unwrapped, so hscroll applies
     let components = Components {
-        git: Arc::new(StubGit::default()),
-        content: Box::new(WideContent),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WideContent),
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
     await_marker(&mut ctrl, "WIDE");
     ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
     ctrl.set_pane_geometry(wide_geometry());
@@ -1296,17 +1327,24 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let git = StubGit::default();
-    let changed_calls = git.changed_calls.clone();
+    let changed_calls = git.changed_calls.clone(); // clone the recorder before Arc::new moves the stub
+    let git: Arc<dyn GitService> = Arc::new(git);
     let components = Components {
-        git: Arc::new(git),
-        content: Box::new(LinesContent { n: 50 }),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(LinesContent { n: 50 }),
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
     await_marker(&mut ctrl, "L0");
     ctrl.set_content_viewport(40, 10);
     ctrl.handle(Intent::ToggleFocus); // focus the content pane
@@ -1397,16 +1435,23 @@ fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
         rest: BTreeMap::from([(b.clone(), Status::Modified)]),  // now only b.rs is changed
         calls: Arc::new(Mutex::new(0)),
     };
+    let git: Arc<dyn GitService> = Arc::new(git);
     let components = Components {
-        git: Arc::new(git),
-        content: Box::new(PathContent),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(PathContent),
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
     ctrl.handle(Intent::ToggleChangedOnly); // changed-only: only a.rs visible → it's selected
     await_marker(&mut ctrl, "a.rs");
     assert_eq!(
@@ -1435,15 +1480,21 @@ fn controller_with_clipboard(root: &Path, is_git_repo: bool) -> (Controller, Rec
     let clipboard = common::RecordingClipboard::default();
     let copied = clipboard.copied.clone();
     let components = Components {
-        git: Arc::new(StubGit::default()),
-        content: Box::new(StubContent),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(StubContent),
+        }),
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(clipboard),
     };
-    let ctrl = Controller::new(root.to_path_buf(), is_git_repo, Baseline::Head, components);
+    let ctrl = Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    );
     (ctrl, copied)
 }
 

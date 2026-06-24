@@ -19,6 +19,7 @@
 use crate::git::{Baseline, Status};
 use crate::intent::Intent;
 use crate::presenter::{Focus, PaneGeometry, ViewState};
+use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
@@ -91,12 +92,21 @@ pub trait Clipboard {
     fn copy(&mut self, text: &str) -> io::Result<()>;
 }
 
-/// The injected components the controller orchestrates.
-pub struct Components {
+/// The root-bound providers rebuilt on every (re-)root. Editor/clipboard are NOT here — they
+/// survive a re-root unchanged, so they live on [`Components`] directly. ADR-0004.
+pub struct RootProviders {
     /// Shared (`Arc`) because both the controller (status / changed-set) and the render
     /// worker (diff, off the input thread) query git.
     pub git: Arc<dyn GitService>,
     pub content: Box<dyn ContentProvider>,
+}
+
+/// The injected components the controller orchestrates.
+pub struct Components {
+    /// Builds the root-bound providers for a given [`Resolved`]. Called once at launch, and
+    /// again per re-root (T-7/T-8). `Fn` (not `FnOnce`) because a re-root re-invokes it.
+    /// ADR-0004.
+    pub providers: Box<dyn Fn(&Resolved) -> RootProviders>,
     pub editor: Box<dyn EditorHandoff>,
     pub clipboard: Box<dyn Clipboard>,
 }
@@ -207,22 +217,23 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// Build the controller rooted at `root`. When `is_git_repo`, the initial working-tree
-    /// status (tree markers, AC-7) and the changed-set against `baseline` are loaded from
-    /// git; otherwise the viewer is a plain browser (AC-26). The initial selection's content
-    /// is rendered so the first frame is populated.
-    pub fn new(
-        root: PathBuf,
-        is_git_repo: bool,
-        baseline: Baseline,
-        components: Components,
-    ) -> Self {
+    /// Build the controller for the resolved root. The root-bound providers (Git Service +
+    /// Content Renderer) are built by the factory in `components` for this `resolved` (ADR-0004),
+    /// the seam a later re-root re-invokes. When `resolved.is_git_repo`, the initial working-tree
+    /// status (tree markers, AC-7) and the changed-set against `baseline` are loaded from git;
+    /// otherwise the viewer is a plain browser (AC-26). The initial selection's content is
+    /// rendered so the first frame is populated.
+    pub fn new(resolved: Resolved, baseline: Baseline, components: Components) -> Self {
         let Components {
-            git,
-            content,
+            providers,
             editor,
             clipboard,
         } = components;
+        let RootProviders { git, content } = providers(&resolved);
+        let root = resolved.root.clone();
+        let is_git_repo = resolved.is_git_repo;
+        // `providers` is intentionally NOT stored in T-6 (no reader yet → would warn). T-7 adds
+        // the field + `re_root` together; here the factory is consumed once and dropped.
         // The Content Renderer (and the diff query it needs) live on a worker thread; the
         // controller talks to it over a job channel and reads finished renders off a result
         // channel (AC-23). The worker exits when the job sender (held by the controller) is

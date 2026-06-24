@@ -7,7 +7,7 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
+    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -53,12 +53,14 @@ impl EditorHandoff for Editor {
 
 fn controller_in(dir: &Path) -> Controller {
     Controller::new(
-        dir.to_path_buf(),
-        false, // non-git: keeps the test focused on banner state
+        // non-git: keeps the test focused on banner state
+        common::resolved(dir.to_path_buf(), false),
         Baseline::Head,
         Components {
-            git: Arc::new(Git),
-            content: Box::new(Content),
+            providers: Box::new(move |_resolved| RootProviders {
+                git: Arc::new(Git),
+                content: Box::new(Content),
+            }),
             editor: Box::new(Editor),
             clipboard: Box::new(common::RecordingClipboard::default()),
         },

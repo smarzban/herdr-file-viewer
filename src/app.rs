@@ -8,6 +8,7 @@
 
 use crate::controller::{
     Clipboard, Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
+    RootProviders,
 };
 use crate::editor::{EditorLauncher, Spawner};
 use crate::git::{self, Baseline, Status};
@@ -46,31 +47,38 @@ pub fn run() -> io::Result<()> {
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
 
-    let git: Arc<dyn GitService> = Arc::new(LiveGit {
-        // In a non-repo there is no repo_root; git is never queried then, but a path is still
-        // required, so fall back to the tree root.
-        repo_root: resolved
-            .repo_root
-            .clone()
-            .unwrap_or_else(|| resolved.root.clone()),
-        base_hint: resolved.base_branch.clone(),
-    });
-    let content: Box<dyn ContentProvider> = Box::new(LiveContent {
-        root: resolved.root.clone(),
-        renderers: default_renderers(),
-    });
+    // The root-bound providers are built by a factory so a later re-root rebuilds them against
+    // the new root (ADR-0004). Non-capturing — it reads the passed `Resolved`, so re-root gets
+    // the new root's git/renderer rather than closing over the launch root.
+    let providers: Box<dyn Fn(&root::Resolved) -> RootProviders> =
+        Box::new(|resolved: &root::Resolved| {
+            let git: Arc<dyn GitService> = Arc::new(LiveGit {
+                // In a non-repo there is no repo_root; git is never queried then, but a path is
+                // still required, so fall back to the tree root.
+                repo_root: resolved
+                    .repo_root
+                    .clone()
+                    .unwrap_or_else(|| resolved.root.clone()),
+                base_hint: resolved.base_branch.clone(),
+            });
+            let content: Box<dyn ContentProvider> = Box::new(LiveContent {
+                root: resolved.root.clone(),
+                renderers: default_renderers(),
+            });
+            RootProviders { git, content }
+        });
     let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
         editor: std::env::var_os("EDITOR"),
     });
     let clipboard: Box<dyn Clipboard> = Box::new(Osc52Clipboard);
 
+    // `Controller::new` now consumes `resolved` by value; `baseline` was already built from it
+    // above (`git::default_baseline(&resolved)`), so moving it here is the last use.
     let mut controller = Controller::new(
-        resolved.root.clone(),
-        resolved.is_git_repo,
+        resolved,
         baseline,
         Components {
-            git,
-            content,
+            providers,
             editor,
             clipboard,
         },

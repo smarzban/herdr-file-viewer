@@ -5,6 +5,7 @@
 #![allow(dead_code)] // not every integration test uses every helper
 
 use herdr_file_viewer::controller::Clipboard;
+use herdr_file_viewer::root::Resolved;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +59,20 @@ impl Clipboard for RecordingClipboard {
     fn copy(&mut self, text: &str) -> std::io::Result<()> {
         self.copied.lock().unwrap().push(text.to_string());
         Ok(())
+    }
+}
+
+/// Build a [`Resolved`] for tests: `repo_root` mirrors `root` when it is a git repo (the tests
+/// never exercise a *linked* worktree, so `is_worktree` is false and there is no separate
+/// top-level). This is the value `Controller::new` now consumes (ADR-0004), and the factory
+/// reads it to build the root-bound providers.
+pub fn resolved(root: PathBuf, is_git_repo: bool) -> Resolved {
+    Resolved {
+        repo_root: is_git_repo.then(|| root.clone()),
+        root,
+        is_git_repo,
+        is_worktree: false,
+        base_branch: None,
     }
 }
 

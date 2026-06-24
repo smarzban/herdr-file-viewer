@@ -7,7 +7,7 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
+    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -120,12 +120,18 @@ fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
 
     let delay = Duration::from_millis(150);
     let components = Components {
-        git: Arc::new(NoGit),
-        content: Box::new(SlowContent { delay }),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent { delay }), // `delay` is Copy → fresh each call
+        }),
         editor: Box::new(NoEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
 
     // A select intent must return far faster than the render takes — it only dispatches.
     let start = Instant::now();
@@ -178,18 +184,25 @@ fn full_diff_mode_asks_git_for_whole_file_context() {
     let mut changed = BTreeMap::new();
     changed.insert(PathBuf::from("c.rs"), Status::Modified);
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(RecordingGit {
+        changed,
+        diff_full_calls: calls.clone(),
+    });
     let components = Components {
-        git: Arc::new(RecordingGit {
-            changed,
-            diff_full_calls: calls.clone(),
-        }),
-        content: Box::new(SlowContent {
-            delay: Duration::from_millis(0),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(SlowContent {
+                delay: Duration::from_millis(0),
+            }),
         }),
         editor: Box::new(NoEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), true, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
 
     // The changed file defaults to the compact Diff; one cycle advances to FullDiff, which
     // dispatches a render whose worker requests a full-context diff.
@@ -223,14 +236,20 @@ fn a_superseded_render_does_not_overwrite_a_newer_selection() {
     std::fs::write(dir.path().join("c.rs"), "3\n").unwrap();
 
     let components = Components {
-        git: Arc::new(NoGit),
-        content: Box::new(SlowContent {
-            delay: Duration::from_millis(80),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent {
+                delay: Duration::from_millis(80),
+            }),
         }),
         editor: Box::new(NoEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
 
     // Fire several selections back-to-back; only the last (c.rs) should win.
     ctrl.handle(Intent::NavDown); // b.rs
@@ -263,12 +282,18 @@ fn a_panicking_renderer_is_contained_and_the_worker_survives() {
     std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
     std::fs::write(dir.path().join("b.rs"), "2\n").unwrap();
     let components = Components {
-        git: Arc::new(NoGit),
-        content: Box::new(PanicOnContent { panic_file: "b.rs" }),
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(PanicOnContent { panic_file: "b.rs" }), // `&'static str` is Copy
+        }),
         editor: Box::new(NoEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
     };
-    let mut ctrl = Controller::new(dir.path().to_path_buf(), false, Baseline::Head, components);
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
 
     // Select b.rs → its render() panics; the worker must catch it and surface a placeholder.
     ctrl.handle(Intent::NavDown); // b.rs
