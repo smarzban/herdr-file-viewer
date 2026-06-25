@@ -1713,3 +1713,253 @@ fn switch_worktree_preselects_agent_active() {
         "the agent worktree differs from the current one"
     );
 }
+
+// ---- worktree picker: modal routing (AC-5, AC-6, AC-7, AC-11) -------------------------
+
+/// Build a controller rooted at `repo` with a linked worktree already added, open the
+/// picker via SwitchWorktree, and return the controller together with the linked path
+/// and the main (current) path.
+fn setup_picker_with_two_worktrees() -> (Controller, PathBuf, PathBuf) {
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "picker-test-branch",
+        ],
+    );
+    let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
+    ctrl.handle(Intent::SwitchWorktree);
+    assert!(
+        ctrl.picker().is_some(),
+        "picker should be open after SwitchWorktree"
+    );
+    let main_path = ctrl.root().to_path_buf();
+    let linked_path = linked.path().to_path_buf();
+    // Leak TempDirs so the directories exist for the test duration.
+    std::mem::forget(repo);
+    std::mem::forget(linked);
+    (ctrl, main_path, linked_path)
+}
+
+#[test]
+fn picker_navdown_moves_cursor_and_navup_decrements_and_clamps() {
+    // AC-5: NavDown increments the cursor; NavUp decrements; cursor clamps at both ends.
+    // Both clamp edges are exercised unconditionally: top (NavUp at row 0) and bottom
+    // (NavDown at the last row), regardless of which row the picker pre-selects.
+    let (mut ctrl, _, _) = setup_picker_with_two_worktrees();
+    let rows_len = ctrl.picker().unwrap().rows.len();
+    assert!(rows_len >= 2, "fixture must have at least 2 worktrees");
+
+    // --- top clamp: drive the cursor to row 0, then assert NavUp is inert ---
+    while ctrl.picker().unwrap().cursor > 0 {
+        let fx = ctrl.handle(Intent::NavUp);
+        assert!(fx.redraw, "NavUp returns redraw while moving");
+    }
+    assert_eq!(ctrl.picker().unwrap().cursor, 0, "cursor is at row 0");
+    let fx = ctrl.handle(Intent::NavUp); // one more NavUp — must not move
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        0,
+        "NavUp at row 0 clamps (cursor stays at 0)"
+    );
+    assert!(
+        !fx.redraw,
+        "NavUp at row 0 returns noop (no move → no redraw)"
+    );
+
+    // --- basic movement: NavDown moves from row 0 to row 1 ---
+    let fx = ctrl.handle(Intent::NavDown);
+    assert!(fx.redraw, "NavDown returns redraw when moving");
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        1,
+        "NavDown increments the cursor from 0 to 1"
+    );
+
+    // --- bottom clamp: drive the cursor to the last row, then assert NavDown is inert ---
+    while ctrl.picker().unwrap().cursor + 1 < rows_len {
+        let fx = ctrl.handle(Intent::NavDown);
+        assert!(fx.redraw, "NavDown returns redraw while moving");
+    }
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        rows_len - 1,
+        "cursor is at the last row"
+    );
+    let fx = ctrl.handle(Intent::NavDown); // one more NavDown — must not move
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        rows_len - 1,
+        "NavDown at the last row clamps (cursor stays at last)"
+    );
+    assert!(
+        !fx.redraw,
+        "NavDown at the last row returns noop (no move → no redraw)"
+    );
+
+    // Picker must still be open after all nav-only intents.
+    assert!(
+        ctrl.picker().is_some(),
+        "picker remains open after nav-only intents"
+    );
+}
+
+#[test]
+fn picker_activate_reroots_to_selected_and_closes_picker() {
+    // AC-7 + AC-5: Activate confirms — re-roots to the selected (non-current) worktree and
+    // closes the picker.
+    let (mut ctrl, main_path, linked_path) = setup_picker_with_two_worktrees();
+
+    // Find the index of the linked (non-current) worktree row.
+    let linked_canon = common::canon(&linked_path);
+    let linked_idx = ctrl
+        .picker()
+        .unwrap()
+        .rows
+        .iter()
+        .position(|w| common::canon(&w.path) == linked_canon)
+        .expect("linked worktree is a row in the picker");
+
+    // Navigate the cursor to the linked row.
+    let current_cursor = ctrl.picker().unwrap().cursor;
+    if current_cursor < linked_idx {
+        for _ in 0..(linked_idx - current_cursor) {
+            ctrl.handle(Intent::NavDown);
+        }
+    } else {
+        for _ in 0..(current_cursor - linked_idx) {
+            ctrl.handle(Intent::NavUp);
+        }
+    }
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        linked_idx,
+        "cursor is on the linked row before Activate"
+    );
+
+    // Confirm.
+    let fx = ctrl.handle(Intent::Activate);
+    assert!(fx.redraw, "Activate returns redraw");
+
+    // Picker is closed.
+    assert!(
+        ctrl.picker().is_none(),
+        "picker is closed after Activate (AC-7)"
+    );
+
+    // Root has changed to the linked worktree (AC-7).
+    let new_root = ctrl.root().to_path_buf();
+    assert_ne!(
+        common::canon(&new_root),
+        common::canon(&main_path),
+        "root changed away from the main worktree"
+    );
+    assert_eq!(
+        common::canon(&new_root),
+        linked_canon,
+        "root is now the linked worktree (AC-7)"
+    );
+}
+
+#[test]
+fn picker_close_cancels_leaving_state_unchanged() {
+    // AC-6: Close cancels — picker closes, root and all other state are unchanged.
+    let (mut ctrl, main_path, _linked_path) = setup_picker_with_two_worktrees();
+
+    let root_before = ctrl.root().to_path_buf();
+    let fx = ctrl.handle(Intent::Close);
+    assert!(fx.redraw, "Close returns redraw");
+
+    // Picker is closed.
+    assert!(
+        ctrl.picker().is_none(),
+        "picker is closed after Close (AC-6)"
+    );
+
+    // Root is unchanged.
+    assert_eq!(
+        common::canon(ctrl.root()),
+        common::canon(&main_path),
+        "root is unchanged after Close (AC-6)"
+    );
+    assert_eq!(
+        common::canon(ctrl.root()),
+        common::canon(&root_before),
+        "root is unchanged after Close"
+    );
+}
+
+#[test]
+fn picker_activate_on_current_worktree_is_a_noop_and_closes_picker() {
+    // AC-11: confirming the already-current worktree is a clean no-op (root unchanged) but the
+    // picker still closes.
+    let (mut ctrl, main_path, _linked_path) = setup_picker_with_two_worktrees();
+
+    // Cursor should already be on the current worktree row (AC-4 pre-select).
+    let cursor = ctrl.picker().unwrap().cursor;
+    assert!(
+        ctrl.picker().unwrap().rows[cursor].is_current,
+        "cursor is pre-selected on the current worktree (AC-4)"
+    );
+
+    let fx = ctrl.handle(Intent::Activate);
+    assert!(fx.redraw, "Activate returns redraw even for no-op");
+
+    // Picker is closed.
+    assert!(
+        ctrl.picker().is_none(),
+        "picker closes after confirm-current (AC-11)"
+    );
+
+    // Root is unchanged.
+    assert_eq!(
+        common::canon(ctrl.root()),
+        common::canon(&main_path),
+        "root is unchanged after confirm-current (AC-11)"
+    );
+}
+
+#[test]
+fn picker_other_intents_are_inert() {
+    // Modal: intents other than Nav/Activate/Close are inert while the picker is open.
+    let (mut ctrl, main_path, _) = setup_picker_with_two_worktrees();
+
+    let root_before = ctrl.root().to_path_buf();
+    let cursor_before = ctrl.picker().unwrap().cursor;
+
+    // These should all be no-ops (picker stays open, root unchanged, cursor unchanged).
+    for intent in [
+        Intent::ToggleIgnore,
+        Intent::ToggleChangedOnly,
+        Intent::CycleView,
+        Intent::ToggleFocus,
+    ] {
+        ctrl.handle(intent);
+    }
+
+    assert!(
+        ctrl.picker().is_some(),
+        "picker stays open for inert intents"
+    );
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        cursor_before,
+        "cursor unchanged for inert intents"
+    );
+    assert_eq!(
+        common::canon(ctrl.root()),
+        common::canon(&main_path),
+        "root unchanged for inert intents"
+    );
+    assert_eq!(
+        common::canon(ctrl.root()),
+        common::canon(&root_before),
+        "root unchanged for inert intents (double-check)"
+    );
+}

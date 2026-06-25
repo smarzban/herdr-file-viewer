@@ -485,6 +485,10 @@ impl Controller {
     pub fn tree(&self) -> &TreeModel {
         &self.tree
     }
+    /// The current tree root. Exposed so tests can assert re-root results (T-13).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
     pub fn content(&self) -> &Text<'static> {
         &self.content
     }
@@ -621,6 +625,11 @@ impl Controller {
         // The action notice is transient: clear it at the top of each intent so a stale
         // failure message does not linger past the next action.
         self.action_notice = None;
+        // Modal: while the picker is open, Nav/Activate/Close drive the picker, not the tree;
+        // every other intent is inert (a modal selection). (AC-5)
+        if self.picker.is_some() {
+            return self.handle_picker_intent(intent);
+        }
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
@@ -643,6 +652,58 @@ impl Controller {
             Intent::DismissUpdate => self.dismiss_update(),
             Intent::SwitchWorktree => self.open_worktree_picker(),
             Intent::Close => self.close_or_unzoom(),
+        }
+    }
+
+    /// Route an intent while the worktree picker is open (modal). NavUp/NavDown move the
+    /// highlight, Activate confirms (re-root to the selected worktree, AC-7; re-selecting the
+    /// current worktree is a no-op via re_root, AC-11), Close cancels (no state change, AC-6).
+    /// All other intents are inert.
+    fn handle_picker_intent(&mut self, intent: Intent) -> Effects {
+        match intent {
+            Intent::NavUp => {
+                if let Some(p) = self.picker.as_mut()
+                    && p.cursor > 0
+                {
+                    p.cursor -= 1;
+                    return Effects::redraw();
+                }
+                Effects::noop()
+            }
+            Intent::NavDown => {
+                if let Some(p) = self.picker.as_mut()
+                    && p.cursor + 1 < p.rows.len()
+                {
+                    p.cursor += 1;
+                    return Effects::redraw();
+                }
+                Effects::noop()
+            }
+            Intent::Activate => {
+                // Take the selected target, CLOSE the picker, then re-root. Closing first
+                // guarantees the picker closes even if re_root early-returns (e.g. re-selecting
+                // the current root is a no-op — AC-11 — and would not reach re_root's own
+                // picker-clear). `.get(p.cursor)` is defensive: the picker is never opened with
+                // empty rows and the cursor is bounds-clamped, but the invariant is distant —
+                // use a local guard so a future change cannot introduce a panic.
+                let target = self
+                    .picker
+                    .as_ref()
+                    .and_then(|p| p.rows.get(p.cursor))
+                    .map(|w| w.path.clone());
+                self.picker = None;
+                if let Some(target) = target {
+                    self.re_root(&target);
+                }
+                Effects::redraw()
+            }
+            Intent::Close => {
+                // Cancel: close the picker; nothing else changes (AC-6).
+                self.picker = None;
+                Effects::redraw()
+            }
+            // Modal: any other intent is inert while picking.
+            _ => Effects::noop(),
         }
     }
 
