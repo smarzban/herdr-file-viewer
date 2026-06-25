@@ -24,15 +24,18 @@ is unit-testable with stubs.
 | --- | --- |
 | `host` | The herdr boundary — parse the injected `HERDR_PLUGIN_CONTEXT_JSON` launch context, degrading to `{ cwd }` on anything malformed (never panics). |
 | `context` | The normalized `LaunchContext` the host hands to the resolver. |
-| `root` | Resolve the tree root (git worktree top-level, else cwd) and git-presence. |
+| `root` | Resolve the tree root (git worktree top-level, else cwd) and git-presence; the re-root engine re-resolves the root and rebuilds the tree + git services in place when you switch worktrees. |
 | `git` | Read-only git queries: status, baseline selection, changed-set, per-file diff. The **only** module that shells out to `git`, and only with read-only subcommands. |
+| `herdr` | Read-only queries to the herdr CLI (`$HERDR_BIN_PATH`) — list git worktrees and which workspaces have an active agent; an absent or failing herdr degrades gracefully to git-only. |
+| `worktree` | Enumerate the repo's git worktrees (`git worktree list --porcelain`) and overlay herdr's agent-active workspace + per-row agent status, feeding the switch-worktree picker. |
 | `tree` | The rooted, `.gitignore`-aware file tree: filters, cursor, expansion, status markers. |
 | `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
 | `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; report the content viewport + pane geometry back. |
+| `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
-| `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker. |
+| `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |
 | `editor` | Hand a file off to `$EDITOR` (launch only — never reads or writes the file). |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
 

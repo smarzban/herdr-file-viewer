@@ -43,6 +43,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 - **Tree, scoped to your work** — rooted at the worktree root inside a git repo, else the
   launch directory. Honors `.gitignore` (toggle to reveal ignored files).
+- **Switch worktree on the fly** — press `W` to re-root the viewer at another git worktree of
+  the repo without relaunching; it pre-selects the worktree a herdr agent is working in, so you
+  can jump straight to it. Read-only — it changes only *what you're viewing*, never the branch
+  or any files.
 - **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), **colored** so changes read at
   a glance (changed files and folders containing changes are red, new files green); a
   changed-files-only filter; and a baseline you can switch between the merge-base of your
@@ -107,6 +111,7 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `w` | Toggle line wrapping for the content pane |
 | `z` | Zoom — hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
+| `W` (Shift+`w`) | **Switch worktree** — open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels |
 | `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
 
@@ -122,7 +127,7 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`).
+never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path — handy for pasting into a prompt, a command, or an agent. The copy uses the
