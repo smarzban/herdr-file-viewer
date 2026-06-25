@@ -20,7 +20,7 @@ use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
 use crate::intent::Intent;
 use crate::picker::PickerState;
-use crate::presenter::{Focus, PaneGeometry, ViewState};
+use crate::presenter::{Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
@@ -598,7 +598,29 @@ impl Controller {
             split_pct: self.split_pct,
             zoomed: self.zoomed,
             update_banner: self.update_banner(),
+            picker: self.picker_view(),
         }
+    }
+
+    /// The owned picker draw model for the Presenter (AC-1, AC-5), or `None` when the picker is
+    /// closed. Maps each worktree row to a [`PickerRowView`] (path + branch + detached) and
+    /// carries the cursor; the path display string is the worktree's full path — informative for
+    /// choosing among worktrees. The Presenter sanitizes the strings (AC-27) and renders the
+    /// detached marker (AC-2).
+    fn picker_view(&self) -> Option<PickerView> {
+        let picker = self.picker.as_ref()?;
+        Some(PickerView {
+            rows: picker
+                .rows
+                .iter()
+                .map(|w| PickerRowView {
+                    path: w.path.to_string_lossy().into_owned(),
+                    branch: w.branch.clone(),
+                    detached: w.detached,
+                })
+                .collect(),
+            cursor: picker.cursor,
+        })
     }
 
     /// Whether the content pane wraps for `node`: forced on by the `w` override, else the

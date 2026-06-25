@@ -2,7 +2,7 @@
 //! AC-3 (display), AC-7 (display), AC-13 (truncation notice), AC-25 (fallback notice).
 
 use herdr_file_viewer::git::Status;
-use herdr_file_viewer::presenter::{Focus, ViewState, draw};
+use herdr_file_viewer::presenter::{Focus, PickerRowView, PickerView, ViewState, draw};
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::tree::{Node, NodeKind};
 use ratatui::Terminal;
@@ -71,6 +71,7 @@ fn sample_state() -> ViewState {
         split_pct: 40,
         zoomed: false,
         update_banner: None,
+        picker: None,
     }
 }
 
@@ -524,6 +525,108 @@ fn no_banner_reserves_no_row_and_shows_nothing() {
         !out.contains("available"),
         "no update text when up-to-date\n{out}"
     );
+}
+
+/// A picker overlay over the two-column layout: a normal worktree, a second branch, and a
+/// detached-HEAD worktree, with a non-zero cursor.
+fn picker_state() -> ViewState {
+    let mut state = sample_state();
+    state.picker = Some(PickerView {
+        rows: vec![
+            PickerRowView {
+                path: "/work/main".to_string(),
+                branch: Some("main".to_string()),
+                detached: false,
+            },
+            PickerRowView {
+                path: "/work/feature".to_string(),
+                branch: Some("feature-x".to_string()),
+                detached: false,
+            },
+            PickerRowView {
+                path: "/work/detached".to_string(),
+                branch: None,
+                detached: true,
+            },
+        ],
+        cursor: 1, // the feature-x row is highlighted (non-zero)
+    });
+    state
+}
+
+#[test]
+fn picker_overlay_renders_rows_over_the_two_columns() {
+    // AC-1/AC-5: the picker overlay is drawn on top of the columns.
+    let out = render(&picker_state(), 100, 24);
+    assert!(
+        out.contains("Switch worktree"),
+        "the picker title is shown\n{out}"
+    );
+    // Each worktree row's path + branch label appears.
+    assert!(out.contains("main"), "the main row is shown\n{out}");
+    assert!(
+        out.contains("feature-x"),
+        "the feature branch label is shown\n{out}"
+    );
+    // The two columns are still drawn underneath (the overlay is partial, centered).
+    assert!(
+        out.contains("Files"),
+        "the tree column is drawn under the overlay\n{out}"
+    );
+}
+
+#[test]
+fn picker_detached_row_shows_a_marker_not_an_empty_branch() {
+    // Gate L-1 / AC-2: a detached-HEAD worktree shows a detached marker, never an empty branch.
+    let out = render(&picker_state(), 100, 24);
+    assert!(
+        out.contains("detached"),
+        "the detached worktree shows a detached marker\n{out}"
+    );
+    // Defense: no row renders an empty `[]` branch label.
+    assert!(
+        !out.contains("[]"),
+        "no row renders an empty branch label\n{out}"
+    );
+}
+
+#[test]
+fn picker_highlights_the_cursor_row() {
+    // AC-5: the cursor row is highlighted (REVERSED) — its background differs from a
+    // non-cursor row. Find the `feature` path (cursor row, idx 1) and a non-cursor `main` row.
+    use ratatui::style::Modifier;
+    let buf = render_buffer(&picker_state(), 100, 24);
+    let row_modifier = |needle: &str| -> Modifier {
+        let (w, h) = (buf.area().width, buf.area().height);
+        for y in 0..h {
+            for x in 0..w {
+                let matches = needle.chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < w
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|c| c.symbol() == ch.to_string())
+                });
+                if matches {
+                    return buf.cell((x, y)).unwrap().modifier;
+                }
+            }
+        }
+        panic!("{needle:?} not found in buffer");
+    };
+    assert!(
+        row_modifier("feature-x").contains(Modifier::REVERSED),
+        "the cursor row (feature-x) is REVERSED"
+    );
+    assert!(
+        !row_modifier("main").contains(Modifier::REVERSED),
+        "a non-cursor row (main) is not REVERSED"
+    );
+}
+
+#[test]
+fn picker_overlay_snapshot() {
+    insta::assert_snapshot!("presenter_picker", render(&picker_state(), 100, 24));
 }
 
 #[test]

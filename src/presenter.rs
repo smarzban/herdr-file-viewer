@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 /// Which column currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,29 @@ pub struct ViewState {
     /// When `Some`, a one-row "update available" status line is drawn across the bottom of the
     /// frame (the columns take the remaining rows). `None` ⇒ no footer, layout unchanged.
     pub update_banner: Option<String>,
+    /// When `Some`, the worktree picker overlay is drawn on top of the two columns (AC-1, AC-5).
+    /// `None` ⇒ no overlay.
+    pub picker: Option<PickerView>,
+}
+
+/// The worktree picker's draw model (an owned snapshot of the controller's picker state, so
+/// the Presenter stays borrow-free). Built by the Session Controller's `view_state()`.
+pub struct PickerView {
+    /// The worktree rows, in display order.
+    pub rows: Vec<PickerRowView>,
+    /// Index into `rows` of the highlighted row.
+    pub cursor: usize,
+}
+
+/// One worktree row in the picker overlay.
+pub struct PickerRowView {
+    /// The worktree's path (displayed, sanitized for control bytes — AC-27).
+    pub path: String,
+    /// The branch name, or `None` when HEAD is detached.
+    pub branch: Option<String>,
+    /// `true` when HEAD is detached (no branch) — shown as a detached marker, never an empty
+    /// branch (AC-2, gate L-1).
+    pub detached: bool,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -294,10 +317,76 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
     if let Some(area) = tree {
         draw_tree(frame, area, state);
     }
-    match content {
+    let dims = match content {
         Some(area) => draw_content(frame, area, state),
         None => (0, 0),
+    };
+    // The worktree picker is a modal overlay: drawn last, on TOP of whatever columns are
+    // visible (AC-1, AC-5), so it is never obscured by the layout beneath it.
+    if let Some(picker) = &state.picker {
+        draw_picker_overlay(frame, frame.area(), picker);
     }
+    dims
+}
+
+/// A `Rect` centered in `area`, sized to `percent_x` × `percent_y` of it — the classic ratatui
+/// centering recipe (three constraints per axis, the middle holding the requested percentage).
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical[1])[1]
+}
+
+/// Draw the worktree picker as a centered, bordered list overlay on top of the columns (AC-1,
+/// AC-5). Each row is `<path> [branch]`, or `<path> (detached)` when HEAD is detached — never
+/// an empty branch (AC-2, gate L-1). The `cursor` row is highlighted (`REVERSED`, the same
+/// idiom `tree_row` uses for the tree selection). The path and branch are both run through
+/// `sanitize_label` first, so a worktree path or branch name carrying control bytes cannot
+/// move the cursor or spoof the UI (AC-27, defense-in-depth — exactly as the tree does).
+fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
+    let popup = centered_rect(60, 60, area);
+    // Clear whatever the columns drew beneath the popup so it reads as a true modal.
+    frame.render_widget(Clear, popup);
+
+    let block = Block::bordered()
+        .title("Switch worktree")
+        .border_style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows: Vec<Line> = picker
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| picker_row(row, i == picker.cursor))
+        .collect();
+    frame.render_widget(Paragraph::new(rows), inner);
+}
+
+/// Render one picker row: `<path> [branch]`, or `<path> (detached)` when detached (AC-2). The
+/// path and branch are sanitized (AC-27) and the row is reversed when it is the cursor row.
+fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
+    let path = sanitize_label(&row.path);
+    let suffix = match &row.branch {
+        Some(branch) => format!(" [{}]", sanitize_label(branch)),
+        None if row.detached => " (detached)".to_string(),
+        // No branch and not detached: show nothing rather than an empty `[]` (defensive).
+        None => String::new(),
+    };
+    let mut style = Style::new();
+    if selected {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    Line::from(Span::styled(format!("{path}{suffix}"), style))
 }
 
 #[cfg(test)]
