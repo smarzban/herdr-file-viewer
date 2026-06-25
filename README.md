@@ -57,7 +57,9 @@ right into the tree. It opens beside whatever you're doing and never touches you
   line numbers and the diff shown inline.
 - **Navigable content** — scroll the content pane in all four directions, toggle line
   wrapping, resize the tree/content split, or zoom (`z`) to hide the tree and read a file
-  full-screen; the layout reflows when the pane is resized.
+  full-screen; the layout reflows when the pane is resized. The tree scrolls to keep the
+  selection in view (and sideways, for long names), and a scrollbar appears on the tree or
+  content pane whenever there is more to see than fits — drag it with the mouse to scroll.
 - **Keyboard-first** — every function has a key; no mouse required.
 
 ## Quick start
@@ -146,7 +148,8 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Double-click** a folder | Expand / collapse it (same as `Enter`) |
 | **Double-click** a file | Open it in **zoom mode** — content full-screen (same as `Enter`); the editor is the `e` key |
 | **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
-| **Horizontal wheel / swipe** over the content | Scroll it sideways (terminal-dependent — see below) |
+| **Horizontal wheel / swipe** | Scroll the content — or the tree — sideways (terminal-dependent — see below) |
+| **Drag** a scrollbar | Scroll that pane — drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
 | **Drag** the divider | Resize the tree / content split |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the

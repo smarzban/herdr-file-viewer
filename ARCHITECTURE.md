@@ -31,11 +31,11 @@ is unit-testable with stubs.
 | `tree` | The rooted, `.gitignore`-aware file tree: filters, cursor, expansion, status markers. |
 | `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
-| `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; report the content viewport + pane geometry back. |
+| `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; scroll the tree to keep the selection in view (and horizontally for long rows) and draw scrollbars where a pane overflows; report the content viewport + tree scroll offset + widest tree row + pane geometry back, so the controller can hit-test a tree click and map a scrollbar drag. |
 | `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
-| `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |
+| `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |
 | `editor` | Hand a file off to `$EDITOR` (launch only — never reads or writes the file). |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
 

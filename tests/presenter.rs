@@ -67,6 +67,9 @@ fn sample_state() -> ViewState {
         width: 100,
         content_scroll: 0,
         content_hscroll: 0,
+        tree_scroll: 0,
+        tree_hscroll: 0,
+        content_rows: 3, // the fixture content is three lines
         wrap: false,
         split_pct: 40,
         zoomed: false,
@@ -255,6 +258,535 @@ fn content_pane_applies_the_vertical_scroll_offset() {
     assert!(
         !out.contains("c0"),
         "lines scrolled past the top are hidden\n{out}"
+    );
+}
+
+#[test]
+fn tree_scrolls_to_keep_selection_visible() {
+    // #45: with more nodes than fit the tree interior, moving the selection toward the end must
+    // scroll the tree window so the selected row stays visible. Pre-fix the tree rendered every
+    // node into the fixed interior with no scroll offset, so a selection past the fold never
+    // reached the buffer — the reported bug ("I can see files being selected but the tree
+    // doesn't move"). Mirrors the picker's keeps-cursor-visible test.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    let mut state = sample_state();
+    state.notices = vec![];
+    // 40 files — far more than fit the ~22-row tree interior at 100x24.
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    state.selected = 37; // near the end
+
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let buf = render_buffer(&state, area.width, area.height);
+    // Scope the search to the TREE interior. The content pane's block title is the SELECTED
+    // node's name ("file-37.rs"), so a frame-wide search would false-match there even when the
+    // tree never scrolled — the bug. Bounding to `tree_inner` asserts the row is in the tree.
+    let t = geometry(area, &state).tree_inner.expect("tree interior");
+
+    // The selected row's distinctive name must be present in the tree (the window scrolled to it)...
+    let needle = "file-37";
+    let mut found_at: Option<(u16, u16)> = None;
+    'scan: for y in t.y..(t.y + t.height) {
+        for x in t.x..(t.x + t.width) {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < t.x + t.width
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                found_at = Some((x, y));
+                break 'scan;
+            }
+        }
+    }
+    let (cx, cy) =
+        found_at.expect("the selected tree row (file-37) must be visible after scrolling");
+    // ...and it carries the REVERSED selection highlight, so it reads as selected.
+    assert!(
+        buf.cell((cx, cy))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the visible selected row must be REVERSED-highlighted"
+    );
+    // And an early node has scrolled off the top of the tree.
+    let mut early_in_tree = false;
+    for y in t.y..(t.y + t.height) {
+        for x in t.x..(t.x + t.width) {
+            if "file-00".chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < t.x + t.width
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            }) {
+                early_in_tree = true;
+            }
+        }
+    }
+    assert!(
+        !early_in_tree,
+        "early nodes (file-00) scroll off the top when the selection is near the end"
+    );
+}
+
+#[test]
+fn geometry_reports_the_tree_scroll_offset_for_hit_testing() {
+    // #45 coupling: the geometry fed back to the controller carries the SAME scroll offset
+    // draw_tree applied, so a click maps to the node drawn on that row. It is 0 when every node
+    // fits, and when overflowing it keeps the selection inside the visible window.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+
+    // Few nodes: no scroll.
+    assert_eq!(
+        geometry(area, &sample_state()).tree_scroll,
+        0,
+        "tree_scroll is 0 when every node fits the interior"
+    );
+
+    // Many nodes, selection near the end: the window scrolls and keeps the selection visible.
+    let mut many = sample_state();
+    many.notices = vec![];
+    many.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    many.selected = 37;
+    let g = geometry(area, &many);
+    let t = g.tree_inner.expect("tree interior");
+    assert!(g.tree_scroll > 0, "an overflowing tree scrolls");
+    let off = g.tree_scroll as usize;
+    assert!(
+        off <= many.selected && many.selected < off + t.height as usize,
+        "the selection (37) stays within the visible window [{off}, {})",
+        off + t.height as usize
+    );
+}
+
+#[test]
+fn tree_shows_a_vertical_scrollbar_only_when_it_overflows() {
+    // The tree gets a vertical scrollbar exactly when there are more nodes than fit (#45 follow-up:
+    // "add a scrollbar where there is something to be moved"). The thumb is a half-block bar
+    // (▐), distinct from the light border (│) and absent elsewhere in these fixtures, so a
+    // frame-wide check is unambiguous: the only ▐ here is the tree scrollbar thumb.
+    let fits = render(&sample_state(), 100, 24); // 7 nodes in a 24-row frame → fits
+    assert!(
+        !fits.contains('▐'),
+        "a tree that fits shows no scrollbar\n{fits}"
+    );
+
+    let mut many = sample_state();
+    many.notices = vec![];
+    many.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    many.selected = 0;
+    let overflow = render(&many, 100, 24);
+    assert!(
+        overflow.contains('▐'),
+        "an overflowing tree shows a scrollbar thumb (▐)\n{overflow}"
+    );
+}
+
+#[test]
+fn tree_shows_a_horizontal_scrollbar_and_scrolls_long_rows() {
+    // The tree gets a horizontal scrollbar (▄ thumb on the bottom border) + horizontal scroll when
+    // the widest row overflows the column — so a long / deeply-nested name can be read sideways.
+    // `tree_hscroll` clips the leading columns, like the content pane. Assertions are scoped to the
+    // TREE column: the content pane's block title is the selected node's name, so a frame-wide
+    // check would false-match the head there regardless of the tree's horizontal scroll.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    let long = format!("START_{}_END", "x".repeat(60));
+    state.nodes = vec![node(&format!("/r/{long}"), NodeKind::File, 0, false, None)];
+    state.selected = 0;
+
+    // The text inside the tree column (interior + its borders), one line per row.
+    let tree_region = |st: &ViewState| -> String {
+        let buf = render_buffer(st, area.width, area.height);
+        let t = geometry(area, st).tree_inner.expect("tree interior");
+        let mut s = String::new();
+        for y in t.y..(t.y + t.height) {
+            for x in t.x..(t.x + t.width) {
+                s.push_str(buf.cell((x, y)).map_or(" ", |c| c.symbol()));
+            }
+            s.push('\n');
+        }
+        s
+    };
+
+    state.tree_hscroll = 0;
+    let head_region = tree_region(&state);
+    let full = render(&state, area.width, area.height);
+    assert!(
+        full.contains('▄'),
+        "an overflowing tree shows a horizontal scrollbar (▄)\n{full}"
+    );
+    assert!(
+        head_region.contains("START_"),
+        "the row head shows in the tree at hscroll 0\n{head_region}"
+    );
+    assert!(
+        !head_region.contains("_END"),
+        "the row tail is off-screen in the tree at hscroll 0\n{head_region}"
+    );
+
+    state.tree_hscroll = 45;
+    let tail_region = tree_region(&state);
+    assert!(
+        tail_region.contains("_END"),
+        "scrolling right reveals the row tail in the tree\n{tail_region}"
+    );
+    assert!(
+        !tail_region.contains("START_"),
+        "the head is clipped in the tree once scrolled right\n{tail_region}"
+    );
+}
+
+#[test]
+fn scrollbars_are_inside_the_pane_with_a_one_column_gap() {
+    // The bars live INSIDE the box (a reserved gutter), not on the border, with a one-cell gap
+    // between the text and the bar. Asserted structurally via geometry: the vertical bar is a
+    // 1-col track exactly one column right of the text's right edge (the gap), spanning the text
+    // rows; the horizontal bar is one row below the text's bottom edge.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    // Overflow both ways: many rows (vbar) + one very wide row (hbar).
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    state.nodes[0] = node(
+        &format!("/r/{}", "w".repeat(80)),
+        NodeKind::File,
+        0,
+        false,
+        None,
+    );
+    state.selected = 0;
+
+    let g = geometry(area, &state);
+    let t = g.tree_inner.expect("tree text rect");
+    let v = g
+        .tree_vbar
+        .expect("tree vbar present when overflowing vertically");
+    let h = g
+        .tree_hbar
+        .expect("tree hbar present when overflowing horizontally");
+
+    assert_eq!(v.width, 1, "the vertical bar is one column wide");
+    assert_eq!(
+        v.x,
+        t.x + t.width + 1,
+        "exactly one gap column between the text and the vertical bar (bar is inside, not on the border)"
+    );
+    assert_eq!(v.height, t.height, "the vertical bar spans the text rows");
+
+    assert_eq!(h.height, 1, "the horizontal bar is one row tall");
+    assert_eq!(
+        h.y,
+        t.y + t.height + 1,
+        "exactly one gap row between the text and the horizontal bar"
+    );
+    assert_eq!(
+        h.x, t.x,
+        "the horizontal bar starts at the text's left edge"
+    );
+}
+
+#[test]
+fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
+    // The content pane gets a vertical scrollbar when it has more lines than the viewport is tall.
+    // The tree (7 nodes) does NOT overflow a 12-row frame, so the only ▐ is the content scrollbar.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(
+        &(0..60)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    state.content_rows = 60; // the controller's rendered-row count drives the vertical bar
+    let out = render(&state, 100, 12);
+    assert!(
+        out.contains('▐'),
+        "overflowing content shows a vertical scrollbar (▐)\n{out}"
+    );
+
+    // A short file shows none.
+    state.content = to_text("only\ntwo\n");
+    state.content_rows = 2;
+    let short = render(&state, 100, 12);
+    assert!(
+        !short.contains('▐'),
+        "content that fits shows no vertical scrollbar\n{short}"
+    );
+}
+
+#[test]
+fn content_vertical_scrollbar_is_driven_by_rendered_rows_not_raw_lines() {
+    // Review (codex/opus/kimi/glm): under wrap, the vertical bar must reflect WRAPPED rows, not raw
+    // lines — else a file with few but long lines that wraps past the viewport gets no bar. The
+    // presenter sizes the bar from `content_rows` (the controller's rendered-row count), so a single
+    // raw line with a large content_rows shows a bar, and a small content_rows shows none.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(&"word ".repeat(400)); // ONE raw line
+    state.wrap = true;
+
+    state.content_rows = 60; // wraps to ~60 rows >> the ~22-row viewport
+    let overflow = render(&state, 100, 24);
+    assert!(
+        overflow.contains('▐'),
+        "a single long line that wraps past the viewport shows a vertical scrollbar\n{overflow}"
+    );
+
+    state.content_rows = 5; // wraps to only 5 rows → fits
+    let fits = render(&state, 100, 24);
+    assert!(
+        !fits.contains('▐'),
+        "no vertical bar when the wrapped rows fit (despite content_scroll units)\n{fits}"
+    );
+}
+
+#[test]
+fn tree_vertical_thumb_tracks_the_selection() {
+    // Review (codex/glm): the tree's vertical thumb reflects the CURSOR position, so dragging it
+    // (which scrubs the selection) makes the thumb follow — rather than the thumb being driven by
+    // the viewport offset while the drag moves the cursor (they'd diverge). With many nodes, a low
+    // selection puts the thumb near the top; a high selection puts it near the bottom.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    let track = geometry(area, &state).tree_vbar.expect("tree vbar present");
+    let thumb_top = |st: &ViewState| -> u16 {
+        let buf = render_buffer(st, area.width, area.height);
+        (track.y..track.y + track.height)
+            .find(|&y| buf.cell((track.x, y)).is_some_and(|c| c.symbol() == "▐"))
+            .expect("a thumb cell")
+    };
+
+    state.selected = 0;
+    let low = thumb_top(&state);
+    state.selected = 39;
+    let high = thumb_top(&state);
+    assert!(
+        high > low,
+        "the thumb moves down as the selection moves down (tracks the cursor): sel0={low} sel39={high}"
+    );
+}
+
+#[test]
+fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
+    // Review (codex): at the last scroll position the thumb must reach the bottom of the track —
+    // stopping short would falsely imply more content remains. The bar is thumb-only (no track
+    // line), so use its fed-back rect for the track extent and check where the thumb (`▐`) lands:
+    // at scroll 0 it includes the top row but not the bottom; at max scroll it reaches the bottom.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let (w, h) = (100u16, 18u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    // 60 lines into a 16-row text area → max scroll 44.
+    state.content = to_text(
+        &(0..60)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    state.wrap = false;
+    state.content_rows = 60; // the rendered-row count drives the vertical bar
+    let track = geometry(area, &state)
+        .content_vbar
+        .expect("content vbar present");
+    let thumb_rows = |buf: &ratatui::buffer::Buffer| -> Vec<u16> {
+        (track.y..track.y + track.height)
+            .filter(|&y| buf.cell((track.x, y)).is_some_and(|c| c.symbol() == "▐"))
+            .collect()
+    };
+
+    state.content_scroll = 0;
+    let top = thumb_rows(&render_buffer(&state, w, h));
+    assert!(
+        top.contains(&track.y),
+        "thumb is at the top of the track at scroll 0"
+    );
+    assert!(
+        !top.contains(&(track.y + track.height - 1)),
+        "thumb is NOT at the bottom at scroll 0"
+    );
+
+    state.content_scroll = 44; // the max scroll for this content/viewport
+    let bottom = thumb_rows(&render_buffer(&state, w, h));
+    assert!(
+        bottom.contains(&(track.y + track.height - 1)),
+        "thumb reaches the bottom of the track at max scroll"
+    );
+}
+
+#[test]
+fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
+    // A line far wider than the content pane gets a horizontal scrollbar when NOT wrapped (so it
+    // can be read sideways). Its thumb is a half-block bar (▄), distinct from the block's
+    // light border (─), so it is an unambiguous marker. Wrapping the same line removes the
+    // overflow, so no horizontal scrollbar is drawn.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(&"x".repeat(300)); // far wider than the ~58-col content pane
+
+    state.wrap = false;
+    let unwrapped = render(&state, 100, 24);
+    assert!(
+        unwrapped.contains('▄'),
+        "a too-wide unwrapped line shows a horizontal scrollbar (▄)\n{unwrapped}"
+    );
+
+    state.wrap = true;
+    let wrapped = render(&state, 100, 24);
+    assert!(
+        !wrapped.contains('▄'),
+        "a wrapped line needs no horizontal scrollbar\n{wrapped}"
+    );
+}
+
+#[test]
+fn tree_scroll_is_sticky_when_the_selection_stays_visible() {
+    // #45 follow-up (review): selecting a row already on screen — e.g. a mouse click — must NOT
+    // move the viewport. Pre-fix the offset was a pure function of the cursor, so clicking a
+    // visible row in a scrolled tree snapped the view (and made a double-click land on the wrong
+    // row). With sticky scrolling, geometry reports the SAME offset when the selection is in view.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    let t_height = geometry(area, &state)
+        .tree_inner
+        .expect("tree interior")
+        .height as usize;
+
+    // Currently scrolled down by 10; select a row INSIDE the visible window [10, 10+height).
+    state.tree_scroll = 10;
+    state.selected = 12;
+    assert!(
+        12 < 10 + t_height,
+        "precondition: the selection is within the current window"
+    );
+    assert_eq!(
+        geometry(area, &state).tree_scroll,
+        10,
+        "selecting a visible row keeps the offset — the tree does not jump"
+    );
+
+    // Selecting a row ABOVE the window scrolls minimally up to it (cursor at the top edge).
+    state.selected = 4;
+    assert_eq!(
+        geometry(area, &state).tree_scroll,
+        4,
+        "a selection above the window scrolls up just to it"
     );
 }
 
