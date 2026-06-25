@@ -6,12 +6,13 @@
 
 mod common;
 
-use common::TempDir;
+use common::{TempDir, git, init_repo_with_commit};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_file_viewer::controller::{
     Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
+use herdr_file_viewer::herdr::HerdrCli;
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::view_policy::ViewMode;
@@ -1569,5 +1570,146 @@ fn copy_path_strips_control_bytes_from_a_hostile_filename() {
             .all(|n| !n.chars().any(|c| c.is_control())),
         "the confirmation notice carries no control bytes: {:?}",
         ctrl.notices()
+    );
+}
+
+// ---- worktree picker: SwitchWorktree opens it (AC-1, AC-3, AC-4, AC-14) ----------------
+
+/// A fake `HerdrCli` returning canned JSON per subcommand, so the agent-active overlay can be
+/// exercised without spawning a real herdr. Keyed on the first arg (`worktree` / `agent`).
+struct FakeHerdr {
+    worktree_json: String,
+    agent_json: String,
+}
+impl HerdrCli for FakeHerdr {
+    fn run_json(&self, args: &[&str]) -> io::Result<String> {
+        match args.first().copied() {
+            Some("worktree") => Ok(self.worktree_json.clone()),
+            Some("agent") => Ok(self.agent_json.clone()),
+            _ => Err(io::Error::other("unexpected herdr subcommand")),
+        }
+    }
+}
+
+#[test]
+fn switch_worktree_in_a_repo_opens_picker_preselecting_current() {
+    // AC-1 / AC-4: SwitchWorktree inside a git repo opens the picker with the repo's worktrees,
+    // pre-selecting the current one (no herdr overlay → the current-root fallback). The picker
+    // shells REAL git on the controller's root (like tests/worktree.rs), so the root is a real
+    // repo; the stub factory's git is independent and only serves status/diff.
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    // A linked worktree so the list has more than one row and the pre-select is meaningful.
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "linked-branch",
+        ],
+    );
+
+    let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
+    assert!(ctrl.picker().is_none(), "no picker before the switch");
+
+    let fx = ctrl.handle(Intent::SwitchWorktree);
+    assert!(fx.redraw, "opening the picker redraws");
+    let picker = ctrl
+        .picker()
+        .expect("SwitchWorktree opens the picker (AC-1)");
+    assert!(
+        picker.rows.len() >= 2,
+        "the picker lists the repo's worktrees: {:?}",
+        picker.rows
+    );
+    let current_idx = picker
+        .rows
+        .iter()
+        .position(|w| w.is_current)
+        .expect("one row is the current worktree");
+    assert_eq!(
+        picker.cursor, current_idx,
+        "with no agent overlay the cursor pre-selects the current worktree (AC-4)"
+    );
+}
+
+#[test]
+fn switch_worktree_outside_repo_is_a_noop_with_notice() {
+    // AC-14: outside a git repository the worktree switch is a no-op — no picker is opened, and
+    // a non-fatal notice explains why.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let fx = ctrl.handle(Intent::SwitchWorktree);
+    assert!(fx.redraw, "the notice still redraws");
+    assert!(
+        ctrl.picker().is_none(),
+        "no picker is opened outside a repo (AC-14)"
+    );
+    assert!(
+        ctrl.action_notice().is_some(),
+        "a non-fatal notice is set outside a repo (AC-14)"
+    );
+}
+
+#[test]
+fn switch_worktree_preselects_agent_active() {
+    // AC-3: when the herdr overlay reports a running agent in a specific worktree, the picker
+    // pre-selects THAT worktree's row (not the current one). The canned JSON is built from the
+    // REAL temp worktree paths so `agent_active`'s path-normalization matches the git rows.
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "agent-branch",
+        ],
+    );
+
+    let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
+
+    // The agent runs in workspace "ws-agent", which the overlay maps to the LINKED worktree —
+    // so the pre-select must be the linked row, not the current (main) one. Tier-2 (a unique
+    // agent worktree) fires with no own-workspace hint.
+    let linked_path = linked.path().to_str().unwrap();
+    let worktree_json = format!(
+        r#"[{{"path": "{}", "open_workspace_id": "ws-agent"}}]"#,
+        linked_path
+    );
+    let agent_json = r#"[{"id": "agent-1", "workspace_id": "ws-agent"}]"#.to_string();
+    ctrl.set_host(
+        Box::new(FakeHerdr {
+            worktree_json,
+            agent_json,
+        }),
+        None,
+    );
+
+    ctrl.handle(Intent::SwitchWorktree);
+    let picker = ctrl.picker().expect("the picker opens");
+    let linked_canon = common::canon(linked.path());
+    let linked_idx = picker
+        .rows
+        .iter()
+        .position(|w| common::canon(&w.path) == linked_canon)
+        .expect("the linked worktree is a row");
+    assert_eq!(
+        picker.cursor, linked_idx,
+        "the cursor pre-selects the agent-active worktree (AC-3): {:?}",
+        picker.rows
+    );
+    // Sanity: the agent worktree is NOT the current one, so this is a real difference from the
+    // AC-4 fallback.
+    assert!(
+        !picker.rows[linked_idx].is_current,
+        "the agent worktree differs from the current one"
     );
 }

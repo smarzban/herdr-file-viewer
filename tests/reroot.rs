@@ -543,6 +543,43 @@ fn re_root_to_current_root_is_a_noop() {
 }
 
 #[test]
+fn re_root_clears_an_open_picker() {
+    // AC-13: a re-root resets navigation/view state — including closing any open worktree
+    // picker. Open the picker in A (a real git repo so `worktree::list` enumerates rows), then
+    // re-root to B and confirm the picker is gone.
+    let a = TempDir::new();
+    common::init_repo_with_commit(a.path());
+    std::fs::write(a.path().join("a.txt"), "a\n").unwrap();
+
+    let components = Components {
+        providers: fake_factory(),
+        editor: Box::new(FakeEditor),
+        clipboard: Box::new(FakeClipboard),
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(a.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.handle(Intent::SwitchWorktree);
+    assert!(
+        ctrl.picker().is_some(),
+        "the picker opens inside a git repo before the re-root"
+    );
+
+    let b = TempDir::new();
+    common::init_repo_with_commit(b.path());
+    std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+    ctrl.re_root(b.path());
+
+    assert!(
+        ctrl.picker().is_none(),
+        "re_root clears the open picker (AC-13)"
+    );
+}
+
+#[test]
 fn re_root_render_resolves_through_the_respawned_worker() {
     // After a re-root, selecting a file dispatches a render that must resolve through the
     // worker respawned for B — drained by `poll`, the content shows the (B) factory's marker.

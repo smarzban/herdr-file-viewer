@@ -86,6 +86,14 @@ pub fn run() -> io::Result<()> {
     // Kick off the once-a-day update check (off the UI thread; disabled by
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK). The banner, if any, appears on a later draw.
     controller.set_update(crate::update::start_default());
+    // Inject the herdr query channel + the viewer's own workspace id for the worktree picker's
+    // agent-active overlay (AC-3) — the first real use of the T-4 host seam. `ctx` is still in
+    // scope (only borrowed by `root::resolve`). A missing/failing herdr degrades to a git-only
+    // picker (AC-15).
+    controller.set_host(
+        Box::new(crate::herdr::LiveHerdr::from_env()),
+        ctx.workspace_id.clone(),
+    );
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a

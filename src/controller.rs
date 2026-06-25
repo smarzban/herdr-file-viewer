@@ -17,7 +17,9 @@
 //! than clobbering the current selection.
 
 use crate::git::{Baseline, Status};
+use crate::herdr::HerdrCli;
 use crate::intent::Intent;
+use crate::picker::PickerState;
 use crate::presenter::{Focus, PaneGeometry, ViewState};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
@@ -226,6 +228,16 @@ pub struct Controller {
     /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
     /// `Some` between a re-root and the tick that applies the result; `None` otherwise.
     status_rx: Option<mpsc::Receiver<StatusResult>>,
+    /// The open worktree picker's state, or `None` when closed (AC-1). A re-root closes it
+    /// (AC-13); the switch itself is wired in later tasks.
+    picker: Option<PickerState>,
+    /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
+    /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
+    /// Session-level — survives a re-root unchanged.
+    herdr: Option<Box<dyn HerdrCli>>,
+    /// The viewer's own herdr workspace id (the agent-overlay's Tier-1 hint). Session-level —
+    /// survives a re-root unchanged.
+    our_workspace_id: Option<String>,
 }
 
 impl Controller {
@@ -285,6 +297,9 @@ impl Controller {
             update_dismissed: false,
             update_rx: None,
             status_rx: None,
+            picker: None,
+            herdr: None,
+            our_workspace_id: None,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -393,7 +408,8 @@ impl Controller {
         self.is_git_repo = resolved.is_git_repo;
         self.tree = TreeModel::new(resolved.root.clone());
 
-        // Reset navigation/view state (AC-13).
+        // Reset navigation/view state (AC-13). The picker is closed on a switch (AC-13 "picker
+        // is closed"); `herdr`/`our_workspace_id` are session-level and deliberately left intact.
         self.focus = Focus::Tree;
         self.zoomed = false;
         self.content_scroll = 0;
@@ -401,6 +417,7 @@ impl Controller {
         self.overrides.clear();
         self.action_notice = None;
         self.changed = BTreeMap::new();
+        self.picker = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, changed_only,
         // split_pct, wrap_override, baseline keep their current values. The fresh TreeModel starts
@@ -478,6 +495,12 @@ impl Controller {
         self.action_notice.as_deref()
     }
 
+    /// The open worktree picker's state, or `None` when it is closed. Exposed so the Presenter
+    /// (T-14) can draw it and tests can assert the rows / pre-selected cursor.
+    pub fn picker(&self) -> Option<&PickerState> {
+        self.picker.as_ref()
+    }
+
     /// All notices to surface: the transient action notice (if any) followed by the content
     /// pane's own notices.
     pub fn notices(&self) -> Vec<String> {
@@ -510,6 +533,17 @@ impl Controller {
     pub fn set_update(&mut self, state: UpdateState) {
         self.update_available = state.initial;
         self.update_rx = state.rx;
+    }
+
+    /// Inject the host query channel + the viewer's own workspace id (mirrors [`set_update`]).
+    /// Called by `app::run` after construction; tests that exercise the picker call it with a
+    /// fake [`HerdrCli`]. Session-level — NOT reset on a re-root (the viewer's workspace doesn't
+    /// change when the tree does). Absent ⇒ a git-only picker with no agent overlay (AC-15).
+    ///
+    /// [`set_update`]: Self::set_update
+    pub fn set_host(&mut self, herdr: Box<dyn HerdrCli>, workspace_id: Option<String>) {
+        self.herdr = Some(herdr);
+        self.our_workspace_id = workspace_id;
     }
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
@@ -607,9 +641,7 @@ impl Controller {
             Intent::ToggleZoom => self.toggle_zoom(),
             Intent::Refresh => self.refresh(),
             Intent::DismissUpdate => self.dismiss_update(),
-            // Picker is wired in T-12 (Worktree Picker state + open-on-SwitchWorktree). Placeholder no-op
-            // keeps the exhaustive match complete and the build green until then.
-            Intent::SwitchWorktree => Effects::noop(),
+            Intent::SwitchWorktree => self.open_worktree_picker(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -1102,6 +1134,44 @@ impl Controller {
             return None;
         }
         self.update_available.as_ref().map(update::banner_text)
+    }
+
+    /// Open the worktree picker (AC-1). Gated to a git repo — outside one it is a no-op with a
+    /// non-fatal notice and no picker (AC-14). Rows come from the read-only git worktree list; the
+    /// pre-select is the agent-active worktree when herdr reports one (AC-3), else the current root
+    /// (AC-4). A missing/failing herdr overlay degrades to the git-only list (AC-15).
+    fn open_worktree_picker(&mut self) -> Effects {
+        if !self.is_git_repo {
+            self.action_notice =
+                Some("worktree switch is only available inside a git repository".into());
+            return Effects::redraw();
+        }
+        let rows = crate::worktree::list(&self.root, &self.root);
+        if rows.is_empty() {
+            // git failed/no worktrees (shouldn't happen in a repo) — notice, no picker.
+            self.action_notice = Some("could not list worktrees".into());
+            return Effects::redraw();
+        }
+        let current_idx = rows.iter().position(|w| w.is_current).unwrap_or(0);
+        let cursor = self.agent_preselect(&rows).unwrap_or(current_idx);
+        self.picker = Some(PickerState { rows, cursor });
+        Effects::redraw()
+    }
+
+    /// The agent-active worktree's row index from the optional herdr overlay (AC-3); `None` when
+    /// no herdr, a query/parse failure, or no single agent worktree — caller falls back to current
+    /// (AC-4, AC-15).
+    fn agent_preselect(&self, rows: &[crate::worktree::Worktree]) -> Option<usize> {
+        let herdr = self.herdr.as_ref()?;
+        let wt_json = herdr.run_json(&["worktree", "list", "--json"]).ok()?;
+        let ag_json = herdr.run_json(&["agent", "list", "--json"]).ok()?;
+        let active = crate::worktree::agent_active(
+            rows,
+            &wt_json,
+            &ag_json,
+            self.our_workspace_id.as_deref(),
+        )?;
+        rows.iter().position(|w| w.path == active)
     }
 
     /// The pane regained focus (the run loop forwards herdr's focus events): re-read git state

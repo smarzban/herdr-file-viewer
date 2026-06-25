@@ -13,6 +13,7 @@ pub mod host;
 pub mod input;
 pub mod intent;
 pub mod launch;
+pub mod picker;
 pub mod presenter;
 pub mod render;
 pub mod root;
