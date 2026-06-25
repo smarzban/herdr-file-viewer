@@ -259,6 +259,225 @@ fn content_pane_applies_the_vertical_scroll_offset() {
 }
 
 #[test]
+fn tree_scrolls_to_keep_selection_visible() {
+    // #45: with more nodes than fit the tree interior, moving the selection toward the end must
+    // scroll the tree window so the selected row stays visible. Pre-fix the tree rendered every
+    // node into the fixed interior with no scroll offset, so a selection past the fold never
+    // reached the buffer — the reported bug ("I can see files being selected but the tree
+    // doesn't move"). Mirrors the picker's keeps-cursor-visible test.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    let mut state = sample_state();
+    state.notices = vec![];
+    // 40 files — far more than fit the ~22-row tree interior at 100x24.
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    state.selected = 37; // near the end
+
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let buf = render_buffer(&state, area.width, area.height);
+    // Scope the search to the TREE interior. The content pane's block title is the SELECTED
+    // node's name ("file-37.rs"), so a frame-wide search would false-match there even when the
+    // tree never scrolled — the bug. Bounding to `tree_inner` asserts the row is in the tree.
+    let t = geometry(area, &state).tree_inner.expect("tree interior");
+
+    // The selected row's distinctive name must be present in the tree (the window scrolled to it)...
+    let needle = "file-37";
+    let mut found_at: Option<(u16, u16)> = None;
+    'scan: for y in t.y..(t.y + t.height) {
+        for x in t.x..(t.x + t.width) {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < t.x + t.width
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                found_at = Some((x, y));
+                break 'scan;
+            }
+        }
+    }
+    let (cx, cy) =
+        found_at.expect("the selected tree row (file-37) must be visible after scrolling");
+    // ...and it carries the REVERSED selection highlight, so it reads as selected.
+    assert!(
+        buf.cell((cx, cy))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the visible selected row must be REVERSED-highlighted"
+    );
+    // And an early node has scrolled off the top of the tree.
+    let mut early_in_tree = false;
+    for y in t.y..(t.y + t.height) {
+        for x in t.x..(t.x + t.width) {
+            if "file-00".chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < t.x + t.width
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            }) {
+                early_in_tree = true;
+            }
+        }
+    }
+    assert!(
+        !early_in_tree,
+        "early nodes (file-00) scroll off the top when the selection is near the end"
+    );
+}
+
+#[test]
+fn geometry_reports_the_tree_scroll_offset_for_hit_testing() {
+    // #45 coupling: the geometry fed back to the controller carries the SAME scroll offset
+    // draw_tree applied, so a click maps to the node drawn on that row. It is 0 when every node
+    // fits, and when overflowing it keeps the selection inside the visible window.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+
+    // Few nodes: no scroll.
+    assert_eq!(
+        geometry(area, &sample_state()).tree_scroll,
+        0,
+        "tree_scroll is 0 when every node fits the interior"
+    );
+
+    // Many nodes, selection near the end: the window scrolls and keeps the selection visible.
+    let mut many = sample_state();
+    many.notices = vec![];
+    many.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    many.selected = 37;
+    let g = geometry(area, &many);
+    let t = g.tree_inner.expect("tree interior");
+    assert!(g.tree_scroll > 0, "an overflowing tree scrolls");
+    let off = g.tree_scroll as usize;
+    assert!(
+        off <= many.selected && many.selected < off + t.height as usize,
+        "the selection (37) stays within the visible window [{off}, {})",
+        off + t.height as usize
+    );
+}
+
+#[test]
+fn tree_shows_a_vertical_scrollbar_only_when_it_overflows() {
+    // The tree gets a vertical scrollbar exactly when there are more nodes than fit (#45 follow-up:
+    // "add a scrollbar where there is something to be moved"). The thumb is the FULL block (█),
+    // which appears nowhere else in these fixtures (the sample content is "fn main()", no █), so a
+    // frame-wide check is unambiguous: the only █ here is the tree scrollbar.
+    let fits = render(&sample_state(), 100, 24); // 7 nodes in a 24-row frame → fits
+    assert!(
+        !fits.contains('█'),
+        "a tree that fits shows no scrollbar\n{fits}"
+    );
+
+    let mut many = sample_state();
+    many.notices = vec![];
+    many.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    many.selected = 0;
+    let overflow = render(&many, 100, 24);
+    assert!(
+        overflow.contains('█'),
+        "an overflowing tree shows a scrollbar thumb (█)\n{overflow}"
+    );
+}
+
+#[test]
+fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
+    // The content pane gets a vertical scrollbar when it has more lines than the viewport is tall.
+    // The tree (7 nodes) does NOT overflow a 12-row frame, so the only █ is the content scrollbar.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(
+        &(0..60)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let out = render(&state, 100, 12);
+    assert!(
+        out.contains('█'),
+        "overflowing content shows a vertical scrollbar (█)\n{out}"
+    );
+
+    // A short file shows none.
+    state.content = to_text("only\ntwo\n");
+    let short = render(&state, 100, 12);
+    assert!(
+        !short.contains('█'),
+        "content that fits shows no vertical scrollbar\n{short}"
+    );
+}
+
+#[test]
+fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
+    // A line far wider than the content pane gets a horizontal scrollbar when NOT wrapped (so it
+    // can be read sideways). The track is the DOUBLE horizontal (═), distinct from the block's
+    // single-line border (─), so it is an unambiguous marker. Wrapping the same line removes the
+    // overflow, so no horizontal scrollbar is drawn.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.content = to_text(&"x".repeat(300)); // far wider than the ~58-col content pane
+
+    state.wrap = false;
+    let unwrapped = render(&state, 100, 24);
+    assert!(
+        unwrapped.contains('═'),
+        "a too-wide unwrapped line shows a horizontal scrollbar (═)\n{unwrapped}"
+    );
+
+    state.wrap = true;
+    let wrapped = render(&state, 100, 24);
+    assert!(
+        !wrapped.contains('═'),
+        "a wrapped line needs no horizontal scrollbar\n{wrapped}"
+    );
+}
+
+#[test]
 fn wrapping_shows_more_of_a_long_line_than_truncating() {
     // A line far wider than the content pane: wrapped, it spills onto further rows; not
     // wrapped, it is truncated to a single row. So the wrapped render shows strictly more of

@@ -31,7 +31,7 @@ is unit-testable with stubs.
 | `tree` | The rooted, `.gitignore`-aware file tree: filters, cursor, expansion, status markers. |
 | `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
-| `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; report the content viewport + pane geometry back. |
+| `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; scroll the tree to keep the selection in view and draw scrollbars where a pane overflows; report the content viewport + tree scroll offset + pane geometry back (the controller adds the offset when hit-testing a tree click). |
 | `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |

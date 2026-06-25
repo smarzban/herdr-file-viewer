@@ -927,9 +927,11 @@ impl Controller {
         if let Some(t) = self.geom.tree_inner
             && t.contains(Position { x: col, y: row })
         {
-            // The row index may exceed the node count (the empty area below the last node): the
-            // click handler treats that as inert, while the wheel still scrolls the column.
-            return MouseRegion::TreeRow((row - t.y) as usize);
+            // Map the screen row to the node actually drawn there: the on-screen offset plus the
+            // tree's scroll offset (#45), the same value `draw_tree` scrolled by. The row index may
+            // still exceed the node count (the empty area below the last node): the click handler
+            // treats that as inert, while the wheel still scrolls the column.
+            return MouseRegion::TreeRow((row - t.y) as usize + self.geom.tree_scroll as usize);
         }
         if let Some(c) = self.geom.content_inner
             && c.contains(Position { x: col, y: row })

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The tree now scrolls to follow the selection.** On a long file list the tree stayed pinned to
+  the top, so moving the cursor past the last visible row selected files you couldn't see. The tree
+  now scrolls to keep the selected row in view (mouse clicks still map to the right row when
+  scrolled). ([#45](https://github.com/smarzban/herdr-file-viewer/issues/45))
+
+### Added
+- **Scrollbars** appear on the tree and content panes whenever there's more to see than fits — a
+  vertical bar when the list or file is taller than the pane, and a horizontal bar when an unwrapped
+  line is wider than the content pane. They show only where there is something to scroll.
+
 ## [1.4.0] - 2026-06-25
 
 ### Added

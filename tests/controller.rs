@@ -927,6 +927,7 @@ fn wide_geometry() -> PaneGeometry {
             width: 38,
             height: 20,
         }),
+        tree_scroll: 0,
         content_inner: Some(Rect {
             x: 41,
             y: 1,
@@ -935,6 +936,39 @@ fn wide_geometry() -> PaneGeometry {
         }),
         divider_x: Some(40),
     }
+}
+
+#[test]
+fn a_tree_click_maps_through_the_scroll_offset() {
+    // #45 coupling: once the tree scrolls (selection past the fold), a click on a visible row must
+    // select the node ACTUALLY drawn there — index `(row - tree_inner.y) + tree_scroll`. Without
+    // the offset, clicking the first visible row would wrongly select node 0 from the scrolled-off
+    // top of the list. `geometry()` feeds `tree_scroll` back; `hit_test` must add it.
+    let dir = TempDir::new();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    // A short tree interior (height 5) scrolled down by 10, as geometry() feeds back when the
+    // selection sits past the fold.
+    let mut g = wide_geometry();
+    g.tree_inner = Some(Rect {
+        x: 1,
+        y: 1,
+        width: 38,
+        height: 5,
+    });
+    g.tree_scroll = 10;
+    ctrl.set_pane_geometry(g);
+
+    // Click the FIRST visible tree row (row == tree_inner.y == 1). With a scroll of 10 that row
+    // shows visible node index 10 (f10.txt), so the click must select node 10, not node 0.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    assert_eq!(
+        ctrl.tree().cursor(),
+        10,
+        "a click on the first visible row selects node (row-offset + tree_scroll)"
+    );
 }
 
 #[test]

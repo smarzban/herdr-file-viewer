@@ -57,7 +57,9 @@ right into the tree. It opens beside whatever you're doing and never touches you
   line numbers and the diff shown inline.
 - **Navigable content** — scroll the content pane in all four directions, toggle line
   wrapping, resize the tree/content split, or zoom (`z`) to hide the tree and read a file
-  full-screen; the layout reflows when the pane is resized.
+  full-screen; the layout reflows when the pane is resized. The tree scrolls to keep the
+  selection in view, and a scrollbar appears on the tree or content pane whenever there is
+  more to see than fits.
 - **Keyboard-first** — every function has a key; no mouse required.
 
 ## Quick start

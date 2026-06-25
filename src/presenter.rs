@@ -10,10 +10,12 @@
 use crate::git::Status;
 use crate::tree::{Node, NodeKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 /// Which column currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +163,52 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
     Line::from(Span::styled(text, style))
 }
 
+/// Draw a vertical scrollbar on the RIGHT border of `block_area`, but only when the content
+/// overflows (`total > viewport`). Inset by one row top/bottom so it never overwrites the block's
+/// corners; the begin/end arrow glyphs are dropped so it reads as a clean track + thumb on the
+/// border (track `║`, thumb `█`). A no-op when everything fits — "a scrollbar only where there is
+/// something to be moved".
+fn draw_vscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize, viewport: usize) {
+    if viewport == 0 || total <= viewport {
+        return;
+    }
+    let mut sb = ScrollbarState::new(total)
+        .position(pos.min(total.saturating_sub(1)))
+        .viewport_content_length(viewport);
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None),
+        block_area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut sb,
+    );
+}
+
+/// Draw a horizontal scrollbar on the BOTTOM border of `block_area`, only when the content is wider
+/// than the viewport (`total > viewport`). Inset by one column each side so it never overwrites the
+/// corners; arrow glyphs dropped (track `═`, thumb `█`). A no-op when everything fits.
+fn draw_hscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize, viewport: usize) {
+    if viewport == 0 || total <= viewport {
+        return;
+    }
+    let mut sb = ScrollbarState::new(total)
+        .position(pos.min(total.saturating_sub(1)))
+        .viewport_content_length(viewport);
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+            .begin_symbol(None)
+            .end_symbol(None),
+        block_area.inner(Margin {
+            vertical: 0,
+            horizontal: 1,
+        }),
+        &mut sb,
+    );
+}
+
 /// Border style for a column — highlighted when it holds focus.
 fn border_style(focused: bool) -> Style {
     if focused {
@@ -184,7 +232,20 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
         .enumerate()
         .map(|(i, node)| tree_row(node, i == state.selected))
         .collect();
-    frame.render_widget(Paragraph::new(rows), inner);
+    // Scroll the tree so the selected row stays visible (#45). The offset is a pure function of
+    // the selection, node count, and the live interior height — so it never needs controller
+    // state, and `geometry` recomputes the SAME value for hit-testing (clicks stay correct when
+    // scrolled). `Paragraph::scroll((y, 0))` clips the leading `y` rows off the top.
+    let offset = scroll_offset(state.selected, state.nodes.len(), inner.height as usize);
+    frame.render_widget(Paragraph::new(rows).scroll((offset as u16, 0)), inner);
+    // A vertical scrollbar on the right border when there are more nodes than fit.
+    draw_vscrollbar(
+        frame,
+        area,
+        state.nodes.len(),
+        offset,
+        inner.height as usize,
+    );
 }
 
 /// Draw the right column: a notices strip (if any) above the content pane. Returns the
@@ -223,6 +284,36 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
         content = content.wrap(Wrap { trim: false });
     }
     frame.render_widget(content, parts[1]);
+
+    // Scrollbars on the content block's borders, only where the file overflows its viewport.
+    // Counts are taken from the raw content lines — exact for the unwrapped case (code/diffs, the
+    // primary scroll use), and a close approximation under wrap. The horizontal bar is suppressed
+    // under wrap, where there is nothing to scroll sideways. `viewport` is the true content
+    // region (`parts[1]`), below the notices strip.
+    let total_lines = state.content.lines.len();
+    draw_vscrollbar(
+        frame,
+        area,
+        total_lines,
+        state.content_scroll as usize,
+        parts[1].height as usize,
+    );
+    if !state.wrap {
+        let max_width = state
+            .content
+            .lines
+            .iter()
+            .map(|l| l.width())
+            .max()
+            .unwrap_or(0);
+        draw_hscrollbar(
+            frame,
+            area,
+            max_width,
+            state.content_hscroll as usize,
+            parts[1].width as usize,
+        );
+    }
     (parts[1].width, parts[1].height)
 }
 
@@ -281,14 +372,19 @@ fn columns(area: Rect, state: &ViewState) -> (Option<Rect>, Option<Rect>, Option
 }
 
 /// Hit-test geometry for mouse input, derived from the same split [`draw`] renders.
-/// `tree_inner` is the interior where tree rows are drawn — visible node `i` is at row
-/// `tree_inner.y + i` (the tree does not scroll). `content_inner` is the content column
-/// interior. `divider_x` is the draggable boundary column (wide layout only).
+/// `tree_inner` is the interior where tree rows are drawn — the visible node at screen row
+/// `tree_inner.y + r` is index `r + tree_scroll` (the tree scrolls to keep the selection in
+/// view, #45). `content_inner` is the content column interior. `divider_x` is the draggable
+/// boundary column (wide layout only).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct PaneGeometry {
     pub area_x: u16,
     pub area_width: u16,
     pub tree_inner: Option<Rect>,
+    /// The tree's vertical scroll offset (first visible node index) on the last drawn frame —
+    /// the same value [`draw_tree`] scrolled by. Hit-testing adds it to map a screen row to the
+    /// node actually drawn there. `0` when every node fits.
+    pub tree_scroll: u16,
     pub content_inner: Option<Rect>,
     pub divider_x: Option<u16>,
 }
@@ -300,10 +396,18 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     let (body, _footer) = body_and_footer(area, state);
     let (tree, content, divider_x) = columns(body, state);
     let inner = |r: Rect| Block::bordered().inner(r);
+    let tree_inner = tree.map(inner);
+    // The tree's scroll offset MUST match what `draw_tree` applies, or a click maps to the wrong
+    // node once the tree scrolls. Both derive it from the same pure `scroll_offset` over the live
+    // interior height — so the drawn window and the hit-test window can never disagree.
+    let tree_scroll = tree_inner.map_or(0, |t| {
+        scroll_offset(state.selected, state.nodes.len(), t.height as usize) as u16
+    });
     PaneGeometry {
         area_x: body.x,
         area_width: body.width,
-        tree_inner: tree.map(inner),
+        tree_inner,
+        tree_scroll,
         content_inner: content.map(inner),
         divider_x,
     }
@@ -465,7 +569,7 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
     // `cursor` inside `[offset, offset + visible)`: clamp the offset so it never scrolls past
     // the end and is 0 whenever all rows fit (preserving the small-list rendering).
     let visible = inner.height as usize;
-    let offset = picker_scroll_offset(picker.cursor, picker.rows.len(), visible);
+    let offset = scroll_offset(picker.cursor, picker.rows.len(), visible);
 
     // Clamp the horizontal scroll to the widest ROW: at most `max_row_width - inner_width`
     // (0 when every row fits). NOT against `desired_inner_w`, which is inflated by the title/footer
@@ -482,7 +586,9 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
 
 /// The first row index to render so the `cursor` row stays within a window of `visible` rows.
 /// Returns 0 when every row fits (or the window is degenerate), and never scrolls past the end.
-fn picker_scroll_offset(cursor: usize, len: usize, visible: usize) -> usize {
+/// Shared by the file tree ([`draw_tree`]) and the worktree picker overlay so both keep their
+/// selection on screen with identical semantics (#45).
+fn scroll_offset(cursor: usize, len: usize, visible: usize) -> usize {
     if visible == 0 || len <= visible {
         return 0;
     }
