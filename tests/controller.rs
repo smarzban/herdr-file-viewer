@@ -1994,6 +1994,183 @@ fn picker_activate_on_current_worktree_is_a_noop_and_closes_picker() {
     );
 }
 
+// ---- T-10: AC-10 — no herdr pane-open on switch (recording HerdrCli spy) ---------------
+
+/// A recording `HerdrCli` that captures every `run_json` argv into shared state and returns
+/// canned valid JSON so the overlay path runs to completion. The test holds a clone of the
+/// `Arc` to read the recorded calls back after the switch completes.
+struct RecordingHerdr {
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+    worktree_json: String,
+    agent_json: String,
+}
+
+impl RecordingHerdr {
+    /// Canned valid JSON for the overlay: a worktree list pointing at `linked_path` in
+    /// workspace "ws-spy", and an agent in that workspace (Tier-2 pre-select fires).
+    fn new(calls: Arc<Mutex<Vec<Vec<String>>>>, linked_path: &std::path::Path) -> Self {
+        let path_str = linked_path.to_str().unwrap_or("");
+        Self {
+            calls,
+            worktree_json: format!(r#"[{{"path": "{path_str}", "open_workspace_id": "ws-spy"}}]"#),
+            agent_json: r#"[{"id": "spy-agent", "workspace_id": "ws-spy"}]"#.to_string(),
+        }
+    }
+}
+
+impl HerdrCli for RecordingHerdr {
+    fn run_json(&self, args: &[&str]) -> io::Result<String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+        match args.first().copied() {
+            Some("worktree") => Ok(self.worktree_json.clone()),
+            Some("agent") => Ok(self.agent_json.clone()),
+            _ => Err(io::Error::other("unexpected subcommand")),
+        }
+    }
+}
+
+#[test]
+fn full_switch_issues_only_read_only_herdr_queries_and_no_pane_calls() {
+    // AC-10: a complete W → navigate → confirm (re_root) cycle must issue NO herdr pane-open
+    // / pane-split / pane-run call. The only herdr calls allowed are the read-only overlay
+    // queries the picker makes when it opens: `["worktree","list","--json"]` and
+    // `["agent","list","--json"]`. The re_root itself must not touch HerdrCli at all.
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "ac10-branch",
+        ],
+    );
+
+    let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
+
+    // Wire in the recording spy before the switch.
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(
+        Box::new(RecordingHerdr::new(Arc::clone(&calls), linked.path())),
+        None,
+    );
+
+    // --- Step 1: open the picker (SwitchWorktree — this is where the overlay queries fire) ---
+    let root_before = ctrl.root().to_path_buf();
+    ctrl.handle(Intent::SwitchWorktree);
+    assert!(
+        ctrl.picker().is_some(),
+        "picker must open on SwitchWorktree"
+    );
+
+    // After opening the picker, check that the ONLY recorded calls so far are the two
+    // read-only overlay queries (order is worktree-list then agent-list).
+    {
+        let log = calls.lock().unwrap();
+        assert_eq!(
+            log.len(),
+            2,
+            "exactly 2 herdr calls when opening the picker: {:?}",
+            *log
+        );
+        assert_eq!(
+            log[0],
+            &["worktree", "list", "--json"],
+            "first call: worktree list"
+        );
+        assert_eq!(
+            log[1],
+            &["agent", "list", "--json"],
+            "second call: agent list"
+        );
+    }
+
+    // --- Step 2: navigate to the linked (non-current) worktree row ---
+    let linked_canon = common::canon(linked.path());
+    let linked_idx = ctrl
+        .picker()
+        .unwrap()
+        .rows
+        .iter()
+        .position(|w| common::canon(&w.path) == linked_canon)
+        .expect("linked worktree is a row in the picker");
+    let current_cursor = ctrl.picker().unwrap().cursor;
+    // Drive the cursor to the linked row.
+    if current_cursor < linked_idx {
+        for _ in 0..(linked_idx - current_cursor) {
+            ctrl.handle(Intent::NavDown);
+        }
+    } else {
+        for _ in 0..(current_cursor - linked_idx) {
+            ctrl.handle(Intent::NavUp);
+        }
+    }
+    assert_eq!(
+        ctrl.picker().unwrap().cursor,
+        linked_idx,
+        "cursor must be on the linked row before Activate"
+    );
+
+    // --- Step 3: confirm (Activate → re_root) ---
+    ctrl.handle(Intent::Activate);
+
+    // --- Assertions ---
+
+    // The picker must be closed.
+    assert!(ctrl.picker().is_none(), "picker closes after Activate");
+
+    // The root must have changed to the linked worktree (re_root ran).
+    assert_eq!(
+        common::canon(ctrl.root()),
+        linked_canon,
+        "root is now the linked worktree after confirm"
+    );
+    assert_ne!(
+        common::canon(ctrl.root()),
+        common::canon(&root_before),
+        "root changed away from the main worktree"
+    );
+
+    // THE CORE AC-10 ASSERTION: no pane call was ever issued.
+    // A pane call would have first arg "pane" (e.g. "pane split", "pane run").
+    // All calls must be read-only list queries; the total count must not grow beyond
+    // the two queries the picker already made — re_root must not touch HerdrCli.
+    let final_log = calls.lock().unwrap().clone();
+    assert_eq!(
+        final_log.len(),
+        2,
+        "re_root must not issue any further herdr calls (still exactly 2 total): {:?}",
+        final_log
+    );
+    for call in &final_log {
+        assert_ne!(
+            call.first().map(String::as_str),
+            Some("pane"),
+            "no call may be a pane operation (AC-10): {:?}",
+            call
+        );
+    }
+    // More strongly: every recorded call is one of the permitted read-only queries.
+    let allowed: &[&[&str]] = &[
+        &["worktree", "list", "--json"],
+        &["agent", "list", "--json"],
+    ];
+    for call in &final_log {
+        let call_refs: Vec<&str> = call.iter().map(String::as_str).collect();
+        assert!(
+            allowed.contains(&call_refs.as_slice()),
+            "unexpected herdr call (must be a read-only list query): {:?}",
+            call
+        );
+    }
+}
+
 #[test]
 fn picker_other_intents_are_inert() {
     // Modal: intents other than Nav/Activate/Close are inert while the picker is open.
