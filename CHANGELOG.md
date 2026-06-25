@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-25
+
+### Added
+- **Switch worktree (`W`).** Press `W` to open a picker of the repository's git worktrees and
+  select one to re-root the viewer in place — the tree, git status, and content pane all rebuild
+  around the chosen worktree without relaunching the plugin. Your view preferences carry over and
+  navigation resets to the new root. It is purely a change of *where you're looking*: read-only, no
+  branch is checked out, and nothing on disk is modified.
+- The picker marks the worktree you're currently viewing and pre-selects the one where a herdr
+  agent is active, so you can jump straight to what an agent is working on.
+- Each picker row shows the worktree's branch (or a detached-HEAD marker) and, when herdr reports
+  it, the live status of the agent running there.
+
+### Changed
+- All notices shown in the viewer's notice strip are now stripped of control characters at the
+  render sink (previously only the copied-path confirmation was), so any filesystem-derived string
+  surfaced in a notice — such as a worktree path — cannot emit a terminal escape or paste-inject.
+
 ## [1.3.0] - 2026-06-24
 
 ### Added
