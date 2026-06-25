@@ -40,6 +40,53 @@ fn show_ignored_toggle_reveals_then_hides_ignored_files() {
 }
 
 #[test]
+fn hide_hidden_toggle_hides_then_reveals_dotfiles() {
+    // #46: a toggle to hide dot-prefixed files/folders (like opening $HOME, flooded with them),
+    // mirroring the show-ignored toggle. By default dotfiles SHOW (so .gitignore / .github stay
+    // browsable); toggling hide_hidden drops every `.`-prefixed entry, regular files remain.
+    let dir = TempDir::new();
+    fs::write(dir.path().join(".gitignore"), "\n").unwrap(); // empty: ignores nothing, shows itself
+    fs::write(dir.path().join(".env"), "x").unwrap();
+    fs::create_dir_all(dir.path().join(".config")).unwrap();
+    fs::write(dir.path().join("keep.txt"), "k").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    // Default: dotfiles are visible (current behavior, preserved).
+    let n = names(&model);
+    assert!(
+        n.contains(&".gitignore".to_string()),
+        "dotfiles show by default"
+    );
+    assert!(n.contains(&".env".to_string()));
+    assert!(n.contains(&".config".to_string()));
+    assert!(n.contains(&"keep.txt".to_string()));
+
+    // Toggle ON: dot-prefixed files AND folders are hidden; regular files remain.
+    model.set_hide_hidden(true);
+    let n = names(&model);
+    assert!(
+        !n.contains(&".gitignore".to_string()),
+        "#46: dotfile hidden"
+    );
+    assert!(!n.contains(&".env".to_string()), "#46: dotfile hidden");
+    assert!(
+        !n.contains(&".config".to_string()),
+        "#46: dot-folder hidden"
+    );
+    assert!(
+        n.contains(&"keep.txt".to_string()),
+        "regular files still shown"
+    );
+
+    // Toggle OFF: restored.
+    model.set_hide_hidden(false);
+    assert!(
+        names(&model).contains(&".gitignore".to_string()),
+        "#46: dotfiles restored when toggled back off"
+    );
+}
+
+#[test]
 fn changed_only_restricts_then_restores_full_tree() {
     let dir = TempDir::new();
     fs::create_dir_all(dir.path().join("src")).unwrap();

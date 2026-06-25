@@ -180,6 +180,7 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     ctrl.handle(Intent::ToggleWrap); // `w` → wrap_override true
     ctrl.handle(Intent::ToggleChangedOnly); // changed-only on (git repo → takes effect)
     ctrl.handle(Intent::ToggleIgnore); // show-ignored on
+    ctrl.handle(Intent::ToggleHidden); // hide-hidden on (#46)
     ctrl.handle(Intent::ToggleBaseline); // baseline Head → Base
 
     let split_pref = ctrl.split_pct();
@@ -187,6 +188,7 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(ctrl.wrap_override(), "wrap toggled on");
     assert!(ctrl.changed_only(), "changed-only toggled on");
     assert!(ctrl.show_ignored(), "show-ignored toggled on");
+    assert!(ctrl.hide_hidden(), "hide-hidden toggled on");
     assert_eq!(ctrl.baseline(), Baseline::Base, "baseline toggled to Base");
 
     // --- Set navigation/view state that re_root must reset. ---
@@ -231,6 +233,7 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(ctrl.wrap_override(), "wrap_override carried");
     assert!(ctrl.changed_only(), "changed_only carried");
     assert!(ctrl.show_ignored(), "show_ignored carried");
+    assert!(ctrl.hide_hidden(), "hide_hidden carried (#46)");
     assert_eq!(ctrl.baseline(), Baseline::Base, "baseline carried");
 
     // Navigation/view state is RESET (AC-13).

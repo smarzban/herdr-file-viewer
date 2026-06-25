@@ -22,6 +22,9 @@ pub enum Intent {
     Activate,
     /// Reveal/hide gitignored files (AC-5).
     ToggleIgnore,
+    /// Hide/reveal dot-prefixed ("hidden") files and folders (#46) — a tree filter, independent
+    /// of the gitignore toggle. Read-only.
+    ToggleHidden,
     /// Restrict the tree to changed files / restore the full tree (AC-6).
     ToggleChangedOnly,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
@@ -66,13 +69,14 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 21] = [
+    pub const ALL: [Intent; 22] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
         Intent::Collapse,
         Intent::Activate,
         Intent::ToggleIgnore,
+        Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
         Intent::ToggleBaseline,
         Intent::CycleView,
@@ -110,6 +114,7 @@ mod tests {
                 | Intent::Collapse
                 | Intent::Activate
                 | Intent::ToggleIgnore
+                | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
                 | Intent::ToggleBaseline
                 | Intent::CycleView

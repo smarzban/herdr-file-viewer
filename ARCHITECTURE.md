@@ -28,7 +28,7 @@ is unit-testable with stubs.
 | `git` | Read-only git queries: status, baseline selection, changed-set, per-file diff. The **only** module that shells out to `git`, and only with read-only subcommands. |
 | `herdr` | Read-only queries to the herdr CLI (`$HERDR_BIN_PATH`) — list git worktrees and which workspaces have an active agent; an absent or failing herdr degrades gracefully to git-only. |
 | `worktree` | Enumerate the repo's git worktrees (`git worktree list --porcelain`) and overlay herdr's agent-active workspace + per-row agent status, feeding the switch-worktree picker. |
-| `tree` | The rooted, `.gitignore`-aware file tree: filters, cursor, expansion, status markers. |
+| `tree` | The rooted, `.gitignore`-aware file tree: filters (gitignored, changed-only, hidden/dotfiles), cursor, expansion, status markers. |
 | `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
 | `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; report the content viewport + pane geometry back. |

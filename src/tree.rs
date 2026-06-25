@@ -44,6 +44,7 @@ pub struct TreeModel {
     expanded: HashSet<PathBuf>,
     cursor: usize,
     show_ignored: bool,
+    hide_hidden: bool,
     changed_only: bool,
     /// Per-file status for tree markers (AC-7), keyed by root-relative path. Set
     /// independently of the filter (`set_status`) so the two can never overwrite each
@@ -60,6 +61,7 @@ impl TreeModel {
             expanded: HashSet::new(),
             cursor: 0,
             show_ignored: false,
+            hide_hidden: false,
             changed_only: false,
             markers: BTreeMap::new(),
             changed_filter: BTreeMap::new(),
@@ -69,6 +71,14 @@ impl TreeModel {
     /// Reveal gitignored/all files (AC-5).
     pub fn set_show_ignored(&mut self, on: bool) {
         self.show_ignored = on;
+        self.clamp_cursor();
+    }
+
+    /// Hide dot-prefixed files and folders (#46) — independent of the gitignore toggle. Off by
+    /// default, so dotfiles (`.gitignore`, `.github`) stay browsable until the user asks to hide
+    /// them (e.g. when opening a `$HOME` flooded with dotfiles).
+    pub fn set_hide_hidden(&mut self, on: bool) {
+        self.hide_hidden = on;
         self.clamp_cursor();
     }
 
@@ -203,13 +213,16 @@ impl TreeModel {
             .any(|k| k != rel && k.starts_with(rel))
     }
 
-    /// Immediate children of `dir`: gitignore-filtered (unless `show_ignored`), `.git`
-    /// hidden, directories before files, each group alphabetical. Read-only.
+    /// Immediate children of `dir`: gitignore-filtered (unless `show_ignored`), dot-prefixed
+    /// entries dropped when `hide_hidden` (#46), `.git` always hidden, directories before files,
+    /// each group alphabetical. Read-only.
     fn entries(&self, dir: &Path) -> Vec<(PathBuf, NodeKind)> {
         let mut builder = WalkBuilder::new(dir);
         builder
             .max_depth(Some(1))
-            .hidden(false) // show dotfiles (e.g. .gitignore, .github)
+            // Dotfiles (e.g. .gitignore, .github) show by default; the hide-hidden toggle (#46)
+            // turns on `ignore`'s hidden filter to drop every `.`-prefixed entry.
+            .hidden(self.hide_hidden)
             .parents(true) // honor ancestor .gitignore for correct nested semantics
             .git_global(false) // hermetic: ignore the user's global gitignore
             .ignore(false) // only git ignore sources, not generic .ignore files

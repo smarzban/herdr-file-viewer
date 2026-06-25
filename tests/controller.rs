@@ -137,6 +137,47 @@ fn toggle_ignore_flips_show_ignored_and_signals_redraw() {
 }
 
 #[test]
+fn toggle_hidden_hides_dotfiles_in_the_tree_and_redraws() {
+    // #46: the `.` toggle drops dot-prefixed entries from the tree, independent of the gitignore
+    // toggle, and signals a redraw. Off by default (dotfiles visible).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".secret"), "x").unwrap();
+    std::fs::write(dir.path().join("keep.txt"), "k").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let names = |c: &Controller| -> Vec<String> {
+        c.tree()
+            .visible_nodes()
+            .iter()
+            .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert!(!ctrl.hide_hidden(), "dotfiles visible by default");
+    assert!(
+        names(&ctrl).contains(&".secret".to_string()),
+        "a dotfile shows by default"
+    );
+
+    let fx = ctrl.handle(Intent::ToggleHidden);
+    assert!(fx.redraw, "a filter change signals a redraw");
+    assert!(ctrl.hide_hidden(), "ToggleHidden turns hiding on");
+    assert!(
+        !names(&ctrl).contains(&".secret".to_string()),
+        "#46: the dotfile is hidden after the toggle"
+    );
+    assert!(
+        names(&ctrl).contains(&"keep.txt".to_string()),
+        "regular files remain"
+    );
+
+    ctrl.handle(Intent::ToggleHidden);
+    assert!(
+        names(&ctrl).contains(&".secret".to_string()),
+        "ToggleHidden again reveals dotfiles"
+    );
+}
+
+#[test]
 fn toggle_changed_only_flips_in_a_repo() {
     // AC-6: restrict the tree to the changed-set, then restore the full tree.
     let dir = TempDir::new();

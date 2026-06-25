@@ -163,6 +163,7 @@ pub struct Controller {
     is_git_repo: bool,
     baseline: Baseline,
     show_ignored: bool,
+    hide_hidden: bool,
     changed_only: bool,
     focus: Focus,
     /// The pane width the run loop last observed (session state for the narrow-split flag,
@@ -276,6 +277,7 @@ impl Controller {
             is_git_repo,
             baseline,
             show_ignored: false,
+            hide_hidden: false,
             changed_only: false,
             focus: Focus::Tree,
             width: 0,
@@ -434,13 +436,15 @@ impl Controller {
         self.changed = BTreeMap::new();
         self.picker = None;
 
-        // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, changed_only,
-        // split_pct, wrap_override, baseline keep their current values. The fresh TreeModel starts
-        // with default filter flags. `show_ignored` is git-independent, so apply it now. The
-        // changed-only *filter* is NOT applied here: it must be applied against the REAL
-        // changed-set, which `dispatch_status_refresh` computes off-thread — applying it now would
-        // filter against the just-cleared empty set. `poll` applies it when the changed-set lands.
+        // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
+        // changed_only, split_pct, wrap_override, baseline keep their current values. The fresh
+        // TreeModel starts with default filter flags. `show_ignored` and `hide_hidden` are
+        // git-independent, so apply them now. The changed-only *filter* is NOT applied here: it
+        // must be applied against the REAL changed-set, which `dispatch_status_refresh` computes
+        // off-thread — applying it now would filter against the just-cleared empty set. `poll`
+        // applies it when the changed-set lands.
         self.tree.set_show_ignored(self.show_ignored);
+        self.tree.set_hide_hidden(self.hide_hidden);
 
         // A re-root happens mid-session, so input must never block (AC-17): compute the new root's
         // status + changed-set OFF the input thread and let `poll` apply the markers + changed-only
@@ -485,6 +489,9 @@ impl Controller {
 
     pub fn show_ignored(&self) -> bool {
         self.show_ignored
+    }
+    pub fn hide_hidden(&self) -> bool {
+        self.hide_hidden
     }
     pub fn changed_only(&self) -> bool {
         self.changed_only
@@ -702,6 +709,7 @@ impl Controller {
             Intent::Collapse => self.collapse(),
             Intent::Activate => self.activate(),
             Intent::ToggleIgnore => self.toggle_ignore(),
+            Intent::ToggleHidden => self.toggle_hidden(),
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
             Intent::ToggleBaseline => self.toggle_baseline(),
             Intent::CycleView => self.cycle_view(),
@@ -1082,6 +1090,15 @@ impl Controller {
         // Revealing/hiding ignored entries can shift which node the cursor lands on, so the
         // content pane must re-render for the (possibly) new selection — otherwise it shows a
         // file that is no longer highlighted.
+        self.dispatch_render();
+        Effects::redraw()
+    }
+
+    fn toggle_hidden(&mut self) -> Effects {
+        self.hide_hidden = !self.hide_hidden;
+        self.tree.set_hide_hidden(self.hide_hidden);
+        // Hiding/revealing dotfiles can shift which node the cursor lands on, so re-render the
+        // content pane for the (possibly) new selection — mirrors toggle_ignore.
         self.dispatch_render();
         Effects::redraw()
     }

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Hide hidden files (`.`).** A toggle that drops dot-prefixed files and folders from the tree —
+  handy when you open a directory (like `$HOME`) that's flooded with them. It's independent of the
+  gitignore toggle (`i`) and off by default, so `.gitignore` / `.github` stay visible until you ask
+  to hide them. ([#46](https://github.com/smarzban/herdr-file-viewer/issues/46))
+
 ## [1.4.0] - 2026-06-25
 
 ### Added

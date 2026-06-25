@@ -42,7 +42,8 @@ right into the tree. It opens beside whatever you're doing and never touches you
 ## What it does
 
 - **Tree, scoped to your work** — rooted at the worktree root inside a git repo, else the
-  launch directory. Honors `.gitignore` (toggle to reveal ignored files).
+  launch directory. Honors `.gitignore` (toggle to reveal ignored files), and a separate toggle
+  (`.`) hides dot-prefixed "hidden" files when a directory is full of them.
 - **Switch worktree on the fly** — press `W` to re-root the viewer at another git worktree of
   the repo without relaunching; it pre-selects the worktree a herdr agent is working in, so you
   can jump straight to it. Read-only — it changes only *what you're viewing*, never the branch
@@ -100,6 +101,7 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
 | `Enter` | Activate the selection — expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
+| `.` | Toggle hidden (dot-prefixed) files and folders |
 | `c` | Toggle changed-files-only |
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
 | `v` | Cycle the content view mode |
