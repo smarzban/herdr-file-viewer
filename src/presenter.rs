@@ -183,11 +183,20 @@ fn scrollbar_state(total: usize, pos: usize, viewport: usize) -> ScrollbarState 
         .viewport_content_length(viewport)
 }
 
+// The scrollbars sit ON the pane border, so they use *line* glyphs, not blocks: a light track
+// matching the border (`│` / `─`) with a HEAVY line thumb (`┃` / `━`). This reads as a bold
+// segment of the border showing the scroll position — thin and unobtrusive — rather than the
+// default `█` full-block thumb, which looks like a thick solid slab (especially horizontally).
+const VSCROLL_TRACK: &str = "│";
+const VSCROLL_THUMB: &str = "┃";
+const HSCROLL_TRACK: &str = "─";
+const HSCROLL_THUMB: &str = "━";
+
 /// Draw a vertical scrollbar on the RIGHT border of `block_area`, but only when the content
 /// overflows (`total > viewport`). Inset by one row top/bottom so it never overwrites the block's
-/// corners; the begin/end arrow glyphs are dropped so it reads as a clean track + thumb on the
-/// border (track `║`, thumb `█`). A no-op when everything fits — "a scrollbar only where there is
-/// something to be moved".
+/// corners; arrow glyphs dropped. Thin line glyphs (track `│`, thumb `┃`) so it reads as a bold
+/// segment of the border, not a block. A no-op when everything fits — "a scrollbar only where
+/// there is something to be moved".
 fn draw_vscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize, viewport: usize) {
     if viewport == 0 || total <= viewport {
         return;
@@ -196,7 +205,9 @@ fn draw_vscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
-            .end_symbol(None),
+            .end_symbol(None)
+            .track_symbol(Some(VSCROLL_TRACK))
+            .thumb_symbol(VSCROLL_THUMB),
         block_area.inner(Margin {
             vertical: 1,
             horizontal: 0,
@@ -207,7 +218,8 @@ fn draw_vscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize
 
 /// Draw a horizontal scrollbar on the BOTTOM border of `block_area`, only when the content is wider
 /// than the viewport (`total > viewport`). Inset by one column each side so it never overwrites the
-/// corners; arrow glyphs dropped (track `═`, thumb `█`). A no-op when everything fits.
+/// corners; arrow glyphs dropped. Thin line glyphs (track `─`, thumb `━`) so the bottom border
+/// shows a bold segment rather than a thick `█` slab. A no-op when everything fits.
 fn draw_hscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize, viewport: usize) {
     if viewport == 0 || total <= viewport {
         return;
@@ -216,7 +228,9 @@ fn draw_hscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
             .begin_symbol(None)
-            .end_symbol(None),
+            .end_symbol(None)
+            .track_symbol(Some(HSCROLL_TRACK))
+            .thumb_symbol(HSCROLL_THUMB),
         block_area.inner(Margin {
             vertical: 0,
             horizontal: 1,
