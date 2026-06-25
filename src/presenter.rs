@@ -201,11 +201,10 @@ fn scrollbar_state(total: usize, pos: usize, viewport: usize) -> ScrollbarState 
 }
 
 // The scrollbars sit INSIDE the pane (a reserved gutter column / row, one cell off the text — see
-// `bar_layout`), so they use a light track matching the border (`│` / `─`) with a half-block thumb
-// (`▐` / `▄`) — a clear medium-weight bar, neither a thin line nor a full-block slab.
-const VSCROLL_TRACK: &str = "│";
+// `bar_layout`). They are THUMB-ONLY (no track line): a half-block thumb (`▐` vertical, `▄`
+// horizontal) floats in an otherwise-blank gutter, so there's no extra line running beside the
+// border / above the row.
 const VSCROLL_THUMB: &str = "▐";
-const HSCROLL_TRACK: &str = "─";
 const HSCROLL_THUMB: &str = "▄";
 
 /// Lay out a pane interior `inner` with the scrollbars drawn *inside* it (not on the border):
@@ -236,8 +235,9 @@ fn bar_layout(inner: Rect, vbar: bool, hbar: bool) -> (Rect, Option<Rect>, Optio
 }
 
 /// Draw a vertical scrollbar into `track` (a 1-column rect inside the pane), only when the content
-/// overflows (`total > viewport`). Arrow glyphs dropped; thin line track + half-block thumb. No-op
-/// when everything fits — "a scrollbar only where there is something to be moved".
+/// overflows (`total > viewport`). Thumb-only: no track line or arrow glyphs, just the thumb in an
+/// otherwise-blank gutter. No-op when everything fits — "a scrollbar only where there is something
+/// to be moved".
 fn draw_vscrollbar(frame: &mut Frame, track: Rect, total: usize, pos: usize, viewport: usize) {
     if viewport == 0 || total <= viewport {
         return;
@@ -247,7 +247,7 @@ fn draw_vscrollbar(frame: &mut Frame, track: Rect, total: usize, pos: usize, vie
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some(VSCROLL_TRACK))
+            .track_symbol(None)
             .thumb_symbol(VSCROLL_THUMB),
         track,
         &mut sb,
@@ -255,7 +255,7 @@ fn draw_vscrollbar(frame: &mut Frame, track: Rect, total: usize, pos: usize, vie
 }
 
 /// Draw a horizontal scrollbar into `track` (a 1-row rect inside the pane), only when the content
-/// is wider than it (`total > viewport`). Arrow glyphs dropped; thin line track + half-block thumb.
+/// is wider than it (`total > viewport`). Thumb-only: no track line or arrow glyphs.
 fn draw_hscrollbar(frame: &mut Frame, track: Rect, total: usize, pos: usize, viewport: usize) {
     if viewport == 0 || total <= viewport {
         return;
@@ -265,7 +265,7 @@ fn draw_hscrollbar(frame: &mut Frame, track: Rect, total: usize, pos: usize, vie
         Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some(HSCROLL_TRACK))
+            .track_symbol(None)
             .thumb_symbol(HSCROLL_THUMB),
         track,
         &mut sb,

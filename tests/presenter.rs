@@ -586,11 +586,18 @@ fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
 #[test]
 fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
     // Review (codex): at the last scroll position the thumb must reach the bottom of the track —
-    // leaving track below it would falsely imply more content remains. The bar now lives INSIDE the
-    // pane (a gutter column), so find it by its thumb glyph rather than the border position: the
-    // track is the column containing `▐`; its cells are `▐` (thumb) or `│` (track). At max scroll
-    // the bottom-most track cell is the thumb; at scroll 0 it is the track (thumb sits at the top).
+    // stopping short would falsely imply more content remains. The bar is thumb-only (no track
+    // line), so use its fed-back rect for the track extent and check where the thumb (`▐`) lands:
+    // at scroll 0 it includes the top row but not the bottom; at max scroll it reaches the bottom.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
     let (w, h) = (100u16, 18u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
     let mut state = sample_state();
     state.notices = vec![];
     // 60 lines into a 16-row text area → max scroll 44.
@@ -601,41 +608,31 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
             .join("\n"),
     );
     state.wrap = false;
-
-    // The symbol of the bottom-most track cell in the vertical-scrollbar column of a render. The
-    // bar column is the one containing `▐`; its track cells are `▐` (thumb) or `│` (track).
-    let bottom_track_cell = |buf: &ratatui::buffer::Buffer| -> String {
-        let mut bar_col = None;
-        'find: for x in 0..w {
-            for y in 0..h {
-                if buf.cell((x, y)).is_some_and(|c| c.symbol() == "▐") {
-                    bar_col = Some(x);
-                    break 'find;
-                }
-            }
-        }
-        let col = bar_col.expect("a vertical scrollbar (▐) is drawn");
-        let bottom = (0..h)
-            .filter(|&y| {
-                buf.cell((col, y))
-                    .is_some_and(|c| c.symbol() == "▐" || c.symbol() == "│")
-            })
-            .max()
-            .expect("the track has cells");
-        buf.cell((col, bottom)).unwrap().symbol().to_string()
+    let track = geometry(area, &state)
+        .content_vbar
+        .expect("content vbar present");
+    let thumb_rows = |buf: &ratatui::buffer::Buffer| -> Vec<u16> {
+        (track.y..track.y + track.height)
+            .filter(|&y| buf.cell((track.x, y)).is_some_and(|c| c.symbol() == "▐"))
+            .collect()
     };
 
     state.content_scroll = 0;
-    assert_eq!(
-        bottom_track_cell(&render_buffer(&state, w, h)),
-        "│",
-        "at scroll 0 the bottom of the track is plain track (thumb is at the top)"
+    let top = thumb_rows(&render_buffer(&state, w, h));
+    assert!(
+        top.contains(&track.y),
+        "thumb is at the top of the track at scroll 0"
     );
+    assert!(
+        !top.contains(&(track.y + track.height - 1)),
+        "thumb is NOT at the bottom at scroll 0"
+    );
+
     state.content_scroll = 44; // the max scroll for this content/viewport
-    assert_eq!(
-        bottom_track_cell(&render_buffer(&state, w, h)),
-        "▐",
-        "at max scroll the thumb reaches the bottom of the track"
+    let bottom = thumb_rows(&render_buffer(&state, w, h));
+    assert!(
+        bottom.contains(&(track.y + track.height - 1)),
+        "thumb reaches the bottom of the track at max scroll"
     );
 }
 
