@@ -1714,6 +1714,75 @@ fn switch_worktree_preselects_agent_active() {
     );
 }
 
+#[test]
+fn picker_falls_back_to_git_only_when_herdr_errors() {
+    // AC-15: when a `HerdrCli` is present but every `run_json` call returns `Err`, the
+    // worktree picker is still opened from git, pre-selects the CURRENT worktree (AC-4
+    // fallback — NO agent overlay), and is fully usable (NavDown moves the cursor).
+    let repo = TempDir::new();
+    init_repo_with_commit(repo.path());
+    let linked = TempDir::new();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            linked.path().to_str().unwrap(),
+            "-b",
+            "fallback-branch",
+        ],
+    );
+
+    struct ErroringHerdr;
+    impl HerdrCli for ErroringHerdr {
+        fn run_json(&self, _args: &[&str]) -> io::Result<String> {
+            Err(io::Error::other("herdr unavailable"))
+        }
+    }
+
+    let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
+    ctrl.set_host(Box::new(ErroringHerdr), Some("ws-anything".into()));
+    assert!(ctrl.picker().is_none(), "no picker before SwitchWorktree");
+
+    let fx = ctrl.handle(Intent::SwitchWorktree);
+    assert!(fx.redraw, "opening the picker redraws");
+
+    let (rows_len, current_idx) = {
+        let picker = ctrl
+            .picker()
+            .expect("picker is opened despite herdr errors (AC-15)");
+        assert!(
+            picker.rows.len() >= 2,
+            "git-only worktree list is populated: {:?}",
+            picker.rows
+        );
+        let current_idx = picker
+            .rows
+            .iter()
+            .position(|w| w.is_current)
+            .expect("one row is the current worktree");
+        assert_eq!(
+            picker.cursor, current_idx,
+            "cursor pre-selects current worktree when herdr errors (AC-4/AC-15): {:?}",
+            picker.rows
+        );
+        (picker.rows.len(), current_idx)
+    };
+
+    // Prove the picker is fully usable: NavDown must move the cursor.
+    ctrl.handle(Intent::NavDown);
+    let after_nav = ctrl.picker().expect("picker still open after NavDown");
+    let expected_after_nav = if current_idx + 1 < rows_len {
+        current_idx + 1
+    } else {
+        current_idx // already at bottom — clamped
+    };
+    assert_eq!(
+        after_nav.cursor, expected_after_nav,
+        "NavDown moves the cursor — picker is fully usable (AC-15)"
+    );
+}
+
 // ---- worktree picker: modal routing (AC-5, AC-6, AC-7, AC-11) -------------------------
 
 /// Build a controller rooted at `repo` with a linked worktree already added, open the
