@@ -67,6 +67,7 @@ fn sample_state() -> ViewState {
         width: 100,
         content_scroll: 0,
         content_hscroll: 0,
+        tree_scroll: 0,
         wrap: false,
         split_pct: 40,
         zoomed: false,
@@ -453,6 +454,44 @@ fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
 }
 
 #[test]
+fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
+    // Review (codex): at the last scroll position the thumb must reach the bottom of the track —
+    // leaving track below it would falsely imply more content remains. The content pane's right
+    // border is the frame's rightmost column; with the block spanning the full height the track is
+    // inset by one row each end, so the bottom track cell is row h-2. At scroll 0 the thumb is at
+    // the top (not that bottom cell); at the max scroll it is.
+    let (w, h) = (100u16, 18u16);
+    let mut state = sample_state();
+    state.notices = vec![];
+    // 60 lines into a (h-2)=16-row viewport → max scroll 44.
+    state.content = to_text(
+        &(0..60)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    state.wrap = false;
+    let bottom_track_row = h - 2;
+    let rightmost = w - 1;
+
+    state.content_scroll = 0;
+    let top = render_buffer(&state, w, h);
+    assert_ne!(
+        top.cell((rightmost, bottom_track_row)).unwrap().symbol(),
+        "█",
+        "at scroll 0 the thumb sits at the top, not the bottom track row"
+    );
+
+    state.content_scroll = 44; // the max scroll for this content/viewport
+    let bottom = render_buffer(&state, w, h);
+    assert_eq!(
+        bottom.cell((rightmost, bottom_track_row)).unwrap().symbol(),
+        "█",
+        "at max scroll the thumb reaches the bottom track row"
+    );
+}
+
+#[test]
 fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
     // A line far wider than the content pane gets a horizontal scrollbar when NOT wrapped (so it
     // can be read sideways). The track is the DOUBLE horizontal (═), distinct from the block's
@@ -474,6 +513,60 @@ fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
     assert!(
         !wrapped.contains('═'),
         "a wrapped line needs no horizontal scrollbar\n{wrapped}"
+    );
+}
+
+#[test]
+fn tree_scroll_is_sticky_when_the_selection_stays_visible() {
+    // #45 follow-up (review): selecting a row already on screen — e.g. a mouse click — must NOT
+    // move the viewport. Pre-fix the offset was a pure function of the cursor, so clicking a
+    // visible row in a scrolled tree snapped the view (and made a double-click land on the wrong
+    // row). With sticky scrolling, geometry reports the SAME offset when the selection is in view.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = (0..40)
+        .map(|i| {
+            node(
+                &format!("/r/file-{i:02}.rs"),
+                NodeKind::File,
+                0,
+                false,
+                None,
+            )
+        })
+        .collect();
+    let t_height = geometry(area, &state)
+        .tree_inner
+        .expect("tree interior")
+        .height as usize;
+
+    // Currently scrolled down by 10; select a row INSIDE the visible window [10, 10+height).
+    state.tree_scroll = 10;
+    state.selected = 12;
+    assert!(
+        12 < 10 + t_height,
+        "precondition: the selection is within the current window"
+    );
+    assert_eq!(
+        geometry(area, &state).tree_scroll,
+        10,
+        "selecting a visible row keeps the offset — the tree does not jump"
+    );
+
+    // Selecting a row ABOVE the window scrolls minimally up to it (cursor at the top edge).
+    state.selected = 4;
+    assert_eq!(
+        geometry(area, &state).tree_scroll,
+        4,
+        "a selection above the window scrolls up just to it"
     );
 }
 

@@ -632,6 +632,9 @@ impl Controller {
             width: self.width,
             content_scroll: self.content_scroll,
             content_hscroll: self.content_hscroll,
+            // Last frame's tree offset, so the Presenter scrolls minimally from it (#45): selecting
+            // a row already in view — e.g. a mouse click — never jumps the viewport.
+            tree_scroll: self.geom.tree_scroll,
             wrap,
             split_pct: self.split_pct,
             zoomed: self.zoomed,
@@ -873,8 +876,8 @@ impl Controller {
         }
     }
 
-    /// Scroll the pane under the cursor: the content pane scrolls vertically; over the tree
-    /// (which does not scroll) the wheel moves the selection — the closest equivalent.
+    /// Scroll the pane under the cursor: the content pane scrolls vertically; over the tree the
+    /// wheel moves the selection (the tree then scrolls to keep it in view, #45).
     fn scroll_at(&mut self, col: u16, row: u16, delta: isize) -> Effects {
         match self.hit_test(col, row) {
             MouseRegion::Content => {

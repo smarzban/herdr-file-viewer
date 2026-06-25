@@ -49,6 +49,11 @@ pub struct ViewState {
     /// Horizontal scroll offset of the content pane, in columns. Only meaningful when not
     /// wrapping (ratatui ignores it under wrap); lets long code/diff lines be read sideways.
     pub content_hscroll: u16,
+    /// The tree's vertical scroll offset from the LAST drawn frame (first visible node index),
+    /// carried back via [`PaneGeometry::tree_scroll`]. The Presenter scrolls *minimally* from it
+    /// so selecting a row already in view (e.g. a mouse click) never jumps the viewport (#45). `0`
+    /// on the first frame and whenever every node fits.
+    pub tree_scroll: u16,
     /// Wrap long content lines (prose: markdown / plain text) instead of truncating them.
     /// Off for diffs and code, whose column alignment must be preserved.
     pub wrap: bool,
@@ -163,6 +168,21 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
     Line::from(Span::styled(text, style))
 }
 
+/// Build a [`ScrollbarState`] that places the thumb correctly for a **scroll offset** (not a list
+/// selection). ratatui's thumb reaches the track end only at `position == content_length - 1`,
+/// while a scroll offset maxes at `total - viewport` — so model the scroll range as its
+/// `(max_scroll + 1)` distinct offsets (`content_length = total - viewport + 1`, positions
+/// `0..=max_scroll`) and set `viewport_content_length` so the thumb is sized to the visible
+/// fraction (`viewport / total`). The thumb then sits at the top at offset 0 and reaches the
+/// bottom at the last offset (fixes the "thumb never reaches the end" misreport). Caller guarantees
+/// `total > viewport`.
+fn scrollbar_state(total: usize, pos: usize, viewport: usize) -> ScrollbarState {
+    let content_length = total - viewport + 1;
+    ScrollbarState::new(content_length)
+        .position(pos.min(content_length - 1))
+        .viewport_content_length(viewport)
+}
+
 /// Draw a vertical scrollbar on the RIGHT border of `block_area`, but only when the content
 /// overflows (`total > viewport`). Inset by one row top/bottom so it never overwrites the block's
 /// corners; the begin/end arrow glyphs are dropped so it reads as a clean track + thumb on the
@@ -172,9 +192,7 @@ fn draw_vscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize
     if viewport == 0 || total <= viewport {
         return;
     }
-    let mut sb = ScrollbarState::new(total)
-        .position(pos.min(total.saturating_sub(1)))
-        .viewport_content_length(viewport);
+    let mut sb = scrollbar_state(total, pos, viewport);
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
@@ -194,9 +212,7 @@ fn draw_hscrollbar(frame: &mut Frame, block_area: Rect, total: usize, pos: usize
     if viewport == 0 || total <= viewport {
         return;
     }
-    let mut sb = ScrollbarState::new(total)
-        .position(pos.min(total.saturating_sub(1)))
-        .viewport_content_length(viewport);
+    let mut sb = scrollbar_state(total, pos, viewport);
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
             .begin_symbol(None)
@@ -232,12 +248,22 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
         .enumerate()
         .map(|(i, node)| tree_row(node, i == state.selected))
         .collect();
-    // Scroll the tree so the selected row stays visible (#45). The offset is a pure function of
-    // the selection, node count, and the live interior height — so it never needs controller
-    // state, and `geometry` recomputes the SAME value for hit-testing (clicks stay correct when
-    // scrolled). `Paragraph::scroll((y, 0))` clips the leading `y` rows off the top.
-    let offset = scroll_offset(state.selected, state.nodes.len(), inner.height as usize);
-    frame.render_widget(Paragraph::new(rows).scroll((offset as u16, 0)), inner);
+    // Scroll the tree so the selected row stays visible (#45), minimally from last frame's offset
+    // (`state.tree_scroll`) so selecting a row already in view doesn't jump the viewport. The
+    // offset is a pure function of the selection, node count, last offset, and the live interior
+    // height — so `geometry` recomputes the SAME value for hit-testing (clicks stay correct when
+    // scrolled). `Paragraph::scroll((y, 0))` clips the leading `y` rows off the top; the cast
+    // saturates so an absurd tree (>65535 rows above the fold) can't wrap the offset.
+    let offset = sticky_scroll_offset(
+        state.selected,
+        state.nodes.len(),
+        inner.height as usize,
+        state.tree_scroll as usize,
+    );
+    frame.render_widget(
+        Paragraph::new(rows).scroll((offset.min(u16::MAX as usize) as u16, 0)),
+        inner,
+    );
     // A vertical scrollbar on the right border when there are more nodes than fit.
     draw_vscrollbar(
         frame,
@@ -398,10 +424,17 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     let inner = |r: Rect| Block::bordered().inner(r);
     let tree_inner = tree.map(inner);
     // The tree's scroll offset MUST match what `draw_tree` applies, or a click maps to the wrong
-    // node once the tree scrolls. Both derive it from the same pure `scroll_offset` over the live
-    // interior height — so the drawn window and the hit-test window can never disagree.
+    // node once the tree scrolls. Both derive it from the same pure `sticky_scroll_offset` over the
+    // live interior height and last frame's offset — so the drawn window and the hit-test window
+    // can never disagree. Saturating cast: an absurd >65535 offset clamps instead of wrapping.
     let tree_scroll = tree_inner.map_or(0, |t| {
-        scroll_offset(state.selected, state.nodes.len(), t.height as usize) as u16
+        sticky_scroll_offset(
+            state.selected,
+            state.nodes.len(),
+            t.height as usize,
+            state.tree_scroll as usize,
+        )
+        .min(u16::MAX as usize) as u16
     });
     PaneGeometry {
         area_x: body.x,
@@ -584,10 +617,10 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
     frame.render_widget(Paragraph::new(window).scroll((0, hscroll)), inner);
 }
 
-/// The first row index to render so the `cursor` row stays within a window of `visible` rows.
-/// Returns 0 when every row fits (or the window is degenerate), and never scrolls past the end.
-/// Shared by the file tree ([`draw_tree`]) and the worktree picker overlay so both keep their
-/// selection on screen with identical semantics (#45).
+/// The first row index to render so the `cursor` row stays within a window of `visible` rows,
+/// **anchoring** the window to the cursor (cursor in the first page ⇒ offset 0). Returns 0 when
+/// every row fits (or the window is degenerate), and never scrolls past the end. Used by the
+/// worktree picker, whose cursor only ever moves by keyboard (no jump to worry about).
 fn scroll_offset(cursor: usize, len: usize, visible: usize) -> usize {
     if visible == 0 || len <= visible {
         return 0;
@@ -600,6 +633,27 @@ fn scroll_offset(cursor: usize, len: usize, visible: usize) -> usize {
     } else {
         (cursor + 1 - visible).min(max_offset)
     }
+}
+
+/// Like [`scroll_offset`] but scrolls **minimally** from the `current` offset: if the cursor is
+/// already inside `[current, current + visible)` the offset does not move. The file tree uses this
+/// so selecting a row that is already on screen — e.g. a mouse click — never jumps the viewport
+/// (a jump would also make a double-click land on the wrong row). Off-screen, it scrolls just
+/// enough to bring the cursor to the nearest edge. Clamped to `[0, len - visible]`.
+fn sticky_scroll_offset(cursor: usize, len: usize, visible: usize, current: usize) -> usize {
+    if visible == 0 || len <= visible {
+        return 0;
+    }
+    let max_offset = len - visible;
+    let current = current.min(max_offset);
+    let offset = if cursor < current {
+        cursor // above the window → bring the cursor to the top edge
+    } else if cursor >= current + visible {
+        cursor + 1 - visible // below the window → bring it to the bottom edge
+    } else {
+        current // already visible → don't move (no jump on a click)
+    };
+    offset.min(max_offset)
 }
 
 /// The color for an agent-status badge: `working`/`done` green, `idle` blue, `blocked` red,
