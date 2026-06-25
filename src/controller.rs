@@ -370,8 +370,8 @@ impl Controller {
     /// factory (ADR-0004), and respawn the render worker — overwriting `job_tx`/`result_rx` drops
     /// the old sender, so the previous worker (which owns the old providers) exits. A fresh
     /// [`TreeModel`] and reset navigation/view state follow (AC-13), while the user's *preferences*
-    /// — `show_ignored`, `changed_only`, `split_pct`, `wrap_override`, `baseline` — are carried
-    /// across unchanged (AC-12). The structural re-root (resolve + fresh tree + worker respawn +
+    /// — `show_ignored`, `hide_hidden`, `changed_only`, `split_pct`, `wrap_override`, `baseline` —
+    /// are carried across unchanged (AC-12). The structural re-root (resolve + fresh tree + worker respawn +
     /// carried prefs + nav reset) is **synchronous**, so the tree is immediately navigable; the
     /// heavier git status + changed-set fills in **asynchronously**, applied by [`poll`] (AC-17),
     /// so input is never blocked. Finally the first frame is rendered. A missing or
