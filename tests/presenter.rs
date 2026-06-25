@@ -396,12 +396,12 @@ fn geometry_reports_the_tree_scroll_offset_for_hit_testing() {
 #[test]
 fn tree_shows_a_vertical_scrollbar_only_when_it_overflows() {
     // The tree gets a vertical scrollbar exactly when there are more nodes than fit (#45 follow-up:
-    // "add a scrollbar where there is something to be moved"). The thumb is a HEAVY vertical line
-    // (┃), distinct from the light border (│) and absent elsewhere in these fixtures, so a
-    // frame-wide check is unambiguous: the only ┃ here is the tree scrollbar thumb.
+    // "add a scrollbar where there is something to be moved"). The thumb is a half-block bar
+    // (▐), distinct from the light border (│) and absent elsewhere in these fixtures, so a
+    // frame-wide check is unambiguous: the only ▐ here is the tree scrollbar thumb.
     let fits = render(&sample_state(), 100, 24); // 7 nodes in a 24-row frame → fits
     assert!(
-        !fits.contains('┃'),
+        !fits.contains('▐'),
         "a tree that fits shows no scrollbar\n{fits}"
     );
 
@@ -421,15 +421,15 @@ fn tree_shows_a_vertical_scrollbar_only_when_it_overflows() {
     many.selected = 0;
     let overflow = render(&many, 100, 24);
     assert!(
-        overflow.contains('┃'),
-        "an overflowing tree shows a scrollbar thumb (┃)\n{overflow}"
+        overflow.contains('▐'),
+        "an overflowing tree shows a scrollbar thumb (▐)\n{overflow}"
     );
 }
 
 #[test]
 fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
     // The content pane gets a vertical scrollbar when it has more lines than the viewport is tall.
-    // The tree (7 nodes) does NOT overflow a 12-row frame, so the only ┃ is the content scrollbar.
+    // The tree (7 nodes) does NOT overflow a 12-row frame, so the only ▐ is the content scrollbar.
     let mut state = sample_state();
     state.notices = vec![];
     state.content = to_text(
@@ -440,15 +440,15 @@ fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
     );
     let out = render(&state, 100, 12);
     assert!(
-        out.contains('┃'),
-        "overflowing content shows a vertical scrollbar (┃)\n{out}"
+        out.contains('▐'),
+        "overflowing content shows a vertical scrollbar (▐)\n{out}"
     );
 
     // A short file shows none.
     state.content = to_text("only\ntwo\n");
     let short = render(&state, 100, 12);
     assert!(
-        !short.contains('┃'),
+        !short.contains('▐'),
         "content that fits shows no vertical scrollbar\n{short}"
     );
 }
@@ -478,7 +478,7 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
     let top = render_buffer(&state, w, h);
     assert_ne!(
         top.cell((rightmost, bottom_track_row)).unwrap().symbol(),
-        "┃",
+        "▐",
         "at scroll 0 the thumb sits at the top, not the bottom track row"
     );
 
@@ -486,7 +486,7 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
     let bottom = render_buffer(&state, w, h);
     assert_eq!(
         bottom.cell((rightmost, bottom_track_row)).unwrap().symbol(),
-        "┃",
+        "▐",
         "at max scroll the thumb reaches the bottom track row"
     );
 }
@@ -494,7 +494,7 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
 #[test]
 fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
     // A line far wider than the content pane gets a horizontal scrollbar when NOT wrapped (so it
-    // can be read sideways). Its thumb is a HEAVY horizontal line (━), distinct from the block's
+    // can be read sideways). Its thumb is a half-block bar (▄), distinct from the block's
     // light border (─), so it is an unambiguous marker. Wrapping the same line removes the
     // overflow, so no horizontal scrollbar is drawn.
     let mut state = sample_state();
@@ -504,14 +504,14 @@ fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
     state.wrap = false;
     let unwrapped = render(&state, 100, 24);
     assert!(
-        unwrapped.contains('━'),
-        "a too-wide unwrapped line shows a horizontal scrollbar (━)\n{unwrapped}"
+        unwrapped.contains('▄'),
+        "a too-wide unwrapped line shows a horizontal scrollbar (▄)\n{unwrapped}"
     );
 
     state.wrap = true;
     let wrapped = render(&state, 100, 24);
     assert!(
-        !wrapped.contains('━'),
+        !wrapped.contains('▄'),
         "a wrapped line needs no horizontal scrollbar\n{wrapped}"
     );
 }

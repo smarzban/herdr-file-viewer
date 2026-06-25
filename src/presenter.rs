@@ -188,9 +188,9 @@ fn scrollbar_state(total: usize, pos: usize, viewport: usize) -> ScrollbarState 
 // segment of the border showing the scroll position — thin and unobtrusive — rather than the
 // default `█` full-block thumb, which looks like a thick solid slab (especially horizontally).
 const VSCROLL_TRACK: &str = "│";
-const VSCROLL_THUMB: &str = "┃";
+const VSCROLL_THUMB: &str = "▐";
 const HSCROLL_TRACK: &str = "─";
-const HSCROLL_THUMB: &str = "━";
+const HSCROLL_THUMB: &str = "▄";
 
 /// Draw a vertical scrollbar on the RIGHT border of `block_area`, but only when the content
 /// overflows (`total > viewport`). Inset by one row top/bottom so it never overwrites the block's
