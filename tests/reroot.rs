@@ -39,6 +39,28 @@ impl GitService for FakeGit {
     }
 }
 
+/// A fake Git Service whose status / changed-set are canned per construction, so a re-root's
+/// factory can hand back a git that reports a *distinct* status for the new root — letting a
+/// test prove the new root's markers fill in (and only via `poll`, asynchronously). The
+/// `diff` carries a canned string so a post-switch render through the respawned worker is
+/// observable too.
+struct CannedGit {
+    status: BTreeMap<PathBuf, Status>,
+    changed: BTreeMap<PathBuf, Status>,
+    diff: String,
+}
+impl GitService for CannedGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        self.status.clone()
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        self.changed.clone()
+    }
+    fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
+        self.diff.clone()
+    }
+}
+
 /// A fake Content Renderer that emits a known marker, so we can see the first frame populate.
 struct FakeContent;
 impl ContentProvider for FakeContent {
@@ -216,6 +238,17 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(!ctrl.zoomed(), "unzoomed after re_root");
     assert_eq!(ctrl.focus(), Focus::Tree, "focus back on the tree");
 
+    // T-8: the git-derived state (status markers + the changed-only filter built from the
+    // changed-set) now fills in ASYNCHRONOUSLY, applied by `poll` rather than synchronously in
+    // `re_root`. Wait for the carried `changed_only` filter to actually be applied against B's
+    // (empty) changed-set — observable as the filtered tree becoming empty — before inspecting
+    // the visible tree below. Waiting on this exact condition (not on the first `poll` to apply
+    // *anything*, which the render worker can satisfy first) makes the drain race-free. The
+    // pref-value and nav-reset assertions above are mode-independent and stay synchronous.
+    poll_until(&mut ctrl, Duration::from_secs(5), |c| {
+        c.tree().visible_nodes().is_empty()
+    });
+
     // The tree is rooted at B with a fresh (collapsed) expansion set. The fake changed-set is
     // empty, so the carried `changed_only` pref currently shows an empty tree; flip it off (B is
     // a git repo, so the toggle takes effect) to observe the real filesystem tree.
@@ -231,4 +264,213 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
         !nodes.iter().any(|n| n.expanded),
         "no expansions carried into the new tree"
     );
+}
+
+/// A factory that, for the root whose path ends in `b_dir_name`, hands back a [`CannedGit`]
+/// reporting `b_status` as its working-tree status (and changed-set) plus `b_diff` as its
+/// diff; every other root gets the empty [`FakeGit`]. This lets the tests build at A (no git
+/// markers) then re-root to B and observe B's distinct fake git fill in. The content provider
+/// is the usual [`FakeContent`] marker.
+fn factory_varying_by_root(
+    b_root: PathBuf,
+    b_status: BTreeMap<PathBuf, Status>,
+    b_diff: String,
+) -> Box<dyn Fn(&Resolved) -> RootProviders> {
+    let b_canon = common::canon(&b_root);
+    Box::new(move |resolved: &Resolved| {
+        let git: Arc<dyn GitService> = if common::canon(&resolved.root) == b_canon {
+            Arc::new(CannedGit {
+                status: b_status.clone(),
+                changed: b_status.clone(),
+                diff: b_diff.clone(),
+            })
+        } else {
+            Arc::new(FakeGit)
+        };
+        RootProviders {
+            git,
+            content: Box::new(FakeContent),
+        }
+    })
+}
+
+/// Drain `poll` until `cond(ctrl)` actually holds, or panic when `deadline` elapses. `re_root`
+/// dispatches TWO async producers (the render worker and the status thread); `poll` returns
+/// `Some` when it applies EITHER, so stopping on the first `Some` can return before the state a
+/// test asserts on has landed. Waiting on the asserted condition itself (not merely on "something
+/// was applied") makes the wait race-free regardless of which producer lands first.
+fn poll_until(ctrl: &mut Controller, deadline: Duration, cond: impl Fn(&Controller) -> bool) {
+    let limit = Instant::now() + deadline;
+    loop {
+        ctrl.poll();
+        if cond(ctrl) {
+            return;
+        }
+        assert!(
+            Instant::now() < limit,
+            "condition never held within {deadline:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn re_root_status_fills_in_asynchronously() {
+    // A is a real git repo with no extra markers (empty fake git). B is a real git repo whose
+    // factory-supplied fake git reports `b.txt` as Modified — a marker that exists ONLY for B.
+    let a = TempDir::new();
+    common::init_repo_with_commit(a.path());
+    std::fs::write(a.path().join("a.txt"), "a\n").unwrap();
+
+    let b = TempDir::new();
+    common::init_repo_with_commit(b.path());
+    std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+    let mut b_status = BTreeMap::new();
+    b_status.insert(PathBuf::from("b.txt"), Status::Modified);
+
+    let components = Components {
+        providers: factory_varying_by_root(b.path().to_path_buf(), b_status, String::new()),
+        editor: Box::new(FakeEditor),
+        clipboard: Box::new(FakeClipboard),
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(a.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.re_root(b.path());
+
+    // STRUCTURAL state is immediate: the tree is rooted at B and navigable right away, with no
+    // `poll` yet. (The synchronous re-root resolved the new root and built a fresh tree.)
+    let nodes = ctrl.tree().visible_nodes();
+    let root_child = nodes.first().expect("B has at least one node");
+    assert!(
+        root_child.path.starts_with(common::canon(b.path())),
+        "tree rooted under B immediately (structural re-root is synchronous)"
+    );
+
+    // But B's git STATUS has NOT been applied yet — the off-thread computation has not been
+    // drained by `poll`. So no node carries B's Modified marker synchronously.
+    assert!(
+        ctrl.tree()
+            .visible_nodes()
+            .iter()
+            .all(|n| n.status.is_none()),
+        "status must NOT be applied synchronously in re_root — it fills in via poll (AC-17)"
+    );
+
+    // Now drain `poll` until B's Modified marker on b.txt actually lands — waiting on the
+    // asserted condition, not on the first `poll` to apply *something* (the render worker may
+    // land before the status thread). The post-poll assertion then cannot flake.
+    poll_until(&mut ctrl, Duration::from_secs(5), |c| {
+        c.tree()
+            .visible_nodes()
+            .iter()
+            .any(|n| n.path.ends_with("b.txt") && n.status == Some(Status::Modified))
+    });
+    assert!(
+        ctrl.tree()
+            .visible_nodes()
+            .iter()
+            .any(|n| n.path.ends_with("b.txt") && n.status == Some(Status::Modified)),
+        "after poll, B's fake-git Modified marker on b.txt is applied (async fill)"
+    );
+}
+
+#[test]
+fn re_root_markers_reflect_new_root_git() {
+    // A has its own (empty) fake git; B's factory git reports `b.txt` as Added. After a re-root
+    // to B and draining poll, the tree markers reflect B's git, not A's.
+    let a = TempDir::new();
+    common::init_repo_with_commit(a.path());
+    std::fs::write(a.path().join("a.txt"), "a\n").unwrap();
+
+    let b = TempDir::new();
+    common::init_repo_with_commit(b.path());
+    std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+    let mut b_status = BTreeMap::new();
+    b_status.insert(PathBuf::from("b.txt"), Status::Added);
+
+    let components = Components {
+        providers: factory_varying_by_root(b.path().to_path_buf(), b_status, String::new()),
+        editor: Box::new(FakeEditor),
+        clipboard: Box::new(FakeClipboard),
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(a.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.re_root(b.path());
+    // Wait until B's `b.txt` node actually carries the expected Added marker — not until the
+    // first `poll` applies something (the render worker may land before the status thread).
+    poll_until(&mut ctrl, Duration::from_secs(5), |c| {
+        c.tree()
+            .visible_nodes()
+            .iter()
+            .any(|n| n.path.ends_with("b.txt") && n.status == Some(Status::Added))
+    });
+
+    let b_marked = ctrl
+        .tree()
+        .visible_nodes()
+        .into_iter()
+        .find(|n| n.path.ends_with("b.txt"))
+        .expect("b.txt is visible under B");
+    assert_eq!(
+        b_marked.status,
+        Some(Status::Added),
+        "markers reflect B's fake git after re_root + poll"
+    );
+    // A's file is not even in B's tree — the marker set is B's alone.
+    assert!(
+        !ctrl
+            .tree()
+            .visible_nodes()
+            .iter()
+            .any(|n| n.path.ends_with("a.txt")),
+        "A's nodes do not leak into B's tree"
+    );
+}
+
+#[test]
+fn re_root_render_resolves_through_the_respawned_worker() {
+    // After a re-root, selecting a file dispatches a render that must resolve through the
+    // worker respawned for B — drained by `poll`, the content shows the (B) factory's marker.
+    let a = TempDir::new();
+    common::init_repo_with_commit(a.path());
+    std::fs::write(a.path().join("a.txt"), "a\n").unwrap();
+
+    let b = TempDir::new();
+    common::init_repo_with_commit(b.path());
+    std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+
+    let components = Components {
+        providers: factory_varying_by_root(b.path().to_path_buf(), BTreeMap::new(), String::new()),
+        editor: Box::new(FakeEditor),
+        clipboard: Box::new(FakeClipboard),
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(a.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.re_root(b.path());
+    // re_root dispatches a render for B's initial selection; the respawned worker (FakeContent)
+    // resolves it. Drain until the content reflects the fake render.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()).contains("fake-rendered-content") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the respawned worker never rendered after re_root"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

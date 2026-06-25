@@ -149,6 +149,12 @@ struct RenderJob {
     is_git: bool,
 }
 
+/// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
+/// changed-set against the active baseline (the changed-only filter, AC-6), both keyed by
+/// repo-root-relative path. Carried over a one-shot channel from the worker `re_root` spawns to
+/// the `poll` that applies them.
+type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
+
 /// The interaction orchestrator and the ephemeral session state.
 pub struct Controller {
     root: PathBuf,
@@ -217,6 +223,9 @@ pub struct Controller {
     update_dismissed: bool,
     /// One-shot receiver for the background update check's result (`None` when no check ran).
     update_rx: Option<mpsc::Receiver<Option<Version>>>,
+    /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
+    /// `Some` between a re-root and the tick that applies the result; `None` otherwise.
+    status_rx: Option<mpsc::Receiver<StatusResult>>,
 }
 
 impl Controller {
@@ -275,6 +284,7 @@ impl Controller {
             update_available: None,
             update_dismissed: false,
             update_rx: None,
+            status_rx: None,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -335,9 +345,11 @@ impl Controller {
     /// the old sender, so the previous worker (which owns the old providers) exits. A fresh
     /// [`TreeModel`] and reset navigation/view state follow (AC-13), while the user's *preferences*
     /// — `show_ignored`, `changed_only`, `split_pct`, `wrap_override`, `baseline` — are carried
-    /// across unchanged (AC-12). Finally git state is re-applied to the new tree (AC-7) and the
-    /// first frame is rendered. Assumes `target` is a valid, usable directory — failure/no-op
-    /// handling is a later task.
+    /// across unchanged (AC-12). The structural re-root (resolve + fresh tree + worker respawn +
+    /// carried prefs + nav reset) is **synchronous**, so the tree is immediately navigable; the
+    /// heavier git status + changed-set fills in **asynchronously**, applied by [`poll`] (AC-17),
+    /// so input is never blocked. Finally the first frame is rendered. Assumes `target` is a
+    /// valid, usable directory — failure/no-op handling is a later task.
     pub fn re_root(&mut self, target: &Path) {
         let resolved = crate::root::resolve(&crate::context::LaunchContext {
             cwd: target.to_path_buf(),
@@ -369,16 +381,40 @@ impl Controller {
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, changed_only,
         // split_pct, wrap_override, baseline keep their current values. The fresh TreeModel starts
-        // with default filter flags, so push the carried filter prefs onto it so the new tree
-        // actually honors them (the controller's flags alone don't reach the tree). `changed_only`
-        // is re-applied with the changed-set `refresh_git_state` recomputes below.
+        // with default filter flags. `show_ignored` is git-independent, so apply it now. The
+        // changed-only *filter* is NOT applied here: it must be applied against the REAL
+        // changed-set, which `dispatch_status_refresh` computes off-thread — applying it now would
+        // filter against the just-cleared empty set. `poll` applies it when the changed-set lands.
         self.tree.set_show_ignored(self.show_ignored);
-        self.tree.set_changed_only(self.changed_only, &self.changed);
 
-        // Re-apply git state to the new tree (status markers + the changed-only filter, which
-        // `refresh_git_state` re-derives from the carried `changed_only` + `baseline`), then render.
-        self.refresh_git_state();
+        // A re-root happens mid-session, so input must never block (AC-17): compute the new root's
+        // status + changed-set OFF the input thread and let `poll` apply the markers + changed-only
+        // filter when they arrive (as content rendering does, AC-23). The structural re-root above
+        // is synchronous, so the tree is immediately navigable. Then render the first frame.
+        self.dispatch_status_refresh();
         self.dispatch_render();
+    }
+
+    /// Compute the new root's working-tree status + changed-set OFF the input thread (AC-17),
+    /// to be applied by [`poll`]. A non-repo has no git state — apply the (empty) changed-only
+    /// filter synchronously and clear any pending fetch. Unlike `refresh_git_state` (which runs
+    /// synchronously on launch / editor-return / baseline-toggle / refresh / focus-gain), this is
+    /// the re-root path, where the heavier status/changed-set work must not block input.
+    fn dispatch_status_refresh(&mut self) {
+        if !self.is_git_repo {
+            self.tree.set_changed_only(self.changed_only, &self.changed); // self.changed is empty
+            self.status_rx = None;
+            return;
+        }
+        let git = Arc::clone(&self.git);
+        let baseline = self.baseline;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let status = git.status();
+            let changed = git.changed_set(baseline);
+            let _ = tx.send((status, changed)); // receiver may be gone if re-rooted again — fine
+        });
+        self.status_rx = Some(rx);
     }
 
     // ---- state accessors (used by the Presenter wiring and tests) ----------------------
@@ -1122,6 +1158,23 @@ impl Controller {
                 applied = true;
             }
             // else: a superseded selection's render — drop it.
+        }
+        // A re-root's off-thread status/changed-set (one-shot, AC-17): apply the new root's
+        // markers and the carried changed-only filter against the freshly-arrived changed-set,
+        // then drop the receiver. A *disconnected* channel means a second re-root superseded this
+        // fetch (its `send` failed) — drop the receiver so we stop polling a dead channel.
+        if let Some(rx) = &self.status_rx {
+            match rx.try_recv() {
+                Ok((status, changed)) => {
+                    self.tree.set_status(&status);
+                    self.changed = changed;
+                    self.tree.set_changed_only(self.changed_only, &self.changed);
+                    self.status_rx = None;
+                    applied = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.status_rx = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
         }
         // A finished background update check (one-shot): adopt its verdict and drop the receiver.
         // `Some(v)` shows/refreshes the banner; `None` (a successful check that found nothing
