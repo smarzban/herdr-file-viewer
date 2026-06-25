@@ -762,6 +762,56 @@ fn pending_reroot_status_does_not_clobber_a_later_sync_refresh() {
 }
 
 #[test]
+fn pending_reroot_status_does_not_clobber_a_later_toggle_baseline() {
+    // Review-gate R2: `toggle_baseline` recomputes the changed-set synchronously, just like
+    // `refresh_git_state` does. But before the fix it did NOT drop the pending re-root async
+    // status fetch (`status_rx`), so a stale async result could arrive on the next `poll` and
+    // overwrite the freshly-recomputed changed-set. Mirrors
+    // `pending_reroot_status_does_not_clobber_a_later_sync_refresh` but with `ToggleBaseline`
+    // as the synchronous action.
+    let repo = TempDir::new();
+    common::init_repo_with_commit(repo.path());
+    std::fs::write(repo.path().join("file.txt"), "x\n").unwrap();
+
+    let b = TempDir::new();
+    common::init_repo_with_commit(b.path());
+    std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+
+    let components = Components {
+        providers: fake_factory(),
+        editor: Box::new(FakeEditor),
+        clipboard: Box::new(FakeClipboard),
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(repo.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    // Re-root to B — dispatches the off-thread status/changed-set fetch. Do NOT poll yet, so
+    // the async result is still pending (or in flight).
+    ctrl.re_root(b.path());
+
+    // Trigger a SYNCHRONOUS baseline toggle while the async fetch is pending (`b` key path).
+    // After this recomputes the changed-set authoritatively, the pending async fetch must be
+    // dropped so it cannot clobber the state on the next `poll`.
+    ctrl.handle(Intent::ToggleBaseline);
+
+    // The pending async re-root fetch must have been dropped by the baseline toggle.
+    assert!(
+        !ctrl.status_refresh_pending(),
+        "a ToggleBaseline must drop any pending re-root async status fetch (R2)"
+    );
+
+    // Draining poll now must be a clean no-op for the status path (nothing stale to apply).
+    ctrl.poll();
+    assert!(
+        !ctrl.status_refresh_pending(),
+        "no pending fetch remains after poll"
+    );
+}
+
+#[test]
 fn re_root_carries_the_base_branch_hint() {
     // Review-gate R1 (F): the launch base-branch hint is a session-level value that re_root must
     // carry into the re-resolution (the herdr per-worktree hint isn't available cross-worktree),

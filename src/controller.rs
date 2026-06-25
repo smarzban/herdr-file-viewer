@@ -1079,6 +1079,11 @@ impl Controller {
         // filter consistent with it.
         self.changed = self.git.changed_set(self.baseline);
         self.tree.set_changed_only(self.changed_only, &self.changed);
+        // Drop any pending re-root async status fetch (review-gate R2): this synchronous
+        // recompute is now authoritative, so a stale in-flight async result must not clobber
+        // it in `poll`. Invariant: every synchronous git-state recompute invalidates a pending
+        // re-root async fetch. Mirrors `refresh_git_state` → `drop_pending_status`.
+        self.drop_pending_status();
         self.dispatch_render(); // a diff is relative to the baseline, so it must re-render
         Effects::redraw()
     }
@@ -1332,10 +1337,17 @@ impl Controller {
         self.tree.set_status(&status);
         self.changed = self.git.changed_set(self.baseline);
         self.tree.set_changed_only(self.changed_only, &self.changed);
-        // Drop any pending re-root async status fetch (review-gate R1, G): this sync refresh has
-        // just produced the authoritative status/changed-set, so an older in-flight async result
-        // must not later clobber it in `poll`. (A second `re_root` already replaces `status_rx`,
-        // so only this sync-refresh-vs-pending race needs handling here.)
+        // Drop any pending re-root async status fetch (review-gate R1, G + R2): this sync
+        // refresh has just produced the authoritative status/changed-set, so an older in-flight
+        // async result must not later clobber it in `poll`. Invariant: every synchronous
+        // git-state recompute invalidates a pending re-root async fetch.
+        self.drop_pending_status();
+    }
+
+    /// Drop any pending re-root async status/changed-set fetch so a stale in-flight result
+    /// cannot later overwrite a freshly-recomputed synchronous git state in [`poll`]. Must be
+    /// called after every synchronous git-state recompute (review-gate R1 G + R2).
+    fn drop_pending_status(&mut self) {
         self.status_rx = None;
     }
 
