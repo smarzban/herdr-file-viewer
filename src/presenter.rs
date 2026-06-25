@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 
 /// Which column currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +356,11 @@ fn centered_rect_sized(w: u16, h: u16, area: Rect) -> Rect {
     }
 }
 
+/// Uniform inner padding (cells on every side) between the picker rows and the box border, so the
+/// content reads with a little breathing room — matching herdr's indented popup content. Applied
+/// both horizontally (a column gutter each side) and vertically (a blank row above the first row
+/// and below the last), so the rows never sit flush against the border or the title/footer chrome.
+const PICKER_PADDING: u16 = 1;
 /// The picker's top-left title (the box label).
 const PICKER_TITLE: &str = "Switch worktree";
 /// The herdr-style `esc close` chip on the top border (right-aligned, dim chrome).
@@ -373,7 +378,8 @@ const PICKER_FOOTER_HINT: &str = "↑↓ move · ←→ scroll · ⏎ switch · 
 /// move the cursor or spoof the UI (AC-27, defense-in-depth — exactly as the tree does).
 ///
 /// The box is **sized to its content** (the widest rendered row × the row count, plus the
-/// border and title), then **clamped to the frame** with a small margin and **centered** — so a
+/// border, title, and uniform inner padding), then **clamped to the frame** with a small margin
+/// and **centered** — so a
 /// few short worktrees draw a tidy box and many long paths grow up to the pane, then cap. It is
 /// recomputed every draw, so it is fully responsive to a pane resize.
 ///
@@ -396,10 +402,14 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
         .map(|(i, row)| picker_row(row, i == picker.cursor))
         .collect();
 
-    // herdr-style chrome: a dim `esc close` chip on the top border (right) and a dim key-hint
-    // footer on the bottom border. These are static affordances (not repo-derived), rendered as
-    // Block titles — never inner rows — so the rows area / scroll above are untouched.
-    let hint_style = Style::new().fg(Color::DarkGray);
+    // herdr-style chrome: an `esc close` chip on the top border (right) and a key-hint footer on
+    // the bottom border. These are static affordances (not repo-derived), rendered as Block titles
+    // — never inner rows — so the rows area / scroll above are untouched. The two hint strings are
+    // drawn in the default/terminal foreground — the SAME color as the worktree path text in the
+    // rows. We set `Color::Reset` explicitly: title spans inherit the Block's (blue) border style,
+    // so without an override they would tint blue rather than match the un-styled path text. (The
+    // current-marker cyan and the agent badges keep their own colors — only the hints change.)
+    let hint_style = Style::new().fg(Color::Reset);
     let top_left = Line::from(PICKER_TITLE);
     let top_right = Line::styled(PICKER_ESC_CLOSE, hint_style).right_aligned();
     let footer = Line::styled(PICKER_FOOTER_HINT, hint_style).centered();
@@ -417,9 +427,18 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
         .max(min_bottom)
         .min(u16::MAX as usize) as u16;
     let desired_inner_h = (rows.len().min(u16::MAX as usize) as u16).max(1);
-    // +2 for the borders on each axis; the titles share the border rows, so no extra height.
-    let want_w = desired_inner_w.saturating_add(2);
-    let want_h = desired_inner_h.saturating_add(2);
+    // Outer width = inner content + 2 (borders) + 2 (one col of horizontal padding each side), so
+    // the rows aren't squeezed against the border. Outer height = inner rows + 2 (top/bottom
+    // borders, which the title/footer chrome share) + 2 (one row of vertical padding top and
+    // bottom), so a blank padded line sits between the top border/title and the first row, and
+    // between the last row and the bottom border/footer. Saturating so huge content never
+    // overflows u16.
+    let want_w = desired_inner_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
     // Cap at the pane, leaving a one-cell margin all round (never exceed, never underflow). If the
     // frame is narrower than the chrome wants, the box caps here and the hints simply truncate.
     let cap_w = area.width.saturating_sub(2);
@@ -433,7 +452,12 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
         .title_top(top_left)
         .title_top(top_right)
         .title_bottom(footer)
-        .border_style(Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD));
+        .border_style(Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD))
+        // A 1-cell gutter on every side so the rows aren't flush against the border (or the
+        // title/footer chrome that shares the border rows). `inner()` subtracts this all round
+        // automatically, so the rows, cursor highlight, current marker, agent badge, vertical
+        // scroll, and hscroll all flow from the padded interior below.
+        .padding(Padding::uniform(PICKER_PADDING));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 

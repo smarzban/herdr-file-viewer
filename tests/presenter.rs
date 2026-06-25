@@ -902,6 +902,71 @@ fn picker_box_clamps_to_a_narrow_frame_without_panicking() {
 }
 
 #[test]
+fn picker_rows_are_inset_from_the_left_border_by_one_padding_col() {
+    // Picker-padding: the rows render into the block's PADDED inner, so a row's first non-blank
+    // cell sits at least 2 columns right of the box's left `│` — one for the border, one for the
+    // horizontal padding gutter. (Before the padding, the first content cell sat at x0 + 1, flush
+    // against the border.)
+    let buf = render_buffer(&picker_state(), 100, 24);
+    let (x0, y0, _x1, y1) = picker_border_box(&buf);
+
+    // Scan the interior rows (between the top and bottom border) for the first one carrying a
+    // non-blank cell, and find that cell's column.
+    let (w, _h) = (buf.area().width, buf.area().height);
+    let mut first_content_col: Option<u16> = None;
+    'rows: for y in (y0 + 1)..y1 {
+        for x in (x0 + 1)..w {
+            let cell = buf.cell((x, y));
+            let sym = cell.map_or(" ", |c| c.symbol());
+            // Stop at the right border; only look inside the box.
+            if sym == "│" && x > x0 {
+                break;
+            }
+            if sym != " " && sym != "│" {
+                first_content_col = Some(x);
+                break 'rows;
+            }
+        }
+    }
+    let col = first_content_col.expect("the picker has at least one row with content");
+    assert!(
+        col >= x0 + 2,
+        "row content is inset from the left border by the padding gutter \
+         (first content col {col} must be >= left border {x0} + 2)"
+    );
+}
+
+#[test]
+fn picker_rows_are_inset_from_the_top_border_by_one_padding_row() {
+    // Picker-padding: uniform padding also insets the rows VERTICALLY, so the first row's text
+    // sits at least 2 rows below the box's top border `─` line — one for the border row (which
+    // carries the title), one for the top padding row (a blank line). (With horizontal-only
+    // padding the first row sat at y0 + 1, flush against the top border.) Complements the
+    // left-inset test, which checks the horizontal gutter.
+    let buf = render_buffer(&picker_state(), 100, 24);
+    let (x0, y0, x1, y1) = picker_border_box(&buf);
+
+    // Scan interior rows top-to-bottom for the first one carrying a non-blank, non-border cell,
+    // and record which row it lands on.
+    let mut first_content_row: Option<u16> = None;
+    'rows: for y in (y0 + 1)..y1 {
+        for x in (x0 + 1)..x1 {
+            let sym = buf.cell((x, y)).map_or(" ", |c| c.symbol());
+            if sym != " " && sym != "│" {
+                first_content_row = Some(y);
+                break 'rows;
+            }
+        }
+    }
+    let row = first_content_row.expect("the picker has at least one row with content");
+    assert!(
+        row >= y0 + 2,
+        "row content is inset from the top border by the padding row \
+         (first content row {row} must be >= top border {y0} + 2)"
+    );
+}
+
+#[test]
 fn picker_border_is_blue() {
     // Picker-layout §1: the overlay border renders in the terminal's ANSI blue (matching herdr's
     // terminal-theme chrome). Assert the `┌` corner cell carries Color::Blue.
@@ -1052,12 +1117,43 @@ fn picker_shows_an_esc_close_chip_on_the_top_border() {
         "the `esc close` chip is to the RIGHT of the title (top={top:?})"
     );
 
-    // The chip is dim chrome (DarkGray), not bright content. Check the fg at the chip's first cell.
+    // The chip is no longer dimmed: its fg matches the worktree PATH text (the default/terminal
+    // foreground, `Color::Reset`), not DarkGray. Compare it to a path cell's fg directly.
+    let path_fg = path_text_fg(&buf);
+    let chip_fg = buf.cell((chip_col, y0)).unwrap().fg;
     assert_eq!(
-        buf.cell((chip_col, y0)).unwrap().fg,
-        ratatui::style::Color::DarkGray,
-        "the `esc close` chip is dim (DarkGray) chrome"
+        chip_fg, path_fg,
+        "the `esc close` chip uses the same fg as the worktree path text (default), not DarkGray"
     );
+    assert_eq!(
+        chip_fg,
+        ratatui::style::Color::Reset,
+        "the chip uses the default/terminal foreground (Color::Reset)"
+    );
+}
+
+/// The foreground color of a worktree PATH cell in the picker rows — the baseline the chrome
+/// hints are expected to match. Anchors on the `/work/main` path (the current, non-cursor row),
+/// reading the fg of its first path glyph. The path spans carry no explicit fg, so this is the
+/// default `Color::Reset`.
+fn path_text_fg(buf: &ratatui::buffer::Buffer) -> ratatui::style::Color {
+    let needle = "/work/main";
+    let (w, h) = (buf.area().width, buf.area().height);
+    for y in 0..h {
+        for x in 0..w {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                return buf.cell((x, y)).unwrap().fg;
+            }
+        }
+    }
+    panic!("{needle:?} path text not found in buffer");
 }
 
 /// The text of a border row between columns `x0..=x1` (one char per cell, multi-width cells
@@ -1118,12 +1214,19 @@ fn picker_shows_a_key_hint_footer_on_the_bottom_border() {
         "the footer uses herdr's ` · ` separator\n{bottom}"
     );
 
-    // The footer is dim chrome (DarkGray). Check the fg at the first hint glyph (`move`).
+    // The footer is no longer dimmed: its fg matches the worktree PATH text (the default/terminal
+    // foreground, `Color::Reset`), not DarkGray. Check the fg at the first hint glyph (`move`).
     let move_col = first_col_of(&buf, x0, x1, y1, "move").expect("footer names `move`");
+    let path_fg = path_text_fg(&buf);
+    let footer_fg = buf.cell((move_col, y1)).unwrap().fg;
     assert_eq!(
-        buf.cell((move_col, y1)).unwrap().fg,
-        ratatui::style::Color::DarkGray,
-        "the footer hint is dim (DarkGray) chrome"
+        footer_fg, path_fg,
+        "the footer hint uses the same fg as the worktree path text (default), not DarkGray"
+    );
+    assert_eq!(
+        footer_fg,
+        ratatui::style::Color::Reset,
+        "the footer uses the default/terminal foreground (Color::Reset)"
     );
 }
 
