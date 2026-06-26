@@ -2560,11 +2560,14 @@ fn picker_other_intents_are_inert() {
     let cursor_before = ctrl.picker().unwrap().cursor;
 
     // These should all be no-ops (picker stays open, root unchanged, cursor unchanged).
+    // OpenFinder included: the finder must NOT open while the picker is the active modal
+    // (modal mutual-exclusion, gate L-3) — handle() routes to handle_picker_intent first.
     for intent in [
         Intent::ToggleIgnore,
         Intent::ToggleChangedOnly,
         Intent::CycleView,
         Intent::ToggleFocus,
+        Intent::OpenFinder,
     ] {
         ctrl.handle(intent);
     }
@@ -2572,6 +2575,10 @@ fn picker_other_intents_are_inert() {
     assert!(
         ctrl.picker().is_some(),
         "picker stays open for inert intents"
+    );
+    assert!(
+        !ctrl.finder_open(),
+        "OpenFinder is inert while the picker is open — finder must not open (modal mutual-exclusion)"
     );
     assert_eq!(
         ctrl.picker().unwrap().cursor,
@@ -2785,5 +2792,38 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
         common::canon(ctrl.root()),
         common::canon(&root_before),
         "AC-N5: root MUST change after SwitchWorktree → NavDown → Activate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-5 — OpenFinder intent: open + finder_open (AC-1, AC-18)
+// ---------------------------------------------------------------------------
+
+/// AC-1 / AC-18: handle(OpenFinder) opens the finder (finder_open() → true), populates it
+/// with the candidates that index::build returns for the root, and leaves the query empty.
+#[test]
+fn open_finder_opens_finder_with_full_candidate_list_and_empty_query() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    assert!(!ctrl.finder_open(), "finder starts closed");
+
+    let fx = ctrl.handle(Intent::OpenFinder);
+    assert!(fx.redraw, "OpenFinder triggers a redraw");
+    assert!(ctrl.finder_open(), "finder_open() is true after OpenFinder");
+
+    // Candidates must equal index::build(root) — same set, order may differ.
+    let mut expected = herdr_file_viewer::index::build(dir.path());
+    expected.sort();
+    let mut got = ctrl.finder_candidates().to_vec();
+    got.sort();
+    assert_eq!(got, expected, "candidates must equal index::build(root)");
+
+    assert_eq!(
+        ctrl.finder_query(),
+        "",
+        "query is empty when the finder is first opened"
     );
 }

@@ -29,6 +29,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('b') => Some(Intent::ToggleBaseline),
         KeyCode::Char('v') => Some(Intent::CycleView),
         KeyCode::Char('e') => Some(Intent::OpenInEditor),
+        KeyCode::Char('f') => Some(Intent::OpenFinder),
         KeyCode::Char('y') => Some(Intent::CopyRepoPath),
         KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
         KeyCode::Char('W') => Some(Intent::SwitchWorktree),
@@ -70,6 +71,7 @@ mod tests {
         (KeyCode::Char('b'), Intent::ToggleBaseline),
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
+        (KeyCode::Char('f'), Intent::OpenFinder),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
@@ -169,6 +171,21 @@ mod tests {
             None
         );
         assert_eq!(map_key(k(KeyCode::Char('w'))), Some(Intent::ToggleWrap));
+    }
+
+    #[test]
+    fn f_maps_to_open_finder_and_modifier_chords_are_inert() {
+        // `f` opens the go-to-file finder (AC-1, AC-N6). Ctrl-f / Alt-f must not fire an intent
+        // (reserved terminal chords / alt-text-entry paths must stay clear).
+        assert_eq!(map_key(k(KeyCode::Char('f'))), Some(Intent::OpenFinder));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
+            None
+        );
     }
 
     #[test]

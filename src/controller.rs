@@ -16,6 +16,7 @@
 //! monotonic sequence so a slow render for a file the user has since left is dropped rather
 //! than clobbering the current selection.
 
+use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
 use crate::intent::Intent;
@@ -235,6 +236,9 @@ pub struct Controller {
     /// The open worktree picker's state, or `None` when closed (AC-1). A re-root closes it
     /// (AC-13); the switch itself is wired in later tasks.
     picker: Option<PickerState>,
+    /// The open go-to-file finder's state, or `None` when closed (AC-1). Opened by the `f` key
+    /// (OpenFinder intent); confirm/cancel wired in T-7.
+    finder: Option<FinderState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
     /// Session-level — survives a re-root unchanged.
@@ -312,6 +316,7 @@ impl Controller {
             update_rx: None,
             status_rx: None,
             picker: None,
+            finder: None,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -739,6 +744,7 @@ impl Controller {
             Intent::Refresh => self.refresh(),
             Intent::DismissUpdate => self.dismiss_update(),
             Intent::SwitchWorktree => self.open_worktree_picker(),
+            Intent::OpenFinder => self.open_finder(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -1516,6 +1522,36 @@ impl Controller {
             hscroll: 0,
         });
         Effects::redraw()
+    }
+
+    /// Open the go-to-file finder (AC-1). Builds the file index for the current root, then
+    /// installs a fresh `FinderState` with an empty query and the full candidate list.
+    /// Returns [`Effects::redraw`] so the run loop paints the overlay on the next tick (T-8).
+    ///
+    /// Modal mutual-exclusion (finder inert while the picker is open) holds BY CONSTRUCTION:
+    /// `handle()` routes to `handle_picker_intent()` while `self.picker.is_some()`, and its
+    /// catch-all `_ => Effects::noop()` swallows `OpenFinder`. No extra guard is needed here.
+    fn open_finder(&mut self) -> Effects {
+        let candidates = crate::index::build(&self.root);
+        self.finder = Some(FinderState::new(candidates));
+        Effects::redraw()
+    }
+
+    /// Whether the go-to-file finder overlay is currently open.
+    pub fn finder_open(&self) -> bool {
+        self.finder.is_some()
+    }
+
+    /// The full candidate list loaded when the finder was opened, or an empty slice when
+    /// the finder is closed. Exposed for tests (T-5); the Presenter/T-8 read via `finder()`.
+    pub fn finder_candidates(&self) -> &[String] {
+        self.finder.as_ref().map(|f| f.candidates()).unwrap_or(&[])
+    }
+
+    /// The current finder query string, or `""` when the finder is closed or the query is
+    /// empty. Exposed for tests (T-5); the Presenter/T-8 reads via `finder()`.
+    pub fn finder_query(&self) -> &str {
+        self.finder.as_ref().map(|f| f.query()).unwrap_or("")
     }
 
     /// Fetch the herdr agent overlay — the `worktree list` + `agent list` JSON — with exactly the

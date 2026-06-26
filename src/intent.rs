@@ -62,6 +62,10 @@ pub enum Intent {
     /// checks out a branch or mutates any worktree (AC-N1/N2). The picker is keyboard-operable
     /// (AC-5); a switch happens ONLY in response to this explicit action (AC-N5).
     SwitchWorktree,
+    /// Open the go-to-file finder overlay to navigate to any file in the repository by
+    /// typing a fuzzy query. Read-only — it navigates the viewer's selection; it never
+    /// modifies any file (AC-1, AC-N1, AC-N3).
+    OpenFinder,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -69,7 +73,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 22] = [
+    pub const ALL: [Intent; 23] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -91,6 +95,7 @@ impl Intent {
         Intent::Refresh,
         Intent::DismissUpdate,
         Intent::SwitchWorktree,
+        Intent::OpenFinder,
         Intent::Close,
     ];
 }
@@ -129,6 +134,7 @@ mod tests {
                 | Intent::Refresh
                 | Intent::DismissUpdate
                 | Intent::SwitchWorktree
+                | Intent::OpenFinder
                 | Intent::Close => false,
             };
             assert!(
@@ -153,6 +159,14 @@ mod tests {
         assert!(
             Intent::ALL.contains(&Intent::SwitchWorktree),
             "Intent::ALL must contain SwitchWorktree"
+        );
+    }
+
+    #[test]
+    fn open_finder_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::OpenFinder),
+            "Intent::ALL must contain OpenFinder"
         );
     }
 }
