@@ -981,6 +981,8 @@ fn wide_geometry() -> PaneGeometry {
         content_vbar: None,
         content_hbar: None,
         divider_x: Some(40),
+        finder_rows: None,
+        finder_scroll: 0,
     }
 }
 
@@ -3404,55 +3406,300 @@ fn enter_with_match_resyncs_hide_hidden_mirror_after_reveal() {
     );
 }
 
-#[test]
-fn mouse_is_inert_while_the_finder_is_open() {
-    // Mirror of `mouse_is_inert_while_the_picker_is_open` (review-gate R1, E) — the finder is
-    // also a keyboard-only modal overlay: a click or wheel behind it must not drive the tree or
-    // content underneath. Guards the `|| self.finder.is_some()` extension in `handle_mouse`.
-    let (_dir, mut ctrl) = finder_dir();
-    ctrl.set_pane_geometry(wide_geometry());
+/// Build a `PaneGeometry` that reflects an open finder with three result rows starting at screen
+/// row 12 (after the border + padding + query line): rows_area at x=10,y=12,w=30,h=10,
+/// finder_scroll=0. Used by the finder-mouse tests below.
+fn finder_geometry_with_rows() -> PaneGeometry {
+    PaneGeometry {
+        finder_rows: Some(Rect {
+            x: 10,
+            y: 12,
+            width: 30,
+            height: 10,
+        }),
+        finder_scroll: 0,
+        ..wide_geometry()
+    }
+}
 
-    // Precondition: the finder is open (OpenFinder was called in `finder_dir`).
+#[test]
+fn mouse_is_inert_while_the_finder_is_open_outside_overlay() {
+    // Rewritten T-9: the finder is mouse-interactive INSIDE its rows area, but clicks/scrolls
+    // OUTSIDE (on the tree or content panes beneath the overlay) must never drive those panes.
+    // This test checks the "outside/other" branch — which must stay inert — and also asserts
+    // that the finder stays open (a click outside does NOT cancel it; Esc cancels).
+    let (_dir, mut ctrl) = finder_dir();
+
+    // Give the controller a geometry where `finder_rows` covers rows 12-21, cols 10-39.
+    // Any click at (col=6, row=3) is in the tree pane but OUTSIDE the overlay rows.
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    // Precondition: the finder is open and a query is typed so matches exist.
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // produces matches
     assert!(
         ctrl.finder_open(),
         "finder must be open before the mouse events"
     );
+    let tree_cursor_before = ctrl.tree().cursor();
 
-    // Capture the underlying state before the mouse events.
-    let cursor_before = ctrl.tree().cursor();
-
-    // A left-click on a tree row would (without the guard) move the cursor and focus the tree.
+    // A left-click on what would be a tree row (outside the overlay) must be inert.
     let click = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
-    assert!(
-        !click.redraw && !click.quit,
-        "a click is a no-op while the finder is open"
-    );
-
-    // A scroll over the tree would (without the guard) move the selection.
-    let scroll = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
-    assert!(
-        !scroll.redraw && !scroll.quit,
-        "a scroll is a no-op while the finder is open"
-    );
-
-    // A scroll over the content pane would (without the guard) scroll the content.
-    let scroll_c = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
-    assert!(
-        !scroll_c.redraw && !scroll_c.quit,
-        "a content scroll is a no-op while the finder is open"
-    );
-
-    // The tree cursor must be unchanged — no mouse event drove it.
+    assert!(!click.quit, "outside click must not quit");
     assert_eq!(
         ctrl.tree().cursor(),
-        cursor_before,
-        "the tree cursor must be unchanged behind the open finder"
+        tree_cursor_before,
+        "the tree cursor must be unchanged: clicks outside overlay must not drive the tree"
     );
 
-    // The finder must still be open (no mouse event closed it).
+    // The finder must still be open — clicking outside the rows area does NOT cancel.
     assert!(
         ctrl.finder_open(),
-        "the finder must still be open after the mouse events"
+        "the finder must still be open: outside clicks do not cancel (Esc cancels)"
+    );
+
+    // Shift+mouse is also inert (terminal selection) — same guard as the normal mouse path.
+    let shift_click = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 15,
+        row: 13,
+        modifiers: KeyModifiers::SHIFT,
+    };
+    let shift_fx = ctrl.handle_mouse(shift_click);
+    assert!(!shift_fx.quit, "Shift+click is inert (terminal selection)");
+
+    // A Down event (not Up) inside the overlay is inert (no drag in the finder).
+    let down = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 15, 12));
+    assert!(!down.quit, "Down event inside the finder overlay is inert");
+}
+
+#[test]
+fn finder_wheel_moves_selection() {
+    // ScrollDown/ScrollUp while the finder is open moves the finder selection by WHEEL_STEP (3),
+    // clamped at both ends. Position-independent (the finder owns all wheel events while open).
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // produces ≥1 matches (alpha, beta, gamma)
+    let n = ctrl.finder_matches().len();
+    assert!(n >= 3, "need ≥3 matches for this test; got {n}");
+
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    // Starting cursor is 0.
+    assert_eq!(ctrl.finder_cursor(), 0, "cursor starts at 0");
+
+    // ScrollDown → moves down by WHEEL_STEP (3) or to the last match if fewer.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3)); // position: tree area (irrelevant)
+    assert!(fx.redraw, "ScrollDown redraws");
+    let expected_after_down = 3_usize.min(n - 1);
+    assert_eq!(
+        ctrl.finder_cursor(),
+        expected_after_down,
+        "ScrollDown moves the finder selection down by WHEEL_STEP"
+    );
+
+    // ScrollUp → moves back up.
+    let fx2 = ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5)); // position: content area (irrelevant)
+    assert!(fx2.redraw, "ScrollUp redraws");
+    assert_eq!(
+        ctrl.finder_cursor(),
+        0,
+        "ScrollUp moves the finder selection back up (clamped at 0)"
+    );
+
+    // ScrollUp at the top is a no-op for the cursor (stays at 0) but still redraws.
+    let fx3 = ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0));
+    assert!(fx3.redraw, "ScrollUp at the top still redraws");
+    assert_eq!(ctrl.finder_cursor(), 0, "cursor is clamped at 0");
+}
+
+#[test]
+fn finder_click_on_row_selects_it() {
+    // A left-button Up event on a result row (within finder_rows) sets the finder cursor to
+    // that row's index (scroll_offset + (screen_row - rows_area.y)).
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // produces matches
+    let n = ctrl.finder_matches().len();
+    assert!(n >= 2, "need ≥2 matches for this test; got {n}");
+
+    // rows_area starts at row 12, scroll=0 → screen row 12 = index 0, row 13 = index 1.
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    // Click on the SECOND result row (screen row 13, col 15 — inside rows_area).
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 13));
+    assert!(fx.redraw, "a click on a result row redraws");
+    assert_eq!(
+        ctrl.finder_cursor(),
+        1,
+        "clicking the second result row sets the cursor to index 1"
+    );
+    assert!(
+        ctrl.finder_open(),
+        "a single click does not confirm: the finder stays open"
+    );
+
+    // Click on the FIRST result row (screen row 12, col 15).
+    let fx2 = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(fx2.redraw, "clicking the first row redraws");
+    assert_eq!(
+        ctrl.finder_cursor(),
+        0,
+        "clicking the first result row sets the cursor to index 0"
+    );
+    assert!(ctrl.finder_open(), "finder still open after a single click");
+
+    // Click outside the rows_area (below the last row, or to the left of the box) — inert.
+    // rows_area is x=10,y=12,w=30,h=10 → row 22 is outside.
+    let fx3 = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 22));
+    assert!(
+        ctrl.finder_open(),
+        "click below rows is inert: finder stays open"
+    );
+    assert_eq!(
+        ctrl.finder_cursor(),
+        0,
+        "cursor unchanged after outside click"
+    );
+    assert!(!fx3.quit, "outside click does not quit");
+}
+
+#[test]
+fn finder_double_click_confirms() {
+    // A double-click (two Up(Left) events on the same row within DOUBLE_CLICK ms) confirms the
+    // finder: the finder closes and the tree reveals that file. Mirrors the tree's double-click
+    // behaviour (folder expand/collapse, file zoom), sharing is_double_click and last_click.
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // produces matches (alpha.txt, beta.rs, gamma.rs)
+    let n = ctrl.finder_matches().len();
+    assert!(n >= 1, "need ≥1 match for this test; got {n}");
+
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    // First click on row 0 (screen row 12) → selects it, finder still open.
+    let fx1 = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(fx1.redraw, "first click redraws");
+    assert!(ctrl.finder_open(), "finder still open after first click");
+    assert_eq!(ctrl.finder_cursor(), 0, "cursor on row 0 after first click");
+
+    // Second click on the SAME row within the double-click window → confirms.
+    // (We rely on Instant::now() being within DOUBLE_CLICK=400ms between the two calls —
+    // guaranteed in a test environment without sleep.)
+    let fx2 = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(fx2.redraw, "double-click redraws");
+    assert!(
+        !ctrl.finder_open(),
+        "double-click closes the finder (confirm)"
+    );
+
+    // The tree should now have a selection pointing to the confirmed file.
+    // (We can't assert the exact path without knowing ranking order, but the tree cursor
+    // moved — it is no longer necessarily 0 depending on the file layout.)
+    // The important assertion: the finder is gone.
+    assert!(
+        ctrl.finder_cursor() == 0,
+        "finder_cursor() returns 0 because the finder is closed (None), not because the cursor was reset"
+    );
+}
+
+/// Geometry where both `tree_inner` and `finder_rows` share row 12.
+/// `tree_inner` starts at y=10 so row 12 = tree node index 2 (a valid node in a 3-node tree).
+/// `finder_rows` starts at y=12 so row 12 = finder row index 0.
+fn cross_contamination_geometry() -> PaneGeometry {
+    PaneGeometry {
+        tree_inner: Some(Rect {
+            x: 1,
+            y: 10,
+            width: 38,
+            height: 20,
+        }),
+        finder_rows: Some(Rect {
+            x: 10,
+            y: 12,
+            width: 30,
+            height: 10,
+        }),
+        finder_scroll: 0,
+        ..wide_geometry()
+    }
+}
+
+#[test]
+fn last_click_not_shared_between_finder_and_tree_scenario_a() {
+    // Scenario A: finder open → click a finder row → Esc closes finder → click tree row at
+    // the SAME screen row → must NOT spuriously double-click (no zoom).
+    // Without the fix, open_finder() and the Esc branch of handle_finder_key both leave
+    // last_click populated, so the tree click pairs with the finder click as a double-click.
+    let (_dir, mut ctrl) = finder_dir();
+    // Geometry where row 12 is finder row 0 AND tree node index 2 (third node — "sub/").
+    ctrl.set_pane_geometry(cross_contamination_geometry());
+
+    // Produce at least one match so finder_rows is non-empty.
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    assert!(ctrl.finder_open(), "precondition: finder is open");
+    assert!(
+        !ctrl.finder_matches().is_empty(),
+        "precondition: matches exist"
+    );
+
+    // Step 1: click finder row 0 at screen row 12 (sets last_click).
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(ctrl.finder_open(), "finder still open after single click");
+
+    // Step 2: Esc closes the finder. The fix clears last_click here.
+    ctrl.handle_finder_key(key(KeyCode::Esc));
+    assert!(!ctrl.finder_open(), "finder closed by Esc");
+
+    // Step 3: click the tree row at the SAME screen row 12 (= tree node index 2).
+    // Without the fix this would fire is_double_click → activate() → zoom.
+    // With the fix last_click was cleared on Esc, so this is a single click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 12));
+    assert!(
+        !ctrl.zoomed(),
+        "tree click after Esc-close must NOT spuriously zoom (last_click cross-contamination)"
+    );
+}
+
+#[test]
+fn last_click_not_shared_between_finder_and_tree_scenario_b() {
+    // Scenario B: click a tree row → open finder → click finder row at the SAME screen row →
+    // must single-click select (finder stays open), NOT spuriously confirm (double-click).
+    // Without the fix, open_finder() leaves last_click populated from the tree click, so the
+    // finder click pairs with the tree click as a double-click and closes the finder.
+    //
+    // Use a fresh controller (not finder_dir which pre-opens the finder) so Step 1 goes through
+    // handle_click (the tree path), not handle_finder_mouse.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("gamma.rs"), "c").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(cross_contamination_geometry());
+
+    // Step 1: click tree row at screen row 12 (= tree node index 2 — "sub/").
+    // The finder is not yet open so this routes through handle_click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 12));
+    assert!(
+        !ctrl.finder_open(),
+        "precondition: finder not open after tree click"
+    );
+
+    // Step 2: open the finder. The fix clears last_click here.
+    ctrl.handle(Intent::OpenFinder);
+    assert!(ctrl.finder_open(), "finder is now open");
+
+    // Produce matches so finder has rows to click.
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    assert!(
+        !ctrl.finder_matches().is_empty(),
+        "precondition: matches exist"
+    );
+
+    // Step 3: click finder row 0 at the SAME screen row 12.
+    // Without the fix is_double_click fires → confirm_finder() closes the finder.
+    // With the fix last_click was cleared on open_finder(), so this is a single click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(
+        ctrl.finder_open(),
+        "finder must stay open after single click (no spurious confirm from cross-contamination)"
     );
 }
 

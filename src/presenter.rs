@@ -545,6 +545,14 @@ pub struct PaneGeometry {
     pub content_vbar: Option<Rect>,
     pub content_hbar: Option<Rect>,
     pub divider_x: Option<u16>,
+    /// The screen rect where finder result rows are drawn, `None` when the finder is closed or
+    /// has no rows (empty query or zero matches). Used by the controller to map a mouse click to
+    /// a result row index: `row - finder_rows.y + finder_scroll` gives the match list index.
+    pub finder_rows: Option<Rect>,
+    /// The finder's scroll offset into the match list — the index of the first visible result row.
+    /// `0` when the finder is closed or when all rows fit. Added to a click's screen-row delta to
+    /// produce the absolute match-list index.
+    pub finder_scroll: u16,
 }
 
 /// Compute the [`PaneGeometry`] for hit-testing the current frame — the same layout [`draw`]
@@ -597,6 +605,17 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         None => (None, None, None),
     };
 
+    // Finder: if the finder overlay is open, compute its layout with the same helper
+    // `draw_finder_overlay` uses (same `area` = `frame.area()` = the full terminal rect),
+    // so the hit-test geometry agrees with what is drawn.
+    let (finder_rows, finder_scroll) = match &state.finder {
+        Some(finder) => {
+            let fl = finder_overlay_layout(area, finder);
+            (fl.rows_area, fl.offset.min(u16::MAX as usize) as u16)
+        }
+        None => (None, 0),
+    };
+
     PaneGeometry {
         area_x: body.x,
         area_width: body.width,
@@ -609,6 +628,8 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         content_vbar,
         content_hbar,
         divider_x,
+        finder_rows,
+        finder_scroll,
     }
 }
 
@@ -896,6 +917,119 @@ const FINDER_PROMPT: &str = "> ";
 /// The placeholder shown on the query-input line when the query is empty (AC-2).
 const FINDER_PLACEHOLDER: &str = "> type to find a file…";
 
+/// The computed layout geometry of the finder overlay, shared between [`draw_finder_overlay`]
+/// and [`geometry`] so neither can drift from the other. Both functions call
+/// [`finder_overlay_layout`] and operate on the returned rects.
+struct FinderLayout {
+    /// The full popup outer rect (after centering + clamping to `area`). Used by `draw` to
+    /// `Clear` the region and render the bordered block.
+    popup: Rect,
+    /// The single-row rect for the query-input line (first row of the block interior).
+    query_area: Rect,
+    /// The rect where result rows are rendered (the interior below the query line), or `None`
+    /// when the interior has no room for rows or when there are no match rows.
+    rows_area: Option<Rect>,
+    /// The scroll offset: the index of the first visible match row. `0` when all rows fit.
+    offset: usize,
+}
+
+/// Compute the finder overlay's layout geometry for the given frame `area` and `finder` draw
+/// model. This is the **single authoritative place** for all the sizing + centering + scroll
+/// math — both [`draw_finder_overlay`] and [`geometry`] call it, so the drawn rects and the
+/// hit-test geometry are guaranteed to agree.
+fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
+    // Build the query line for width measurement (same logic as draw).
+    let query_line: Line<'static> = if finder.query.is_empty() {
+        Line::styled(
+            FINDER_PLACEHOLDER.to_string(),
+            Style::new().add_modifier(Modifier::DIM),
+        )
+    } else {
+        let display_query = sanitize_label(&finder.query);
+        Line::from(format!("{FINDER_PROMPT}{display_query}"))
+    };
+
+    // Build match lines for width measurement.
+    let match_lines: Vec<Line<'static>> = finder
+        .matches
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let text = sanitize_label(path);
+            let style = if i == finder.cursor {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            Line::styled(text, style)
+        })
+        .collect();
+
+    // Chrome widths (same as draw_finder_overlay).
+    let hint_style = Style::new().fg(Color::Reset);
+    let top_left = Line::from(FINDER_TITLE);
+    let top_right = Line::styled(FINDER_ESC_CANCEL, hint_style).right_aligned();
+    let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
+
+    let query_w = query_line.width();
+    let max_row_w = match_lines.iter().map(Line::width).max().unwrap_or(0);
+    let min_top = top_left.width() + 1 + top_right.width();
+    let min_bottom = footer.width();
+    let desired_inner_w = query_w
+        .max(max_row_w)
+        .max(min_top)
+        .max(min_bottom)
+        .min(u16::MAX as usize) as u16;
+    let desired_inner_h = (1 + match_lines.len().min(u16::MAX as usize) as u16).max(1);
+    let want_w = desired_inner_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let cap_w = area.width.saturating_sub(2);
+    let cap_h = area.height.saturating_sub(2);
+    let popup = centered_rect_sized(want_w.min(cap_w), want_h.min(cap_h), area);
+
+    let block = Block::bordered().padding(Padding::uniform(PICKER_PADDING));
+    let inner = block.inner(popup);
+
+    // The query line always occupies the first row of the interior (when it fits).
+    let (rows_area, offset) = if inner.height == 0 {
+        (None, 0)
+    } else {
+        let query_area_height = 1u16;
+        let remaining = inner.height.saturating_sub(query_area_height);
+        if remaining == 0 || match_lines.is_empty() {
+            (None, 0)
+        } else {
+            let ra = Rect {
+                x: inner.x,
+                y: inner.y + query_area_height,
+                width: inner.width,
+                height: remaining,
+            };
+            let visible = ra.height as usize;
+            let off = scroll_offset(finder.cursor, match_lines.len(), visible);
+            (Some(ra), off)
+        }
+    };
+
+    let query_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: if inner.height > 0 { 1 } else { 0 },
+    };
+
+    FinderLayout {
+        popup,
+        query_area,
+        rows_area,
+        offset,
+    }
+}
+
 /// Draw the go-to-file finder as a centered, bordered overlay on top of the columns (AC-1).
 ///
 /// The interior (top to bottom) is:
@@ -908,7 +1042,13 @@ const FINDER_PLACEHOLDER: &str = "> type to find a file…";
 /// Reuses [`centered_rect_sized`], [`scroll_offset`], `PICKER_PADDING`, and the Scrollbar/
 /// Block primitives from the picker overlay — no duplication of their internals.
 fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
-    // Build the query line.
+    // Delegate all sizing + centering + scroll math to the shared layout helper, so this
+    // function and `geometry()` can never drift from each other.
+    let layout = finder_overlay_layout(area, finder);
+
+    // Build the query line for rendering (same logic as the layout helper, which built it only
+    // for measurement). Re-built here because `Line` is not `Copy` and the helper doesn't need
+    // to return it.
     let query_line: Line<'static> = if finder.query.is_empty() {
         // Empty query: dim placeholder (AC-2).
         Line::styled(
@@ -920,7 +1060,7 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         Line::from(format!("{FINDER_PROMPT}{display_query}"))
     };
 
-    // Build match rows (AC-5, AC-27).
+    // Build match rows for rendering (AC-5, AC-27).
     let match_lines: Vec<Line<'static>> = finder
         .matches
         .iter()
@@ -942,29 +1082,8 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
     let top_right = Line::styled(FINDER_ESC_CANCEL, hint_style).right_aligned();
     let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
 
-    // Size-to-content: widest of the query line, match rows, and chrome.
-    let query_w = query_line.width();
-    let max_row_w = match_lines.iter().map(Line::width).max().unwrap_or(0);
-    let min_top = top_left.width() + 1 + top_right.width();
-    let min_bottom = footer.width();
-    let desired_inner_w = query_w
-        .max(max_row_w)
-        .max(min_top)
-        .max(min_bottom)
-        .min(u16::MAX as usize) as u16;
-    // Interior height: query line + match rows (at least 1 so the query line always shows).
-    let desired_inner_h = (1 + match_lines.len().min(u16::MAX as usize) as u16).max(1);
-    let want_w = desired_inner_w
-        .saturating_add(2)
-        .saturating_add(PICKER_PADDING * 2);
-    let want_h = desired_inner_h
-        .saturating_add(2)
-        .saturating_add(PICKER_PADDING * 2);
-    let cap_w = area.width.saturating_sub(2);
-    let cap_h = area.height.saturating_sub(2);
-    let popup = centered_rect_sized(want_w.min(cap_w), want_h.min(cap_h), area);
-
-    frame.render_widget(Clear, popup);
+    // Clear whatever the columns drew beneath the popup so it reads as a true modal.
+    frame.render_widget(Clear, layout.popup);
 
     let block = Block::bordered()
         .title_top(top_left)
@@ -972,57 +1091,43 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         .title_bottom(footer)
         .border_style(Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD))
         .padding(Padding::uniform(PICKER_PADDING));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
+    frame.render_widget(block, layout.popup);
 
-    // Split the inner rect: the first row is the query line; the rest are match rows.
-    if inner.height == 0 {
-        return;
+    // Render the query line if the interior is tall enough.
+    if layout.query_area.height > 0 {
+        frame.render_widget(Paragraph::new(query_line), layout.query_area);
     }
-    let query_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(Paragraph::new(query_line), query_area);
 
-    // Match rows below the query line (may be zero).
-    if inner.height <= 1 || match_lines.is_empty() {
-        return;
-    }
-    let rows_area = Rect {
-        x: inner.x,
-        y: inner.y + 1,
-        width: inner.width,
-        height: inner.height - 1,
-    };
-    let visible = rows_area.height as usize;
-    let offset = scroll_offset(finder.cursor, match_lines.len(), visible);
-    let window: Vec<Line<'static>> = match_lines.into_iter().skip(offset).take(visible).collect();
-    frame.render_widget(Paragraph::new(window), rows_area);
+    // Render match rows if the layout allocated space for them.
+    if let Some(rows_area) = layout.rows_area {
+        let visible = rows_area.height as usize;
+        let offset = layout.offset;
+        let window: Vec<Line<'static>> =
+            match_lines.into_iter().skip(offset).take(visible).collect();
+        frame.render_widget(Paragraph::new(window), rows_area);
 
-    // Vertical scrollbar when match rows overflow.
-    let total = finder.matches.len();
-    if total > visible {
-        // The scrollbar tracks the cursor position (not the viewport offset) so it follows the
-        // selection — same idiom as the tree's vertical scrollbar.
-        let sb_state = scrollbar_state(total, finder.cursor, visible);
-        let sb_area = Rect {
-            x: rows_area.x + rows_area.width,
-            y: rows_area.y,
-            width: 1,
-            height: rows_area.height,
-        };
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .thumb_symbol("▐")
-                .track_symbol(None)
-                .begin_symbol(None)
-                .end_symbol(None),
-            sb_area,
-            &mut sb_state.clone(),
-        );
+        // Vertical scrollbar when match rows overflow.
+        let total = finder.matches.len();
+        if total > visible {
+            // The scrollbar tracks the cursor position (not the viewport offset) so it follows the
+            // selection — same idiom as the tree's vertical scrollbar.
+            let sb_state = scrollbar_state(total, finder.cursor, visible);
+            let sb_area = Rect {
+                x: rows_area.x + rows_area.width,
+                y: rows_area.y,
+                width: 1,
+                height: rows_area.height,
+            };
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .thumb_symbol("▐")
+                    .track_symbol(None)
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                sb_area,
+                &mut sb_state.clone(),
+            );
+        }
     }
 }
 

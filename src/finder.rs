@@ -88,6 +88,17 @@ impl FinderState {
         self.cursor
     }
 
+    /// Set the cursor to `idx`, clamped to `[0, matches.len() - 1]`. A no-op when the match
+    /// list is empty (cursor stays 0). Used by the mouse click handler to jump the selection
+    /// directly to a result row without bounds-checking at the call site.
+    pub fn set_cursor(&mut self, idx: usize) {
+        if self.matches.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        self.cursor = idx.min(self.matches.len() - 1);
+    }
+
     /// The candidate index at the current cursor position within the match list, or `None`
     /// when the match list is empty (zero matches → no selection to confirm).
     pub fn selected_candidate_index(&self) -> Option<usize> {
