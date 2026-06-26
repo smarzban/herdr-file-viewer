@@ -2137,3 +2137,94 @@ fn finder_overlay_with_matches_snapshot() {
         render(&finder_state_with_matches(), 100, 24)
     );
 }
+
+#[test]
+fn finder_geometry_agrees_with_draw_for_mouse_click_hit_testing() {
+    // Regression: the controller maps a mouse click in the finder overlay to a match index via
+    //   `finder_scroll + (click_y - finder_rows.y)`.
+    // This test renders the overlay and scans the ACTUAL buffer to find which screen row each
+    // match path is drawn on, then asserts that geometry().finder_rows / finder_scroll produce
+    // the same row for that match index.  A mismatch here means geometry and draw have drifted
+    // and a click would resolve to the wrong file.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+
+    let view = finder_state_with_matches();
+    // Matches: index 0 = "src/main.rs", index 1 = "src/inner/main_helper.rs", index 2 = "README.md"
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+
+    let buf = render_buffer(&view, w, h);
+
+    // Helper: scan the full buffer for the first row where `needle` appears, return that row's y.
+    let find_draw_row = |needle: &str| -> u16 {
+        for y in 0..h {
+            for x in 0..w {
+                let hit = needle.chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < w
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|c| c.symbol() == ch.to_string())
+                });
+                if hit {
+                    return y;
+                }
+            }
+        }
+        panic!("{needle:?} not found in buffer — draw did not render it");
+    };
+
+    let draw_row_0 = find_draw_row("src/main.rs");
+    let draw_row_1 = find_draw_row("main_helper.rs");
+
+    let g = geometry(area, &view);
+    let rows_rect = g
+        .finder_rows
+        .expect("geometry().finder_rows must be Some when the finder has matches");
+    let scroll = g.finder_scroll as usize;
+
+    // The drawn row must lie inside finder_rows.
+    assert!(
+        draw_row_1 >= rows_rect.y && draw_row_1 < rows_rect.y + rows_rect.height,
+        "draw put 'main_helper.rs' at screen row {draw_row_1}, \
+         but geometry().finder_rows is {rows_rect:?} — they disagree"
+    );
+    assert!(
+        draw_row_0 >= rows_rect.y && draw_row_0 < rows_rect.y + rows_rect.height,
+        "draw put 'src/main.rs' at screen row {draw_row_0}, \
+         but geometry().finder_rows is {rows_rect:?} — they disagree"
+    );
+
+    // Apply the controller's click-to-index formula and verify the result.
+    let index_1 = scroll + (draw_row_1 - rows_rect.y) as usize;
+    assert_eq!(
+        index_1, 1,
+        "click on the drawn 'main_helper.rs' row (screen y={draw_row_1}) should map to match \
+         index 1 via scroll({scroll}) + (draw_y - rows_rect.y({})): got {index_1}",
+        rows_rect.y
+    );
+
+    let index_0 = scroll + (draw_row_0 - rows_rect.y) as usize;
+    assert_eq!(
+        index_0, 0,
+        "click on the drawn 'src/main.rs' row (screen y={draw_row_0}) should map to match \
+         index 0 via scroll({scroll}) + (draw_y - rows_rect.y({})): got {index_0}",
+        rows_rect.y
+    );
+
+    // Sanity: a Position inside finder_rows at the found row is within the rect.
+    let probe_x = rows_rect.x + rows_rect.width / 2;
+    assert!(
+        rows_rect.contains(ratatui::layout::Position {
+            x: probe_x,
+            y: draw_row_1
+        }),
+        "a position inside finder_rows at the drawn row must be contained in the rect"
+    );
+}
