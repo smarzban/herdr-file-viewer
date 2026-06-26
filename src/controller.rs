@@ -708,6 +708,7 @@ impl Controller {
                 .map(|&i| f.candidates()[i].clone())
                 .collect(),
             cursor: f.cursor(),
+            hscroll: f.hscroll(),
         })
     }
 
@@ -928,6 +929,24 @@ impl Controller {
         match ev.kind {
             MouseEventKind::ScrollDown => self.finder_move_selection(WHEEL_STEP),
             MouseEventKind::ScrollUp => self.finder_move_selection(-WHEEL_STEP),
+            // Horizontal wheel: scroll the result rows sideways, mirroring the vertical-wheel
+            // handling above. Additive to the keyboard ←/→ scroll (AC-18 keyboard-first).
+            MouseEventKind::ScrollRight => {
+                if let Some(f) = self.finder.as_mut() {
+                    f.scroll_right();
+                    Effects::redraw()
+                } else {
+                    Effects::noop()
+                }
+            }
+            MouseEventKind::ScrollLeft => {
+                if let Some(f) = self.finder.as_mut() {
+                    f.scroll_left();
+                    Effects::redraw()
+                } else {
+                    Effects::noop()
+                }
+            }
             MouseEventKind::Up(MouseButton::Left) => self.handle_finder_click(ev.column, ev.row),
             // Down / Drag / other: inert (no drag in the finder).
             _ => Effects::noop(),
@@ -1665,6 +1684,12 @@ impl Controller {
         self.finder.as_ref().map(|f| f.cursor()).unwrap_or(0)
     }
 
+    /// The horizontal scroll offset for the result rows, or `0` when the finder is closed.
+    /// Exposed for tests that verify Left/Right keys and horizontal wheel move hscroll.
+    pub fn finder_hscroll(&self) -> u16 {
+        self.finder.as_ref().map(|f| f.hscroll()).unwrap_or(0)
+    }
+
     /// Route a key event while the finder overlay is open.
     ///
     /// - A printable `Char(c)` with no modifier other than `SHIFT` pushes the character,
@@ -1697,6 +1722,17 @@ impl Controller {
             }
             KeyCode::Down => {
                 finder.move_selection(1);
+                Effects::redraw()
+            }
+            // Left/Right: horizontal scroll of the result rows. The prompt is append-only so the
+            // arrow keys are free — exactly as the picker uses ←/→ for hscroll. The Presenter
+            // clamps to `max_row_width − inner_width` at draw, so over-scrolling is harmless here.
+            KeyCode::Left => {
+                finder.scroll_left();
+                Effects::redraw()
+            }
+            KeyCode::Right => {
+                finder.scroll_right();
                 Effects::redraw()
             }
             KeyCode::Enter => self.confirm_finder(),

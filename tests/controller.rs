@@ -3733,6 +3733,106 @@ fn q_is_a_literal_query_char_in_the_finder_not_a_cancel_key() {
 }
 
 // ---------------------------------------------------------------------------
+// Finder hscroll — Left/Right keys + horizontal wheel + recompute reset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finder_right_key_increments_hscroll_and_left_decrements_it() {
+    // Left/Right arrow keys scroll the result rows horizontally (saturating), exactly as the
+    // worktree picker uses ←/→. The prompt is append-only so the arrows are free.
+    let (_dir, mut ctrl) = finder_dir();
+
+    assert_eq!(ctrl.finder_hscroll(), 0, "hscroll starts at 0");
+
+    let fx = ctrl.handle_finder_key(key(KeyCode::Right));
+    assert!(fx.redraw, "Right redraws");
+    let after_right = ctrl.finder_hscroll();
+    assert!(after_right > 0, "Right increments hscroll");
+
+    let fx2 = ctrl.handle_finder_key(key(KeyCode::Right));
+    assert!(fx2.redraw, "Right again redraws");
+    assert!(
+        ctrl.finder_hscroll() > after_right,
+        "Right again increments hscroll further"
+    );
+
+    let fx3 = ctrl.handle_finder_key(key(KeyCode::Left));
+    assert!(fx3.redraw, "Left redraws");
+    assert_eq!(
+        ctrl.finder_hscroll(),
+        after_right,
+        "Left decrements hscroll back by one step"
+    );
+}
+
+#[test]
+fn finder_left_at_zero_does_not_underflow() {
+    // Left at hscroll=0 is saturating — it stays at 0, never wraps.
+    let (_dir, mut ctrl) = finder_dir();
+
+    assert_eq!(ctrl.finder_hscroll(), 0, "precondition: hscroll is 0");
+    let fx = ctrl.handle_finder_key(key(KeyCode::Left));
+    assert!(fx.redraw, "Left at 0 still redraws");
+    assert_eq!(
+        ctrl.finder_hscroll(),
+        0,
+        "Left at 0 stays at 0 (saturating)"
+    );
+}
+
+#[test]
+fn finder_horizontal_wheel_scrolls_right_and_left() {
+    // ScrollRight/ScrollLeft (horizontal wheel) scroll the result rows sideways — additive to
+    // the keyboard ←/→ (AC-18 keyboard-first; mouse is additive).
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    assert_eq!(ctrl.finder_hscroll(), 0, "hscroll starts at 0");
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 20, 14));
+    assert!(fx.redraw, "ScrollRight redraws");
+    let after_right = ctrl.finder_hscroll();
+    assert!(after_right > 0, "ScrollRight increments hscroll");
+
+    let fx2 = ctrl.handle_mouse(mouse(MouseEventKind::ScrollLeft, 20, 14));
+    assert!(fx2.redraw, "ScrollLeft redraws");
+    assert_eq!(
+        ctrl.finder_hscroll(),
+        0,
+        "ScrollLeft decrements hscroll back to 0"
+    );
+}
+
+#[test]
+fn finder_hscroll_resets_to_zero_on_new_query() {
+    // Typing a new character (recompute) resets hscroll to 0 so the fresh result list starts
+    // unscrolled — the same pattern as cursor resetting to 0 on every query change.
+    let (_dir, mut ctrl) = finder_dir();
+
+    // Scroll right first.
+    ctrl.handle_finder_key(key(KeyCode::Right));
+    assert!(ctrl.finder_hscroll() > 0, "precondition: hscroll is set");
+
+    // Typing a character calls recompute() which resets hscroll.
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    assert_eq!(
+        ctrl.finder_hscroll(),
+        0,
+        "hscroll resets to 0 when a new query character is typed"
+    );
+
+    // Same for Backspace.
+    ctrl.handle_finder_key(key(KeyCode::Right));
+    assert!(ctrl.finder_hscroll() > 0, "precondition: hscroll set again");
+    ctrl.handle_finder_key(key(KeyCode::Backspace));
+    assert_eq!(
+        ctrl.finder_hscroll(),
+        0,
+        "hscroll resets to 0 on Backspace (recompute)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // T-10 — Scope independence + non-git (AC-16, AC-17, AC-19)
 // ---------------------------------------------------------------------------
 

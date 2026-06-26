@@ -8,6 +8,11 @@
 use crate::fuzzy;
 use crate::prompt::PromptInput;
 
+/// How many columns one horizontal-scroll step moves the result rows. Mirrors the controller's
+/// `HSCROLL_STEP` — defined here so `FinderState` is self-contained and the controller can call
+/// `scroll_left`/`scroll_right` without passing a delta.
+const HSCROLL_STEP: u16 = 8;
+
 /// Live state of the go-to-file overlay while it is open (AC-1).
 ///
 /// Created by [`crate::controller::Controller::open_finder`] when the user presses `f` and
@@ -23,6 +28,10 @@ pub struct FinderState {
     matches: Vec<usize>,
     /// Cursor position within `matches`. Driven by T-6.
     cursor: usize,
+    /// Horizontal scroll offset for the result rows, in columns. Monotonic here — the Presenter
+    /// clamps to `max_row_width − inner_width` at draw so it can never over-scroll. Reset to 0
+    /// in `recompute()` (a new query starts unscrolled). Does NOT affect the query line.
+    hscroll: u16,
 }
 
 impl FinderState {
@@ -33,6 +42,7 @@ impl FinderState {
             candidates,
             matches: Vec::new(),
             cursor: 0,
+            hscroll: 0,
         }
     }
 
@@ -61,10 +71,12 @@ impl FinderState {
         self.recompute();
     }
 
-    /// Re-run [`fuzzy::match_and_rank`] against the current query and reset the cursor to 0.
+    /// Re-run [`fuzzy::match_and_rank`] against the current query and reset the cursor and
+    /// horizontal scroll to 0 so a new query starts at the left edge of the result rows.
     fn recompute(&mut self) {
         self.matches = fuzzy::match_and_rank(self.prompt.query(), &self.candidates);
         self.cursor = 0;
+        self.hscroll = 0;
     }
 
     /// Move the cursor within the match list by `delta` rows, clamped to `[0, matches.len()-1]`
@@ -97,6 +109,22 @@ impl FinderState {
             return;
         }
         self.cursor = idx.min(self.matches.len() - 1);
+    }
+
+    /// The horizontal scroll offset for the result rows (columns). The Presenter clamps it to
+    /// `max_row_width − inner_width` at draw, so it can never over-scroll past the widest row.
+    pub fn hscroll(&self) -> u16 {
+        self.hscroll
+    }
+
+    /// Scroll the result rows right by one step (saturating — the Presenter clamps at draw).
+    pub fn scroll_right(&mut self) {
+        self.hscroll = self.hscroll.saturating_add(HSCROLL_STEP);
+    }
+
+    /// Scroll the result rows left by one step, clamped at 0.
+    pub fn scroll_left(&mut self) {
+        self.hscroll = self.hscroll.saturating_sub(HSCROLL_STEP);
     }
 
     /// The candidate index at the current cursor position within the match list, or `None`

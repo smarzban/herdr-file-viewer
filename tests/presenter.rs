@@ -1868,6 +1868,7 @@ fn finder_state_empty_query() -> ViewState {
         query: String::new(),
         matches: vec![],
         cursor: 0,
+        hscroll: 0,
     });
     state
 }
@@ -1883,6 +1884,7 @@ fn finder_state_with_matches() -> ViewState {
             "README.md".to_string(),
         ],
         cursor: 1, // the second row is highlighted
+        hscroll: 0,
     });
     state
 }
@@ -1981,6 +1983,7 @@ fn finder_state_overflow() -> ViewState {
         query: "file".to_string(),
         matches,
         cursor: 25,
+        hscroll: 0,
     });
     state
 }
@@ -2097,6 +2100,7 @@ fn finder_overlay_nonempty_query_zero_matches_shows_prompt_not_placeholder() {
         query: "zzzzz".to_string(),
         matches: vec![],
         cursor: 0,
+        hscroll: 0,
     });
     let out = render(&state, 100, 24);
 

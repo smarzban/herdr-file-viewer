@@ -121,6 +121,10 @@ pub struct FinderView {
     pub matches: Vec<String>,
     /// Index into `matches` of the highlighted row.
     pub cursor: usize,
+    /// Raw horizontal scroll offset (columns) for the result rows. The Presenter clamps it to
+    /// `max_row_width − inner_width` at draw so it can never over-scroll. The query line is
+    /// NOT scrolled; this affects only the match rows.
+    pub hscroll: u16,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -908,10 +912,9 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
 
 /// The finder overlay's top-left title (the box label).
 const FINDER_TITLE: &str = "Go to file";
-/// The herdr-style `esc cancel` chip on the top border (right-aligned, dim chrome).
-const FINDER_ESC_CANCEL: &str = "esc cancel";
-/// The herdr-style key-hint footer on the bottom border — the finder's real bindings.
-const FINDER_FOOTER_HINT: &str = "↑↓ move · ⏎ open · esc cancel";
+/// The herdr-style key-hint footer on the bottom border — the finder's real bindings, including
+/// the horizontal scroll keys (←→) added alongside the result-row hscroll feature.
+const FINDER_FOOTER_HINT: &str = "↑↓ move · ←→ scroll · ⏎ open · esc cancel";
 /// The prompt prefix shown on the query-input line.
 const FINDER_PROMPT: &str = "> ";
 /// The placeholder shown on the query-input line when the query is empty (AC-2).
@@ -965,15 +968,15 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
         })
         .collect();
 
-    // Chrome widths (same as draw_finder_overlay).
+    // Chrome widths (same as draw_finder_overlay). No top-right chip — the footer is the single
+    // home for all key hints.
     let hint_style = Style::new().fg(Color::Reset);
     let top_left = Line::from(FINDER_TITLE);
-    let top_right = Line::styled(FINDER_ESC_CANCEL, hint_style).right_aligned();
     let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
 
     let query_w = query_line.width();
     let max_row_w = match_lines.iter().map(Line::width).max().unwrap_or(0);
-    let min_top = top_left.width() + 1 + top_right.width();
+    let min_top = top_left.width();
     let min_bottom = footer.width();
     let desired_inner_w = query_w
         .max(max_row_w)
@@ -1076,10 +1079,10 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         })
         .collect();
 
-    // Chrome: static strings, no sanitization needed.
+    // Chrome: static strings, no sanitization needed. Only FINDER_TITLE on the top border —
+    // the `esc cancel` chip has been removed so it does not duplicate the footer hint.
     let hint_style = Style::new().fg(Color::Reset);
     let top_left = Line::from(FINDER_TITLE);
-    let top_right = Line::styled(FINDER_ESC_CANCEL, hint_style).right_aligned();
     let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
 
     // Clear whatever the columns drew beneath the popup so it reads as a true modal.
@@ -1087,7 +1090,6 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
 
     let block = Block::bordered()
         .title_top(top_left)
-        .title_top(top_right)
         .title_bottom(footer)
         .border_style(Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD))
         .padding(Padding::uniform(PICKER_PADDING));
@@ -1104,7 +1106,16 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         let offset = layout.offset;
         let window: Vec<Line<'static>> =
             match_lines.into_iter().skip(offset).take(visible).collect();
-        frame.render_widget(Paragraph::new(window), rows_area);
+
+        // Clamp hscroll to the widest ROW (not the chrome-inflated desired width) so it is a
+        // no-op when every row fits and never over-scrolls past the widest path — the same
+        // pattern the picker uses. `Paragraph::scroll((0, x))` clips the leading `x` columns
+        // off each line so long paths can be read sideways.
+        let max_row_width = window.iter().map(Line::width).max().unwrap_or(0);
+        let max_hscroll =
+            (max_row_width.min(u16::MAX as usize) as u16).saturating_sub(rows_area.width);
+        let hscroll = finder.hscroll.min(max_hscroll);
+        frame.render_widget(Paragraph::new(window).scroll((0, hscroll)), rows_area);
 
         // Vertical scrollbar when match rows overflow.
         let total = finder.matches.len();
