@@ -49,8 +49,8 @@ fn guards_the_tag_against_the_crate_version() {
 #[test]
 fn publishes_a_commit_marker() {
     let w = workflow();
-    // The install gate compares the checkout's HEAD to this marker (herdr's checkout lacks tags),
-    // so the release must publish the built commit as a COMMIT asset.
+    // The install script reads this marker to note when a checkout is ahead of the release it's
+    // installing (herdr's checkout lacks tags), so the release must publish the built commit.
     assert!(
         w.contains("release/COMMIT") && w.contains("GITHUB_SHA"),
         "release must publish a COMMIT marker (the GITHUB_SHA it was built from)"

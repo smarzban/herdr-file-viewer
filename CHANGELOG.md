@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Installing now reuses the latest released binary even when `main` is ahead of the tag.** The
+  install step (`scripts/fetch-or-build.sh`) matches the prebuilt by **version** rather than by exact
+  commit, so landing a PR no longer forces new users to compile while a release is pending — they get
+  the last released, SHA-256-verified binary instead. A version with no published release still falls
+  back to building from source, and when the checkout is ahead of the release it's installing, the
+  install prints a note saying the binary doesn't yet include the unreleased source.
+
 ## [1.5.0] - 2026-06-25
 
 ### Added

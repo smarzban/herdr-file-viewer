@@ -66,7 +66,7 @@ right into the tree. It opens beside whatever you're doing and never touches you
 ## Quick start
 
 ```bash
-# 1. Install the plugin (tagged releases download a prebuilt binary; otherwise builds from source):
+# 1. Install the plugin (downloads a prebuilt binary for released versions; otherwise builds from source):
 herdr plugin install smarzban/herdr-file-viewer
 
 # 2. (recommended) install the renderers, so markdown / diffs / code are styled, not plain text:

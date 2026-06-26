@@ -1,12 +1,15 @@
 #!/bin/sh
 # fetch-or-build.sh — herdr [[build]] step for herdr-file-viewer.
 #
-# Fast path: download the prebuilt binary that matches THIS source's version + platform from the
-# GitHub release, verify its SHA-256, and install it at target/release/herdr-file-viewer.
-# Fallback: on ANY miss (source is not the released commit, no asset for this version,
-# network/download error, checksum mismatch, unmapped platform, no curl/wget) print a clear notice
-# and build from source with cargo — identical to the pre-prebuilt behavior, so installing never
-# gets harder than before.
+# Fast path: download the prebuilt binary that matches THIS source's declared version + platform
+# from the GitHub release, verify its SHA-256, and install it at target/release/herdr-file-viewer.
+# The match is by VERSION, not by exact commit: a checkout that is AHEAD of the matching release
+# (e.g. main has merged work that isn't tagged yet) still uses that released binary, so landing a
+# PR no longer forces new users to compile while a release is pending. Integrity is unchanged — the
+# binary is still SHA-256 verified — and a version with no published release still 404s to source.
+# Fallback: on ANY miss (no asset for this version, network/download error, checksum mismatch,
+# unmapped platform, no curl/wget) print a clear notice and build from source with cargo — identical
+# to the pre-prebuilt behavior, so installing never gets harder than before.
 #
 # Paths and the release base URL are overridable via env (FV_REPO_ROOT / FV_CARGO_TOML / FV_OUT /
 # FV_BASE_URL) so the logic is exercised by a hermetic test with stubbed uname/curl/cargo/git.
@@ -88,21 +91,26 @@ asset="herdr-file-viewer-$triple"
 tmpdir=$(mktemp -d 2>/dev/null) || fallback "could not create a temp dir"
 trap 'rm -rf "$tmpdir"' EXIT
 
-# --- gate: this checkout must be EXACTLY the commit the v$version release was built from ----
-# `herdr plugin install` clones a git work tree at the chosen commit but usually WITHOUT local tags,
-# so we cannot resolve the release tag locally. Instead we compare the checkout's HEAD to the commit
-# recorded in the release's COMMIT asset (a plain HTTPS download; `git rev-parse HEAD` is a safe
-# local ref read — no remote, no config-driven command execution). Between releases this repo's main
-# sits at the last released version while its HEAD has advanced past the tag; this check makes the
-# prebuilt fire only when the source IS the released commit, otherwise we build from source. When the
-# checkout is not a git work tree (e.g. an unpacked tarball) ahead-ness is undefined, so we proceed
-# on the version as before.
+# --- version-only match (no commit-exactness gate) -----------------------------------------
+# The prebuilt is used whenever a release exists for the version this source DECLARES — even when
+# the checkout is ahead of that release's commit (e.g. main has merged work that isn't tagged yet).
+# This decouples "merge a PR" from "cut a release": new installs keep getting the last released,
+# SHA-256-verified binary instead of being forced to compile. A version with no matching release
+# still falls back to source, because the asset download further below 404s — so we can never
+# silently install a binary whose version differs from this source.
+#
+# For transparency only (never a failure): if this is a git work tree and we can read both HEAD and
+# the release's published COMMIT marker, note when the checkout is ahead — the binary is the released
+# v$version while the working tree may carry newer, unreleased source. `git rev-parse HEAD` is a safe
+# local ref read; the COMMIT fetch is best-effort and its absence is not an error.
+ahead_note=""
 if have git && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   head_rev=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo nohead)
-  download "$base_url/v$version/COMMIT" "$tmpdir/COMMIT" || fallback "release commit marker not available for v$version"
-  release_commit=$(tr -d '[:space:]' < "$tmpdir/COMMIT" 2>/dev/null)
-  if [ -z "$release_commit" ] || [ "$head_rev" != "$release_commit" ]; then
-    fallback "checkout ($head_rev) is not the v$version release commit ($release_commit) — building from source"
+  if download "$base_url/v$version/COMMIT" "$tmpdir/COMMIT" 2>/dev/null; then
+    release_commit=$(tr -d '[:space:]' < "$tmpdir/COMMIT" 2>/dev/null)
+    if [ -n "$release_commit" ] && [ "$head_rev" != "$release_commit" ]; then
+      ahead_note=" Note: this checkout ($head_rev) is ahead of the v$version release commit ($release_commit), so newer unreleased source is not in this binary."
+    fi
   fi
 fi
 
@@ -127,5 +135,5 @@ fi
 chmod +x "$tmpbin"
 mkdir -p "$(dirname "$out")"
 mv -f "$tmpbin" "$out" || fallback "could not install the verified binary to $out"
-echo "herdr-file-viewer: installed prebuilt v$version ($triple), verified SHA-256."
+echo "herdr-file-viewer: installed prebuilt v$version ($triple), verified SHA-256.$ahead_note"
 exit 0

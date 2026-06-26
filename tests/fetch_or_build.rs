@@ -142,9 +142,9 @@ fn run_impl(
         "#!/bin/sh\necho FAKE_CARGO_BUILD \"$@\"\nexit 0\n",
     );
 
-    // The release-tag gate inspects FV_REPO_ROOT as a git work tree. By default point it at the
-    // (non-git) temp root so the gate is skipped and the platform/download/verify logic is what's
-    // under test; the gate's own tests pass a real git repo here.
+    // The ahead-note logic inspects FV_REPO_ROOT as a git work tree. By default point it at the
+    // (non-git) temp root so it is skipped and the platform/download/verify logic is what's under
+    // test; the git-checkout tests pass a real git repo here.
     let fv_repo_root: &Path = repo_root.unwrap_or(root.as_path());
     let path = format!("{}:{}", stub.display(), std::env::var("PATH").unwrap());
     let output = Command::new("sh")
@@ -182,7 +182,7 @@ fn run(os: &str, arch: &str, version: &str, serve_binary: bool, corrupt_sums: bo
 
 /// Throwaway git repo at `dir` with a single commit and NO tag — exactly like herdr's install
 /// checkout (a work tree at the cloned commit, without local tags). Returns the HEAD commit SHA,
-/// which the COMMIT-gate compares against the release's published marker.
+/// which the ahead-note logic compares against the release's published COMMIT marker.
 fn make_git_repo(dir: &Path) -> String {
     fs::create_dir_all(dir).unwrap();
     let g = |args: &[&str]| -> std::process::Output {
@@ -319,11 +319,10 @@ fn script_preserves_the_cargo_source_build_fallback() {
     );
 }
 
-// Regression test for the v1.2.0 install failure: herdr's checkout is a git work tree at the
-// release commit but WITHOUT local tags. The gate must confirm the match via the published COMMIT
-// marker (HEAD == COMMIT), not a local tag ref, and use the prebuilt.
+// Matching commit: when the checkout IS the released commit, the prebuilt installs cleanly and
+// (because HEAD == COMMIT) no "ahead" note is emitted.
 #[test]
-fn gate_uses_prebuilt_when_head_matches_the_release_commit() {
+fn uses_prebuilt_when_head_matches_the_release_commit() {
     let gitdir = tmp("gitrepo-match");
     let head = make_git_repo(&gitdir); // tagless work tree, like herdr's install checkout
     let o = run_impl(
@@ -341,22 +340,21 @@ fn gate_uses_prebuilt_when_head_matches_the_release_commit() {
         o.stdout,
         o.stderr
     );
+    assert!(!o.fell_back(), "must not build from source");
     assert!(
-        !o.fell_back(),
-        "must not build from source when HEAD is the released commit"
-    );
-    assert!(
-        o.urls.iter().any(|u| u.ends_with("/v1.2.0/COMMIT")),
-        "gate must fetch the COMMIT marker; urls: {:?}",
-        o.urls
+        !o.stdout.contains("ahead of"),
+        "no ahead-note when the checkout IS the released commit; stdout: {}",
+        o.stdout
     );
     let _ = fs::remove_dir_all(&gitdir);
 }
 
-// When the checkout's HEAD differs from the release commit (e.g. main has advanced past the tag),
-// the gate must fall back to a source build and never install the stale binary.
+// Version-only behavior: when the checkout's HEAD is AHEAD of the release commit (e.g. main has
+// merged work that isn't tagged yet), the prebuilt for the declared version is STILL installed —
+// landing a PR no longer forces new users to compile — and a transparency note records that the
+// working tree carries newer, unreleased source than the binary.
 #[test]
-fn gate_falls_back_when_head_differs_from_the_release_commit() {
+fn uses_prebuilt_when_head_is_ahead_of_the_release_commit() {
     let gitdir = tmp("gitrepo-ahead");
     let _head = make_git_repo(&gitdir);
     let other = "0000000000000000000000000000000000000000"; // a commit this checkout is NOT at
@@ -370,16 +368,51 @@ fn gate_falls_back_when_head_differs_from_the_release_commit() {
         Some(other),
     );
     assert!(
-        o.fell_back(),
-        "HEAD != release commit must build from source\nstdout:{}\nstderr:{}",
+        o.installed_prebuilt(),
+        "HEAD ahead of the release commit must still use the prebuilt\nstdout:{}\nstderr:{}",
         o.stdout,
         o.stderr
     );
-    assert!(o.placed.is_none(), "must not install the stale binary");
     assert!(
-        !o.urls.iter().any(|u| u.contains("herdr-file-viewer-")),
-        "the gate must fire before the binary download; urls: {:?}",
+        !o.fell_back(),
+        "must not build from source merely because the checkout is ahead of the tag"
+    );
+    assert_eq!(
+        o.placed.as_deref(),
+        Some(&b"#!/bin/sh\necho prebuilt-viewer\n"[..]),
+        "the verified prebuilt must be installed"
+    );
+    assert!(
+        o.urls
+            .iter()
+            .any(|u| u.contains("herdr-file-viewer-x86_64-unknown-linux-musl")),
+        "the binary download must happen (no commit gate before it); urls: {:?}",
         o.urls
     );
+    assert!(
+        o.stdout.contains("ahead of"),
+        "must note that the checkout is ahead of the release commit; stdout: {}",
+        o.stdout
+    );
+    let _ = fs::remove_dir_all(&gitdir);
+}
+
+// A version with NO published release still falls back to source even from a git checkout — the
+// asset download 404s, so we never silently install a binary whose version differs from the source.
+#[test]
+fn version_with_no_release_still_falls_back_from_a_git_checkout() {
+    let gitdir = tmp("gitrepo-norelease");
+    let head = make_git_repo(&gitdir);
+    let o = run_impl(
+        "Linux",
+        "x86_64",
+        "9.9.9",
+        false, // serve_binary = false → the asset 404s
+        false,
+        Some(&gitdir),
+        Some(&head),
+    );
+    assert!(o.fell_back(), "stdout: {}\nstderr: {}", o.stdout, o.stderr);
+    assert!(o.placed.is_none(), "must not install anything");
     let _ = fs::remove_dir_all(&gitdir);
 }

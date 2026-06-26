@@ -2,11 +2,13 @@
 
 Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**.
 
-> **No Rust toolchain needed for tagged releases.** `herdr plugin install smarzban/herdr-file-viewer`
+> **No Rust toolchain needed when a prebuilt exists.** `herdr plugin install smarzban/herdr-file-viewer`
 > downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64).
-> If no matching prebuilt is available — an unsupported platform, or installing from a `main` that is
-> ahead of the latest release — it automatically builds from source with `cargo` instead (Rust 1.96+).
-> The install command is the same either way.
+> The prebuilt is matched by **version**, so you get it even when `main` is ahead of the latest tag —
+> you'll receive the most recent released binary (a note tells you when newer, unreleased changes
+> aren't in it yet). It builds from source with `cargo` (Rust 1.96+) only when there's no matching
+> prebuilt at all — an unsupported platform, or a version that hasn't been released yet. The install
+> command is the same either way.
 
 **Install through herdr** — herdr runs the manifest's `[[build]]` step at install time, either
 downloading a prebuilt binary or compiling from source, producing `./target/release/herdr-file-viewer`,
