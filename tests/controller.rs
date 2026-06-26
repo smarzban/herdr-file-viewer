@@ -3358,3 +3358,84 @@ fn enter_with_match_resyncs_hide_hidden_mirror_after_reveal() {
         ".envrc is visible in the tree after hide_hidden was relaxed"
     );
 }
+
+#[test]
+fn mouse_is_inert_while_the_finder_is_open() {
+    // Mirror of `mouse_is_inert_while_the_picker_is_open` (review-gate R1, E) — the finder is
+    // also a keyboard-only modal overlay: a click or wheel behind it must not drive the tree or
+    // content underneath. Guards the `|| self.finder.is_some()` extension in `handle_mouse`.
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.set_pane_geometry(wide_geometry());
+
+    // Precondition: the finder is open (OpenFinder was called in `finder_dir`).
+    assert!(
+        ctrl.finder_open(),
+        "finder must be open before the mouse events"
+    );
+
+    // Capture the underlying state before the mouse events.
+    let cursor_before = ctrl.tree().cursor();
+
+    // A left-click on a tree row would (without the guard) move the cursor and focus the tree.
+    let click = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
+    assert!(
+        !click.redraw && !click.quit,
+        "a click is a no-op while the finder is open"
+    );
+
+    // A scroll over the tree would (without the guard) move the selection.
+    let scroll = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert!(
+        !scroll.redraw && !scroll.quit,
+        "a scroll is a no-op while the finder is open"
+    );
+
+    // A scroll over the content pane would (without the guard) scroll the content.
+    let scroll_c = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert!(
+        !scroll_c.redraw && !scroll_c.quit,
+        "a content scroll is a no-op while the finder is open"
+    );
+
+    // The tree cursor must be unchanged — no mouse event drove it.
+    assert_eq!(
+        ctrl.tree().cursor(),
+        cursor_before,
+        "the tree cursor must be unchanged behind the open finder"
+    );
+
+    // The finder must still be open (no mouse event closed it).
+    assert!(
+        ctrl.finder_open(),
+        "the finder must still be open after the mouse events"
+    );
+}
+
+#[test]
+fn q_is_a_literal_query_char_in_the_finder_not_a_cancel_key() {
+    // AC-9: cancel is Esc ONLY — `q` is a literal query character (the resolved Esc-only decision,
+    // contrast the global `q` = Close binding). Typing `q` while the finder is open must append it
+    // to the query and leave the finder OPEN; only Esc closes it.
+    let (_dir, mut ctrl) = finder_dir();
+
+    let fx = ctrl.handle_finder_key(key(KeyCode::Char('q')));
+    assert!(fx.redraw, "typing 'q' redraws (it edited the query)");
+    assert_eq!(
+        ctrl.finder_query(),
+        "q",
+        "'q' is appended as a literal query char"
+    );
+    assert!(
+        ctrl.finder_open(),
+        "'q' must NOT close the finder — only Esc cancels (AC-9)"
+    );
+
+    // A second 'q' keeps building the query, still no cancel.
+    ctrl.handle_finder_key(key(KeyCode::Char('q')));
+    assert_eq!(ctrl.finder_query(), "qq", "'q' keeps appending");
+    assert!(ctrl.finder_open(), "still open after another 'q'");
+
+    // Esc — and only Esc — closes it.
+    ctrl.handle_finder_key(key(KeyCode::Esc));
+    assert!(!ctrl.finder_open(), "Esc closes the finder (AC-9)");
+}

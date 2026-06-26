@@ -848,10 +848,11 @@ impl Controller {
     /// still works (herdr reserves Shift+mouse for exactly that). Selection/activation happen
     /// on button *release*, so a divider drag is never mistaken for a click.
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
-        // Modal: while the picker is open it is keyboard-only, so the mouse is inert — a click /
-        // wheel / drag behind the overlay must not drive the tree or content underneath. This
-        // mirrors the keyboard modal gate in `handle`. (review-gate R1, E)
-        if self.picker.is_some() {
+        // Modal: while the picker OR the finder is open, the mouse is inert — a click / wheel /
+        // drag behind the overlay must not drive the tree or content underneath. Both overlays
+        // are keyboard-only modals. This mirrors the keyboard modal gate in `handle`.
+        // (review-gate R1, E; finder mouse-gate is the symmetric fix for go-to-file)
+        if self.picker.is_some() || self.finder.is_some() {
             return Effects::noop();
         }
         if ev.modifiers.contains(KeyModifiers::SHIFT) {

@@ -141,6 +141,22 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
 
         if event::poll(TICK)? {
             match event::read()? {
+                // While the finder overlay is open, every key press is routed directly to
+                // `handle_finder_key` so printable keys (including `j`, `w`, `q`, …) edit the
+                // query instead of firing viewer intents (AC-7). The arm is gated on
+                // `finder_open()` so it is entirely skipped when the finder is closed, leaving
+                // the existing `map_key` arm below to run unchanged.
+                Event::Key(key) if key.kind == KeyEventKind::Press && controller.finder_open() => {
+                    let fx = controller.handle_finder_key(key);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
+                    }
+                    if fx.quit {
+                        return Ok(()); // finder never quits; harmless for symmetry
+                    }
+                    dirty |= fx.redraw;
+                }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && let Some(intent) = input::map_key(key) =>

@@ -21,6 +21,93 @@ use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
 use std::time::Duration;
 
+/// AC-7 e2e oracle: the go-to-file finder routes printable keys to the query (not the tree),
+/// and Enter confirms the selection while Esc cancels. We drive `f`, then type `j` and `w`
+/// (keys that are otherwise NavDown and ToggleWrap in the viewer), and assert the overlay shows
+/// the typed query `> jw` — proving the event-loop finder arm is routing presses to
+/// `handle_finder_key` instead of `map_key`. Then we cancel with Esc and prove a second open
+/// + Enter jumps to the file (the file's unique content marker appears in the content pane).
+#[test]
+fn finder_routes_printable_keys_to_query_and_enter_confirms_esc_cancels() {
+    let dir = TempDir::new();
+    let p = dir.path();
+    init_repo_with_commit(p);
+    // `alpha.txt` sorts before `jwtest.txt` so the cursor starts on `alpha.txt` at launch —
+    // meaning `jwtest.txt`'s content is NOT pre-rendered. When Enter confirms the finder
+    // selection, `JWMARK` is drawn into the previously-blank content pane for the first time,
+    // making it a robust pty anchor (blank-cell content appears contiguously).
+    std::fs::write(p.join("alpha.txt"), "ALPHAMARK\n").unwrap();
+    // A file whose name embeds `jw` so our typed query matches it uniquely, and whose content has
+    // a unique single-token marker we can anchor on after the confirm (AC-7 reveal outcome).
+    // The file is committed so it appears in the candidate index.
+    std::fs::write(p.join("jwtest.txt"), "JWMARK\n").unwrap();
+    git(p, &["add", "alpha.txt", "jwtest.txt"]);
+    git(p, &["commit", "-q", "-m", "finder-test files"]);
+
+    let mut cmd = viewer_command(p);
+    cmd.env("EDITOR", "true");
+    let mut s = Session::spawn(cmd).expect("spawn the viewer in a pty");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+
+    // Wait for the initial tree render so the viewer is fully up. `alpha.txt` sorts first and
+    // is the cursor's initial selection; `jwtest.txt` is in the same tree draw and also visible.
+    s.expect("alpha.txt")
+        .expect("tree lists the committed files on launch");
+
+    // --- Cancel sub-case (AC-6): open finder, type `j` and `w` (viewer nav/wrap keys), assert
+    // the overlay query reflects the typed text, then Esc closes the finder. ---
+    s.send("f").expect("send open-finder");
+    // The overlay title is the stable blank-cell anchor (drawn into previously-blank cells).
+    s.expect("Go to file")
+        .expect("the finder overlay renders its title after `f`");
+
+    // Type `j` — this is NavDown in the viewer's normal key map. If routing were wrong, `j`
+    // would drive the tree cursor down instead of updating the finder query. The AC-7 proof is
+    // that `jwtest.txt` appears in the finder's match-row list: the match list was empty before
+    // typing (empty query → no matches), so these cells were blank; the first render of the match
+    // row writes "jwtest.txt" contiguously into previously-blank cells — a robust pty anchor.
+    s.send("j").expect("send `j` into the finder query");
+    s.expect("jwtest.txt")
+        .expect("AC-7 routing proof: `j` edited the finder query (not NavDown) — jwtest.txt appears in the match list");
+
+    // Type `w` — ToggleWrap in the viewer; must also land in the query without toggling anything.
+    s.send("w").expect("send `w` into the finder query");
+
+    // Settle before Esc so crossterm sees a lone ESC (not Alt+char).
+    std::thread::sleep(Duration::from_millis(150));
+    s.send("\u{1b}").expect("send Esc to cancel the finder");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // --- Confirm sub-case (AC-7 reveal): open finder, narrow to the unique file, Enter reveals. ---
+    s.send("f").expect("re-open the finder");
+    s.expect("Go to file")
+        .expect("the finder overlay opens again");
+
+    // Type `jw` — the query "jw" is a subsequence of `jwtest.txt` only. Enter confirms.
+    s.send("j").expect("send `j`");
+    s.send("w").expect("send `w`");
+    // Enter confirms the selection: the finder closes, the tree reveals `jwtest.txt`, and the
+    // content pane renders it. `alpha.txt` is the cursor's current position (the initial
+    // selection); after reveal, `jwtest.txt` becomes selected and its content is dispatched for
+    // rendering. `JWMARK` appears in the content pane for the FIRST time (the cursor was on
+    // `alpha.txt` at launch, so `jwtest.txt` was never rendered — these are blank cells).
+    s.send("\r")
+        .expect("send Enter to confirm the finder selection");
+    s.expect("JWMARK")
+        .expect("AC-7: Enter confirms — the selected file's content is shown in the content pane");
+
+    // Clean exit — no finder key crashed the run loop.
+    s.send("q").expect("send close");
+    s.expect(Eof)
+        .expect("the viewer terminates cleanly after the finder flow");
+    match s.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => {
+            assert_eq!(code, 0, "AC-7/AC-20: no finder key crashed the viewer")
+        }
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}
+
 #[test]
 fn every_keyboard_function_drives_the_viewer_and_it_exits_cleanly() {
     let dir = TempDir::new();
