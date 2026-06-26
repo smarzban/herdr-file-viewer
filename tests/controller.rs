@@ -3439,3 +3439,166 @@ fn q_is_a_literal_query_char_in_the_finder_not_a_cancel_key() {
     ctrl.handle_finder_key(key(KeyCode::Esc));
     assert!(!ctrl.finder_open(), "Esc closes the finder (AC-9)");
 }
+
+// ---------------------------------------------------------------------------
+// T-10 — Scope independence + non-git (AC-16, AC-17, AC-19)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finder_candidates_are_independent_of_changed_only_filter() {
+    // AC-16: the finder's candidate set is the full index::build walk — a separate walk from the
+    // tree (ADR-0005). Turning `changed_only` ON restricts the TREE view to the changed-set, but
+    // the finder candidates must remain the complete file index, unchanged.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("gamma.rs"), "c").unwrap();
+
+    // Only beta.rs is in the changed-set; changed_only would restrict the tree to beta.rs only.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("beta.rs"), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    // Enable changed_only — the tree now shows only beta.rs.
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only(), "precondition: changed_only is ON");
+
+    // Open the finder — it must walk the full index regardless of the tree filter.
+    ctrl.handle(Intent::OpenFinder);
+    assert!(ctrl.finder_open(), "finder opened");
+
+    let mut got = ctrl.finder_candidates().to_vec();
+    got.sort();
+    let mut expected = herdr_file_viewer::index::build(dir.path());
+    expected.sort();
+
+    assert_eq!(
+        got, expected,
+        "finder candidates must equal index::build(root), unaffected by changed_only (AC-16)"
+    );
+    // Sanity: there are more candidates than just the changed file.
+    assert!(
+        got.len() > 1,
+        "the full index has more entries than the changed-set alone: {got:?}"
+    );
+}
+
+#[test]
+fn finder_candidates_include_dotfiles_even_with_hide_hidden_on() {
+    // AC-17: the finder's candidate set comes from index::build, which always includes dotfiles
+    // (hidden(false) in WalkBuilder). Toggling `hide_hidden` ON hides dotfiles in the TREE
+    // view but must not affect the finder candidates. A non-ignored dotfile (e.g. `.env.example`)
+    // must still appear in finder_candidates() after ToggleHidden.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".env.example"), "SECRET=x").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // Turn on hide_hidden — the tree would hide .env.example.
+    ctrl.handle(Intent::ToggleHidden);
+    assert!(ctrl.hide_hidden(), "precondition: hide_hidden is ON");
+
+    // Open the finder.
+    ctrl.handle(Intent::OpenFinder);
+    assert!(ctrl.finder_open(), "finder opened");
+
+    let candidates = ctrl.finder_candidates().to_vec();
+
+    // The dotfile must be in the candidate list.
+    assert!(
+        candidates.iter().any(|p| p.contains(".env.example")),
+        ".env.example must be a candidate even with hide_hidden ON (AC-17): {candidates:?}"
+    );
+
+    // Cross-check against index::build — the sets must be identical.
+    let mut got = candidates.clone();
+    got.sort();
+    let mut expected = herdr_file_viewer::index::build(dir.path());
+    expected.sort();
+    assert_eq!(
+        got, expected,
+        "finder candidates must equal index::build(root), unaffected by hide_hidden (AC-17)"
+    );
+}
+
+#[test]
+fn finder_works_fully_in_a_non_git_directory() {
+    // AC-19: the finder must open, list candidates, match a typed query, and jump (Enter → reveal)
+    // in a directory that is NOT a git repository. The controller is built with is_git_repo=false
+    // (as non-git roots are constructed throughout this test file), which means index::build uses
+    // require_git(false) and all git intents are inert — but the finder must be fully operational.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("readme.txt"), "hello").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[foo]").unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src").join("main.rs"), "fn main() {}").unwrap();
+
+    // Non-git root: is_git_repo = false.
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // 1. Open the finder — must not panic or fail.
+    let fx = ctrl.handle(Intent::OpenFinder);
+    assert!(fx.redraw, "OpenFinder redraws");
+    assert!(
+        ctrl.finder_open(),
+        "finder is open in a non-git root (AC-19)"
+    );
+
+    // 2. Candidate list must be non-empty and equal to index::build(root).
+    let mut got = ctrl.finder_candidates().to_vec();
+    got.sort();
+    let mut expected = herdr_file_viewer::index::build(dir.path());
+    expected.sort();
+    assert!(!got.is_empty(), "non-git root has files to list (AC-19)");
+    assert_eq!(
+        got, expected,
+        "finder candidates match index::build in a non-git root (AC-19)"
+    );
+
+    // 3. Type a query that matches a known file — "main" matches "src/main.rs".
+    for c in "main".chars() {
+        ctrl.handle_finder_key(key(KeyCode::Char(c)));
+    }
+    let matches = ctrl.finder_matches().to_vec();
+    let candidates = ctrl.finder_candidates().to_vec();
+    assert!(
+        !matches.is_empty(),
+        "typing 'main' must produce at least one match in the non-git root: {candidates:?}"
+    );
+    let matched_path = &candidates[matches[0]];
+    assert!(
+        matched_path.contains("main"),
+        "the top match must contain 'main': {matched_path}"
+    );
+
+    // 4. Press Enter — the finder must close and the tree selection must land on the matched file
+    //    (reveal + render without git). AC-19: jump works without git.
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "Enter signals a redraw (AC-19)");
+    assert!(
+        !ctrl.finder_open(),
+        "finder closed after Enter in a non-git root (AC-19)"
+    );
+
+    let selected = ctrl
+        .tree()
+        .selected()
+        .expect("a node is selected after reveal in a non-git root");
+    let selected_rel = selected
+        .path
+        .strip_prefix(ctrl.root())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        selected_rel, *matched_path,
+        "the tree cursor points to the jumped-to file in a non-git root (AC-19)"
+    );
+}
