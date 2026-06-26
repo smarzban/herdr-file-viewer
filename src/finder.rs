@@ -87,5 +87,10 @@ impl FinderState {
     pub fn cursor(&self) -> usize {
         self.cursor
     }
-    // (T-7 will add selected_candidate_index() -> Option<usize>)
+
+    /// The candidate index at the current cursor position within the match list, or `None`
+    /// when the match list is empty (zero matches → no selection to confirm).
+    pub fn selected_candidate_index(&self) -> Option<usize> {
+        self.matches.get(self.cursor).copied()
+    }
 }

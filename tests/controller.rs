@@ -3100,3 +3100,261 @@ fn open_finder_opens_finder_with_full_candidate_list_and_empty_query() {
         "query is empty when the finder is first opened"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-7 — Confirm (reveal + render) · cancel · no-match no-op
+// ---------------------------------------------------------------------------
+
+/// Build a temp dir with files and an open finder (git repo variant so changed_only works).
+fn finder_dir_git() -> (TempDir, Controller) {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("gamma.rs"), "c").unwrap();
+    // Only beta.rs is in the changed-set.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("beta.rs"), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.handle(Intent::OpenFinder);
+    (dir, ctrl)
+}
+
+#[test]
+fn enter_with_match_closes_finder_and_reveals_file_and_redraws() {
+    // AC-10, AC-11: Enter on a matched candidate closes the finder, moves the tree cursor to
+    // that file, and triggers a redraw (content is dispatched for the new selection).
+    let (_dir, mut ctrl) = finder_dir();
+
+    // Type 'b' to match "beta.rs".
+    ctrl.handle_finder_key(key(KeyCode::Char('b')));
+    let matches = ctrl.finder_matches().to_vec();
+    assert!(
+        !matches.is_empty(),
+        "precondition: at least one match for 'b'"
+    );
+
+    let candidates = ctrl.finder_candidates().to_vec();
+    let selected_path = candidates[matches[0]].clone();
+
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "Enter with a match signals a redraw");
+    assert!(!ctrl.finder_open(), "finder is closed after Enter (AC-10)");
+
+    // The tree's selected node must be the confirmed file.
+    let selected = ctrl
+        .tree()
+        .selected()
+        .expect("a node is selected after reveal");
+    let selected_rel = selected
+        .path
+        .strip_prefix(ctrl.root())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        selected_rel, selected_path,
+        "tree cursor points to the confirmed file (AC-11)"
+    );
+}
+
+#[test]
+fn enter_with_zero_matches_keeps_finder_open_and_is_noop() {
+    // AC-6: Enter with zero matches must be a no-op — the finder stays open so the user can
+    // refine their query rather than being unexpectedly dismissed.
+    let (_dir, mut ctrl) = finder_dir();
+
+    // Type a non-matching query.
+    ctrl.handle_finder_key(key(KeyCode::Char('z')));
+    ctrl.handle_finder_key(key(KeyCode::Char('z')));
+    ctrl.handle_finder_key(key(KeyCode::Char('z')));
+    assert!(
+        ctrl.finder_matches().is_empty(),
+        "precondition: no matches for 'zzz'"
+    );
+
+    let cursor_before = ctrl.tree().cursor();
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    // Not a redraw: the no-op is completely inert (no state change).
+    assert!(!fx.redraw, "Enter with zero matches is a noop (no redraw)");
+    assert!(
+        ctrl.finder_open(),
+        "finder stays open when there are no matches (AC-6)"
+    );
+    assert_eq!(
+        ctrl.tree().cursor(),
+        cursor_before,
+        "tree cursor is unchanged"
+    );
+}
+
+#[test]
+fn enter_on_missing_target_sets_notice_and_closes_finder() {
+    // AC-20: if the selected candidate has been removed from disk since the finder was opened,
+    // Enter must close the finder, set a non-fatal notice, and leave the tree selection unchanged.
+    let (dir, mut ctrl) = finder_dir();
+
+    // Match "beta.rs", then delete it before confirming.
+    ctrl.handle_finder_key(key(KeyCode::Char('b')));
+    let matches = ctrl.finder_matches().to_vec();
+    assert!(!matches.is_empty(), "precondition: 'b' matches beta.rs");
+    // Verify we're going to try to reveal beta.rs.
+    let candidate = &ctrl.finder_candidates()[matches[0]];
+    assert!(
+        candidate.contains("beta"),
+        "expect beta.rs to be the match: {candidate}"
+    );
+
+    let cursor_before = ctrl.tree().cursor();
+    // Delete the file so reveal() returns false.
+    std::fs::remove_file(dir.path().join("beta.rs")).unwrap();
+
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    assert!(
+        fx.redraw,
+        "Enter on a missing target still redraws (notice)"
+    );
+    assert!(
+        !ctrl.finder_open(),
+        "finder is closed even on a failed reveal (AC-20)"
+    );
+    assert!(
+        ctrl.action_notice().is_some(),
+        "a non-fatal notice is set when the target is missing (AC-20)"
+    );
+    assert!(
+        ctrl.action_notice().unwrap().contains("beta"),
+        "notice names the missing file: {:?}",
+        ctrl.action_notice()
+    );
+    assert_eq!(
+        ctrl.tree().cursor(),
+        cursor_before,
+        "tree selection unchanged when reveal fails"
+    );
+}
+
+#[test]
+fn esc_closes_finder_and_leaves_tree_unchanged() {
+    // AC-9: Esc discards the finder without touching the tree selection, root, or content.
+    let (_dir, mut ctrl) = finder_dir();
+
+    // Navigate the tree to a known position.
+    ctrl.handle(Intent::NavDown);
+    let cursor_before = ctrl.tree().cursor();
+    // Type something to prove the query is also discarded.
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    assert!(!ctrl.finder_matches().is_empty(), "precondition");
+
+    let fx = ctrl.handle_finder_key(key(KeyCode::Esc));
+    assert!(fx.redraw, "Esc signals a redraw");
+    assert!(!ctrl.finder_open(), "finder is closed after Esc (AC-9)");
+    assert_eq!(
+        ctrl.tree().cursor(),
+        cursor_before,
+        "tree cursor unchanged after Esc (AC-9)"
+    );
+}
+
+#[test]
+fn enter_with_match_resyncs_changed_only_mirror_after_reveal() {
+    // Mirror-resync guard (T-4 review note): when changed_only is ON and the finder navigates
+    // to a file that is NOT in the changed-set, reveal() relaxes the tree's changed_only field
+    // to false. The controller's mirror must be re-synced — otherwise the next `c` toggle
+    // would read the stale mirror and re-apply the wrong filter.
+    let (_dir, mut ctrl) = finder_dir_git();
+
+    // Turn on changed-only filter (only beta.rs is in the changed-set).
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only(), "precondition: changed_only is ON");
+
+    // Open the finder and jump to alpha.txt (not in the changed-set).
+    ctrl.handle(Intent::OpenFinder);
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    // alpha.txt should match.
+    let matches = ctrl.finder_matches().to_vec();
+    let candidates = ctrl.finder_candidates().to_vec();
+    let alpha_idx = matches
+        .iter()
+        .position(|&i| candidates[i].contains("alpha"))
+        .expect("alpha.txt must match 'a'");
+    // Navigate to alpha.txt's position in the list.
+    for _ in 0..alpha_idx {
+        ctrl.handle_finder_key(key(KeyCode::Down));
+    }
+    // Confirm: reveal() must relax changed_only in the tree AND the controller re-syncs its mirror.
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "Enter redraws");
+    assert!(!ctrl.finder_open(), "finder closed");
+
+    // The controller mirror must be false (synced from the tree after reveal relaxed it).
+    assert!(
+        !ctrl.changed_only(),
+        "controller changed_only() mirror is false after reveal relaxed the filter (desync guard)"
+    );
+
+    // The tree must actually show alpha.txt (visible in the now-relaxed tree).
+    let nodes = ctrl.tree().visible_nodes();
+    let has_alpha = nodes
+        .iter()
+        .any(|n| n.path.file_name().unwrap_or_default() == "alpha.txt");
+    assert!(
+        has_alpha,
+        "alpha.txt is visible in the tree after the filter was relaxed"
+    );
+}
+
+#[test]
+fn enter_with_match_resyncs_hide_hidden_mirror_after_reveal() {
+    // Mirror-resync guard (T-4 review note), hide_hidden variant — symmetric to the changed_only
+    // case above. When hide_hidden is ON and the finder jumps to a NON-ignored dotfile, reveal()
+    // relaxes the tree's hide_hidden field; the controller's mirror must re-sync so the next `.`
+    // toggle does not read a stale value. Guards lines 1633-1634 (the hide_hidden re-sync).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".envrc"), "x").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "y").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), true, StubGit::default(), false);
+
+    // Turn on hide-hidden (the tree would hide the dotfile; the finder index still surfaces it).
+    ctrl.handle(Intent::ToggleHidden);
+    assert!(ctrl.hide_hidden(), "precondition: hide_hidden is ON");
+
+    // Open the finder and jump to the dotfile (query "env" matches ".envrc").
+    ctrl.handle(Intent::OpenFinder);
+    for c in "env".chars() {
+        ctrl.handle_finder_key(key(KeyCode::Char(c)));
+    }
+    let matches = ctrl.finder_matches().to_vec();
+    let candidates = ctrl.finder_candidates().to_vec();
+    let envrc_idx = matches
+        .iter()
+        .position(|&i| candidates[i].contains(".envrc"))
+        .expect(".envrc must match 'env'");
+    for _ in 0..envrc_idx {
+        ctrl.handle_finder_key(key(KeyCode::Down));
+    }
+    let fx = ctrl.handle_finder_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "Enter redraws");
+    assert!(!ctrl.finder_open(), "finder closed");
+
+    // The controller mirror must be false (synced from the tree after reveal relaxed it).
+    assert!(
+        !ctrl.hide_hidden(),
+        "controller hide_hidden() mirror is false after reveal relaxed the filter (desync guard)"
+    );
+
+    // The tree must actually show .envrc (visible in the now-relaxed tree).
+    let nodes = ctrl.tree().visible_nodes();
+    let has_envrc = nodes
+        .iter()
+        .any(|n| n.path.file_name().unwrap_or_default() == ".envrc");
+    assert!(
+        has_envrc,
+        ".envrc is visible in the tree after hide_hidden was relaxed"
+    );
+}

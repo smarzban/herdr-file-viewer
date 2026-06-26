@@ -1574,8 +1574,9 @@ impl Controller {
     /// - `Backspace` deletes the last character and re-matches (AC-7).
     /// - `Up`/`Down` move the selection within the current match list, clamped at both ends
     ///   (AC-8).
-    /// - `Enter`/`Esc` (confirm/cancel) are not yet handled — they fall through to the
-    ///   `_ => Effects::noop()` arm and will be wired in T-7.
+    /// - `Enter` confirms the selection — reveal + render, or a non-fatal notice on a vanished
+    ///   target, or a no-op that keeps the finder open when there are no matches (AC-6, AC-10,
+    ///   AC-11, AC-20). `Esc` discards the finder, leaving the prior state intact (AC-9).
     ///
     /// When the finder is not open, all keys are a no-op (defensive guard).
     pub fn handle_finder_key(&mut self, key: KeyEvent) -> Effects {
@@ -1599,7 +1600,45 @@ impl Controller {
                 finder.move_selection(1);
                 Effects::redraw()
             }
-            _ => Effects::noop(), // Enter/Esc handled in T-7
+            KeyCode::Enter => self.confirm_finder(),
+            KeyCode::Esc => {
+                self.finder = None;
+                Effects::redraw()
+            }
+            _ => Effects::noop(),
+        }
+    }
+
+    /// Confirm the current finder selection: take the selected candidate's root-relative path,
+    /// join with the root, and call [`TreeModel::reveal`]. On success re-sync the controller's
+    /// filter mirrors (reveal may have relaxed `changed_only`/`hide_hidden` in the tree),
+    /// dispatch a render for the newly-selected file, close the finder, and return a redraw.
+    ///
+    /// - Zero matches (empty list) → no-op; finder stays open (AC-6).
+    /// - Reveal returns `false` (target missing/removed since open) → close the finder, set a
+    ///   non-fatal `action_notice`, leave the tree selection unchanged (AC-20).
+    fn confirm_finder(&mut self) -> Effects {
+        let Some(finder) = self.finder.as_ref() else {
+            return Effects::noop();
+        };
+        let Some(cand_idx) = finder.selected_candidate_index() else {
+            return Effects::noop(); // zero matches → no-op, finder stays open (AC-6)
+        };
+        let rel = finder.candidates()[cand_idx].clone();
+        let abs = self.root.join(&rel);
+        self.finder = None; // confirm dismisses the modal regardless of reveal outcome
+        if self.tree.reveal(&abs) {
+            // reveal() may have relaxed the tree's changed_only/hide_hidden fields — re-sync
+            // the controller's mirror fields so a later `c`/`.` toggle stays consistent
+            // (T-4 review note: the mirrors at controller.rs:166-168 drive those toggles).
+            self.changed_only = self.tree.changed_only();
+            self.hide_hidden = self.tree.hide_hidden();
+            self.dispatch_render();
+            Effects::redraw()
+        } else {
+            // Target has disappeared since the finder was opened — non-fatal notice (AC-20).
+            self.action_notice = Some(format!("Could not open {rel}"));
+            Effects::redraw()
         }
     }
 
