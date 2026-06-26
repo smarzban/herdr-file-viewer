@@ -78,6 +78,9 @@ pub struct ViewState {
     /// When `Some`, the worktree picker overlay is drawn on top of the two columns (AC-1, AC-5).
     /// `None` ⇒ no overlay.
     pub picker: Option<PickerView>,
+    /// When `Some`, the go-to-file finder overlay is drawn on top of the columns (AC-1).
+    /// `None` ⇒ no overlay.
+    pub finder: Option<FinderView>,
 }
 
 /// The worktree picker's draw model (an owned snapshot of the controller's picker state, so
@@ -107,6 +110,17 @@ pub struct PickerRowView {
     /// The hosting agent's status (e.g. `"working"`), or `None` when the worktree's workspace
     /// hosts no real agent. Rendered as a small trailing badge, colored by status (AC-19).
     pub agent: Option<String>,
+}
+
+/// The finder overlay's draw model (an owned snapshot of the controller's finder state).
+/// Built by the Session Controller's `view_state()` (T-8).
+pub struct FinderView {
+    /// The current query text drawn on the input line.
+    pub query: String,
+    /// Matched root-relative paths, ranked best-first. Empty when the query is empty (AC-2).
+    pub matches: Vec<String>,
+    /// Index into `matches` of the highlighted row.
+    pub cursor: usize,
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
@@ -624,6 +638,11 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
     if let Some(picker) = &state.picker {
         draw_picker_overlay(frame, frame.area(), picker);
     }
+    // The go-to-file finder is also a modal overlay (AC-1). Only one modal is ever open, but
+    // an independent check is correct — if both are somehow set, both draw (last wins).
+    if let Some(finder) = &state.finder {
+        draw_finder_overlay(frame, frame.area(), finder);
+    }
     dims
 }
 
@@ -864,6 +883,147 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
         ));
     }
     Line::from(spans)
+}
+
+/// The finder overlay's top-left title (the box label).
+const FINDER_TITLE: &str = "Go to file";
+/// The herdr-style `esc cancel` chip on the top border (right-aligned, dim chrome).
+const FINDER_ESC_CANCEL: &str = "esc cancel";
+/// The herdr-style key-hint footer on the bottom border — the finder's real bindings.
+const FINDER_FOOTER_HINT: &str = "↑↓ move · ⏎ open · esc cancel";
+/// The prompt prefix shown on the query-input line.
+const FINDER_PROMPT: &str = "> ";
+/// The placeholder shown on the query-input line when the query is empty (AC-2).
+const FINDER_PLACEHOLDER: &str = "> type to find a file…";
+
+/// Draw the go-to-file finder as a centered, bordered overlay on top of the columns (AC-1).
+///
+/// The interior (top to bottom) is:
+///   1. A **query-input line**: `"> "` + the current query text (both through `sanitize_label`
+///      for AC-27 parity). When the query is empty a dim placeholder replaces the prompt.
+///   2. **Match rows**: each matched root-relative path run through `sanitize_label` (AC-5, AC-27);
+///      the `cursor` row is highlighted with REVERSED — the same idiom the picker uses. When
+///      `matches` is empty (empty query or no hit) no rows are drawn (AC-2).
+///
+/// Reuses [`centered_rect_sized`], [`scroll_offset`], `PICKER_PADDING`, and the Scrollbar/
+/// Block primitives from the picker overlay — no duplication of their internals.
+fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
+    // Build the query line.
+    let query_line: Line<'static> = if finder.query.is_empty() {
+        // Empty query: dim placeholder (AC-2).
+        Line::styled(
+            FINDER_PLACEHOLDER.to_string(),
+            Style::new().add_modifier(Modifier::DIM),
+        )
+    } else {
+        let display_query = sanitize_label(&finder.query);
+        Line::from(format!("{FINDER_PROMPT}{display_query}"))
+    };
+
+    // Build match rows (AC-5, AC-27).
+    let match_lines: Vec<Line<'static>> = finder
+        .matches
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let text = sanitize_label(path);
+            let style = if i == finder.cursor {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            Line::styled(text, style)
+        })
+        .collect();
+
+    // Chrome: static strings, no sanitization needed.
+    let hint_style = Style::new().fg(Color::Reset);
+    let top_left = Line::from(FINDER_TITLE);
+    let top_right = Line::styled(FINDER_ESC_CANCEL, hint_style).right_aligned();
+    let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
+
+    // Size-to-content: widest of the query line, match rows, and chrome.
+    let query_w = query_line.width();
+    let max_row_w = match_lines.iter().map(Line::width).max().unwrap_or(0);
+    let min_top = top_left.width() + 1 + top_right.width();
+    let min_bottom = footer.width();
+    let desired_inner_w = query_w
+        .max(max_row_w)
+        .max(min_top)
+        .max(min_bottom)
+        .min(u16::MAX as usize) as u16;
+    // Interior height: query line + match rows (at least 1 so the query line always shows).
+    let desired_inner_h = (1 + match_lines.len().min(u16::MAX as usize) as u16).max(1);
+    let want_w = desired_inner_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let cap_w = area.width.saturating_sub(2);
+    let cap_h = area.height.saturating_sub(2);
+    let popup = centered_rect_sized(want_w.min(cap_w), want_h.min(cap_h), area);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::bordered()
+        .title_top(top_left)
+        .title_top(top_right)
+        .title_bottom(footer)
+        .border_style(Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD))
+        .padding(Padding::uniform(PICKER_PADDING));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Split the inner rect: the first row is the query line; the rest are match rows.
+    if inner.height == 0 {
+        return;
+    }
+    let query_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(Paragraph::new(query_line), query_area);
+
+    // Match rows below the query line (may be zero).
+    if inner.height <= 1 || match_lines.is_empty() {
+        return;
+    }
+    let rows_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height - 1,
+    };
+    let visible = rows_area.height as usize;
+    let offset = scroll_offset(finder.cursor, match_lines.len(), visible);
+    let window: Vec<Line<'static>> = match_lines.into_iter().skip(offset).take(visible).collect();
+    frame.render_widget(Paragraph::new(window), rows_area);
+
+    // Vertical scrollbar when match rows overflow.
+    let total = finder.matches.len();
+    if total > visible {
+        // The scrollbar tracks the cursor position (not the viewport offset) so it follows the
+        // selection — same idiom as the tree's vertical scrollbar.
+        let sb_state = scrollbar_state(total, finder.cursor, visible);
+        let sb_area = Rect {
+            x: rows_area.x + rows_area.width,
+            y: rows_area.y,
+            width: 1,
+            height: rows_area.height,
+        };
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("▐")
+                .track_symbol(None)
+                .begin_symbol(None)
+                .end_symbol(None),
+            sb_area,
+            &mut sb_state.clone(),
+        );
+    }
 }
 
 #[cfg(test)]

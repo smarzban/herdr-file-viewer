@@ -21,7 +21,7 @@ use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
 use crate::intent::Intent;
 use crate::picker::PickerState;
-use crate::presenter::{Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
+use crate::presenter::{FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
@@ -664,6 +664,7 @@ impl Controller {
             zoomed: self.zoomed,
             update_banner: self.update_banner(),
             picker: self.picker_view(),
+            finder: self.finder_view(),
         }
     }
 
@@ -690,6 +691,23 @@ impl Controller {
                 .collect(),
             cursor: picker.cursor,
             hscroll: picker.hscroll,
+        })
+    }
+
+    /// The owned finder draw model for the Presenter (AC-1, AC-2, AC-5), or `None` when the finder
+    /// is closed. Resolves the ranked match indices into owned root-relative path strings so the
+    /// Presenter is borrow-free; carries the current query and cursor. The Presenter sanitizes the
+    /// path strings (AC-27) and renders the query-input line + placeholder + match rows.
+    fn finder_view(&self) -> Option<FinderView> {
+        let f = self.finder.as_ref()?;
+        Some(FinderView {
+            query: f.query().to_string(),
+            matches: f
+                .matches()
+                .iter()
+                .map(|&i| f.candidates()[i].clone())
+                .collect(),
+            cursor: f.cursor(),
         })
     }
 

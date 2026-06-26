@@ -2,7 +2,7 @@
 //! AC-3 (display), AC-7 (display), AC-13 (truncation notice), AC-25 (fallback notice).
 
 use herdr_file_viewer::git::Status;
-use herdr_file_viewer::presenter::{Focus, PickerRowView, PickerView, ViewState, draw};
+use herdr_file_viewer::presenter::{FinderView, Focus, PickerRowView, PickerView, ViewState, draw};
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::tree::{Node, NodeKind};
 use ratatui::Terminal;
@@ -75,6 +75,7 @@ fn sample_state() -> ViewState {
         zoomed: false,
         update_banner: None,
         picker: None,
+        finder: None,
     }
 }
 
@@ -1855,5 +1856,280 @@ fn banner_carves_exactly_one_row_off_the_columns() {
         h_plain - h_banner,
         1,
         "the banner takes exactly one row from the body"
+    );
+}
+
+// ── Finder overlay tests (T-8, AC-1, AC-2, AC-5) ─────────────────────────────
+
+/// A `ViewState` with the finder open and an EMPTY query (no matches yet).
+fn finder_state_empty_query() -> ViewState {
+    let mut state = sample_state();
+    state.finder = Some(FinderView {
+        query: String::new(),
+        matches: vec![],
+        cursor: 0,
+    });
+    state
+}
+
+/// A `ViewState` with the finder open, a query typed, and 3 matched paths.
+fn finder_state_with_matches() -> ViewState {
+    let mut state = sample_state();
+    state.finder = Some(FinderView {
+        query: "main".to_string(),
+        matches: vec![
+            "src/main.rs".to_string(),
+            "src/inner/main_helper.rs".to_string(),
+            "README.md".to_string(),
+        ],
+        cursor: 1, // the second row is highlighted
+    });
+    state
+}
+
+#[test]
+fn finder_overlay_empty_query_shows_title_and_placeholder_no_rows() {
+    // AC-2: when the query is empty the finder shows the query-input line with a placeholder
+    // and NO match rows — not a blank box, and not the full candidate list.
+    let out = render(&finder_state_empty_query(), 100, 24);
+    assert!(
+        out.contains("Go to file"),
+        "the finder title is shown\n{out}"
+    );
+    // The placeholder must appear (AC-2).
+    assert!(
+        out.contains("type to find"),
+        "the placeholder is shown when the query is empty\n{out}"
+    );
+    // No file rows (matches is empty so no paths appear yet).
+    // The tree still renders under the overlay (AC-1 — partial overlay).
+    assert!(
+        out.contains("Files"),
+        "the tree column is drawn under the overlay (AC-1)\n{out}"
+    );
+}
+
+#[test]
+fn finder_overlay_with_matches_shows_rows_and_highlights_cursor() {
+    // AC-5: each match row is a root-relative path; the cursor row is highlighted (REVERSED).
+    // AC-1: the overlay is drawn ON TOP of the two-column layout.
+    use ratatui::style::Modifier;
+
+    let buf = render_buffer(&finder_state_with_matches(), 100, 24);
+    let (w, h) = (buf.area().width, buf.area().height);
+
+    // All three matched paths appear in the buffer.
+    let out = format!("{}", {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            draw(f, &finder_state_with_matches());
+        })
+        .unwrap();
+        t.backend().clone()
+    });
+    assert!(
+        out.contains("src/main.rs"),
+        "first match row is shown\n{out}"
+    );
+    assert!(
+        out.contains("main_helper"),
+        "second match row is shown\n{out}"
+    );
+    assert!(out.contains("README.md"), "third match row is shown\n{out}");
+    // The two-column layout is still underneath (AC-1).
+    assert!(
+        out.contains("Files"),
+        "the tree column is drawn under the overlay (AC-1)\n{out}"
+    );
+
+    // The cursor row (index 1 = "src/inner/main_helper.rs") is REVERSED.
+    let needle = "main_helper";
+    let mut cursor_cell: Option<(u16, u16)> = None;
+    'outer: for y in 0..h {
+        for x in 0..w {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                cursor_cell = Some((x, y));
+                break 'outer;
+            }
+        }
+    }
+    let (cx, cy) = cursor_cell.expect("cursor row (main_helper) is in the buffer");
+    assert!(
+        buf.cell((cx, cy))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the cursor row (main_helper) is REVERSED-highlighted (AC-5)"
+    );
+}
+
+/// A `ViewState` with the finder open, many matches that overflow the visible rows area, and
+/// the cursor set near the end — exercises the scrollbar path and the viewport window.
+fn finder_state_overflow() -> ViewState {
+    let mut state = sample_state();
+    // 30 matches in a height-16 terminal: the popup interior is small, so the rows area height is
+    // well below 30 and the scrollbar must be shown. Cursor at index 25 — near the end.
+    let matches: Vec<String> = (0..30).map(|i| format!("src/file_{i:02}.rs")).collect();
+    state.finder = Some(FinderView {
+        query: "file".to_string(),
+        matches,
+        cursor: 25,
+    });
+    state
+}
+
+#[test]
+fn finder_overlay_overflow_scrolls_viewport_and_border_stays_intact() {
+    // Finding 1 + Finding 2 guard: with more matches than the popup rows area is tall —
+    // 30 matches in a height-16 terminal — the presenter must:
+    //   (a) draw only the viewport window of rows (not all 30),
+    //   (b) keep the REVERSED highlight on the cursor row after scrolling,
+    //   (c) leave the right border column as `│` (NOT overwritten by the scrollbar thumb).
+    use ratatui::style::Modifier;
+
+    let state = finder_state_overflow();
+    let (w, h) = (100u16, 16u16);
+    let buf = render_buffer(&state, w, h);
+
+    // (a) viewport clipping: only rows near the cursor (25) should be in the buffer.
+    // "src/file_00.rs" is near the top; with cursor=25 the window has scrolled past it.
+    let out = render(&state, w, h);
+    assert!(
+        !out.contains("file_00"),
+        "early row (file_00) must be scrolled off when cursor is near the end\n{out}"
+    );
+    // The cursor row's distinctive name must be visible.
+    assert!(
+        out.contains("file_25"),
+        "the cursor row (file_25) must be visible after scrolling\n{out}"
+    );
+
+    // (b) REVERSED modifier on the cursor row cell.
+    let needle = "file_25";
+    let mut cursor_cell: Option<(u16, u16)> = None;
+    'outer: for y in 0..h {
+        for x in 0..w {
+            let matches_here = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches_here {
+                cursor_cell = Some((x, y));
+                break 'outer;
+            }
+        }
+    }
+    let (cx, cy) = cursor_cell.expect("cursor row (file_25) must be visible in the buffer");
+    assert!(
+        buf.cell((cx, cy))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the cursor row (file_25) must carry the REVERSED highlight after scrolling"
+    );
+
+    // (c) right border of the popup is `│`, not corrupted by the scrollbar.
+    // Locate the finder popup's right border column by finding "Go to file" on the title row and
+    // scanning right for the `┐` corner, then assert every interior cell in that column is `│`.
+    let title = "Go to file";
+    let mut title_anchor: Option<(u16, u16)> = None;
+    'find_title: for y in 0..h {
+        for x in 0..w {
+            let here = title.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if here {
+                title_anchor = Some((x, y));
+                break 'find_title;
+            }
+        }
+    }
+    let (tx, ty) = title_anchor.expect("finder title 'Go to file' must be in the buffer");
+    // Scan right from the title to find the `┐` top-right corner.
+    let mut x1: Option<u16> = None;
+    for x in tx..w {
+        if buf.cell((x, ty)).is_some_and(|c| c.symbol() == "┐") {
+            x1 = Some(x);
+            break;
+        }
+    }
+    let x1 = x1.expect("popup top-right corner `┐` must be to the right of the title");
+    // Find the bottom-right `┘` corner.
+    let mut y1: Option<u16> = None;
+    for y in (ty + 1)..h {
+        if buf.cell((x1, y)).is_some_and(|c| c.symbol() == "┘") {
+            y1 = Some(y);
+            break;
+        }
+    }
+    let y1 = y1.expect("popup bottom-right corner `┘` must exist");
+    // Every cell on the right border column between the top and bottom corners must be `│`.
+    for y in (ty + 1)..y1 {
+        let cell = buf.cell((x1, y)).expect("right border cell");
+        assert_eq!(
+            cell.symbol(),
+            "│",
+            "right border col {x1} row {y} must be `│` — the scrollbar must NOT overwrite the border"
+        );
+    }
+}
+
+#[test]
+fn finder_overlay_nonempty_query_zero_matches_shows_prompt_not_placeholder() {
+    // Finding 3: a non-empty query with NO matches must show the `> query` prompt line (not the
+    // placeholder) and must NOT draw any match rows.
+    let mut state = sample_state();
+    state.finder = Some(FinderView {
+        query: "zzzzz".to_string(),
+        matches: vec![],
+        cursor: 0,
+    });
+    let out = render(&state, 100, 24);
+
+    // The prompt prefix + query text must appear.
+    assert!(
+        out.contains("> zzzzz"),
+        "the prompt line must show the typed query\n{out}"
+    );
+    // The placeholder must NOT appear (it is only for an empty query).
+    assert!(
+        !out.contains("type to find"),
+        "the placeholder must not appear when a query is typed\n{out}"
+    );
+    // No match rows (the matches list is empty, so nothing else should appear).
+    // The overlay is still drawn (title present).
+    assert!(
+        out.contains("Go to file"),
+        "the finder title is still drawn\n{out}"
+    );
+}
+
+#[test]
+fn finder_overlay_empty_query_snapshot() {
+    insta::assert_snapshot!(
+        "presenter_finder_empty_query",
+        render(&finder_state_empty_query(), 100, 24)
+    );
+}
+
+#[test]
+fn finder_overlay_with_matches_snapshot() {
+    insta::assert_snapshot!(
+        "presenter_finder_with_matches",
+        render(&finder_state_with_matches(), 100, 24)
     );
 }
