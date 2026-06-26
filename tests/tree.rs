@@ -1,5 +1,7 @@
 //! T-6 — Tree Model: gitignore-aware recursive enumeration + root boundary
 //! (AC-3, AC-4, AC-N5, AC-N1).
+//!
+//! T-4 — Tree Model `reveal(path)` (AC-10, AC-20, AC-N5).
 
 mod common;
 
@@ -138,4 +140,152 @@ fn dotfiles_are_browsable_but_dot_git_is_hidden() {
     let n = names(&TreeModel::new(dir.path()));
     assert!(n.contains(&".env".to_string()), "dotfiles are browsable");
     assert!(!n.contains(&".git".to_string()), ".git is hidden");
+}
+
+// ── T-4: reveal(path) ────────────────────────────────────────────────────────
+
+/// (a) Collapse all, reveal a deep file → ancestors expanded and target selected (AC-10).
+#[test]
+fn reveal_expands_ancestors_and_selects_target() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    fs::write(dir.path().join("src/inner/deep.rs"), "x").unwrap();
+    fs::write(dir.path().join("src/top.rs"), "y").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    // Sanity: deep.rs is NOT visible before reveal (all collapsed).
+    let before_names = names(&model);
+    assert!(
+        !before_names.contains(&"deep.rs".to_string()),
+        "deep.rs should be hidden before reveal"
+    );
+
+    let target = dir.path().join("src/inner/deep.rs");
+    let ok = model.reveal(&target);
+    assert!(ok, "reveal returned false unexpectedly");
+
+    let selected = model
+        .selected()
+        .expect("a node must be selected after reveal");
+    assert_eq!(
+        selected.path, target,
+        "selected node must be the revealed file"
+    );
+
+    let visible: Vec<_> = model
+        .visible_nodes()
+        .into_iter()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        visible.contains(&"inner".to_string()),
+        "inner/ must be visible after reveal"
+    );
+    assert!(
+        visible.contains(&"deep.rs".to_string()),
+        "deep.rs must be visible after reveal"
+    );
+}
+
+/// (b) `changed_only` ON, target NOT in changed set → `reveal` clears `changed_only` and selects
+/// the file (filter-relax, AC-10).
+#[test]
+fn reveal_clears_changed_only_when_target_hidden_by_filter() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub/target.rs"), "t").unwrap();
+    fs::write(dir.path().join("sub/changed.rs"), "c").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    let mut status = BTreeMap::new();
+    // Only changed.rs is in the changed-set; target.rs is not.
+    status.insert(PathBuf::from("sub/changed.rs"), Status::Modified);
+    model.set_changed_only(true, &status);
+
+    let target = dir.path().join("sub/target.rs");
+    let ok = model.reveal(&target);
+    assert!(ok, "reveal returned false unexpectedly");
+
+    let selected = model
+        .selected()
+        .expect("a node must be selected after reveal");
+    assert_eq!(
+        selected.path, target,
+        "selected node must be the revealed file"
+    );
+
+    // The filter must have been relaxed.
+    let visible: Vec<_> = model
+        .visible_nodes()
+        .into_iter()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        visible.contains(&"target.rs".to_string()),
+        "target.rs must be visible after filter relaxation"
+    );
+}
+
+/// (c) `hide_hidden` ON, dot-prefixed target → `reveal` clears `hide_hidden` and selects it.
+#[test]
+fn reveal_clears_hide_hidden_when_target_is_dotfile() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join(".secret"), "s").unwrap();
+    fs::write(dir.path().join("visible.rs"), "v").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    model.set_hide_hidden(true);
+
+    // Sanity: .secret is invisible.
+    let before = names(&model);
+    assert!(
+        !before.contains(&".secret".to_string()),
+        ".secret should be hidden before reveal"
+    );
+
+    let target = dir.path().join(".secret");
+    let ok = model.reveal(&target);
+    assert!(ok, "reveal returned false unexpectedly");
+
+    let selected = model
+        .selected()
+        .expect("a node must be selected after reveal");
+    assert_eq!(
+        selected.path, target,
+        "selected node must be the dot-prefixed file"
+    );
+}
+
+/// (d) `reveal` of a nonexistent / above-root path returns `false` and leaves cursor unchanged
+/// (AC-20, AC-N5).
+#[test]
+fn reveal_returns_false_for_missing_or_above_root_path() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join("a.txt"), "a").unwrap();
+    fs::write(dir.path().join("b.txt"), "b").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    // Move cursor to index 1 (b.txt, since a.txt sorts first).
+    model.move_cursor(1);
+    let cursor_before = model.cursor();
+
+    // Nonexistent path under root.
+    let missing = dir.path().join("no_such_file.txt");
+    let ok = model.reveal(&missing);
+    assert!(!ok, "reveal of nonexistent path must return false");
+    assert_eq!(
+        model.cursor(),
+        cursor_before,
+        "cursor must be unchanged after failed reveal"
+    );
+
+    // Path above root (parent of the root).
+    let above_root = dir.path().parent().unwrap().join("escaped.txt");
+    let ok2 = model.reveal(&above_root);
+    assert!(!ok2, "reveal of above-root path must return false");
+    assert_eq!(
+        model.cursor(),
+        cursor_before,
+        "cursor must be unchanged after above-root reveal"
+    );
 }

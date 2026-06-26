@@ -285,6 +285,46 @@ impl TreeModel {
         self.visible_nodes().into_iter().nth(self.cursor)
     }
 
+    /// Reveal `path` in the tree: expand every collapsed ancestor, relax `changed_only` or
+    /// `hide_hidden` if they would hide the target, then move the cursor to the target's
+    /// visible-row index. Returns `false` (no mutation) when `path` is not a file under `root`
+    /// or does not exist on disk (AC-10, AC-20, AC-N5).
+    pub fn reveal(&mut self, path: &Path) -> bool {
+        if !path.starts_with(&self.root) {
+            return false; // above root — AC-N5
+        }
+        if !path.is_file() {
+            return false; // missing or not a regular file — AC-20
+        }
+        // Expand every ancestor directory from the file's parent up to and including root.
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(&self.root) {
+                break;
+            }
+            self.expand(d);
+            if d == self.root {
+                break;
+            }
+            dir = d.parent();
+        }
+        // Relax a filter only if it still hides the target after expansion.
+        if self.changed_only && !self.visible_nodes().iter().any(|n| n.path == path) {
+            self.changed_only = false;
+        }
+        if self.hide_hidden && !self.visible_nodes().iter().any(|n| n.path == path) {
+            self.hide_hidden = false;
+        }
+        // Move the cursor to the target's visible row.
+        match self.visible_nodes().iter().position(|n| n.path == path) {
+            Some(idx) => {
+                self.cursor = idx;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Keep the cursor within the (possibly shrunken) visible list after a structural or
     /// filter change, so indexing by `cursor` can never run past the end.
     fn clamp_cursor(&mut self) {
