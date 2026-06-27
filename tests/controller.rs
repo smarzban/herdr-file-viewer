@@ -6093,3 +6093,184 @@ fn incremental_search_typing_does_not_clear_search_via_dispatch_render() {
         "AC-17: search state remains Some after Backspace"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-15 — Negative criteria & conformance (AC-N1, AC-N2, AC-N3, AC-N4, AC-N6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ac_n1_n2_search_and_goto_journey_leaves_filesystem_and_git_unchanged() {
+    // AC-N1: search and go-to-line create/rename/move/delete no file — the filesystem under
+    // the root is unchanged after a full search + go-to-line exercise.
+    // AC-N2: no git mutation — `git status --porcelain` and HEAD are unchanged after the exercise.
+    //
+    // Journey: open `/` → type query → n → N → Esc; open `:` → type `5` → Enter.
+    // Pattern mirrors ac_n1_finder_enter_journey_leaves_filesystem_unchanged /
+    // ac_n2_finder_exercise_does_not_mutate_git_state above.
+    let dir = TempDir::new();
+    common::init_repo_with_commit(dir.path());
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "fn main() {}\nline2\nline3\nline4\nline5\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "pub fn lib() {}\n").unwrap();
+
+    // Snapshot BEFORE.
+    let fs_before = snapshot_no_git(dir.path());
+    let status_before = common::git(dir.path(), &["status", "--porcelain"]);
+    let head_before = common::git(dir.path(), &["rev-parse", "HEAD"]);
+
+    // Drive the controller through a full search + go-to-line exercise.
+    // Use SearchContent so the prompt actions actually run against real content.
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle"); // wait for initial render
+    ctrl.set_content_viewport(40, 5);
+
+    // Search journey: open `/` → type → n → N → Esc.
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    // Commit the search then navigate matches.
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    ctrl.handle(Intent::NextMatch);
+    ctrl.handle(Intent::PrevMatch);
+    // Open a second search and cancel with Esc (restores scroll, clears state).
+    ctrl.handle(Intent::OpenSearch);
+    for c in "line".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Esc));
+
+    // Go-to-line journey: open `:` → type `5` → Enter.
+    ctrl.handle(Intent::OpenGoToLine);
+    ctrl.handle_prompt_key(key(KeyCode::Char('5')));
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+
+    // Snapshot AFTER.
+    let fs_after = snapshot_no_git(dir.path());
+    let status_after = common::git(dir.path(), &["status", "--porcelain"]);
+    let head_after = common::git(dir.path(), &["rev-parse", "HEAD"]);
+
+    // AC-N1: filesystem unchanged.
+    assert_eq!(
+        fs_after, fs_before,
+        "AC-N1: filesystem must be unchanged after a full search + go-to-line exercise"
+    );
+    // AC-N2: git state unchanged.
+    assert_eq!(
+        status_after, status_before,
+        "AC-N2: git status --porcelain must be unchanged after the search + go-to-line exercise"
+    );
+    assert_eq!(
+        head_after, head_before,
+        "AC-N2: HEAD commit must be unchanged after the search + go-to-line exercise"
+    );
+}
+
+#[test]
+fn ac_n3_fresh_controller_has_no_prior_search() {
+    // AC-N3: no persistent state — a freshly-built Controller has no prior search committed.
+    // `search()` returns `None` immediately after construction (nothing has been typed or
+    // committed yet). The filesystem-unchanged snapshot in the AC-N1/N2 test above also
+    // covers the "no state written to disk" half of AC-N3.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+
+    let (ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(
+        ctrl.search().is_none(),
+        "AC-N3: a fresh Controller must have search() == None (no prior search state)"
+    );
+    // Also confirm the prompt is not open (no go-to-line or search prompt active).
+    assert!(
+        !ctrl.prompt_open(),
+        "AC-N3: a fresh Controller must have no prompt open"
+    );
+}
+
+/// A content provider that renders plain text that does NOT contain the sentinel "ZZUNIQUE".
+/// Used for AC-N4: another on-disk file will contain "ZZUNIQUE", but the displayed content
+/// must never show it, so searching for it yields zero matches.
+struct ContentWithoutSentinel;
+impl ContentProvider for ContentWithoutSentinel {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
+        RenderResult {
+            content: Text::raw(lines),
+            notices: Vec::new(),
+        }
+    }
+}
+
+fn controller_with_sentinel_excluded_content(root: &Path) -> Controller {
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(ContentWithoutSentinel),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn ac_n4_search_matches_only_open_file_content_not_other_disk_files() {
+    // AC-N4: search matches only the OPEN file's displayed content — a token present only in
+    // ANOTHER on-disk file yields zero matches, even though it exists on the filesystem.
+    //
+    // Setup: two files on disk.
+    //   displayed_file.txt — the open file, content rendered via ContentWithoutSentinel
+    //                        (alpha/beta/gamma/…) — does NOT contain "ZZUNIQUE".
+    //   other_file.txt    — contains "ZZUNIQUE" but is NOT the displayed file.
+    //
+    // Search for "ZZUNIQUE" → zero matches because search only scans
+    // `content_plain_lines()` (the rendered content pane), never the filesystem.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("displayed_file.txt"), "alpha\nbeta\n").unwrap();
+    // This file contains the sentinel but is NOT displayed — it must never be scanned.
+    std::fs::write(
+        dir.path().join("other_file.txt"),
+        "ZZUNIQUE token is here\n",
+    )
+    .unwrap();
+
+    let mut ctrl = controller_with_sentinel_excluded_content(dir.path());
+    // Wait for ContentWithoutSentinel to land (any of its lines will do).
+    await_marker(&mut ctrl, "alpha");
+    ctrl.set_content_viewport(40, 10);
+
+    // Open the search prompt and type the sentinel.
+    ctrl.handle(Intent::OpenSearch);
+    for c in "ZZUNIQUE".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+
+    // The SearchState must be Some (prompt was opened and typed into), but matches must be empty.
+    let s = ctrl
+        .search()
+        .expect("AC-N4: SearchState must be Some after typing into the search prompt");
+    assert!(
+        s.matches.is_empty(),
+        "AC-N4: searching for a token present only in another on-disk file must yield zero \
+         matches (search is scoped to the displayed content, not the filesystem); got {} matches",
+        s.matches.len()
+    );
+
+    // Confirm: the sentinel IS present in the other file on disk (the precondition holds).
+    let other = std::fs::read_to_string(dir.path().join("other_file.txt")).unwrap();
+    assert!(
+        other.contains("ZZUNIQUE"),
+        "precondition: the sentinel exists in other_file.txt on disk"
+    );
+}

@@ -108,10 +108,14 @@ fn declares_linux_and_macos_platforms() {
 #[test]
 fn declares_no_event_hooks() {
     let m = manifest();
-    // AC-N4: no event-hook table — the viewer only ever opens via an explicit action.
+    // AC-N4 (finder): no event-hook table — the viewer only ever opens via an explicit action.
+    // AC-N6 (in-file-nav): search and go-to-line also have no auto/event trigger — they open
+    // only via the explicit `/` (OpenSearch) and `:` (OpenGoToLine) key bindings. The manifest
+    // declaring no `[[events]]` is the Host Adapter proof of this: nothing in the manifest
+    // can cause herdr to call back into the viewer to open a prompt automatically.
     assert!(
         !m.contains("[[events]]"),
-        "AC-N4: manifest must declare no [[events]] hooks"
+        "AC-N4/AC-N6: manifest must declare no [[events]] hooks"
     );
     assert!(
         !m.contains("[[link_handlers]]"),
