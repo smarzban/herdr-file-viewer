@@ -10,6 +10,7 @@ pub mod editor;
 pub mod finder;
 pub mod fuzzy;
 pub mod git;
+pub mod help;
 pub mod herdr;
 pub mod highlight;
 pub mod host;
