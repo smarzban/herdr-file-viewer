@@ -659,6 +659,41 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
 }
 
 #[test]
+fn scroll_to_line_brings_the_target_line_into_view_and_clamps_out_of_range() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max_content_scroll = 40
+
+    // a line already near the top: line 1 lands at the top
+    ctrl.scroll_to_line(1);
+    assert_eq!(ctrl.content_scroll(), 0, "line 1 at the top");
+
+    // a mid-file line lands near the top (offset = line-1), still well within the clamp
+    ctrl.scroll_to_line(25);
+    let off = ctrl.content_scroll();
+    assert!(
+        off <= 24 && 24 < off + 10,
+        "line 25 is within the 10-row viewport"
+    );
+    assert_eq!(off, 24, "lands the target near the top");
+
+    // below 1 clamps to line 1 (AC-4)
+    ctrl.scroll_to_line(0);
+    assert_eq!(ctrl.content_scroll(), 0, "0 clamps to line 1");
+
+    // above the last clamps to the last line → last screenful (AC-4); line 50 still visible
+    ctrl.scroll_to_line(1000);
+    let off = ctrl.content_scroll();
+    assert_eq!(off, 40, "beyond the last line shows the last screenful");
+    assert!(
+        off <= 49 && 49 < off + 10,
+        "the last line (50) is within the viewport"
+    );
+}
+
+#[test]
 fn selecting_a_different_file_resets_the_scroll_to_the_top() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
@@ -4638,5 +4673,584 @@ fn ac_n6_open_finder_intent_does_open_the_finder() {
     assert!(
         ctrl.finder_open(),
         "AC-N6: Intent::OpenFinder must open the finder"
+    );
+}
+
+#[test]
+fn open_go_to_line_opens_the_prompt_in_a_source_mapped_view() {
+    // AC-1: in a source-mapped (SyntaxContent) view, OpenGoToLine opens the prompt.
+    // An unchanged, non-markdown .rs file renders as SyntaxContent (the policy default).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "precondition: an unchanged .rs file is in SyntaxContent"
+    );
+    assert!(!ctrl.prompt_open(), "prompt starts closed");
+
+    let fx = ctrl.handle(Intent::OpenGoToLine);
+    assert!(
+        ctrl.prompt_open(),
+        "AC-1: prompt opens in a source-mapped view"
+    );
+    assert!(fx.redraw, "opening the prompt signals a redraw");
+    assert_eq!(ctrl.content_scroll(), 0, "content scroll unchanged");
+    assert!(
+        ctrl.action_notice().is_none(),
+        "no unavailable notice in a source-mapped view"
+    );
+}
+
+#[test]
+fn open_go_to_line_opens_the_prompt_in_transformed_views_too() {
+    // AC-7 (revised): `:` opens the prompt whenever a FILE is selected — in a transformed view
+    // (RenderedMarkdown, Diff, FullDiff) too. No "unavailable" notice; the view is NOT switched yet
+    // (the switch happens on confirm — see the jump test below). Covers gate finding L2 (FullDiff).
+
+    // --- RenderedMarkdown ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("notes.md"), "# Hello\n").unwrap();
+        let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::RenderedMarkdown),
+            "precondition: a .md file is in RenderedMarkdown"
+        );
+        ctrl.handle(Intent::OpenGoToLine);
+        assert!(
+            ctrl.prompt_open(),
+            "AC-7: `:` opens the prompt in RenderedMarkdown"
+        );
+        assert!(
+            ctrl.action_notice().is_none(),
+            "no unavailable notice — the prompt opens"
+        );
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::RenderedMarkdown),
+            "the view is unchanged until confirm"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged on open");
+    }
+
+    // --- Diff ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+        let mut changed = BTreeMap::new();
+        changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+        let git = StubGit {
+            status: changed.clone(),
+            changed,
+            ..StubGit::default()
+        };
+        let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::Diff),
+            "precondition: a changed .rs file is in Diff"
+        );
+        ctrl.handle(Intent::OpenGoToLine);
+        assert!(ctrl.prompt_open(), "AC-7: `:` opens the prompt in Diff");
+        assert!(
+            ctrl.action_notice().is_none(),
+            "no unavailable notice in Diff"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged on open");
+    }
+
+    // --- FullDiff (gate finding L2) ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+        let mut changed = BTreeMap::new();
+        changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+        let git = StubGit {
+            status: changed.clone(),
+            changed,
+            ..StubGit::default()
+        };
+        let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+        ctrl.handle(Intent::CycleView); // Diff → FullDiff
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::FullDiff),
+            "precondition: one CycleView reaches FullDiff"
+        );
+        ctrl.handle(Intent::OpenGoToLine);
+        assert!(
+            ctrl.prompt_open(),
+            "AC-7 / gate L2: `:` opens the prompt in FullDiff"
+        );
+        assert!(
+            ctrl.action_notice().is_none(),
+            "no unavailable notice in FullDiff"
+        );
+    }
+}
+
+// T-3 — Go-to-line keystroke + confirm + cancel (AC-2..AC-6, AC-7 edge)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn go_to_line_builds_the_number_from_digits_and_ignores_non_digits() {
+    // AC-2: digit keys push to the buffer; non-digit printables are silently ignored.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+
+    ctrl.handle_prompt_key(key(KeyCode::Char('4')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('a'))); // non-digit: ignored
+    ctrl.handle_prompt_key(key(KeyCode::Char('2')));
+    assert_eq!(
+        ctrl.prompt_query(),
+        "42",
+        "digits build the number, non-digits ignored"
+    );
+    // Backspace deletes the last digit
+    ctrl.handle_prompt_key(key(KeyCode::Backspace));
+    assert_eq!(ctrl.prompt_query(), "4");
+}
+
+#[test]
+fn go_to_line_enter_jumps_to_the_line_and_clamps_out_of_range() {
+    // AC-3: Enter with a valid line number scrolls the content to that line (near the top).
+    // AC-4: a line number beyond the last line is clamped to the last screenful.
+    // 50 lines, viewport 10 → max_content_scroll = 40.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+
+    // Jump to line 25 (1-based): content_scroll should be 24 (line 25 near top).
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    ctrl.handle_prompt_key(key(KeyCode::Char('2')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('5')));
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(!ctrl.prompt_open(), "Enter closes the prompt");
+    assert_eq!(
+        ctrl.content_scroll(),
+        24,
+        "line 25 lands at offset 24 (near top, AC-3)"
+    );
+
+    // Re-open and type "1000" — beyond the last line → clamped to max_content_scroll (40, AC-4).
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    for c in "1000".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(
+        !ctrl.prompt_open(),
+        "Enter closes the prompt after out-of-range"
+    );
+    assert_eq!(
+        ctrl.content_scroll(),
+        40,
+        "out-of-range clamps to last screenful (AC-4)"
+    );
+}
+
+#[test]
+fn go_to_line_empty_enter_closes_without_jumping() {
+    // AC-5: Enter with an empty buffer closes the prompt and leaves the scroll unchanged.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    assert_eq!(ctrl.content_scroll(), 0, "scroll starts at 0");
+
+    // Enter with no digits typed: close, no scroll.
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(!ctrl.prompt_open(), "empty Enter closes the prompt (AC-5)");
+    assert_eq!(
+        ctrl.content_scroll(),
+        0,
+        "scroll unchanged on empty Enter (AC-5)"
+    );
+}
+
+#[test]
+fn go_to_line_esc_closes_without_jumping() {
+    // AC-6: Esc closes the prompt and leaves content_scroll unchanged.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10);
+
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    // Type some digits to prove Esc discards them.
+    ctrl.handle_prompt_key(key(KeyCode::Char('3')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('7')));
+    assert_eq!(ctrl.prompt_query(), "37");
+    ctrl.handle_prompt_key(key(KeyCode::Esc));
+    assert!(!ctrl.prompt_open(), "Esc closes the prompt (AC-6)");
+    assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged on Esc (AC-6)");
+}
+
+#[test]
+fn open_go_to_line_is_unavailable_when_no_file_is_selected() {
+    // AC-7 edge: when the cursor sits on a directory, selected_view_mode() is None →
+    // open_go_to_line fires the unavailable notice and leaves the prompt closed.
+    // Build a tree whose first (and only non-hidden) node is a subdirectory.
+    // The tree lists alphabetically: "adir/" sorts before any file we might add,
+    // and since the cursor starts at index 0, the first node (the directory) is selected.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("adir")).unwrap();
+    // Add a file so the controller_with_lines render worker has something to render,
+    // but the tree cursor starts at "adir/" (index 0, a directory).
+    std::fs::write(dir.path().join("z.txt"), "content\n").unwrap();
+
+    // Use the plain `controller()` helper (not controller_with_lines) — we only need
+    // the directory-selection behaviour, not a specific rendered line count.
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // Confirm the first visible node is a directory (precondition).
+    let nodes = ctrl.tree().visible_nodes();
+    assert!(
+        !nodes.is_empty(),
+        "tree must have at least one visible node"
+    );
+    let first = &nodes[0];
+    assert_eq!(
+        first.path.file_name().unwrap().to_str().unwrap(),
+        "adir",
+        "precondition: first node is the subdirectory"
+    );
+    // Cursor starts at 0 → the directory is selected → selected_view_mode() is None.
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        None,
+        "precondition: directory has no view mode"
+    );
+
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(
+        !ctrl.prompt_open(),
+        "AC-7 edge: prompt must NOT open when a directory is selected"
+    );
+    assert!(
+        ctrl.action_notice().is_some(),
+        "AC-7 edge: an unavailable notice is set when a directory is selected"
+    );
+}
+
+/// A git controller whose single file `file` is reported CHANGED (so its default view is Diff, a
+/// transformed view), with `n` numbered lines of content — for exercising the go-to-line auto-switch
+/// from a transformed view to the source-mapped content view.
+fn changed_controller_with_lines(root: &Path, file: &str, n: usize) -> Controller {
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from(file), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(LinesContent { n }),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), true),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn go_to_line_in_a_transformed_view_switches_to_content_and_jumps() {
+    // AC-7 (revised): confirming `:N` in a transformed view (here Diff) switches the file to the
+    // source-mapped content view and jumps to source line N once the re-render lands.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = changed_controller_with_lines(dir.path(), "a.txt", 50);
+    await_marker(&mut ctrl, "L0"); // initial render (changed → Diff; LinesContent ignores mode)
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max_content_scroll = 40
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "precondition: the changed file is in Diff (a transformed view)"
+    );
+
+    // Open the prompt (opens in any view), type 25, Enter.
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    for c in "25".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+
+    // Confirm auto-switched the view to source-mapped content and queued the jump for the re-render.
+    assert!(!ctrl.prompt_open(), "Enter closes the prompt");
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "AC-7: confirm auto-switched to the source-mapped content view"
+    );
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(25),
+        "the jump is queued against the dispatched re-render"
+    );
+
+    // Pump poll() until the queued render lands and the jump applies.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(
+            Instant::now() < deadline,
+            "the auto-switch jump never applied"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        24,
+        "after the switch render, jumped to line 25 (offset 24)"
+    );
+}
+
+// review-gate Round 1 — regression tests for the findings fixed in R1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mouse_is_inert_while_the_go_to_line_prompt_is_open() {
+    // R1 (HIGH, 5 models): the go-to-line prompt is keyboard-only and modal — the run loop routes
+    // only KEY events to it. Without a guard in handle_mouse, a click/wheel would still reach the
+    // tree beneath and change the selection, so a subsequent Enter would jump/auto-switch the WRONG
+    // file. The mouse must be inert while the prompt is open (mirroring the picker's modal guard).
+    let dir = TempDir::new();
+    for i in 0..6 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().cursor(), 0, "cursor starts on f00.txt");
+
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open(), "prompt opens on the selected file");
+
+    // A left click on another tree row (row 4 → visible node 3) must be swallowed.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 4));
+    assert!(
+        !fx.redraw,
+        "a click under an open prompt is inert (no redraw)"
+    );
+    assert_eq!(
+        ctrl.tree().cursor(),
+        0,
+        "the click must NOT move the selection while the prompt is open"
+    );
+    assert!(
+        ctrl.prompt_open(),
+        "the prompt stays open after an inert click"
+    );
+
+    // A scroll-wheel over the tree is inert too.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert!(!fx.redraw, "a scroll under an open prompt is inert");
+    assert_eq!(
+        ctrl.tree().cursor(),
+        0,
+        "scroll does not move the selection under the prompt"
+    );
+}
+
+/// A content provider for the go-to-line wrap test: 5 long, space-free lines (`W0…`, 25 cols → 3
+/// rows each at width 10) then 5 short lines (`S5`..`S9`, 1 row each). With wrap on, source line 6
+/// (`S5`) sits at display row 15, not row 5 — so the wrap-aware mapping and the naive `line-1`
+/// disagree, which is exactly what the test pins down.
+struct WrapLines;
+impl ContentProvider for WrapLines {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let mut lines: Vec<String> = (0..5).map(|i| format!("W{i}{}", "x".repeat(23))).collect();
+        lines.extend((5..10).map(|i| format!("S{i}")));
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+        }
+    }
+}
+
+fn controller_with_wrap_lines(root: &Path) -> Controller {
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WrapLines),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn go_to_line_maps_source_line_to_wrapped_row_offset_when_wrap_is_on() {
+    // R1 (MEDIUM, 4 models): with the `w` wrap override on, a source line no longer maps 1:1 to a
+    // display row — earlier long lines wrap into several rows. `:N` must land on source line N (its
+    // cumulative wrapped-row offset), not display row N-1, or the target falls off-screen. (AC-3
+    // under wrap.) 5 W-lines × 3 rows = 15, so source line 6 (the first S-line) is at row 15.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_wrap_lines(dir.path());
+    await_marker(&mut ctrl, "S9"); // 5 long (W) + 5 short (S) lines rendered
+    ctrl.set_content_viewport(10, 5); // width 10 → each 25-char W line wraps to 3 rows
+
+    // Wrap OFF: source line 6 maps 1:1 → display row 5.
+    ctrl.scroll_to_line(6);
+    assert_eq!(
+        ctrl.content_scroll(),
+        5,
+        "wrap off: source line 6 = display row 5 (1:1)"
+    );
+
+    // Wrap ON (the `w` key): the 5 W-lines each occupy 3 rows, so source line 6 sits at row 15.
+    ctrl.handle(Intent::ToggleWrap);
+    ctrl.scroll_to_line(6);
+    assert_eq!(
+        ctrl.content_scroll(),
+        15,
+        "wrap on: source line 6 lands at its wrapped-row offset (15), not display row 5"
+    );
+    assert_ne!(
+        ctrl.content_scroll(),
+        5,
+        "the wrap-aware mapping must differ from the naive line-1"
+    );
+}
+
+#[test]
+fn go_to_line_queues_the_jump_when_a_source_render_is_still_in_flight() {
+    // R1 (MEDIUM): if a source file's render hasn't landed yet, selected_view_mode() reports
+    // SyntaxContent from the path while self.content is still stale. Confirming `:N` must NOT clamp
+    // against the stale content — it queues against the in-flight render (applied_seq != latest_seq)
+    // and the jump applies once that render lands.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    // Deliberately do NOT await_marker: the initial render is still in flight.
+    ctrl.set_content_viewport(40, 10);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "source-mapped by path even before its render lands"
+    );
+
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "25".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(25),
+        "the jump is queued against the in-flight render, not clamped against stale content"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "the queued jump never applied");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        24,
+        "after the render lands, jumped to line 25 (offset 24)"
+    );
+}
+
+#[test]
+fn go_to_line_second_confirm_supersedes_an_in_flight_auto_switch_jump() {
+    // R1 (MEDIUM): confirming `:` in a transformed view auto-switches (override → Syntax) and queues
+    // a jump against the switch render; selected_view_mode() then reports SyntaxContent immediately.
+    // A SECOND confirm before that render lands must WIN — the older queued line must not overwrite
+    // it when the render arrives.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = changed_controller_with_lines(dir.path(), "a.txt", 50);
+    await_marker(&mut ctrl, "L0"); // initial Diff render landed
+    ctrl.set_content_viewport(40, 10);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "starts in a transformed view"
+    );
+
+    // First confirm — :10 → auto-switch + queue (render in flight).
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "10".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(10),
+        "first confirm queued line 10"
+    );
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "auto-switched the view (override)"
+    );
+
+    // Second confirm BEFORE polling — :30 must supersede the queued 10.
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "30".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(30),
+        "the second confirm supersedes the queued jump (30, not 10)"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "the queued jump never applied");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        29,
+        "lands on line 30 (offset 29) — the LAST confirm wins, not line 10"
     );
 }

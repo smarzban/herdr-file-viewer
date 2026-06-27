@@ -157,6 +157,20 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     }
                     dirty |= fx.redraw;
                 }
+                // While a bottom prompt (go-to-line) is open, route every key press to handle_prompt_key so
+                // digits/printables edit the prompt instead of firing viewer intents (AC-21). Mutually exclusive
+                // with the finder arm above — only one modal is ever open.
+                Event::Key(key) if key.kind == KeyEventKind::Press && controller.prompt_open() => {
+                    let fx = controller.handle_prompt_key(key);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
+                    }
+                    if fx.quit {
+                        return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && let Some(intent) = input::map_key(key) =>

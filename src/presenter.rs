@@ -81,6 +81,10 @@ pub struct ViewState {
     /// When `Some`, the go-to-file finder overlay is drawn on top of the columns (AC-1).
     /// `None` ⇒ no overlay.
     pub finder: Option<FinderView>,
+    /// When `Some`, a one-row prompt is drawn across the very bottom of the viewer showing the active
+    /// in-file-nav prompt (e.g. `Go to line: 42`). `None` ⇒ no prompt open. The Controller builds the
+    /// display string (label + buffer) so the Presenter stays mode-agnostic. (AC-1)
+    pub prompt: Option<String>,
     /// The tree root's directory basename (e.g. `"herdr-plugin"`), shown as the tree column's
     /// top-border title so the user can see *which* directory the tree is rooted at — mirroring
     /// how the content pane titles itself from the selected node. Truncated with an ellipsis if
@@ -566,6 +570,30 @@ fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
+/// Carve the optional one-row bottom prompt off the very bottom, then the optional update-banner
+/// footer off what remains (so the prompt sits below the banner). Reuses [`body_and_footer`] for
+/// the banner so a frame with NO prompt lays out exactly as before. Shared by [`draw`] and
+/// [`geometry`] so the body rect they use can never disagree.
+fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Option<Rect>) {
+    let (above_prompt, prompt) = if state.prompt.is_some() && area.height >= 2 {
+        let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+        (parts[0], Some(parts[1]))
+    } else {
+        (area, None)
+    };
+    let (body, banner) = body_and_footer(above_prompt, state);
+    (body, banner, prompt)
+}
+
+/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Sanitized (AC-27), clipped to its row.
+fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
+    let line = Line::styled(
+        sanitize_label(prompt),
+        Style::new().fg(Color::Black).bg(Color::Gray),
+    );
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 /// Below this pane width the viewer drops to a single, focused column (AC-21).
 const NARROW_SPLIT: u16 = 80;
 
@@ -652,7 +680,7 @@ pub struct PaneGeometry {
 /// renders, so a click is never mapped against stale geometry. The interior of a bordered
 /// block is its area inset by one cell on each side (the title does not change it).
 pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
-    let (body, _footer) = body_and_footer(area, state);
+    let (body, _footer, _prompt) = body_footer_prompt(area, state);
     let (tree, content, divider_x) = columns(body, state);
     let inner = |r: Rect| Block::bordered().inner(r);
 
@@ -751,9 +779,12 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 /// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
 /// geometry it is drawn into (a stale `state.width` cannot desync the layout).
 pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
-    let (body, footer) = body_and_footer(frame.area(), state);
+    let (body, footer, prompt_area) = body_footer_prompt(frame.area(), state);
     if let (Some(area), Some(banner)) = (footer, state.update_banner.as_deref()) {
         draw_update_footer(frame, area, banner);
+    }
+    if let (Some(area), Some(prompt)) = (prompt_area, state.prompt.as_deref()) {
+        draw_prompt_line(frame, area, prompt);
     }
     let (tree, content, _divider) = columns(body, state);
     if let Some(area) = tree {

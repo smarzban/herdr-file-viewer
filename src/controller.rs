@@ -19,6 +19,7 @@
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
+use crate::infile::{PromptMode, PromptState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
@@ -240,6 +241,12 @@ pub struct Controller {
     /// (OpenFinder intent); closed by confirm/cancel (T-7) and by [`re_root`](Self::re_root) (a
     /// re-root invalidates the old-root candidate list).
     finder: Option<FinderState>,
+    /// The open in-file-nav bottom prompt (go-to-line), or `None` when closed. While `Some`, the run
+    /// loop routes raw keys to `handle_prompt_key` (T-4) and the mouse is inert ([`handle_mouse`]
+    /// returns early), so the selection can't change under an open prompt. Closed by confirm/cancel
+    /// (T-3) and by [`re_root`](Self::re_root) (symmetric with the picker/finder teardown).
+    /// Mutually exclusive with the picker/finder modals.
+    prompt: Option<PromptState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
     /// Session-level — survives a re-root unchanged.
@@ -257,6 +264,18 @@ pub struct Controller {
     /// at construction and on each re-root and cached here — never queried per-frame, since the
     /// branch can only change by a re-root, not by navigation.
     current_branch: Option<String>,
+    /// A queued go-to-line jump awaiting its re-render: `(render seq, 1-based source line)`. Set when
+    /// `:` confirms in a **transformed** view (RenderedMarkdown / Diff / FullDiff) — the view is
+    /// switched to the source-mapped content view and the jump can't run until that render lands, so
+    /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
+    /// jump is pending; superseded (cleared) by any newer render dispatch.
+    pending_goto: Option<(u64, usize)>,
+    /// The seq of the render result currently held in [`content`](Self::content), bumped by [`poll`]
+    /// each time it applies a result. Equal to `latest_seq` exactly when the latest dispatched render
+    /// has landed; lagging while one is in flight. Lets a synchronous go-to-line jump tell "content is
+    /// current" from "a render is still coming" — so `:N` only jumps in-place when the source-mapped
+    /// content is actually applied, and otherwise queues against the in-flight render (AC-3/AC-7).
+    applied_seq: u64,
 }
 
 impl Controller {
@@ -329,6 +348,9 @@ impl Controller {
             status_rx: None,
             picker: None,
             finder: None,
+            prompt: None,
+            pending_goto: None,
+            applied_seq: 0,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -471,6 +493,10 @@ impl Controller {
         // exclusive and re_root only fires via picker-confirm), but kept structural so a future
         // re-root trigger can't strand a finder. (review-gate R1: G2)
         self.finder = None;
+        // Close the go-to-line prompt too (symmetric teardown). Unreachable today — the prompt is
+        // modal and re_root only fires via picker-confirm — but kept structural so a future re-root
+        // trigger can't strand an open prompt over a freshly re-rooted tree.
+        self.prompt = None;
         self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
@@ -718,6 +744,9 @@ impl Controller {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             branch: self.current_branch.clone(),
+            prompt: self.prompt.as_ref().map(|p| match p.mode {
+                crate::infile::PromptMode::GoToLine => format!("Go to line: {}", p.input.query()),
+            }),
         }
     }
 
@@ -801,6 +830,11 @@ impl Controller {
         if self.finder.is_some() {
             return Effects::noop();
         }
+        // A prompt is modal too: the run loop routes raw keys to handle_prompt_key while it is open, so
+        // handle() should not be reached. Guard structurally — symmetric with the finder guard.
+        if self.prompt.is_some() {
+            return Effects::noop();
+        }
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
@@ -824,6 +858,7 @@ impl Controller {
             Intent::DismissUpdate => self.dismiss_update(),
             Intent::SwitchWorktree => self.open_worktree_picker(),
             Intent::OpenFinder => self.open_finder(),
+            Intent::OpenGoToLine => self.open_go_to_line(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -912,6 +947,13 @@ impl Controller {
         // Modal: while the picker is open the mouse is fully inert — the picker is
         // keyboard-only. This mirrors the keyboard modal gate in `handle`. (review-gate R1, E)
         if self.picker.is_some() {
+            return Effects::noop();
+        }
+        // The go-to-line prompt is keyboard-only too: the run loop routes only KEY events to
+        // `handle_prompt_key`, so without this guard a click/wheel would still reach the tree/content
+        // beneath and change the selection mid-prompt — then a confirm would jump (or auto-switch) the
+        // WRONG file, or strand a bogus override on a directory. Make the mouse inert, like the picker.
+        if self.prompt.is_some() {
             return Effects::noop();
         }
         // The finder is also a modal overlay, but it IS mouse-interactive: wheel scrolls the
@@ -1374,6 +1416,25 @@ impl Controller {
             .saturating_sub(self.content_height)
     }
 
+    /// Scroll the content pane so 1-based source line `line_1based` is visible, landing the line near
+    /// the top of the viewport. The source line is clamped to `[1, source_line_count]` (below 1 →
+    /// line 1; above the last → the last line), mapped to its display-row offset, then that offset is
+    /// clamped to `[0, max_content_scroll()]` so a near-the-end line shows the last screenful (the
+    /// target stays within view). Without wrap a source line maps 1:1 to a display row, so the offset
+    /// is `line-1`; with wrap on (the `w` override wraps every mode) earlier long lines occupy several
+    /// rows, so the offset is the cumulative wrapped-row count of the lines BEFORE the target — the
+    /// same mapping the wrapped-row total uses, so `:N` lands on source line N either way. (AC-3, AC-4)
+    pub fn scroll_to_line(&mut self, line_1based: usize) {
+        let source_lines = self.content.lines.len();
+        let line = line_1based.max(1).min(source_lines.max(1));
+        let offset = if self.effective_wrap() {
+            self.wrapped_rows_before(line - 1)
+        } else {
+            line - 1
+        };
+        self.content_scroll = (offset.min(u16::MAX as usize) as u16).min(self.max_content_scroll());
+    }
+
     /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
     /// real last row. Without wrapping each source line is one (truncated) row. With wrapping a
     /// line spans multiple rows: ratatui's exact `line_count` is private, and an arithmetic
@@ -1392,19 +1453,29 @@ impl Controller {
     /// vertical scrollbar must size/position against — raw `lines.len()` undercounts under wrap.
     fn rendered_line_count_for(&self, wrap: bool) -> u16 {
         let count = if wrap {
-            let w = self.content_width.max(1) as usize;
-            self.content
-                .lines
-                .iter()
-                .map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
-                })
-                .sum::<usize>()
+            self.wrapped_rows_before(self.content.lines.len())
         } else {
             self.content.lines.len()
         };
         count.min(u16::MAX as usize) as u16
+    }
+
+    /// Cumulative display rows the first `n` content (source) lines occupy at the current content
+    /// width when wrapping is on (each line is ≥ 1 row). Shared by [`rendered_line_count_for`] (with
+    /// `n` = the whole line count → the wrapped-row total) and [`scroll_to_line`] (with `n` = line-1 →
+    /// the display-row offset of a source line), so the scroll clamp and the go-to-line target are
+    /// computed by the SAME wrapping logic and therefore always agree (AC-3/AC-4).
+    fn wrapped_rows_before(&self, n: usize) -> usize {
+        let w = self.content_width.max(1) as usize;
+        self.content
+            .lines
+            .iter()
+            .take(n)
+            .map(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
+            })
+            .sum::<usize>()
     }
 
     /// Scroll the content pane horizontally by `delta` columns, clamped to `[0, max]`.
@@ -1779,6 +1850,131 @@ impl Controller {
         self.finder.is_some()
     }
 
+    /// Open the go-to-line prompt (AC-1). Opens whenever a **file** is selected, in any view: in a
+    /// source-mapped (SyntaxContent) view the confirm jumps directly; in a transformed view
+    /// (RenderedMarkdown / Diff / FullDiff) — where a source line has no 1:1 display row — the confirm
+    /// switches this file to the source-mapped content view and jumps once it re-renders (AC-7). With
+    /// nothing / a directory selected there is no file to address, so emit a one-line notice and open
+    /// nothing. Snapshots the current content scroll into the prompt state.
+    fn open_go_to_line(&mut self) -> Effects {
+        if self.selected_view_mode().is_some() {
+            self.prompt = Some(PromptState {
+                mode: PromptMode::GoToLine,
+                input: crate::prompt::PromptInput::new(),
+                saved_scroll: self.content_scroll,
+            });
+        } else {
+            self.action_notice = Some("Go to line: select a file first".into());
+        }
+        Effects::redraw()
+    }
+
+    /// Whether an in-file-nav bottom prompt is currently open.
+    pub fn prompt_open(&self) -> bool {
+        self.prompt.is_some()
+    }
+
+    /// The pending auto-switch go-to-line target (1-based source line), or `None`. Set when `:`
+    /// confirms in a transformed view (the jump waits for the source-mapped re-render); cleared by
+    /// `poll` once that render lands and the jump applies (AC-7). Exposed for tests.
+    pub fn pending_goto_line(&self) -> Option<usize> {
+        self.pending_goto.map(|(_, line)| line)
+    }
+
+    /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
+    /// (AC-2) and the Presenter's bottom prompt line (T-4). Mirrors `finder_query()`.
+    pub fn prompt_query(&self) -> &str {
+        self.prompt.as_ref().map(|p| p.input.query()).unwrap_or("")
+    }
+
+    /// Route a key event while a bottom-prompt modal is open. The run loop (T-4) calls this
+    /// instead of the normal key→intent map while `prompt_open()`. Dispatches by the prompt's
+    /// mode. (AC-2…AC-6)
+    pub fn handle_prompt_key(&mut self, key: KeyEvent) -> Effects {
+        // `PromptMode` is `Copy`; read it and drop the borrow before the per-mode handler runs.
+        let Some(mode) = self.prompt.as_ref().map(|p| p.mode) else {
+            return Effects::noop();
+        };
+        match mode {
+            PromptMode::GoToLine => self.go_to_line_key(key),
+        }
+    }
+
+    /// Go-to-line prompt key handling: digits build the line number, non-digit printables are
+    /// ignored (AC-2); Backspace deletes; Enter jumps (clamped, AC-3/AC-4) or — when empty —
+    /// just closes with no jump (AC-5); Esc closes leaving the scroll unchanged (AC-6). Confirm
+    /// and cancel both close the prompt. Go-to-line is not incremental, so the content scroll
+    /// only ever moves on a non-empty Enter.
+    fn go_to_line_key(&mut self, key: KeyEvent) -> Effects {
+        match key.code {
+            // Only accept ASCII digits with no modifier other than SHIFT (consistent with the
+            // finder's printable-char gate).
+            KeyCode::Char(c)
+                if c.is_ascii_digit()
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
+            {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.push(c);
+                }
+                Effects::redraw()
+            }
+            // A non-digit printable is ignored — the buffer is unchanged, no repaint. (AC-2)
+            KeyCode::Char(_) => Effects::noop(),
+            KeyCode::Backspace => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.backspace();
+                }
+                Effects::redraw()
+            }
+            KeyCode::Enter => {
+                let q = self
+                    .prompt
+                    .as_ref()
+                    .map(|p| p.input.query().to_string())
+                    .unwrap_or_default();
+                self.prompt = None; // confirm always closes (AC-5 empty also closes)
+                // A new confirm supersedes any auto-switch jump still queued from an earlier confirm,
+                // so the older line can't overwrite this one when its render lands.
+                self.pending_goto = None;
+                if !q.is_empty() {
+                    // The buffer holds only ASCII digits (non-digits are rejected above), so a
+                    // parse failure can only be an overflow → treat as "beyond the last line";
+                    // scroll_to_line clamps usize::MAX to the last line (AC-4).
+                    let n = q.parse::<usize>().unwrap_or(usize::MAX);
+                    let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
+                    if source_mapped && self.applied_seq == self.latest_seq {
+                        // Source-mapped AND the displayed content is the latest render → the line→row
+                        // mapping is valid now, so jump synchronously (AC-3).
+                        self.scroll_to_line(n);
+                    } else if let Some(path) = self
+                        .tree
+                        .selected()
+                        .filter(|node| node.kind == NodeKind::File)
+                        .map(|node| node.path.clone())
+                    {
+                        // Either a transformed view (a source line has no display row here) or a
+                        // source render still in flight (the override reports SyntaxContent before its
+                        // render lands — jumping now would clamp against stale content). Queue the jump
+                        // for the render that carries the source-mapped content, and only (re)dispatch
+                        // when we must actually switch the view mode (AC-7); `poll` applies the queued
+                        // jump once the matching render lands.
+                        if !source_mapped {
+                            self.overrides.insert(path, ViewMode::SyntaxContent);
+                            self.dispatch_render();
+                        }
+                        self.pending_goto = Some((self.latest_seq, n));
+                    }
+                }
+                Effects::redraw()
+            }
+            KeyCode::Esc => {
+                self.prompt = None; // cancel: close, scroll unchanged (AC-6)
+                Effects::redraw()
+            }
+            _ => Effects::noop(),
+        }
+    }
+
     /// The full candidate list loaded when the finder was opened, or an empty slice when
     /// the finder is closed. Exposed for tests (T-5); the Presenter/T-8 read via `finder()`.
     pub fn finder_candidates(&self) -> &[String] {
@@ -1999,6 +2195,10 @@ impl Controller {
         // previous file's scroll offsets.
         self.content_scroll = 0;
         self.content_hscroll = 0;
+        // A new render supersedes any queued go-to-line jump from an OLDER render (e.g. the user
+        // navigated away before an auto-switch render landed). The auto-switch path sets its own
+        // `pending_goto` AFTER calling this, so its jump survives; only stale ones are cleared.
+        self.pending_goto = None;
 
         let Some(node) = self.tree.selected() else {
             return self.clear_content();
@@ -2035,7 +2235,16 @@ impl Controller {
             if seq == self.latest_seq {
                 self.content = result.content;
                 self.content_notices = result.notices;
+                self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
                 applied = true;
+                // A queued go-to-line jump (auto-switch from a transformed view, AC-7) applies once
+                // ITS render lands: now that the source-mapped content is in, scroll to the line.
+                if let Some((pseq, line)) = self.pending_goto
+                    && pseq == seq
+                {
+                    self.scroll_to_line(line);
+                    self.pending_goto = None;
+                }
             }
             // else: a superseded selection's render — drop it.
         }

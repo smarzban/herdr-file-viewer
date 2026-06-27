@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Go to line (`:`).** Press `:` to open a prompt and jump the content pane to a source line by
+  number — `Enter` jumps (out-of-range clamps to the last line), `Esc` cancels. Works in every view:
+  in a rendered-markdown or diff view (where a source line has no 1:1 display row) confirming switches
+  the file to the line-numbered content view and jumps there. Read-only navigation. (The first half of
+  in-file navigation; in-file search follows.)
 - **Go to file (`f`).** Open a fuzzy finder over every file in the tree and jump straight to one by
   name — type to filter, `↑` / `↓` to move, `Enter` to open, `Esc` to cancel; `←` / `→` (or the
   horizontal wheel) scroll long result rows, and the result list has a draggable scrollbar.

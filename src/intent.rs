@@ -66,6 +66,14 @@ pub enum Intent {
     /// typing a fuzzy query. Read-only — it navigates the viewer's selection; it never
     /// modifies any file (AC-1, AC-N1, AC-N3).
     OpenFinder,
+    /// Open the go-to-line prompt to scroll the content pane to a source line by number.
+    /// Read-only navigation — it only moves the in-pane scroll; no file or git mutation
+    /// (AC-1, AC-N1). Opens for any selected **file**, in every view: in a source-mapped
+    /// (syntax/content) view the jump is immediate; in a transformed view (rendered-markdown /
+    /// diff / full-diff) confirming auto-switches the file to the source-mapped view and jumps
+    /// once it re-renders (AC-7, revised). With nothing / a directory selected it shows a notice
+    /// and opens nothing. Opened only by the explicit `:` key — no event hook (AC-N6).
+    OpenGoToLine,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -73,7 +81,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 23] = [
+    pub const ALL: [Intent; 24] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -96,6 +104,7 @@ impl Intent {
         Intent::DismissUpdate,
         Intent::SwitchWorktree,
         Intent::OpenFinder,
+        Intent::OpenGoToLine,
         Intent::Close,
     ];
 }
@@ -135,6 +144,7 @@ mod tests {
                 | Intent::DismissUpdate
                 | Intent::SwitchWorktree
                 | Intent::OpenFinder
+                | Intent::OpenGoToLine
                 | Intent::Close => false,
             };
             assert!(
@@ -167,6 +177,14 @@ mod tests {
         assert!(
             Intent::ALL.contains(&Intent::OpenFinder),
             "Intent::ALL must contain OpenFinder"
+        );
+    }
+
+    #[test]
+    fn open_go_to_line_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::OpenGoToLine),
+            "Intent::ALL must contain OpenGoToLine"
         );
     }
 }

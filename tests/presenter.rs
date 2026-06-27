@@ -78,6 +78,7 @@ fn sample_state() -> ViewState {
         finder: None,
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
+        prompt: None,
     }
 }
 
@@ -2345,5 +2346,61 @@ fn finder_geometry_exposes_the_scrollbar_track_only_when_rows_overflow() {
     assert!(
         geometry(area, &small).finder_vbar.is_none(),
         "geometry().finder_vbar must be None when every match row fits"
+    );
+}
+
+// ── T-4: bottom prompt line (AC-1) + no-file-notice path (AC-7) ──────────────
+
+#[test]
+fn an_open_go_to_line_prompt_renders_a_bottom_line() {
+    // AC-1: when a prompt is open (`ViewState.prompt = Some("Go to line: 42")`), the Presenter draws
+    // a one-row line at the very bottom of the frame showing the prompt string.
+    let mut st = sample_state();
+    st.update_banner = None; // no banner — prompt is the sole bottom row
+    st.prompt = Some("Go to line: 42".into());
+    // Render at a known size; the bottom row (row h-1) must contain the prompt label + number.
+    let (w, h) = (100u16, 24u16);
+    let out = render(&st, w, h);
+    let last_row = out
+        .lines()
+        .last()
+        .expect("at least one row in the rendered output");
+    assert!(
+        last_row.contains("Go to line: 42"),
+        "the last row must contain 'Go to line: 42' when a prompt is open\n{out}"
+    );
+    // The two-column layout is still drawn above the prompt row.
+    assert!(
+        out.contains("fn main()"),
+        "content still shows above the prompt line\n{out}"
+    );
+}
+
+#[test]
+fn no_prompt_open_leaves_layout_unchanged() {
+    // AC-1 (negative): with `prompt: None` the layout is byte-identical to the pre-T-4 baseline —
+    // body_footer_prompt falls through to body_and_footer with no prompt row reserved.
+    let st = sample_state(); // prompt: None (set by the sample_state helper)
+    let out_no_prompt = render(&st, 100, 24);
+    // The bottom row must NOT contain the go-to-line prompt label (no phantom prompt).
+    let last_row = out_no_prompt.lines().last().expect("at least one row");
+    assert!(
+        !last_row.contains("Go to line:"),
+        "no prompt row rendered when prompt is None\n{out_no_prompt}"
+    );
+}
+
+#[test]
+fn go_to_line_no_file_notice_renders_for_ac7() {
+    // AC-7 (revised): the ONLY go-to-line notice is the no-file case — `:` with a directory / nothing
+    // selected emits "Go to line: select a file first" and opens no prompt. (A transformed view no
+    // longer shows an "unavailable" notice — confirming there auto-switches and jumps.) This verifies
+    // the Presenter surfaces that notice via the existing notices channel, with no new code path.
+    let mut st = sample_state();
+    st.notices = vec!["Go to line: select a file first".into()];
+    let out = render(&st, 100, 24);
+    assert!(
+        out.contains("Go to line: select a file first"),
+        "the no-file go-to-line notice (AC-7) must appear in the rendered frame\n{out}"
     );
 }

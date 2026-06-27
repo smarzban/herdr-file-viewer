@@ -37,6 +37,7 @@ is unit-testable with stubs.
 | `fuzzy` | A pure fuzzy matcher: rank file paths against a typed query (the finder's scoring), no I/O. |
 | `index` | Build the flat, `.gitignore`-aware list of repo file paths the finder searches. |
 | `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
+| `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line now; in-file search later), its `prompt` input buffer, and the content-scroll snapshot for cancel-restore. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |
