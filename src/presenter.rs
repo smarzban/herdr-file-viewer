@@ -94,6 +94,10 @@ pub struct ViewState {
     /// border. `None` outside a git repo or on a detached HEAD — in which case the bottom title is
     /// omitted entirely rather than showing a blank/placeholder branch (degrade gracefully).
     pub branch: Option<String>,
+    /// When `Some`, the content pane is drawn through [`crate::highlight::apply`] to overlay
+    /// match highlights on top of the rendered text (AC-9, AC-11). `None` ⇒ draw the content
+    /// as-is (byte-identical to today — the `None` arm is just `state.content.clone()`).
+    pub search: Option<ContentSearch>,
 }
 
 /// The worktree picker's draw model (an owned snapshot of the controller's picker state, so
@@ -123,6 +127,21 @@ pub struct PickerRowView {
     /// The hosting agent's status (e.g. `"working"`), or `None` when the worktree's workspace
     /// hosts no real agent. Rendered as a small trailing badge, colored by status (AC-19).
     pub agent: Option<String>,
+}
+
+/// Search-highlight overlay for the content pane: the matches in the displayed content and which
+/// one is current. Carried in [`ViewState`] so the Presenter overlays them via
+/// [`crate::highlight::apply`]. Built by the Session Controller's `view_state()` from
+/// `self.search: Option<SearchState>`.
+///
+/// The Presenter uses this purely for rendering — it overlays the highlight onto `content` lines
+/// at draw time and never mutates any state (AC-N1, constitution read-only).
+pub struct ContentSearch {
+    /// The matches to highlight, in document order.
+    pub matches: Vec<crate::search::Match>,
+    /// Index into `matches` of the current (most recently navigated) match — rendered with
+    /// [`crate::highlight::CURRENT_HIGHLIGHT`] rather than the regular [`crate::highlight::HIGHLIGHT`].
+    pub current: usize,
 }
 
 /// The finder overlay's draw model (an owned snapshot of the controller's finder state).
@@ -517,8 +536,21 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     let max_width = content_max_line_width(&state.content);
     let (text, vbar, hbar) = content_bars(content_area, total_rows, max_width, state.wrap);
 
+    // Overlay highlight when a committed search is active. `highlight::apply` returns the same
+    // line count and never changes a line's text width — only re-segments spans and patches
+    // styles — so `content_rows` and `max_width` (computed above from `state.content`) stay
+    // valid. When `search` is `None`, cloning `state.content` is byte-identical to the pre-T-12
+    // path, so existing snapshots are unaffected (AC zero-churn invariant).
+    let content_text = match &state.search {
+        Some(cs) => ratatui::text::Text::from(crate::highlight::apply(
+            &state.content.lines,
+            &cs.matches,
+            cs.current,
+        )),
+        None => state.content.clone(),
+    };
     let mut content =
-        Paragraph::new(state.content.clone()).scroll((state.content_scroll, state.content_hscroll));
+        Paragraph::new(content_text).scroll((state.content_scroll, state.content_hscroll));
     if state.wrap {
         content = content.wrap(Wrap { trim: false });
     }

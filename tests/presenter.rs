@@ -2,8 +2,11 @@
 //! AC-3 (display), AC-7 (display), AC-13 (truncation notice), AC-25 (fallback notice).
 
 use herdr_file_viewer::git::Status;
-use herdr_file_viewer::presenter::{FinderView, Focus, PickerRowView, PickerView, ViewState, draw};
+use herdr_file_viewer::presenter::{
+    ContentSearch, FinderView, Focus, PickerRowView, PickerView, ViewState, draw,
+};
 use herdr_file_viewer::render::to_text;
+use herdr_file_viewer::search::Match;
 use herdr_file_viewer::tree::{Node, NodeKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -79,6 +82,7 @@ fn sample_state() -> ViewState {
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
         prompt: None,
+        search: None,
     }
 }
 
@@ -2402,5 +2406,165 @@ fn go_to_line_no_file_notice_renders_for_ac7() {
     assert!(
         out.contains("Go to line: select a file first"),
         "the no-file go-to-line notice (AC-7) must appear in the rendered frame\n{out}"
+    );
+}
+
+// ── T-12: ContentSearch overlay — AC-8, AC-9, AC-11 ─────────────────────────
+
+/// A `ViewState` with a known three-line content and two search matches:
+/// - match 0 on line 0 (bytes 3..7 = "main") — non-current, gets `HIGHLIGHT`
+/// - match 1 on line 2 (bytes 0..1 = "}") — CURRENT, gets `CURRENT_HIGHLIGHT`
+///
+/// cursor = 1 → match 1 is the current one.
+fn search_state() -> ViewState {
+    use herdr_file_viewer::render::to_text;
+    let mut st = sample_state();
+    st.notices = vec![];
+    // Content: exactly three lines whose text is predictable byte-by-byte.
+    // "fn main() {\n    println!(\"hello\");\n}\n"  (from sample_state, but override)
+    // We use simple ASCII-only content so byte offsets are trivial.
+    st.content = to_text("fn main() {\n    println!;\n}\n");
+    st.content_rows = 3;
+    // match 0 = "main" on line 0, bytes 3..7
+    // match 1 = "}" on line 2, bytes 0..1  → current (current = 1)
+    st.search = Some(ContentSearch {
+        matches: vec![
+            Match {
+                line: 0,
+                start: 3,
+                end: 7,
+            }, // "main"
+            Match {
+                line: 2,
+                start: 0,
+                end: 1,
+            }, // "}"
+        ],
+        current: 1,
+    });
+    st
+}
+
+#[test]
+fn search_highlight_colors_match_cells_with_highlight_style() {
+    // AC-9: every non-current match is highlighted with HIGHLIGHT (black on yellow).
+    // AC-11: the current match is highlighted with CURRENT_HIGHLIGHT (black on cyan), distinct from the non-current ones.
+    use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+
+    let st = search_state();
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let buf = render_buffer(&st, w, h);
+
+    // Find the content text rect via geometry so we only scan there.
+    let content_inner = geometry(area, &st)
+        .content_inner
+        .expect("content inner must be present");
+
+    // Helper: find the first cell matching `needle` inside `content_inner`, return its (x, y).
+    let find_in_content = |needle: &str| -> Option<(u16, u16)> {
+        for y in content_inner.y..(content_inner.y + content_inner.height) {
+            for x in content_inner.x..(content_inner.x + content_inner.width) {
+                let hit = needle.chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < content_inner.x + content_inner.width
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|c| c.symbol() == ch.to_string())
+                });
+                if hit {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    };
+
+    // AC-9: "main" (match 0, non-current) must be in the content area and carry HIGHLIGHT bg.
+    let (mx, my) = find_in_content("main").expect("'main' must appear in the content area");
+    let main_bg = buf.cell((mx, my)).unwrap().bg;
+    assert_eq!(
+        main_bg,
+        HIGHLIGHT.bg.unwrap(),
+        "AC-9: the non-current match 'main' must have the HIGHLIGHT background (yellow), got {main_bg:?}"
+    );
+    let main_fg = buf.cell((mx, my)).unwrap().fg;
+    assert_eq!(
+        main_fg,
+        HIGHLIGHT.fg.unwrap(),
+        "AC-9: the non-current match 'main' must have the HIGHLIGHT foreground (black), got {main_fg:?}"
+    );
+
+    // AC-11: "}" (match 1, current) must carry CURRENT_HIGHLIGHT — visually distinct from HIGHLIGHT.
+    let (cx2, cy2) = find_in_content("}").expect("'}' must appear in the content area");
+    let cur_bg = buf.cell((cx2, cy2)).unwrap().bg;
+    assert_eq!(
+        cur_bg,
+        CURRENT_HIGHLIGHT.bg.unwrap(),
+        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT background (cyan), got {cur_bg:?}"
+    );
+    let cur_fg = buf.cell((cx2, cy2)).unwrap().fg;
+    assert_eq!(
+        cur_fg,
+        CURRENT_HIGHLIGHT.fg.unwrap(),
+        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT foreground (black), got {cur_fg:?}"
+    );
+
+    // AC-11 distinctness: the two highlight backgrounds are different.
+    assert_ne!(
+        HIGHLIGHT.bg.unwrap(),
+        CURRENT_HIGHLIGHT.bg.unwrap(),
+        "AC-11: HIGHLIGHT and CURRENT_HIGHLIGHT backgrounds must differ"
+    );
+}
+
+#[test]
+fn search_none_keeps_draw_content_byte_identical() {
+    // Zero-churn: `search: None` must produce output byte-identical to a state that never had a
+    // search field. We compare two sample_state() renders — both have search: None — confirming
+    // the new field has no side-effects on existing rendering paths.
+    let st = sample_state(); // search: None
+    let out1 = render(&st, 100, 24);
+    let out2 = render(&st, 100, 24);
+    assert_eq!(
+        out1, out2,
+        "deterministic: two identical states produce the same output"
+    );
+    // And the wide-layout snapshot still passes (it references search: None implicitly).
+    insta::assert_snapshot!("presenter_wide", render(&sample_state(), 100, 24));
+}
+
+#[test]
+fn search_prompt_renders_slash_term_on_bottom_row() {
+    // AC-8: while a search prompt is open, the `/term` string appears on the bottom row.
+    let mut st = sample_state();
+    st.prompt = Some("/foo".into());
+    let (w, h) = (100u16, 24u16);
+    let out = render(&st, w, h);
+    let last_row = out.lines().last().expect("at least one row");
+    assert!(
+        last_row.contains("/foo"),
+        "AC-8: the bottom row must show '/foo' when a search prompt is open\n{out}"
+    );
+    // Content still visible above the prompt.
+    assert!(
+        out.contains("fn main()"),
+        "content is still drawn above the prompt line\n{out}"
+    );
+}
+
+#[test]
+fn search_highlight_snapshot() {
+    // Snapshot the highlighted content pane so regressions in highlight::apply's output are caught.
+    insta::assert_snapshot!(
+        "presenter_search_highlight",
+        render(&search_state(), 100, 24)
     );
 }

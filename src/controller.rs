@@ -22,7 +22,9 @@ use crate::herdr::HerdrCli;
 use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
-use crate::presenter::{FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
+use crate::presenter::{
+    ContentSearch, FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState,
+};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
@@ -757,6 +759,13 @@ impl Controller {
             prompt: self.prompt.as_ref().map(|p| match p.mode {
                 crate::infile::PromptMode::GoToLine => format!("Go to line: {}", p.input.query()),
                 crate::infile::PromptMode::Search => format!("/{}", p.input.query()),
+            }),
+            // Populate the highlight overlay from the committed/live search state so the Presenter
+            // overlays matches via highlight::apply. `None` when no search is active → draw_content
+            // falls through to `state.content.clone()`, byte-identical to the pre-T-12 path.
+            search: self.search.as_ref().map(|s| ContentSearch {
+                matches: s.matches.clone(),
+                current: s.current,
             }),
         }
     }
