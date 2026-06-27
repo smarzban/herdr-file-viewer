@@ -423,7 +423,14 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     // blank cells → when `n` brings it into view it is written contiguously.
     let mut content_lines = Vec::with_capacity(50);
     for i in 1u32..=50 {
-        if i == 25 || i == 35 {
+        if i == 1 {
+            // Distinctive top-of-file anchor — lets the test SYNCHRONIZE on aaa.txt's content
+            // actually being rendered + visible (after `/` zooms it) before it searches. The
+            // content render is off-thread and slower on macOS CI; without this barrier the
+            // SEARCHMARK search could run against an in-flight (empty) render → zero matches →
+            // `n` inert → SEARCHMARK never appears → a flaky `expect` timeout on macOS.
+            content_lines.push("TOPMARK".to_string());
+        } else if i == 25 || i == 35 {
             content_lines.push("SEARCHMARK".to_string());
         } else {
             content_lines.push(format!("F{i:02}")); // short, differs from SEARCHMARK in every column
@@ -451,6 +458,12 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     // the next key so `j` lands inside the prompt (same pattern as go-to-line e2e).
     s.send("/").expect("send `/` to open the search prompt");
     std::thread::sleep(Duration::from_millis(300));
+    // Synchronize before searching: `/` zooms the selected file (FIX 7b) so its content becomes
+    // visible. Wait for the top-of-file anchor so the SEARCHMARK search below runs against
+    // fully-rendered content, not an in-flight (empty) off-thread render — the render is slower on
+    // macOS CI and otherwise raced the search, making the `SEARCHMARK` expect flaky there.
+    s.expect("TOPMARK")
+        .expect("aaa.txt content is rendered and visible (zoomed) before the search flow");
 
     // Step 3: AC-21 routing proof — send `j` (NavDown) and `w` (ToggleWrap) into the prompt.
     // If routing were broken, `j` would move the tree cursor to `jfile.txt`; the subsequent
