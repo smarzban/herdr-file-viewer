@@ -1374,6 +1374,19 @@ impl Controller {
             .saturating_sub(self.content_height)
     }
 
+    /// Scroll the content pane so 1-based source line `line_1based` is visible, landing the
+    /// line near the top of the viewport. The line is clamped to `[1, rendered_line_count()]`
+    /// (below 1 → line 1; above the last → the last line), then the offset is clamped to
+    /// `[0, max_content_scroll()]` so a near-the-end line shows the last screenful (the target
+    /// is still within view). In a source-mapped (SyntaxContent) view a source line maps 1:1 to
+    /// a display row, so `content_scroll` (display rows) indexes source lines directly. (AC-3, AC-4)
+    pub fn scroll_to_line(&mut self, line_1based: usize) {
+        let last = self.rendered_line_count() as usize;
+        let line = line_1based.max(1).min(last.max(1));
+        let target = (line - 1) as u16;
+        self.content_scroll = target.min(self.max_content_scroll());
+    }
+
     /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
     /// real last row. Without wrapping each source line is one (truncated) row. With wrapping a
     /// line spans multiple rows: ratatui's exact `line_count` is private, and an arithmetic

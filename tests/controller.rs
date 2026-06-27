@@ -659,6 +659,41 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
 }
 
 #[test]
+fn scroll_to_line_brings_the_target_line_into_view_and_clamps_out_of_range() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max_content_scroll = 40
+
+    // a line already near the top: line 1 lands at the top
+    ctrl.scroll_to_line(1);
+    assert_eq!(ctrl.content_scroll(), 0, "line 1 at the top");
+
+    // a mid-file line lands near the top (offset = line-1), still well within the clamp
+    ctrl.scroll_to_line(25);
+    let off = ctrl.content_scroll();
+    assert!(
+        off <= 24 && 24 < off + 10,
+        "line 25 is within the 10-row viewport"
+    );
+    assert_eq!(off, 24, "lands the target near the top");
+
+    // below 1 clamps to line 1 (AC-4)
+    ctrl.scroll_to_line(0);
+    assert_eq!(ctrl.content_scroll(), 0, "0 clamps to line 1");
+
+    // above the last clamps to the last line → last screenful (AC-4); line 50 still visible
+    ctrl.scroll_to_line(1000);
+    let off = ctrl.content_scroll();
+    assert_eq!(off, 40, "beyond the last line shows the last screenful");
+    assert!(
+        off <= 49 && 49 < off + 10,
+        "the last line (50) is within the viewport"
+    );
+}
+
+#[test]
 fn selecting_a_different_file_resets_the_scroll_to_the_top() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
