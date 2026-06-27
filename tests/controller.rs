@@ -5899,3 +5899,197 @@ fn next_match_prev_match_inert_with_zero_match_committed_search() {
         "AC-19: PrevMatch must not scroll with zero matches"
     );
 }
+
+// ── T-11: Search cancel + clear lifecycle ─────────────────────────────────────
+
+#[test]
+fn search_esc_restores_scroll_and_clears_search_state() {
+    // AC-17: Esc in search mode cancels — restores the pre-open scroll AND clears self.search.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle"); // wait for initial render
+    ctrl.set_content_viewport(40, 5); // 20 lines, 5 visible → max scroll = 15
+
+    // Scroll the content pane down to a known position before opening the search prompt.
+    ctrl.handle(Intent::ToggleFocus); // switch to content focus
+    for _ in 0..6 {
+        ctrl.handle(Intent::NavDown); // scroll down 6 lines
+    }
+    let pre_open_scroll = ctrl.content_scroll();
+    assert!(
+        pre_open_scroll > 0,
+        "precondition: scroll is non-zero before opening search"
+    );
+
+    // Switch back to tree focus so we can open the search prompt.
+    ctrl.handle(Intent::ToggleFocus);
+
+    // Open the search prompt (snapshots scroll into saved_scroll).
+    ctrl.handle(Intent::OpenSearch);
+    assert!(ctrl.prompt_open(), "precondition: prompt is open");
+
+    // Type "needle" — this should scroll to the first match (line 1) and populate self.search.
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    assert!(
+        ctrl.search().is_some(),
+        "precondition: search state populated after typing"
+    );
+    // The scroll has moved away from pre_open_scroll (to first match at line 1).
+    // Because we scrolled to 6 before and first match is at line 1, scroll should now be 1.
+    let scroll_after_typing = ctrl.content_scroll();
+    assert_ne!(
+        scroll_after_typing, pre_open_scroll,
+        "precondition: scroll moved while typing (first match scrolled into view)"
+    );
+
+    // Press Esc → cancel: should restore saved_scroll AND clear search.
+    ctrl.handle_prompt_key(key(KeyCode::Esc));
+
+    // AC-17: prompt is closed.
+    assert!(!ctrl.prompt_open(), "AC-17: Esc closes the prompt");
+    // AC-17: content_scroll is restored to the pre-open position.
+    assert_eq!(
+        ctrl.content_scroll(),
+        pre_open_scroll,
+        "AC-17: Esc restores content_scroll to the pre-open value"
+    );
+    // AC-17: self.search is cleared (None), not retained.
+    assert!(
+        ctrl.search().is_none(),
+        "AC-17: Esc clears search state (self.search = None)"
+    );
+}
+
+#[test]
+fn open_search_clears_prior_committed_search() {
+    // AC-20 (new search clears prior): committing a search then opening a new one clears
+    // the previously committed SearchState.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    // Commit a first search for "needle".
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(
+        !ctrl.prompt_open(),
+        "precondition: prompt closed after Enter"
+    );
+    assert!(
+        ctrl.search().is_some(),
+        "precondition: committed search is Some after Enter"
+    );
+
+    // Open a new search — this should clear the prior committed SearchState.
+    let fx = ctrl.handle(Intent::OpenSearch);
+    assert!(fx.redraw, "OpenSearch returns redraw");
+    assert!(ctrl.prompt_open(), "AC-20: new search prompt is open");
+
+    // The prior committed search must be cleared (None) immediately on opening.
+    assert!(
+        ctrl.search().is_none(),
+        "AC-20: opening a new search clears the prior committed SearchState"
+    );
+}
+
+#[test]
+fn content_change_clears_committed_search_file_select() {
+    // AC-20 (content change clears committed search): navigating to a different file clears
+    // the committed SearchState because dispatch_render is called.
+    let dir = TempDir::new();
+    // Need two files so NavDown can select the second one.
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "y\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    // Commit a search for "needle".
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(
+        ctrl.search().is_some(),
+        "precondition: search is Some after commit"
+    );
+
+    // Navigate to the next file — this calls dispatch_render which must clear search.
+    ctrl.handle(Intent::NavDown);
+
+    // AC-20: the committed search must be cleared synchronously by dispatch_render.
+    assert!(
+        ctrl.search().is_none(),
+        "AC-20: navigating to a different file clears the committed search"
+    );
+}
+
+#[test]
+fn content_change_clears_committed_search_cycle_view() {
+    // AC-20 (content change clears committed search): cycling the view mode clears the
+    // committed SearchState because dispatch_render is called.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    // Commit a search for "needle".
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(
+        ctrl.search().is_some(),
+        "precondition: search is Some after commit"
+    );
+
+    // Cycle the view mode — calls dispatch_render which must clear search.
+    ctrl.handle(Intent::CycleView);
+
+    // AC-20: the committed search must be cleared synchronously.
+    assert!(
+        ctrl.search().is_none(),
+        "AC-20: cycling the view mode clears the committed search"
+    );
+}
+
+#[test]
+fn incremental_search_typing_does_not_clear_search_via_dispatch_render() {
+    // Regression guard: live incremental typing (refresh_search) must NOT call dispatch_render,
+    // which would wipe self.search while the user is still typing (AC-17 / AC-20 invariant).
+    // This test verifies that typing into the search prompt never wipes the SearchState mid-type.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    ctrl.handle(Intent::OpenSearch);
+
+    // Type one character at a time and verify search is always Some (never wiped).
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+        assert!(
+            ctrl.search().is_some(),
+            "AC-17: search state must remain Some while typing (not cleared by dispatch_render); failed after typing '{c}'"
+        );
+    }
+
+    // Also Backspace must not wipe.
+    ctrl.handle_prompt_key(key(KeyCode::Backspace));
+    assert!(
+        ctrl.search().is_some(),
+        "AC-17: search state remains Some after Backspace"
+    );
+}

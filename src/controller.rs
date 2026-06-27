@@ -278,8 +278,12 @@ pub struct Controller {
     applied_seq: u64,
     /// Live incremental-search state: the most-recently-typed query, the matches it produced,
     /// and which match is current. `None` until the first keystroke in a Search prompt; `Some`
-    /// (even with empty matches) once typing begins. Cleared to `None` when the prompt closes
-    /// so that `search()` accurately reflects "no active search session" (T-11 refines cancel).
+    /// (even with empty matches) once typing begins. Enter-commit retains it so `n`/`N` can
+    /// navigate the committed matches (AC-14). Cleared to `None` on Esc-cancel (AC-17), on
+    /// opening a new search (AC-20), and at the top of `dispatch_render` so any displayed-content
+    /// change (file-select, view-cycle, baseline-toggle, refresh, re-root, etc.) wipes a committed
+    /// search + its highlighting (AC-20). The incremental-typing path (`refresh_search`) does NOT
+    /// call `dispatch_render`, so live typing is never wiped by that clear.
     search: Option<SearchState>,
 }
 
@@ -1902,6 +1906,9 @@ impl Controller {
         if self.picker.is_some() || self.finder.is_some() {
             return Effects::noop();
         }
+        // AC-20: opening a new search clears any prior committed SearchState so highlights from
+        // the old query are gone before the new prompt opens. Clear first, then snapshot scroll.
+        self.search = None;
         self.prompt = Some(PromptState {
             mode: PromptMode::Search,
             input: crate::prompt::PromptInput::new(),
@@ -2056,8 +2063,12 @@ impl Controller {
                 self.prompt = None;
                 Effects::redraw()
             }
-            // Minimal Esc: close the prompt. Cancel-restore (restore saved_scroll) is T-11.
+            // AC-17: Esc cancels the search — restore the pre-open scroll snapshot and clear
+            // the in-progress SearchState (no highlights remain after cancel).
             KeyCode::Esc => {
+                let saved_scroll = self.prompt.as_ref().map(|p| p.saved_scroll).unwrap_or(0);
+                self.content_scroll = saved_scroll;
+                self.search = None;
                 self.prompt = None;
                 Effects::redraw()
             }
@@ -2378,6 +2389,12 @@ impl Controller {
         // navigated away before an auto-switch render landed). The auto-switch path sets its own
         // `pending_goto` AFTER calling this, so its jump survives; only stale ones are cleared.
         self.pending_goto = None;
+        // AC-20: any displayed-content change (file-select, view-cycle, baseline-toggle, refresh,
+        // go-to-line auto-switch, re-root, etc.) clears a committed search and its highlighting.
+        // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets
+        // `self.search` directly — it does NOT call `dispatch_render` — so live typing is NOT
+        // wiped by this clear.
+        self.search = None;
 
         let Some(node) = self.tree.selected() else {
             return self.clear_content();
