@@ -187,6 +187,30 @@ fn truncate_title(s: &str, area_width: u16) -> String {
     out
 }
 
+/// Truncate a border title to fit a bordered block of outer width `area_width`, replacing the
+/// MIDDLE with an ellipsis so BOTH ends stay visible (e.g. `fix/tree…r-hscroll`). Used for the
+/// branch, where the distinctive parts are the `prefix/` and the trailing feature name — tail
+/// truncation (`fix/tree-and-pi…`) would hide the latter. Same budget rule as [`truncate_title`]:
+/// the interior width minus the two borders and a one-column slack. The tail gets the extra column
+/// on an odd budget (the trailing feature name is usually the most distinctive part of a branch).
+fn truncate_middle(s: &str, area_width: u16) -> String {
+    let budget = area_width.saturating_sub(2).saturating_sub(1) as usize;
+    if budget == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= budget {
+        return s.to_string();
+    }
+    // Reserve one column for the ellipsis; split the remainder head/tail, tail favored on an odd budget.
+    let keep = budget.saturating_sub(1);
+    let head_len = keep / 2;
+    let tail_len = keep - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 /// The status color for a tree row: changes (modified / deleted) are light red, new files
 /// (added / untracked) light green, and a directory containing any change is light red.
 /// Clean rows take the default foreground.
@@ -402,7 +426,9 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // (no `title_bottom`) outside a repo or on a detached HEAD, so the border degrades cleanly
     // rather than showing a blank/placeholder branch. Sanitized + truncated like the top title.
     if let Some(branch) = &state.branch {
-        block = block.title_bottom(truncate_title(&sanitize_label(branch), area.width));
+        // Middle-ellipsis (not tail) so a long branch keeps both its `prefix/` and trailing feature
+        // name visible when the tree column is narrow (SMA-249).
+        block = block.title_bottom(truncate_middle(&sanitize_label(branch), area.width));
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);

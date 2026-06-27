@@ -143,6 +143,29 @@ fn tree_title_truncates_an_overlong_root_name() {
 }
 
 #[test]
+fn tree_branch_uses_middle_ellipsis_when_long() {
+    // SMA-249 refinement: a long branch on the bottom border is truncated in the MIDDLE so both the
+    // prefix and the trailing (most distinctive) part stay visible, instead of losing the tail.
+    let mut state = sample_state();
+    state.root_name = "repo".to_string();
+    state.branch = Some(format!("PFX{}SFX", "z".repeat(60)));
+    let out = render(&state, 100, 24);
+    assert!(out.contains('…'), "the long branch is truncated\n{out}");
+    assert!(
+        out.contains("PFX"),
+        "the branch prefix stays visible (head kept)\n{out}"
+    );
+    assert!(
+        out.contains("SFX"),
+        "the branch suffix stays visible (tail kept — the middle-ellipsis point)\n{out}"
+    );
+    assert!(
+        !out.contains(&"z".repeat(40)),
+        "the middle is dropped (the full run is not rendered)\n{out}"
+    );
+}
+
+#[test]
 fn draws_two_columns_tree_and_content() {
     let out = render(&sample_state(), 100, 24);
 
