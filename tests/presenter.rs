@@ -2353,12 +2353,12 @@ fn finder_geometry_exposes_the_scrollbar_track_only_when_rows_overflow() {
 
 #[test]
 fn an_open_go_to_line_prompt_renders_a_bottom_line() {
-    // AC-1: when a prompt is open (`ViewState.prompt = Some(":42")`), the Presenter draws a
-    // one-row line at the very bottom of the frame showing the prompt string.
+    // AC-1: when a prompt is open (`ViewState.prompt = Some("Go to line: 42")`), the Presenter draws
+    // a one-row line at the very bottom of the frame showing the prompt string.
     let mut st = sample_state();
     st.update_banner = None; // no banner — prompt is the sole bottom row
-    st.prompt = Some(":42".into());
-    // Render at a known size; the bottom row (row h-1) must contain ":42".
+    st.prompt = Some("Go to line: 42".into());
+    // Render at a known size; the bottom row (row h-1) must contain the prompt label + number.
     let (w, h) = (100u16, 24u16);
     let out = render(&st, w, h);
     let last_row = out
@@ -2366,8 +2366,8 @@ fn an_open_go_to_line_prompt_renders_a_bottom_line() {
         .last()
         .expect("at least one row in the rendered output");
     assert!(
-        last_row.contains(":42"),
-        "the last row must contain ':42' when a prompt is open\n{out}"
+        last_row.contains("Go to line: 42"),
+        "the last row must contain 'Go to line: 42' when a prompt is open\n{out}"
     );
     // The two-column layout is still drawn above the prompt row.
     assert!(
@@ -2382,10 +2382,10 @@ fn no_prompt_open_leaves_layout_unchanged() {
     // body_footer_prompt falls through to body_and_footer with no prompt row reserved.
     let st = sample_state(); // prompt: None (set by the sample_state helper)
     let out_no_prompt = render(&st, 100, 24);
-    // The bottom row must NOT contain ":" followed by digits (no phantom prompt).
+    // The bottom row must NOT contain the go-to-line prompt label (no phantom prompt).
     let last_row = out_no_prompt.lines().last().expect("at least one row");
     assert!(
-        !last_row.contains(":42"),
+        !last_row.contains("Go to line:"),
         "no prompt row rendered when prompt is None\n{out_no_prompt}"
     );
 }

@@ -363,17 +363,22 @@ fn go_to_line_jumps_to_a_source_line_and_is_unavailable_in_markdown() {
         "AC-3/AC-21: after Enter the content pane scrolls to source line 40 (DEEPMARKER visible)",
     );
 
-    // Step 6: AC-7 live — the prompt is closed and focus is still the tree; `j` now NavDowns onto
-    // notes.md (RenderedMarkdown), where `:` must show the unavailable notice and open no prompt.
+    // Step 6: AC-7 (revised) live — go-to-line now opens in EVERY view. The prompt is closed and
+    // focus is still the tree; `j` NavDowns onto notes.md (RenderedMarkdown), where `:` opens the
+    // prompt (its "Go to line:" label appears) rather than the old "unavailable" notice. The notes.md
+    // content pane has blank rows below its two lines, so the freshly-reserved prompt row writes the
+    // label into previously-blank cells — a robust pty anchor. (The switch-then-jump on confirm is
+    // proven rigorously by the controller unit test; here we prove the prompt opens in markdown.)
     s.send("j").expect("send NavDown to move to notes.md");
     s.expect("MDHEADERMARK")
         .expect("notes.md is now selected and its content is shown");
     s.send(":").expect("send `:` on the markdown file");
-    s.expect("unavailable")
-        .expect("AC-7: `:` on a RenderedMarkdown file shows the unavailable notice");
+    s.expect("Go to line:")
+        .expect("AC-7: `:` opens the go-to-line prompt even in a rendered-markdown view");
 
-    // Step 7: clean exit (no prompt is open on the markdown file). The Esc-no-jump path is proven
-    // rigorously by the T-3 unit tests; this e2e covers the live routing/jump/notice flow.
+    // Step 7: Esc closes the prompt (otherwise the prompt would swallow the quit key), then exit.
+    s.send("\u{1b}").expect("send Esc to close the prompt");
+    std::thread::sleep(Duration::from_millis(150));
     s.send("q").expect("send close");
     s.expect(Eof)
         .expect("the viewer terminates cleanly after the go-to-line flow");

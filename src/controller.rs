@@ -262,6 +262,12 @@ pub struct Controller {
     /// at construction and on each re-root and cached here — never queried per-frame, since the
     /// branch can only change by a re-root, not by navigation.
     current_branch: Option<String>,
+    /// A queued go-to-line jump awaiting its re-render: `(render seq, 1-based source line)`. Set when
+    /// `:` confirms in a **transformed** view (RenderedMarkdown / Diff / FullDiff) — the view is
+    /// switched to the source-mapped content view and the jump can't run until that render lands, so
+    /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
+    /// jump is pending; superseded (cleared) by any newer render dispatch.
+    pending_goto: Option<(u64, usize)>,
 }
 
 impl Controller {
@@ -335,6 +341,7 @@ impl Controller {
             picker: None,
             finder: None,
             prompt: None,
+            pending_goto: None,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -725,7 +732,7 @@ impl Controller {
                 .unwrap_or_default(),
             branch: self.current_branch.clone(),
             prompt: self.prompt.as_ref().map(|p| match p.mode {
-                crate::infile::PromptMode::GoToLine => format!(":{}", p.input.query()),
+                crate::infile::PromptMode::GoToLine => format!("Go to line: {}", p.input.query()),
             }),
         }
     }
@@ -1807,19 +1814,21 @@ impl Controller {
         self.finder.is_some()
     }
 
-    /// Open the go-to-line prompt (AC-1) — but only in a source-mapped (syntax/content) view, where a
-    /// source line maps 1:1 to a display row. In a transformed view (RenderedMarkdown / Diff /
-    /// FullDiff, or nothing selected) there is no source-line→row map, so emit a one-line unavailable
-    /// notice and open nothing (AC-7). Snapshots the current content scroll into the prompt state.
+    /// Open the go-to-line prompt (AC-1). Opens whenever a **file** is selected, in any view: in a
+    /// source-mapped (SyntaxContent) view the confirm jumps directly; in a transformed view
+    /// (RenderedMarkdown / Diff / FullDiff) — where a source line has no 1:1 display row — the confirm
+    /// switches this file to the source-mapped content view and jumps once it re-renders (AC-7). With
+    /// nothing / a directory selected there is no file to address, so emit a one-line notice and open
+    /// nothing. Snapshots the current content scroll into the prompt state.
     fn open_go_to_line(&mut self) -> Effects {
-        if self.selected_view_mode() == Some(ViewMode::SyntaxContent) {
+        if self.selected_view_mode().is_some() {
             self.prompt = Some(PromptState {
                 mode: PromptMode::GoToLine,
                 input: crate::prompt::PromptInput::new(),
                 saved_scroll: self.content_scroll,
             });
         } else {
-            self.action_notice = Some("Go to line is unavailable in this view".into());
+            self.action_notice = Some("Go to line: select a file first".into());
         }
         Effects::redraw()
     }
@@ -1827,6 +1836,13 @@ impl Controller {
     /// Whether an in-file-nav bottom prompt is currently open.
     pub fn prompt_open(&self) -> bool {
         self.prompt.is_some()
+    }
+
+    /// The pending auto-switch go-to-line target (1-based source line), or `None`. Set when `:`
+    /// confirms in a transformed view (the jump waits for the source-mapped re-render); cleared by
+    /// `poll` once that render lands and the jump applies (AC-7). Exposed for tests.
+    pub fn pending_goto_line(&self) -> Option<usize> {
+        self.pending_goto.map(|(_, line)| line)
     }
 
     /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
@@ -1886,7 +1902,18 @@ impl Controller {
                     // parse failure can only be an overflow → treat as "beyond the last line";
                     // scroll_to_line clamps usize::MAX to the last line (AC-4).
                     let n = q.parse::<usize>().unwrap_or(usize::MAX);
-                    self.scroll_to_line(n); // AC-3 / AC-4
+                    if self.selected_view_mode() == Some(ViewMode::SyntaxContent) {
+                        // Already source-mapped: the content is current, jump synchronously (AC-3).
+                        self.scroll_to_line(n);
+                    } else if let Some(path) = self.tree.selected().map(|n| n.path.clone()) {
+                        // Transformed view (markdown / diff): a source line has no display row here,
+                        // so switch this file to the source-mapped content view and jump once the
+                        // re-render lands (AC-7). The new content renders off-thread, so the jump is
+                        // queued against the dispatched render's seq and applied by `poll`.
+                        self.overrides.insert(path, ViewMode::SyntaxContent);
+                        self.dispatch_render();
+                        self.pending_goto = Some((self.latest_seq, n));
+                    }
                 }
                 Effects::redraw()
             }
@@ -2118,6 +2145,10 @@ impl Controller {
         // previous file's scroll offsets.
         self.content_scroll = 0;
         self.content_hscroll = 0;
+        // A new render supersedes any queued go-to-line jump from an OLDER render (e.g. the user
+        // navigated away before an auto-switch render landed). The auto-switch path sets its own
+        // `pending_goto` AFTER calling this, so its jump survives; only stale ones are cleared.
+        self.pending_goto = None;
 
         let Some(node) = self.tree.selected() else {
             return self.clear_content();
@@ -2155,6 +2186,14 @@ impl Controller {
                 self.content = result.content;
                 self.content_notices = result.notices;
                 applied = true;
+                // A queued go-to-line jump (auto-switch from a transformed view, AC-7) applies once
+                // ITS render lands: now that the source-mapped content is in, scroll to the line.
+                if let Some((pseq, line)) = self.pending_goto
+                    && pseq == seq
+                {
+                    self.scroll_to_line(line);
+                    self.pending_goto = None;
+                }
             }
             // else: a superseded selection's render — drop it.
         }

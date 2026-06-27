@@ -4705,10 +4705,10 @@ fn open_go_to_line_opens_the_prompt_in_a_source_mapped_view() {
 }
 
 #[test]
-fn open_go_to_line_is_unavailable_in_transformed_views() {
-    // AC-7: in a transformed view (RenderedMarkdown, Diff, FullDiff) the prompt must NOT open;
-    // instead an unavailable notice is set and scroll is unchanged.
-    // Also covers gate finding L2: FullDiff must be treated as non-source-mapped.
+fn open_go_to_line_opens_the_prompt_in_transformed_views_too() {
+    // AC-7 (revised): `:` opens the prompt whenever a FILE is selected — in a transformed view
+    // (RenderedMarkdown, Diff, FullDiff) too. No "unavailable" notice; the view is NOT switched yet
+    // (the switch happens on confirm — see the jump test below). Covers gate finding L2 (FullDiff).
 
     // --- RenderedMarkdown ---
     {
@@ -4721,16 +4721,21 @@ fn open_go_to_line_is_unavailable_in_transformed_views() {
             Some(ViewMode::RenderedMarkdown),
             "precondition: a .md file is in RenderedMarkdown"
         );
-        let _fx = ctrl.handle(Intent::OpenGoToLine);
+        ctrl.handle(Intent::OpenGoToLine);
         assert!(
-            !ctrl.prompt_open(),
-            "AC-7: prompt must NOT open in RenderedMarkdown"
+            ctrl.prompt_open(),
+            "AC-7: `:` opens the prompt in RenderedMarkdown"
         );
         assert!(
-            ctrl.action_notice().is_some(),
-            "AC-7: unavailable notice set in RenderedMarkdown"
+            ctrl.action_notice().is_none(),
+            "no unavailable notice — the prompt opens"
         );
-        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::RenderedMarkdown),
+            "the view is unchanged until confirm"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged on open");
     }
 
     // --- Diff ---
@@ -4751,13 +4756,13 @@ fn open_go_to_line_is_unavailable_in_transformed_views() {
             Some(ViewMode::Diff),
             "precondition: a changed .rs file is in Diff"
         );
-        let _fx = ctrl.handle(Intent::OpenGoToLine);
-        assert!(!ctrl.prompt_open(), "AC-7: prompt must NOT open in Diff");
+        ctrl.handle(Intent::OpenGoToLine);
+        assert!(ctrl.prompt_open(), "AC-7: `:` opens the prompt in Diff");
         assert!(
-            ctrl.action_notice().is_some(),
-            "AC-7: unavailable notice set in Diff"
+            ctrl.action_notice().is_none(),
+            "no unavailable notice in Diff"
         );
-        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged on open");
     }
 
     // --- FullDiff (gate finding L2) ---
@@ -4773,29 +4778,21 @@ fn open_go_to_line_is_unavailable_in_transformed_views() {
         };
         let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
 
-        // Diff → (CycleView) → FullDiff
-        assert_eq!(
-            ctrl.selected_view_mode(),
-            Some(ViewMode::Diff),
-            "precondition: a changed file starts in Diff"
-        );
-        ctrl.handle(Intent::CycleView);
+        ctrl.handle(Intent::CycleView); // Diff → FullDiff
         assert_eq!(
             ctrl.selected_view_mode(),
             Some(ViewMode::FullDiff),
             "precondition: one CycleView reaches FullDiff"
         );
-
-        let _fx = ctrl.handle(Intent::OpenGoToLine);
+        ctrl.handle(Intent::OpenGoToLine);
         assert!(
-            !ctrl.prompt_open(),
-            "AC-7 / gate L2: prompt must NOT open in FullDiff"
+            ctrl.prompt_open(),
+            "AC-7 / gate L2: `:` opens the prompt in FullDiff"
         );
         assert!(
-            ctrl.action_notice().is_some(),
-            "AC-7 / gate L2: unavailable notice set in FullDiff"
+            ctrl.action_notice().is_none(),
+            "no unavailable notice in FullDiff"
         );
-        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
     }
 }
 
@@ -4955,5 +4952,89 @@ fn open_go_to_line_is_unavailable_when_no_file_is_selected() {
     assert!(
         ctrl.action_notice().is_some(),
         "AC-7 edge: an unavailable notice is set when a directory is selected"
+    );
+}
+
+/// A git controller whose single file `file` is reported CHANGED (so its default view is Diff, a
+/// transformed view), with `n` numbered lines of content — for exercising the go-to-line auto-switch
+/// from a transformed view to the source-mapped content view.
+fn changed_controller_with_lines(root: &Path, file: &str, n: usize) -> Controller {
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from(file), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(LinesContent { n }),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), true),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn go_to_line_in_a_transformed_view_switches_to_content_and_jumps() {
+    // AC-7 (revised): confirming `:N` in a transformed view (here Diff) switches the file to the
+    // source-mapped content view and jumps to source line N once the re-render lands.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = changed_controller_with_lines(dir.path(), "a.txt", 50);
+    await_marker(&mut ctrl, "L0"); // initial render (changed → Diff; LinesContent ignores mode)
+    ctrl.set_content_viewport(40, 10); // 50 lines, 10 tall → max_content_scroll = 40
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "precondition: the changed file is in Diff (a transformed view)"
+    );
+
+    // Open the prompt (opens in any view), type 25, Enter.
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open());
+    for c in "25".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+
+    // Confirm auto-switched the view to source-mapped content and queued the jump for the re-render.
+    assert!(!ctrl.prompt_open(), "Enter closes the prompt");
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "AC-7: confirm auto-switched to the source-mapped content view"
+    );
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(25),
+        "the jump is queued against the dispatched re-render"
+    );
+
+    // Pump poll() until the queued render lands and the jump applies.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(
+            Instant::now() < deadline,
+            "the auto-switch jump never applied"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        24,
+        "after the switch render, jumped to line 25 (offset 24)"
     );
 }

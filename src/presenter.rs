@@ -82,8 +82,8 @@ pub struct ViewState {
     /// `None` ⇒ no overlay.
     pub finder: Option<FinderView>,
     /// When `Some`, a one-row prompt is drawn across the very bottom of the viewer showing the active
-    /// in-file-nav prompt (e.g. `:42` for go-to-line). `None` ⇒ no prompt open. The Controller builds
-    /// the display string (mode lead + buffer) so the Presenter stays mode-agnostic. (AC-1)
+    /// in-file-nav prompt (e.g. `Go to line: 42`). `None` ⇒ no prompt open. The Controller builds the
+    /// display string (label + buffer) so the Presenter stays mode-agnostic. (AC-1)
     pub prompt: Option<String>,
     /// The tree root's directory basename (e.g. `"herdr-plugin"`), shown as the tree column's
     /// top-border title so the user can see *which* directory the tree is rooted at — mirroring
@@ -585,7 +585,7 @@ fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Opt
     (body, banner, prompt)
 }
 
-/// Draw the one-row bottom prompt (`:42` / later `/term`). Sanitized (AC-27) and clipped to its row.
+/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Sanitized (AC-27), clipped to its row.
 fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     let line = Line::styled(
         sanitize_label(prompt),
