@@ -36,8 +36,10 @@ is unit-testable with stubs.
 | `finder` | The modal go-to-file finder overlay state (query, ranked matches, cursor, scroll) drawn over the layout; captures its own keys while open and navigates the tree selection on confirm. |
 | `fuzzy` | A pure fuzzy matcher: rank file paths against a typed query (the finder's scoring), no I/O. |
 | `index` | Build the flat, `.gitignore`-aware list of repo file paths the finder searches. |
+| `search` | A pure in-file substring matcher: find every occurrence of a query within the displayed content's lines (smartcase, literal — never a regex), returning byte-offset match ranges in document order. No I/O. |
+| `highlight` | Overlay match highlighting onto the content pane: re-segment each line's spans at the match byte boundaries and patch a highlight style over the matched runs, with a distinct style on the current match. Pure; composes over the delegated render rather than re-rendering. |
 | `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
-| `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line now; in-file search later), its `prompt` input buffer, and the content-scroll snapshot for cancel-restore. |
+| `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line or in-file search), its `prompt` input buffer, the live `SearchState` (query, matches, current match), and the content-scroll snapshot for cancel-restore. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |

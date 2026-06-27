@@ -392,3 +392,132 @@ fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
         other => panic!("expected a clean exit, got {other:?}"),
     }
 }
+
+/// T-13 — AC-21 e2e oracle: while the search prompt is open, printable keys edit the query and
+/// do NOT trigger viewer actions (e.g. `j` does not move the tree cursor); `n`/`N` cycle after
+/// commit; Esc closes the prompt and restores.
+///
+/// **Routing proof (indirect, AC-21)**: two files are present: `aaa.txt` (which contains
+/// `SEARCHMARK` at line 25, beyond the initial viewport) and `jfile.txt` (which does NOT).
+/// `aaa.txt` sorts first and is the cursor's initial selection. We open `/`, sleep 300 ms,
+/// then send `j` (NavDown in the viewer's normal key-map) and `w` (ToggleWrap). If routing
+/// were broken, `j` would fire NavDown, moving the cursor to `jfile.txt`. After Esc-restore,
+/// a fresh search for `SEARCHMARK` on `jfile.txt` would find nothing → `n` would be inert →
+/// `SEARCHMARK` never appears → test fails. The `SEARCHMARK` appearing via `n` is therefore
+/// the AC-21 routing proof: it can only happen if `j` went into the search query (not the tree).
+///
+/// **n/N cycling**: after committing the search, `n` scrolls the content so `SEARCHMARK` (at
+/// line 25, below the initial viewport) appears for the first time in previously-blank cells —
+/// a robust pty anchor. `N` is driven for liveness; its clean exit is the secondary proof.
+///
+/// **Esc-restore**: Esc from inside the prompt clears the search state and restores the scroll;
+/// a bare Esc outside the prompt is inert (no crash).
+#[test]
+fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
+    let dir = TempDir::new();
+    let p = dir.path();
+    init_repo_with_commit(p);
+
+    // `aaa.txt`: 50 lines of short filler + `SEARCHMARK` at lines 25 and 35 (1-based).
+    // The initial viewport (≈20 rows) shows only the top; `SEARCHMARK` starts off-screen →
+    // blank cells → when `n` brings it into view it is written contiguously.
+    let mut content_lines = Vec::with_capacity(50);
+    for i in 1u32..=50 {
+        if i == 1 {
+            // Distinctive top-of-file anchor — lets the test SYNCHRONIZE on aaa.txt's content
+            // actually being rendered + visible (after `/` zooms it) before it searches. The
+            // content render is off-thread and slower on macOS CI; without this barrier the
+            // SEARCHMARK search could run against an in-flight (empty) render → zero matches →
+            // `n` inert → SEARCHMARK never appears → a flaky `expect` timeout on macOS.
+            content_lines.push("TOPMARK".to_string());
+        } else if i == 25 || i == 35 {
+            content_lines.push("SEARCHMARK".to_string());
+        } else {
+            content_lines.push(format!("F{i:02}")); // short, differs from SEARCHMARK in every column
+        }
+    }
+    // `aaa.txt` sorts before `jfile.txt` AND before `seed.txt` (from init_repo_with_commit),
+    // so it is the first row in the tree and is selected (and rendered) on launch.
+    std::fs::write(p.join("aaa.txt"), content_lines.join("\n") + "\n").unwrap();
+    // `jfile.txt`: no SEARCHMARK. If `j` NavDown had moved the cursor here, the search would
+    // return zero matches and `n` would be inert — the routing-proof outcome would fail.
+    std::fs::write(p.join("jfile.txt"), "JFILECONTENT\n").unwrap();
+    git(p, &["add", "aaa.txt", "jfile.txt"]);
+    git(p, &["commit", "-q", "-m", "search e2e files"]);
+
+    let mut cmd = viewer_command(p);
+    cmd.env("EDITOR", "true");
+    let mut s = Session::spawn(cmd).expect("spawn the viewer");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+
+    // Step 1: viewer is up; tree lists both files. `aaa.txt` is the initial selection (top row).
+    s.expect("aaa.txt")
+        .expect("tree lists aaa.txt on launch (first row, initial selection)");
+
+    // Step 2: open the search prompt with `/`. Give the event loop a moment to open before
+    // the next key so `j` lands inside the prompt (same pattern as go-to-line e2e).
+    s.send("/").expect("send `/` to open the search prompt");
+    std::thread::sleep(Duration::from_millis(300));
+    // Synchronize before searching: `/` zooms the selected file (FIX 7b) so its content becomes
+    // visible. Wait for the top-of-file anchor so the SEARCHMARK search below runs against
+    // fully-rendered content, not an in-flight (empty) off-thread render — the render is slower on
+    // macOS CI and otherwise raced the search, making the `SEARCHMARK` expect flaky there.
+    s.expect("TOPMARK")
+        .expect("aaa.txt content is rendered and visible (zoomed) before the search flow");
+
+    // Step 3: AC-21 routing proof — send `j` (NavDown) and `w` (ToggleWrap) into the prompt.
+    // If routing were broken, `j` would move the tree cursor to `jfile.txt`; the subsequent
+    // search would find nothing on that file. The `SEARCHMARK` assertion in Step 7 below is
+    // the outcome-based proof that these keys went to the query instead.
+    s.send("j").expect("send `j` into the search prompt");
+    s.send("w").expect("send `w` into the search prompt");
+
+    // Step 4: Esc cancels the open prompt and restores the pre-open scroll (AC-21 Esc-restore).
+    // Settle before Esc so crossterm reads a lone ESC (not Alt+char).
+    std::thread::sleep(Duration::from_millis(150));
+    s.send("\u{1b}")
+        .expect("send Esc to cancel the search prompt");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // Step 5: open a fresh search for `SEARCHMARK`. If routing failed (j was NavDown), the
+    // cursor is now on `jfile.txt` and this search runs on that file — which has no SEARCHMARK.
+    // If routing succeeded, the cursor is still on `aaa.txt` and the search finds two matches.
+    s.send("/").expect("re-open the search prompt");
+    std::thread::sleep(Duration::from_millis(200));
+    for c in "SEARCHMARK".chars() {
+        s.send(c.to_string()).expect("send search char");
+    }
+    // Commit the search with Enter.
+    s.send("\r").expect("send Enter to commit the search");
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Step 6: `n` cycles to the first (and current) match: line 25 of `aaa.txt`. This line was
+    // below the initial viewport → its characters land in previously-blank cells → robust anchor.
+    // AC-21 routing proof outcome: `SEARCHMARK` can only appear here if the cursor stayed on
+    // `aaa.txt` (i.e. `j` inside the prompt did NOT fire NavDown).
+    s.send("n").expect("send `n` to go to next match");
+    s.expect("SEARCHMARK").expect(
+        "AC-21 routing proof + n/N cycling: `SEARCHMARK` appears after `n` (blank-cell anchor). \
+         This proves `j` in the prompt went to the query (not NavDown to jfile.txt).",
+    );
+
+    // Step 7: `N` cycles backward (liveness proof — clean exit is the secondary assertion).
+    s.send("N").expect("send `N` to go to previous match");
+
+    // Step 8: a bare Esc outside the prompt is inert (maps to no intent — must not crash).
+    std::thread::sleep(Duration::from_millis(150));
+    s.send("\u{1b}")
+        .expect("send Esc outside the prompt (inert)");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // Step 9: clean exit — no search key crashed the run loop (AC-21).
+    s.send("q").expect("send close");
+    s.expect(Eof)
+        .expect("the viewer terminates cleanly after the search flow");
+    match s.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => {
+            assert_eq!(code, 0, "AC-21: no search key crashed the viewer")
+        }
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}

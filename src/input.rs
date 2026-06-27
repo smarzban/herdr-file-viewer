@@ -31,6 +31,9 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('e') => Some(Intent::OpenInEditor),
         KeyCode::Char('f') => Some(Intent::OpenFinder),
         KeyCode::Char(':') => Some(Intent::OpenGoToLine),
+        KeyCode::Char('/') => Some(Intent::OpenSearch),
+        KeyCode::Char('n') => Some(Intent::NextMatch),
+        KeyCode::Char('N') => Some(Intent::PrevMatch),
         KeyCode::Char('y') => Some(Intent::CopyRepoPath),
         KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
         KeyCode::Char('W') => Some(Intent::SwitchWorktree),
@@ -74,6 +77,9 @@ mod tests {
         (KeyCode::Char('e'), Intent::OpenInEditor),
         (KeyCode::Char('f'), Intent::OpenFinder),
         (KeyCode::Char(':'), Intent::OpenGoToLine),
+        (KeyCode::Char('/'), Intent::OpenSearch),
+        (KeyCode::Char('n'), Intent::NextMatch),
+        (KeyCode::Char('N'), Intent::PrevMatch),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
@@ -201,6 +207,44 @@ mod tests {
         );
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::ALT)),
+            None
+        );
+    }
+
+    #[test]
+    fn search_keys_map_correctly_and_modifier_chords_are_inert() {
+        // AC-8, AC-N6: `/` → OpenSearch, `n` → NextMatch, `N` → PrevMatch.
+        // Ctrl/Alt chords on these keys must NOT fire an intent (AC-N6).
+        // `N` is a shifted character (Char('N') with SHIFT) — must still map.
+        assert_eq!(map_key(k(KeyCode::Char('/'))), Some(Intent::OpenSearch));
+        assert_eq!(map_key(k(KeyCode::Char('n'))), Some(Intent::NextMatch));
+        assert_eq!(map_key(k(KeyCode::Char('N'))), Some(Intent::PrevMatch));
+
+        // `N` with SHIFT bit set (as some terminals report it) still maps:
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT)),
+            Some(Intent::PrevMatch)
+        );
+
+        // Ctrl/Alt chords are inert (AC-N6):
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
             None
         );
     }

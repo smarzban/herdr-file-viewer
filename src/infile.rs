@@ -1,13 +1,30 @@
-//! In-file navigation modal state — the bottom-prompt modal (go-to-line now; search added in a
-//! later phase). Ephemeral, in-memory only (AC-N3).
+//! In-file navigation modal state — the bottom-prompt modal (go-to-line and search).
+//! Ephemeral, in-memory only (AC-N3).
 
 use crate::prompt::PromptInput;
+use crate::search::Match;
 
 /// Which in-file-nav prompt is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptMode {
     /// Jump the content pane to a source line by number (`:`).
     GoToLine,
+    /// Substring search across the content pane's lines (`/`). Read-only navigation —
+    /// moves highlight/scroll only, never mutates a file (AC-N1/N3, AC-8).
+    Search,
+}
+
+/// State for an open search session: the committed query, the matches it produced, and
+/// which match is currently active (the `current` index into `matches`).
+///
+/// Fields are `pub` so T-9/T-10 can read and update them from the controller without
+/// needing extra accessors, and to avoid dead-code warnings before those tasks land.
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    pub query: String,
+    pub matches: Vec<Match>,
+    /// Index of the currently-selected match in `matches`.
+    pub current: usize,
 }
 
 /// State for the open bottom-prompt modal: the mode, the editable buffer, and the content scroll

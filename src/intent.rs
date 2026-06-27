@@ -74,6 +74,19 @@ pub enum Intent {
     /// once it re-renders (AC-7, revised). With nothing / a directory selected it shows a notice
     /// and opens nothing. Opened only by the explicit `:` key — no event hook (AC-N6).
     OpenGoToLine,
+    /// Open the search prompt at the bottom of the content pane (`/`). Read-only navigation —
+    /// search moves highlight/scroll only; no file or git mutation (AC-8, AC-N1, AC-N3).
+    /// Unlike `:` (go-to-line) the search prompt opens in **every** view mode — it is not
+    /// view-gated. Opened only by the explicit `/` key — no event hook (AC-N6).
+    OpenSearch,
+    /// Advance to the next match, wrapping at the end of the match list. Read-only navigation —
+    /// scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when there is no
+    /// committed search with ≥1 match. Bound to `n` only — no event hook (AC-N6).
+    NextMatch,
+    /// Retreat to the previous match, wrapping at the start of the match list. Read-only
+    /// navigation — scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when
+    /// there is no committed search with ≥1 match. Bound to `N` only — no event hook (AC-N6).
+    PrevMatch,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -81,7 +94,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 24] = [
+    pub const ALL: [Intent; 27] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -105,6 +118,9 @@ impl Intent {
         Intent::SwitchWorktree,
         Intent::OpenFinder,
         Intent::OpenGoToLine,
+        Intent::OpenSearch,
+        Intent::NextMatch,
+        Intent::PrevMatch,
         Intent::Close,
     ];
 }
@@ -145,6 +161,9 @@ mod tests {
                 | Intent::SwitchWorktree
                 | Intent::OpenFinder
                 | Intent::OpenGoToLine
+                | Intent::OpenSearch
+                | Intent::NextMatch
+                | Intent::PrevMatch
                 | Intent::Close => false,
             };
             assert!(
@@ -185,6 +204,39 @@ mod tests {
         assert!(
             Intent::ALL.contains(&Intent::OpenGoToLine),
             "Intent::ALL must contain OpenGoToLine"
+        );
+    }
+
+    #[test]
+    fn open_search_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::OpenSearch),
+            "Intent::ALL must contain OpenSearch"
+        );
+    }
+
+    #[test]
+    fn next_match_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::NextMatch),
+            "Intent::ALL must contain NextMatch"
+        );
+    }
+
+    #[test]
+    fn prev_match_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::PrevMatch),
+            "Intent::ALL must contain PrevMatch"
+        );
+    }
+
+    #[test]
+    fn all_length_is_27() {
+        assert_eq!(
+            Intent::ALL.len(),
+            27,
+            "Intent::ALL must have exactly 27 variants after adding OpenSearch/NextMatch/PrevMatch"
         );
     }
 }

@@ -52,6 +52,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
 - **Go to a line** — press `:` and type a line number to jump the content pane straight there;
   in a rendered-markdown or diff view it switches to the line-numbered content view to make the
   jump. Out-of-range clamps to the last line.
+- **Search in a file** — press `/` to search the open file's content: every match highlights as
+  you type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase —
+  a lowercase query matches any case, add a capital to go case-sensitive — and it works in every
+  view (code, markdown, or diff); `Esc` clears it.
 - **Switch worktree on the fly** — press `W` to re-root the viewer at another git worktree of
   the repo without relaunching; it pre-selects the worktree a herdr agent is working in, so you
   can jump straight to it. Read-only — it changes only *what you're viewing*, never the branch
@@ -118,6 +122,8 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `e` | Open the selected file in `$EDITOR` |
 | `f` | **Go to file** — open a fuzzy finder over every file in the tree; type to filter, `↑` / `↓` move, `Enter` opens the selected file, `Esc` cancels (`←` / `→` scroll long paths) |
 | `:` | **Go to line** — open a prompt and jump the content pane to a source line by number (`Enter` jumps, `Esc` cancels; out-of-range clamps to the last line). Works in any view; in a rendered-markdown or diff view, confirming switches to the line-numbered content view and jumps there |
+| `/` | **Search in file** — open a prompt and highlight every match in the content pane as you type; `Enter` commits the search (highlights persist), `Esc` clears it and restores the scroll. Smartcase (a lowercase query is case-insensitive; a capital makes it case-sensitive). Works in any view |
+| `n` / `N` (Shift+`n`) | After a committed search, jump to the **next** / **previous** match and scroll it into view — wrapping at the ends with a notice |
 | `y` | Copy the selected file's **repo-relative** path to the clipboard (e.g. `src/app.rs`) |
 | `Y` | Copy the selected file's **absolute** path to the clipboard |
 | `Tab` | Move focus between the tree and content columns |
@@ -141,7 +147,7 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`).
+never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path — handy for pasting into a prompt, a command, or an agent. The copy uses the
@@ -230,7 +236,6 @@ A few things on the way:
 
 - **In-app help overlay** — a `?` key to show every keybinding (and setup tips) without leaving the viewer.
 - **Settings & customization** — a config file for keymaps, the default split, themes, and your own renderer/editor commands.
-- **In-file search** — `/` to search within the open file and `n` / `N` to cycle matches (the `:` go-to-line jump has shipped).
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) — bug reports and feature requests are very welcome.
 
