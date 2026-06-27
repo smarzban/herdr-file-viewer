@@ -5392,3 +5392,241 @@ fn next_match_and_prev_match_are_noops_with_no_committed_search() {
         "PrevMatch must not scroll the content pane"
     );
 }
+
+// ── T-9: Search open + incremental matching ──────────────────────────────────
+
+/// Content renderer that returns a predictable multi-line body with known searchable tokens.
+struct SearchContent;
+impl ContentProvider for SearchContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        // 20 lines; "needle" appears at lines 2, 5, 10, 15 (0-based: 1, 4, 9, 14).
+        let lines: Vec<String> = (0..20)
+            .map(|i| match i {
+                1 | 4 | 9 | 14 => format!("line{i} needle here"),
+                _ => format!("line{i} other content"),
+            })
+            .collect();
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+        }
+    }
+}
+
+fn controller_with_search_content(root: &Path) -> Controller {
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(SearchContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn search_typing_populates_matches_and_scrolls_to_first_match() {
+    // AC-9: typing into the search prompt populates matches from the displayed content.
+    // AC-10: when matches exist the content scrolls so a match is within the viewport.
+    use herdr_file_viewer::infile::PromptMode;
+
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle"); // wait for the SearchContent render to land
+    ctrl.set_content_viewport(40, 5); // 20 lines, 5 visible → max scroll = 15
+
+    // Open the search prompt.
+    ctrl.handle(Intent::OpenSearch);
+    assert!(ctrl.prompt_open(), "precondition: prompt is open");
+    assert_eq!(ctrl.prompt_mode(), Some(PromptMode::Search));
+
+    // Before typing, search() should be None (no search state yet).
+    assert!(ctrl.search().is_none(), "no search state before typing");
+
+    // Snapshot scroll before typing — first match is at line 1 (0-based), so scroll should move.
+    let scroll_before = ctrl.content_scroll();
+
+    // Type "needle" character by character.
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+
+    // AC-9: matches populated from displayed content.
+    let s = ctrl
+        .search()
+        .expect("SearchState must be Some after typing");
+    assert_eq!(
+        s.matches.len(),
+        4,
+        "AC-9: 4 'needle' matches in the content (lines 1,4,9,14)"
+    );
+
+    // AC-9: current is 0 (first match in document order).
+    assert_eq!(s.current, 0, "AC-9: current match is index 0 (first)");
+
+    // AC-10: scroll must have moved to bring the first match into view.
+    // First match is at content line 1 (0-based); scroll_to_line(2) → offset 1.
+    assert_ne!(
+        ctrl.content_scroll(),
+        scroll_before.max(1) - 1, // the top was already 0; first match line is 1
+        "AC-10: content scrolled toward first match"
+    );
+    // Concretely: scroll_to_line(2) sets offset = line-1 = 1.
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "AC-10: scrolled to display row 1 (first match's line offset)"
+    );
+}
+
+#[test]
+fn search_no_match_leaves_matches_empty_and_scroll_unchanged() {
+    // AC-18: a query that matches nothing → matches empty AND content scroll is unchanged.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    // Scroll down a bit first so we can confirm it doesn't move.
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    let scroll_before = ctrl.content_scroll();
+    assert!(scroll_before > 0, "precondition: we've scrolled down");
+    ctrl.handle(Intent::ToggleFocus); // back to tree focus
+
+    ctrl.handle(Intent::OpenSearch);
+
+    // Type a query that definitely doesn't appear in the content.
+    for c in "xyzzy_not_found".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+
+    let s = ctrl.search().expect("SearchState exists even on no-match");
+    assert!(s.matches.is_empty(), "AC-18: no matches for absent query");
+    assert_eq!(
+        ctrl.content_scroll(),
+        scroll_before,
+        "AC-18: scroll must not move when there are no matches"
+    );
+}
+
+#[test]
+fn search_backspace_rematches() {
+    // Backspace reduces the query and re-runs find_matches; dropping the last char of a
+    // no-match query can restore matches (incremental re-match, AC-9).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+    ctrl.set_content_viewport(40, 5);
+
+    ctrl.handle(Intent::OpenSearch);
+
+    // Type "needle" (matches exist).
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        ctrl.search().unwrap().matches.len(),
+        4,
+        "precondition: 4 matches for 'needle'"
+    );
+
+    // Extend with 'X' → "needleX" which matches nothing.
+    ctrl.handle_prompt_key(key(KeyCode::Char('X')));
+    assert!(
+        ctrl.search().unwrap().matches.is_empty(),
+        "no matches for 'needleX'"
+    );
+
+    // Backspace: back to "needle" → matches restore.
+    ctrl.handle_prompt_key(key(KeyCode::Backspace));
+    assert_eq!(
+        ctrl.search().unwrap().matches.len(),
+        4,
+        "AC-9: Backspace rematches; 4 'needle' matches restored"
+    );
+    assert_eq!(
+        ctrl.search().unwrap().current,
+        0,
+        "current is 0 after re-match"
+    );
+}
+
+#[test]
+fn search_accepts_all_printable_chars_not_just_digits() {
+    // The search prompt accepts any printable char (letters, digits, symbols, spaces).
+    // Contrast with go-to-line which rejects non-digit printables.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_search_content(dir.path());
+    await_marker(&mut ctrl, "needle");
+
+    ctrl.handle(Intent::OpenSearch);
+
+    // Type a query with mixed chars including uppercase (via SHIFT), digits, and symbols.
+    // "Line" with uppercase L — key_shift is already defined in this file.
+    ctrl.handle_prompt_key(key_shift('L'));
+    ctrl.handle_prompt_key(key(KeyCode::Char('i')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('n')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('e')));
+
+    // "Line" is case-sensitive (uppercase L) → won't match "line…" (lowercase l).
+    let s = ctrl.search().expect("SearchState must be Some");
+    assert_eq!(
+        ctrl.prompt_query(),
+        "Line",
+        "prompt buffer contains all typed chars including shift-char"
+    );
+    // Smartcase: "Line" has uppercase → case-sensitive → no match on "line…"
+    assert!(
+        s.matches.is_empty(),
+        "case-sensitive 'Line' doesn't match lowercase 'line…'"
+    );
+
+    // Now type a space + digit (symbol-ish chars).
+    ctrl.handle_prompt_key(key(KeyCode::Char(' ')));
+    ctrl.handle_prompt_key(key(KeyCode::Char('1')));
+    // Query is "Line 1" — still no match (uppercase L, case-sensitive).
+    assert_eq!(ctrl.prompt_query(), "Line 1", "space and digit accepted");
+}
+
+#[test]
+fn search_esc_closes_prompt() {
+    // Esc closes the search prompt (minimal T-9 behavior; Esc-restore is T-11).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::OpenSearch);
+    assert!(ctrl.prompt_open(), "precondition: prompt is open");
+
+    ctrl.handle_prompt_key(key(KeyCode::Esc));
+    assert!(!ctrl.prompt_open(), "Esc closes the search prompt");
+}
+
+#[test]
+fn search_enter_closes_prompt() {
+    // Enter closes the search prompt (minimal T-9 behavior; commit semantics are T-10).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::OpenSearch);
+    assert!(ctrl.prompt_open(), "precondition: prompt is open");
+
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(!ctrl.prompt_open(), "Enter closes the search prompt");
+}

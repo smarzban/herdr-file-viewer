@@ -19,7 +19,7 @@
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
-use crate::infile::{PromptMode, PromptState};
+use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
@@ -276,6 +276,11 @@ pub struct Controller {
     /// current" from "a render is still coming" — so `:N` only jumps in-place when the source-mapped
     /// content is actually applied, and otherwise queues against the in-flight render (AC-3/AC-7).
     applied_seq: u64,
+    /// Live incremental-search state: the most-recently-typed query, the matches it produced,
+    /// and which match is current. `None` until the first keystroke in a Search prompt; `Some`
+    /// (even with empty matches) once typing begins. Cleared to `None` when the prompt closes
+    /// so that `search()` accurately reflects "no active search session" (T-11 refines cancel).
+    search: Option<SearchState>,
 }
 
 impl Controller {
@@ -351,6 +356,7 @@ impl Controller {
             prompt: None,
             pending_goto: None,
             applied_seq: 0,
+            search: None,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -1482,6 +1488,18 @@ impl Controller {
             .sum::<usize>()
     }
 
+    /// Extract the plain-text content of every displayed line (ANSI spans joined, no styling).
+    /// Used by the incremental search (T-9) to feed `search::find_matches`; search always
+    /// operates on the DISPLAYED content, not the source file, so it works identically across
+    /// every view mode (SyntaxContent, Diff, RenderedMarkdown — AC-13).
+    fn content_plain_lines(&self) -> Vec<String> {
+        self.content
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
     /// Scroll the content pane horizontally by `delta` columns, clamped to `[0, max]`.
     fn scroll_content_h(&mut self, delta: i32) -> Effects {
         let max = self.max_content_hscroll() as i32;
@@ -2008,17 +2026,78 @@ impl Controller {
         }
     }
 
-    /// Search prompt key handling stub (T-8). Full incremental-search key handling lands in T-9;
-    /// for this task the prompt opens via `open_search()` and Esc closes it. Any other key is a
-    /// no-op so the prompt can be dismissed without crashing — the real handler replaces this in T-9.
+    /// Search prompt key handling (T-9). Incremental: every printable char or Backspace re-runs
+    /// `find_matches` over the displayed content's plain text and scrolls the first match into
+    /// view. Esc and Enter close the prompt (minimal for T-9; commit semantics are T-10 and
+    /// cancel-restore semantics are T-11). All other keys are ignored.
     fn search_prompt_key(&mut self, key: KeyEvent) -> Effects {
         match key.code {
+            // Accept any printable char (no modifier beyond SHIFT — consistent with the finder's
+            // printable-char gate). Unlike go-to-line, search does NOT restrict to digits.
+            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.push(c);
+                }
+                self.refresh_search();
+                Effects::redraw()
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.backspace();
+                }
+                self.refresh_search();
+                Effects::redraw()
+            }
+            // Minimal Enter: close the prompt. Commit semantics (keep search state, n/N
+            // navigation) are T-10 — do NOT clear self.search here so T-10 can refine.
+            KeyCode::Enter => {
+                self.prompt = None;
+                Effects::redraw()
+            }
+            // Minimal Esc: close the prompt. Cancel-restore (restore saved_scroll) is T-11.
             KeyCode::Esc => {
                 self.prompt = None;
                 Effects::redraw()
             }
             _ => Effects::noop(),
         }
+    }
+
+    /// Incremental search core: read the current prompt query, run `find_matches` over the
+    /// displayed content's plain-text lines, store the result in `self.search`, and scroll
+    /// the first match into view (AC-9, AC-10, AC-18).
+    fn refresh_search(&mut self) {
+        let q = self
+            .prompt
+            .as_ref()
+            .map(|p| p.input.query().to_string())
+            .unwrap_or_default();
+        let plain = self.content_plain_lines();
+        let matches = crate::search::find_matches(&q, &plain);
+
+        // Selection policy: always choose match index 0 (first in document order).
+        // Incremental "stay near cursor" policies are deferred to a later task.
+        let current = 0;
+
+        // AC-10: scroll so the current match is within the viewport.
+        // AC-18: do NOT touch content_scroll when there are no matches.
+        if !matches.is_empty() {
+            // matches[0].line is 0-based; scroll_to_line takes 1-based.
+            self.scroll_to_line(matches[0].line + 1);
+        }
+
+        self.search = Some(SearchState {
+            query: q,
+            matches,
+            current,
+        });
+    }
+
+    /// The live incremental-search state, or `None` when no search is active (no Search prompt
+    /// has been typed into yet, or the prompt was closed and state cleared). Exposed for tests
+    /// (T-9); the Presenter reads it for highlight overlay (T-12).
+    pub fn search(&self) -> Option<&SearchState> {
+        self.search.as_ref()
     }
 
     /// The full candidate list loaded when the finder was opened, or an empty slice when
