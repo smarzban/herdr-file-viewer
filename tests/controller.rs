@@ -985,6 +985,7 @@ fn wide_geometry() -> PaneGeometry {
         finder_scroll: 0,
         finder_max_hscroll: 0,
         finder_vbar: None,
+        picker_max_hscroll: 0,
     }
 }
 
@@ -2265,6 +2266,67 @@ fn picker_expand_scrolls_right_and_collapse_scrolls_left_clamped() {
         ctrl.picker().is_some(),
         "picker stays open through hscroll intents"
     );
+}
+
+#[test]
+fn picker_hscroll_does_not_overshoot_past_the_measured_max() {
+    // SMA-229: Expand (→) is monotonic (it can't know the row widths), so over-scrolling right used
+    // to park the picker's stored hscroll past the real maximum; the first few Collapse (←) presses
+    // then appeared to do nothing while the overshoot burned back down. The Presenter now feeds back
+    // `picker_max_hscroll` and `set_pane_geometry` clamps the stored offset to it each frame (the
+    // same fix as the finder, mirroring `content_hscroll`), so one Collapse always moves the view.
+    let (mut ctrl, _, _) = setup_picker_with_two_worktrees();
+
+    // Geometry the Presenter would feed back: the widest row needs at most 8 columns of h-scroll.
+    let geom = PaneGeometry {
+        picker_max_hscroll: 8,
+        ..wide_geometry()
+    };
+
+    // Over-scroll right well past the max (several monotonic Expand steps of HSCROLL_STEP=8).
+    for _ in 0..3 {
+        ctrl.handle(Intent::Expand);
+    }
+    assert!(
+        ctrl.picker().unwrap().hscroll > 8,
+        "precondition: raw Expand overshoots the max when unclamped in isolation"
+    );
+
+    // The run loop feeds the measured geometry back after the draw → the stored offset is clamped.
+    ctrl.set_pane_geometry(geom);
+    assert_eq!(
+        ctrl.picker().unwrap().hscroll,
+        8,
+        "geometry feedback clamps the stored picker hscroll to the measured maximum"
+    );
+
+    // A SINGLE Collapse now visibly moves the view — no overshoot left to burn down first.
+    ctrl.handle(Intent::Collapse);
+    assert!(
+        ctrl.picker().unwrap().hscroll < 8,
+        "one Collapse moves immediately after the clamp (the bug was: it needed several)"
+    );
+}
+
+#[test]
+fn view_state_titles_the_tree_with_root_basename_and_branch() {
+    // SMA-249: the tree's borders are driven by view_state().root_name (the root directory
+    // basename) and .branch (the cached current git branch — None outside a repo / detached).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let vs = ctrl.view_state();
+    let expected = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        vs.root_name, expected,
+        "root_name is the root directory basename"
+    );
+    assert!(vs.branch.is_none(), "branch is None outside a git repo");
 }
 
 #[test]

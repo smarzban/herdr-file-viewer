@@ -252,6 +252,11 @@ pub struct Controller {
     /// (review-gate R1, F). Session-level — survives a re-root unchanged: the herdr per-worktree
     /// hint isn't available cross-worktree, so the launch hint is the best shared-base recovery.
     base_branch: Option<String>,
+    /// The current git branch (e.g. `"main"`, `"feat/x"`), shown on the tree's bottom border.
+    /// `None` outside a repo or on a detached HEAD. Computed ONCE from the freshly-resolved root
+    /// at construction and on each re-root and cached here — never queried per-frame, since the
+    /// branch can only change by a re-root, not by navigation.
+    current_branch: Option<String>,
 }
 
 impl Controller {
@@ -273,6 +278,12 @@ impl Controller {
         // The launch base-branch hint is session-level — recorded once here and carried across
         // re-roots (F). It is `None` outside a repo / when herdr gave no hint.
         let base_branch = resolved.base_branch.clone();
+        // The current branch for the tree's bottom-border title (SMA-249): queried once here from
+        // the resolved repo root (never per-frame), `None` outside a repo / on detached HEAD.
+        let current_branch = resolved
+            .repo_root
+            .as_deref()
+            .and_then(crate::git::current_branch);
         // The Content Renderer (and the diff query it needs) live on a worker thread; the
         // controller talks to it over a job channel and reads finished renders off a result
         // channel (AC-23). The worker exits when the job sender (held by the controller) is
@@ -321,6 +332,7 @@ impl Controller {
             herdr: None,
             our_workspace_id: None,
             base_branch,
+            current_branch,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -434,6 +446,13 @@ impl Controller {
         self.root = resolved.root.clone();
         self.is_git_repo = resolved.is_git_repo;
         self.tree = TreeModel::new(resolved.root.clone());
+        // Recompute the cached branch for the new root's bottom-border title (SMA-249). Cheap and
+        // synchronous: a single `git rev-parse` against the already-resolved repo root, done once
+        // per re-root (not per-frame). `None` when the new root is outside a repo / detached.
+        self.current_branch = resolved
+            .repo_root
+            .as_deref()
+            .and_then(crate::git::current_branch);
 
         // Reset navigation/view state (AC-13). The picker is closed on a switch (AC-13 "picker
         // is closed"); `herdr`/`our_workspace_id` are session-level and deliberately left intact.
@@ -636,10 +655,17 @@ impl Controller {
     /// otherwise leave the offset parked past the widest row, making the first few left presses
     /// appear to do nothing until the overshoot burned down.
     pub fn set_pane_geometry(&mut self, geom: PaneGeometry) {
+        // Read the measured maxima before `geom` is moved into `self.geom`, then clamp each modal's
+        // stored hscroll to it — both Expand (finder/picker scroll_right) are monotonic, so without
+        // this an over-scroll right parks the offset past the widest row (SMA-229).
         let finder_max_hscroll = geom.finder_max_hscroll;
+        let picker_max_hscroll = geom.picker_max_hscroll;
         self.geom = geom;
         if let Some(finder) = self.finder.as_mut() {
             finder.clamp_hscroll(finder_max_hscroll);
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.clamp_hscroll(picker_max_hscroll);
         }
     }
 
@@ -683,6 +709,15 @@ impl Controller {
             update_banner: self.update_banner(),
             picker: self.picker_view(),
             finder: self.finder_view(),
+            // The tree's top-border title is the root directory basename; the bottom is the cached
+            // current branch (SMA-249). The basename is empty only for a filesystem-root `/`, where
+            // the Presenter falls back to "Files".
+            root_name: self
+                .root
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            branch: self.current_branch.clone(),
         }
     }
 

@@ -76,6 +76,8 @@ fn sample_state() -> ViewState {
         update_banner: None,
         picker: None,
         finder: None,
+        root_name: "r".to_string(), // the fixture tree is rooted at /r
+        branch: None,
     }
 }
 
@@ -87,6 +89,57 @@ fn render(state: &ViewState, w: u16, h: u16) -> String {
         })
         .unwrap();
     format!("{}", terminal.backend())
+}
+
+#[test]
+fn tree_borders_show_root_name_on_top_and_branch_on_bottom() {
+    // SMA-249: the tree column's TOP border is the root directory basename (not the old static
+    // "Files"), and the BOTTOM border is the current branch when present.
+    let mut state = sample_state();
+    state.root_name = "myrepo".to_string();
+    state.branch = Some("featzz".to_string());
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("myrepo"),
+        "tree top border shows the root basename\n{out}"
+    );
+    assert!(
+        out.contains("featzz"),
+        "tree bottom border shows the current branch\n{out}"
+    );
+    assert!(
+        !out.contains("Files"),
+        "the static 'Files' title is gone\n{out}"
+    );
+
+    // Outside a repo (branch None) the branch is omitted entirely — no leftover label.
+    state.branch = None;
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("myrepo"),
+        "top border still shows the root name when branchless\n{out}"
+    );
+    assert!(
+        !out.contains("featzz"),
+        "no branch is rendered when branch is None\n{out}"
+    );
+}
+
+#[test]
+fn tree_title_truncates_an_overlong_root_name() {
+    // SMA-249: a root name wider than the tree column is truncated with an ellipsis so it can't
+    // break the border.
+    let mut state = sample_state();
+    state.root_name = "x".repeat(80);
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains('…'),
+        "an over-long root name is truncated with an ellipsis\n{out}"
+    );
+    assert!(
+        !out.contains(&"x".repeat(70)),
+        "the full over-long name is not rendered (it was truncated)\n{out}"
+    );
 }
 
 #[test]
@@ -1146,9 +1199,11 @@ fn picker_overlay_renders_rows_over_the_two_columns() {
         out.contains("feature-x"),
         "the feature branch label is shown\n{out}"
     );
-    // The two columns are still drawn underneath (the overlay is partial, centered).
+    // The two columns are still drawn underneath (the overlay is partial, centered). The tree's
+    // titled top border ("┌r…") proves its column drew beneath the modal (SMA-249: the title is
+    // the root basename, not the old static "Files").
     assert!(
-        out.contains("Files"),
+        out.contains("┌r"),
         "the tree column is drawn under the overlay\n{out}"
     );
 }
@@ -1904,9 +1959,10 @@ fn finder_overlay_empty_query_shows_title_and_placeholder_no_rows() {
         "the placeholder is shown when the query is empty\n{out}"
     );
     // No file rows (matches is empty so no paths appear yet).
-    // The tree still renders under the overlay (AC-1 — partial overlay).
+    // The tree still renders under the overlay (AC-1 — partial overlay). Its titled top border
+    // ("┌r…") proves the column drew beneath the modal (SMA-249: root basename, not "Files").
     assert!(
-        out.contains("Files"),
+        out.contains("┌r"),
         "the tree column is drawn under the overlay (AC-1)\n{out}"
     );
 }
@@ -1938,9 +1994,10 @@ fn finder_overlay_with_matches_shows_rows_and_highlights_cursor() {
         "second match row is shown\n{out}"
     );
     assert!(out.contains("README.md"), "third match row is shown\n{out}");
-    // The two-column layout is still underneath (AC-1).
+    // The two-column layout is still underneath (AC-1). Its titled top border ("┌r…") proves the
+    // tree column drew beneath the modal (SMA-249: root basename, not the old static "Files").
     assert!(
-        out.contains("Files"),
+        out.contains("┌r"),
         "the tree column is drawn under the overlay (AC-1)\n{out}"
     );
 

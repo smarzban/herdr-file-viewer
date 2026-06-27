@@ -81,6 +81,15 @@ pub struct ViewState {
     /// When `Some`, the go-to-file finder overlay is drawn on top of the columns (AC-1).
     /// `None` ⇒ no overlay.
     pub finder: Option<FinderView>,
+    /// The tree root's directory basename (e.g. `"herdr-plugin"`), shown as the tree column's
+    /// top-border title so the user can see *which* directory the tree is rooted at — mirroring
+    /// how the content pane titles itself from the selected node. Truncated with an ellipsis if
+    /// it would overflow the column; the Presenter falls back to "Files" when it is empty.
+    pub root_name: String,
+    /// The current git branch (e.g. `"main"`, `"feat/x"`), shown on the tree column's bottom
+    /// border. `None` outside a git repo or on a detached HEAD — in which case the bottom title is
+    /// omitted entirely rather than showing a blank/placeholder branch (degrade gracefully).
+    pub branch: Option<String>,
 }
 
 /// The worktree picker's draw model (an owned snapshot of the controller's picker state, so
@@ -153,6 +162,29 @@ fn node_name(node: &Node) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| node.path.to_string_lossy().into_owned())
+}
+
+/// Truncate a border title to fit a bordered block of outer width `area_width`, replacing the
+/// tail with an ellipsis (`…`) when it would overflow. The interior is the outer width minus the
+/// two border columns; we keep one further column of slack so the title never butts flush against
+/// the corner glyph and risk pushing the border out. A title that already fits is returned
+/// unchanged; a degenerate (tiny) width yields an empty string rather than a broken border.
+fn truncate_title(s: &str, area_width: u16) -> String {
+    // Interior width inside the two borders, minus a one-column slack so the title can't reach the
+    // far corner. Saturating throughout so a 0/1/2-wide area can never underflow.
+    let budget = area_width.saturating_sub(2).saturating_sub(1) as usize;
+    if budget == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= budget {
+        return s.to_string();
+    }
+    // Reserve one column for the ellipsis, so the visible result is `budget` columns total.
+    let keep = budget.saturating_sub(1);
+    let mut out: String = chars[..keep].iter().collect();
+    out.push('…');
+    out
 }
 
 /// The status color for a tree row: changes (modified / deleted) are light red, new files
@@ -354,9 +386,24 @@ fn border_style(focused: bool) -> Style {
 
 /// Draw the left column: the bordered file tree.
 fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
-    let block = Block::bordered()
-        .title("Files")
+    // Top title = the root directory basename (mirroring how the content pane titles itself from
+    // the selected node), sanitized (a repo dir name is untrusted, AC-27) and truncated to the
+    // column so a long name can't break the border. Fall back to "Files" only when it is empty.
+    let name = sanitize_label(&state.root_name);
+    let title = if name.is_empty() {
+        "Files".to_string()
+    } else {
+        truncate_title(&name, area.width)
+    };
+    let mut block = Block::bordered()
+        .title(title)
         .border_style(border_style(state.focus == Focus::Tree));
+    // Bottom title = the current git branch, when in a repo on a real branch. Omitted entirely
+    // (no `title_bottom`) outside a repo or on a detached HEAD, so the border degrades cleanly
+    // rather than showing a blank/placeholder branch. Sanitized + truncated like the top title.
+    if let Some(branch) = &state.branch {
+        block = block.title_bottom(truncate_title(&sanitize_label(branch), area.width));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -567,6 +614,12 @@ pub struct PaneGeometry {
     /// when the match rows overflow. `None` when the finder is closed or every row fits. Lets the
     /// controller map a press/drag on the bar to a selection position (click-drag scroll).
     pub finder_vbar: Option<Rect>,
+    /// The maximum useful HORIZONTAL scroll for the worktree picker rows, in columns (widest row
+    /// minus the inner width; `0` when rows fit or the picker is closed). Fed back so the controller
+    /// clamps the *stored* `hscroll` in state each frame — without it, over-scrolling right (Expand)
+    /// parks the offset past the real maximum and the first few Collapse presses appear to do
+    /// nothing while it burns back down (the same fix as `finder_max_hscroll`, SMA-229).
+    pub picker_max_hscroll: u16,
 }
 
 /// Compute the [`PaneGeometry`] for hit-testing the current frame — the same layout [`draw`]
@@ -635,6 +688,14 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         None => (None, 0, 0, None),
     };
 
+    // Picker: the SAME helper `draw_picker_overlay` uses, so the fed-back `max_hscroll` matches what
+    // is drawn — the controller clamps the stored picker hscroll to it each frame (SMA-229). `0`
+    // when the picker is closed.
+    let picker_max_hscroll = match &state.picker {
+        Some(picker) => picker_overlay_layout(area, picker).max_hscroll,
+        None => 0,
+    };
+
     PaneGeometry {
         area_x: body.x,
         area_width: body.width,
@@ -651,6 +712,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         finder_scroll,
         finder_max_hscroll,
         finder_vbar,
+        picker_max_hscroll,
     }
 }
 
@@ -720,6 +782,83 @@ const PICKER_ESC_CLOSE: &str = "esc close";
 /// confirms the switch, Esc cancels. Static (not repo-derived), so no sanitization is needed.
 const PICKER_FOOTER_HINT: &str = "↑↓ move · ←→ scroll · ⏎ switch · esc cancel";
 
+/// The computed layout geometry of the worktree picker overlay, shared between
+/// [`draw_picker_overlay`] and [`geometry`] so neither can drift from the other — mirroring
+/// [`FinderLayout`]. Both functions call [`picker_overlay_layout`] and operate on these rects.
+struct PickerLayout {
+    /// The full popup outer rect (after centering + clamping to `area`). Used by `draw` to
+    /// `Clear` the region and render the bordered block.
+    popup: Rect,
+    /// The padded interior the rows are drawn into (the popup minus borders + uniform padding).
+    inner: Rect,
+    /// The scroll offset: the index of the first visible row (keeps the cursor in view). `0` when
+    /// every row fits.
+    offset: usize,
+    /// The maximum useful HORIZONTAL scroll for the rows, in columns: the widest row minus the
+    /// inner width (`0` when every row fits). The single source of truth for the clamp —
+    /// [`draw_picker_overlay`] clamps the displayed offset to it AND [`geometry`] feeds it back so
+    /// the controller clamps the *stored* `hscroll` to the same value, so the two can never
+    /// disagree (which is what made an over-scroll-right need several left presses to undo, SMA-229).
+    max_hscroll: u16,
+}
+
+/// Compute the worktree picker overlay's layout geometry for the given frame `area` and `picker`
+/// draw model. This is the **single authoritative place** for the picker's sizing + centering +
+/// scroll math — both [`draw_picker_overlay`] and [`geometry`] call it, so the drawn rects and
+/// the hit-test / clamp geometry are guaranteed to agree (mirrors [`finder_overlay_layout`]).
+fn picker_overlay_layout(area: Rect, picker: &PickerView) -> PickerLayout {
+    // Build every row once to measure widths (size-to-content), exactly as draw does.
+    let rows: Vec<Line> = picker
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| picker_row(row, i == picker.cursor))
+        .collect();
+
+    // Chrome widths (same as draw): the title + `esc close` chip on top, the key-hint footer below.
+    let hint_style = Style::new().fg(Color::Reset);
+    let top_left = Line::from(PICKER_TITLE);
+    let top_right = Line::styled(PICKER_ESC_CLOSE, hint_style).right_aligned();
+    let footer = Line::styled(PICKER_FOOTER_HINT, hint_style).centered();
+
+    let max_row_width = rows.iter().map(Line::width).max().unwrap_or(0);
+    let min_top = top_left.width() + 1 + top_right.width();
+    let min_bottom = footer.width();
+    let desired_inner_w = max_row_width
+        .max(min_top)
+        .max(min_bottom)
+        .min(u16::MAX as usize) as u16;
+    let desired_inner_h = (rows.len().min(u16::MAX as usize) as u16).max(1);
+    let want_w = desired_inner_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let cap_w = area.width.saturating_sub(2);
+    let cap_h = area.height.saturating_sub(2);
+    let popup = centered_rect_sized(want_w.min(cap_w), want_h.min(cap_h), area);
+
+    let block = Block::bordered().padding(Padding::uniform(PICKER_PADDING));
+    let inner = block.inner(popup);
+
+    let visible = inner.height as usize;
+    let offset = scroll_offset(picker.cursor, picker.rows.len(), visible);
+
+    // Max useful horizontal scroll = widest ROW minus the inner width. NOT against `desired_inner_w`,
+    // which is inflated by the title/footer chrome — clamping there would let scroll-right push the
+    // rows off-screen on a narrow pane even when every row fits. Saturating, so a narrow box never
+    // underflows.
+    let max_hscroll = (max_row_width.min(u16::MAX as usize) as u16).saturating_sub(inner.width);
+
+    PickerLayout {
+        popup,
+        inner,
+        offset,
+        max_hscroll,
+    }
+}
+
 /// Draw the worktree picker as a centered, bordered list overlay on top of the columns (AC-1,
 /// AC-5). Each row is `<path> [branch]`, or `<path> (detached)` when HEAD is detached — never
 /// an empty branch (AC-2, gate L-1). The `cursor` row is highlighted (`REVERSED`, the same
@@ -744,7 +883,12 @@ const PICKER_FOOTER_HINT: &str = "↑↓ move · ←→ scroll · ⏎ switch · 
 /// Both are Block titles, never inner rows, so the rows area / scroll are untouched; the
 /// size-to-content calc widens the box to fit them so short rows don't clip the chrome.
 fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
-    // Build every row once so we can both measure widths (size-to-content) and draw the window.
+    // Delegate all sizing + centering + scroll math to the shared layout helper, so this function
+    // and `geometry()` can never drift from each other (mirrors `draw_finder_overlay`).
+    let layout = picker_overlay_layout(area, picker);
+
+    // Re-build every row for rendering (the layout helper built them only for measurement;
+    // `Line` is not `Copy`, so it can't return them).
     let rows: Vec<Line> = picker
         .rows
         .iter()
@@ -764,39 +908,8 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
     let top_right = Line::styled(PICKER_ESC_CLOSE, hint_style).right_aligned();
     let footer = Line::styled(PICKER_FOOTER_HINT, hint_style).centered();
 
-    // Desired interior: the widest row (display width, not byte len — `Line::width` counts
-    // unicode columns) × the row count — AND wide enough for the chrome so the chip/footer never
-    // truncate when rows are short. The box adds the two border rows/cols plus one title row.
-    let max_row_width = rows.iter().map(Line::width).max().unwrap_or(0);
-    // Top border must fit "Switch worktree" + a one-space gap + "esc close"; the bottom must fit
-    // the footer hint. Take the max so short rows still leave room for the chrome.
-    let min_top = top_left.width() + 1 + top_right.width();
-    let min_bottom = footer.width();
-    let desired_inner_w = max_row_width
-        .max(min_top)
-        .max(min_bottom)
-        .min(u16::MAX as usize) as u16;
-    let desired_inner_h = (rows.len().min(u16::MAX as usize) as u16).max(1);
-    // Outer width = inner content + 2 (borders) + 2 (one col of horizontal padding each side), so
-    // the rows aren't squeezed against the border. Outer height = inner rows + 2 (top/bottom
-    // borders, which the title/footer chrome share) + 2 (one row of vertical padding top and
-    // bottom), so a blank padded line sits between the top border/title and the first row, and
-    // between the last row and the bottom border/footer. Saturating so huge content never
-    // overflows u16.
-    let want_w = desired_inner_w
-        .saturating_add(2)
-        .saturating_add(PICKER_PADDING * 2);
-    let want_h = desired_inner_h
-        .saturating_add(2)
-        .saturating_add(PICKER_PADDING * 2);
-    // Cap at the pane, leaving a one-cell margin all round (never exceed, never underflow). If the
-    // frame is narrower than the chrome wants, the box caps here and the hints simply truncate.
-    let cap_w = area.width.saturating_sub(2);
-    let cap_h = area.height.saturating_sub(2);
-    let popup = centered_rect_sized(want_w.min(cap_w), want_h.min(cap_h), area);
-
     // Clear whatever the columns drew beneath the popup so it reads as a true modal.
-    frame.render_widget(Clear, popup);
+    frame.render_widget(Clear, layout.popup);
 
     let block = Block::bordered()
         .title_top(top_left)
@@ -808,26 +921,18 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
         // automatically, so the rows, cursor highlight, current marker, agent badge, vertical
         // scroll, and hscroll all flow from the padded interior below.
         .padding(Padding::uniform(PICKER_PADDING));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
+    frame.render_widget(block, layout.popup);
 
-    // Scroll the row window so the cursor row stays visible. With `visible` interior rows, keep
-    // `cursor` inside `[offset, offset + visible)`: clamp the offset so it never scrolls past
-    // the end and is 0 whenever all rows fit (preserving the small-list rendering).
-    let visible = inner.height as usize;
-    let offset = scroll_offset(picker.cursor, picker.rows.len(), visible);
+    let visible = layout.inner.height as usize;
+    // Clamp the displayed hscroll to `layout.max_hscroll` — the SAME value the controller clamps the
+    // stored offset to (via geometry feedback), so display and state never disagree. A no-op when
+    // every row fits, and never scrolls past the widest row (SMA-229).
+    let hscroll = picker.hscroll.min(layout.max_hscroll);
 
-    // Clamp the horizontal scroll to the widest ROW: at most `max_row_width - inner_width`
-    // (0 when every row fits). NOT against `desired_inner_w`, which is inflated by the title/footer
-    // chrome — clamping there would let scroll-right push the rows off-screen on a narrow pane even
-    // when every row fits. Saturating, so a narrow box never underflows.
-    let max_hscroll = (max_row_width.min(u16::MAX as usize) as u16).saturating_sub(inner.width);
-    let hscroll = picker.hscroll.min(max_hscroll);
-
-    let window: Vec<Line> = rows.into_iter().skip(offset).take(visible).collect();
+    let window: Vec<Line> = rows.into_iter().skip(layout.offset).take(visible).collect();
     // `Paragraph::scroll((y, x))` clips the leading `x` columns off each line — the horizontal
     // read for long paths. The vertical window is already applied by skip/take, so y stays 0.
-    frame.render_widget(Paragraph::new(window).scroll((0, hscroll)), inner);
+    frame.render_widget(Paragraph::new(window).scroll((0, hscroll)), layout.inner);
 }
 
 /// The first row index to render so the `cursor` row stays within a window of `visible` rows,

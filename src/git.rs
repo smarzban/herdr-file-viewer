@@ -287,8 +287,9 @@ fn run_trimmed(repo_root: &Path, args: &[&str]) -> Option<String> {
     run_raw(repo_root, args).map(|s| s.trim().to_string())
 }
 
-/// The current branch name, or `None` when detached.
-fn current_branch(repo_root: &Path) -> Option<String> {
+/// The current branch name, or `None` when detached. `pub` so the Session Controller can cache
+/// it for the tree's bottom-border title (it is computed once per (re-)root, never per-frame).
+pub fn current_branch(repo_root: &Path) -> Option<String> {
     match run_trimmed(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
         Some(b) if b != "HEAD" => Some(b),
         _ => None,

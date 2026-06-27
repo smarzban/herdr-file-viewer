@@ -44,6 +44,8 @@ fn state(width: u16, focus: Focus) -> ViewState {
         update_banner: None,
         picker: None,
         finder: None,
+        root_name: "r".to_string(), // the fixture tree is rooted at /r
+        branch: None,
     }
 }
 
