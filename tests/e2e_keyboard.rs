@@ -282,3 +282,108 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
         other => panic!("expected a clean exit, got {other:?}"),
     }
 }
+
+/// T-5 — go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
+/// typing a line number and Enter scrolls the content to that line (AC-3 jump + AC-21 routing);
+/// pressing `:` on a RenderedMarkdown file shows the "unavailable" notice without opening a prompt
+/// (AC-7).
+///
+/// Routing proof (AC-21): after opening the prompt with `:`, we send `j` (NavDown in the normal
+/// viewer key-map) and then `40`. If routing were broken, `j` would move the tree cursor onto
+/// `notes.md`, and the subsequent jump would target the wrong file — so `DEEPMARKER` (source line
+/// 40 of `long.txt`) would never appear.
+///
+/// Anchor robustness: the content pane is `bat`-rendered with a line-number gutter, and ratatui
+/// redraws only changed cells — so a marker whose characters coincidentally match the cells it
+/// overwrites gets split across cursor-move escapes in the pty stream (an earlier `DEEPMARK040`
+/// fragmented because its trailing `0` matched). `DEEPMARKER` is **all letters** and the filler
+/// lines are `L<NN>`, so every column of the marker differs from whatever sat there before the
+/// scroll → ratatui writes the row in one contiguous run and `expect("DEEPMARKER")` is reliable.
+/// `DEEPMARKER` is on line 40, below the initial viewport, so it only appears after the jump.
+#[test]
+fn go_to_line_jumps_to_a_source_line_and_is_unavailable_in_markdown() {
+    let dir = TempDir::new();
+    let p = dir.path();
+    init_repo_with_commit(p);
+
+    // long.txt: 60 lines. Line 1 = TOPMARK001 (launch anchor, drawn into blank cells); line 40 =
+    // DEEPMARKER (the jump target, all-letters so it redraws contiguously); every other line is
+    // a short `L<NN>` filler that differs from DEEPMARKER in every column.
+    let mut lines = Vec::with_capacity(60);
+    for i in 1u32..=60 {
+        if i == 1 {
+            lines.push("TOPMARK001".to_string());
+        } else if i == 40 {
+            lines.push("DEEPMARKER".to_string());
+        } else {
+            lines.push(format!("L{i:02}"));
+        }
+    }
+    std::fs::write(p.join("long.txt"), lines.join("\n") + "\n").unwrap();
+
+    // notes.md: RenderedMarkdown view-mode → `:` is unavailable.
+    std::fs::write(p.join("notes.md"), "# MDHEADERMARK\nSome note text.\n").unwrap();
+
+    // Commit both so view-policy picks the right modes: long.txt → SyntaxContent (`:` works);
+    // notes.md → RenderedMarkdown (`:` unavailable). `long.txt` sorts before `notes.md`, so the
+    // cursor starts on long.txt at launch.
+    git(p, &["add", "long.txt", "notes.md"]);
+    git(p, &["commit", "-q", "-m", "go-to-line test files"]);
+
+    let mut cmd = viewer_command(p);
+    cmd.env("EDITOR", "true");
+    let mut s = Session::spawn(cmd).expect("spawn the viewer in a pty");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+
+    // Step 1: initial draw — tree lists long.txt, its top content is shown.
+    s.expect("long.txt")
+        .expect("tree should list long.txt on launch");
+    s.expect("TOPMARK001")
+        .expect("long.txt top content should be visible on launch");
+
+    // Step 2: open the go-to-line prompt (long.txt is SyntaxContent, so `:` opens it). Give the
+    // event loop a beat to open the prompt before the next key, so `j` lands inside the prompt and
+    // not as a NavDown on the tree.
+    s.send(":").expect("send `:` to open the go-to-line prompt");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Step 3: AC-21 routing proof — `j` (NavDown in normal mode) must be swallowed by the open
+    // prompt (a non-digit, ignored), NOT navigate the tree.
+    s.send("j")
+        .expect("send `j` — must be swallowed by the prompt, not fire NavDown");
+
+    // Step 4: type the line number. The prompt now holds "40" (j was ignored).
+    s.send("40").expect("send the line-number digits");
+
+    // Step 5: confirm — the content scrolls so source line 40 (DEEPMARKER) is visible. This is the
+    // AC-3 jump proof AND confirms AC-21 routing: if `j` had escaped the prompt and selected
+    // notes.md, there would be no DEEPMARKER to show.
+    s.send("\r").expect("send Enter to confirm the jump");
+    s.expect("DEEPMARKER").expect(
+        "AC-3/AC-21: after Enter the content pane scrolls to source line 40 (DEEPMARKER visible)",
+    );
+
+    // Step 6: AC-7 live — the prompt is closed and focus is still the tree; `j` now NavDowns onto
+    // notes.md (RenderedMarkdown), where `:` must show the unavailable notice and open no prompt.
+    s.send("j").expect("send NavDown to move to notes.md");
+    s.expect("MDHEADERMARK")
+        .expect("notes.md is now selected and its content is shown");
+    s.send(":").expect("send `:` on the markdown file");
+    s.expect("unavailable")
+        .expect("AC-7: `:` on a RenderedMarkdown file shows the unavailable notice");
+
+    // Step 7: clean exit (no prompt is open on the markdown file). The Esc-no-jump path is proven
+    // rigorously by the T-3 unit tests; this e2e covers the live routing/jump/notice flow.
+    s.send("q").expect("send close");
+    s.expect(Eof)
+        .expect("the viewer terminates cleanly after the go-to-line flow");
+    match s.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => {
+            assert_eq!(
+                code, 0,
+                "AC-21/AC-3/AC-7: no go-to-line key crashed the viewer"
+            )
+        }
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}
