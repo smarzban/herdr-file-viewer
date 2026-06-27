@@ -19,6 +19,7 @@
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::herdr::HerdrCli;
+use crate::infile::{PromptMode, PromptState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState};
@@ -240,6 +241,10 @@ pub struct Controller {
     /// (OpenFinder intent); closed by confirm/cancel (T-7) and by [`re_root`](Self::re_root) (a
     /// re-root invalidates the old-root candidate list).
     finder: Option<FinderState>,
+    /// The open in-file-nav bottom prompt (go-to-line), or `None` when closed. While `Some`, the run
+    /// loop routes raw keys to `handle_prompt_key` (T-4). Closed by confirm/cancel (T-3) and by a
+    /// re-root / new render. Mutually exclusive with the picker/finder modals.
+    prompt: Option<PromptState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
     /// Session-level — survives a re-root unchanged.
@@ -329,6 +334,7 @@ impl Controller {
             status_rx: None,
             picker: None,
             finder: None,
+            prompt: None,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -801,6 +807,11 @@ impl Controller {
         if self.finder.is_some() {
             return Effects::noop();
         }
+        // A prompt is modal too: the run loop routes raw keys to handle_prompt_key while it is open, so
+        // handle() should not be reached. Guard structurally — symmetric with the finder guard.
+        if self.prompt.is_some() {
+            return Effects::noop();
+        }
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
@@ -824,6 +835,7 @@ impl Controller {
             Intent::DismissUpdate => self.dismiss_update(),
             Intent::SwitchWorktree => self.open_worktree_picker(),
             Intent::OpenFinder => self.open_finder(),
+            Intent::OpenGoToLine => self.open_go_to_line(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -1790,6 +1802,28 @@ impl Controller {
     /// Whether the go-to-file finder overlay is currently open.
     pub fn finder_open(&self) -> bool {
         self.finder.is_some()
+    }
+
+    /// Open the go-to-line prompt (AC-1) — but only in a source-mapped (syntax/content) view, where a
+    /// source line maps 1:1 to a display row. In a transformed view (RenderedMarkdown / Diff /
+    /// FullDiff, or nothing selected) there is no source-line→row map, so emit a one-line unavailable
+    /// notice and open nothing (AC-7). Snapshots the current content scroll into the prompt state.
+    fn open_go_to_line(&mut self) -> Effects {
+        if self.selected_view_mode() == Some(ViewMode::SyntaxContent) {
+            self.prompt = Some(PromptState {
+                mode: PromptMode::GoToLine,
+                input: crate::prompt::PromptInput::new(),
+                saved_scroll: self.content_scroll,
+            });
+        } else {
+            self.action_notice = Some("Go to line is unavailable in this view".into());
+        }
+        Effects::redraw()
+    }
+
+    /// Whether an in-file-nav bottom prompt is currently open.
+    pub fn prompt_open(&self) -> bool {
+        self.prompt.is_some()
     }
 
     /// The full candidate list loaded when the finder was opened, or an empty slice when

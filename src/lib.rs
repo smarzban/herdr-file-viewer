@@ -13,6 +13,7 @@ pub mod git;
 pub mod herdr;
 pub mod host;
 pub mod index;
+pub mod infile;
 pub mod input;
 pub mod intent;
 pub mod launch;

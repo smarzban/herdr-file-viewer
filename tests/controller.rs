@@ -4675,3 +4675,126 @@ fn ac_n6_open_finder_intent_does_open_the_finder() {
         "AC-N6: Intent::OpenFinder must open the finder"
     );
 }
+
+#[test]
+fn open_go_to_line_opens_the_prompt_in_a_source_mapped_view() {
+    // AC-1: in a source-mapped (SyntaxContent) view, OpenGoToLine opens the prompt.
+    // An unchanged, non-markdown .rs file renders as SyntaxContent (the policy default).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "precondition: an unchanged .rs file is in SyntaxContent"
+    );
+    assert!(!ctrl.prompt_open(), "prompt starts closed");
+
+    let fx = ctrl.handle(Intent::OpenGoToLine);
+    assert!(
+        ctrl.prompt_open(),
+        "AC-1: prompt opens in a source-mapped view"
+    );
+    assert!(fx.redraw, "opening the prompt signals a redraw");
+    assert_eq!(ctrl.content_scroll(), 0, "content scroll unchanged");
+    assert!(
+        ctrl.action_notice().is_none(),
+        "no unavailable notice in a source-mapped view"
+    );
+}
+
+#[test]
+fn open_go_to_line_is_unavailable_in_transformed_views() {
+    // AC-7: in a transformed view (RenderedMarkdown, Diff, FullDiff) the prompt must NOT open;
+    // instead an unavailable notice is set and scroll is unchanged.
+    // Also covers gate finding L2: FullDiff must be treated as non-source-mapped.
+
+    // --- RenderedMarkdown ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("notes.md"), "# Hello\n").unwrap();
+        let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::RenderedMarkdown),
+            "precondition: a .md file is in RenderedMarkdown"
+        );
+        let _fx = ctrl.handle(Intent::OpenGoToLine);
+        assert!(
+            !ctrl.prompt_open(),
+            "AC-7: prompt must NOT open in RenderedMarkdown"
+        );
+        assert!(
+            ctrl.action_notice().is_some(),
+            "AC-7: unavailable notice set in RenderedMarkdown"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
+    }
+
+    // --- Diff ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+        let mut changed = BTreeMap::new();
+        changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+        let git = StubGit {
+            status: changed.clone(),
+            changed,
+            ..StubGit::default()
+        };
+        let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::Diff),
+            "precondition: a changed .rs file is in Diff"
+        );
+        let _fx = ctrl.handle(Intent::OpenGoToLine);
+        assert!(!ctrl.prompt_open(), "AC-7: prompt must NOT open in Diff");
+        assert!(
+            ctrl.action_notice().is_some(),
+            "AC-7: unavailable notice set in Diff"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
+    }
+
+    // --- FullDiff (gate finding L2) ---
+    {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+        let mut changed = BTreeMap::new();
+        changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+        let git = StubGit {
+            status: changed.clone(),
+            changed,
+            ..StubGit::default()
+        };
+        let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+        // Diff → (CycleView) → FullDiff
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::Diff),
+            "precondition: a changed file starts in Diff"
+        );
+        ctrl.handle(Intent::CycleView);
+        assert_eq!(
+            ctrl.selected_view_mode(),
+            Some(ViewMode::FullDiff),
+            "precondition: one CycleView reaches FullDiff"
+        );
+
+        let _fx = ctrl.handle(Intent::OpenGoToLine);
+        assert!(
+            !ctrl.prompt_open(),
+            "AC-7 / gate L2: prompt must NOT open in FullDiff"
+        );
+        assert!(
+            ctrl.action_notice().is_some(),
+            "AC-7 / gate L2: unavailable notice set in FullDiff"
+        );
+        assert_eq!(ctrl.content_scroll(), 0, "scroll unchanged");
+    }
+}

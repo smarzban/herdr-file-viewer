@@ -30,6 +30,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('v') => Some(Intent::CycleView),
         KeyCode::Char('e') => Some(Intent::OpenInEditor),
         KeyCode::Char('f') => Some(Intent::OpenFinder),
+        KeyCode::Char(':') => Some(Intent::OpenGoToLine),
         KeyCode::Char('y') => Some(Intent::CopyRepoPath),
         KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
         KeyCode::Char('W') => Some(Intent::SwitchWorktree),
@@ -72,6 +73,7 @@ mod tests {
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
         (KeyCode::Char('f'), Intent::OpenFinder),
+        (KeyCode::Char(':'), Intent::OpenGoToLine),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
@@ -184,6 +186,21 @@ mod tests {
         );
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
+            None
+        );
+    }
+
+    #[test]
+    fn colon_maps_to_open_go_to_line_and_modifier_chords_are_inert() {
+        // `:` opens the go-to-line prompt (AC-1, AC-N6). Ctrl-: / Alt-: must not fire an intent.
+        // (Shift is allowed — `:` is a shifted char on many layouts — so do not assert Shift is None.)
+        assert_eq!(map_key(k(KeyCode::Char(':'))), Some(Intent::OpenGoToLine));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::ALT)),
             None
         );
     }
