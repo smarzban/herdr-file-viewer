@@ -68,9 +68,11 @@ pub enum Intent {
     OpenFinder,
     /// Open the go-to-line prompt to scroll the content pane to a source line by number.
     /// Read-only navigation — it only moves the in-pane scroll; no file or git mutation
-    /// (AC-1, AC-N1). Available only in a source-mapped (syntax/content) view; in a
-    /// transformed view it shows an unavailable notice and opens nothing (AC-7). Opened only
-    /// by the explicit `:` key — no event hook (AC-N6).
+    /// (AC-1, AC-N1). Opens for any selected **file**, in every view: in a source-mapped
+    /// (syntax/content) view the jump is immediate; in a transformed view (rendered-markdown /
+    /// diff / full-diff) confirming auto-switches the file to the source-mapped view and jumps
+    /// once it re-renders (AC-7, revised). With nothing / a directory selected it shows a notice
+    /// and opens nothing. Opened only by the explicit `:` key — no event hook (AC-N6).
     OpenGoToLine,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,

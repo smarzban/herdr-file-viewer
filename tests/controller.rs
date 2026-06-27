@@ -5038,3 +5038,219 @@ fn go_to_line_in_a_transformed_view_switches_to_content_and_jumps() {
         "after the switch render, jumped to line 25 (offset 24)"
     );
 }
+
+// review-gate Round 1 — regression tests for the findings fixed in R1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mouse_is_inert_while_the_go_to_line_prompt_is_open() {
+    // R1 (HIGH, 5 models): the go-to-line prompt is keyboard-only and modal — the run loop routes
+    // only KEY events to it. Without a guard in handle_mouse, a click/wheel would still reach the
+    // tree beneath and change the selection, so a subsequent Enter would jump/auto-switch the WRONG
+    // file. The mouse must be inert while the prompt is open (mirroring the picker's modal guard).
+    let dir = TempDir::new();
+    for i in 0..6 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert_eq!(ctrl.tree().cursor(), 0, "cursor starts on f00.txt");
+
+    ctrl.handle(Intent::OpenGoToLine);
+    assert!(ctrl.prompt_open(), "prompt opens on the selected file");
+
+    // A left click on another tree row (row 4 → visible node 3) must be swallowed.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 4));
+    assert!(
+        !fx.redraw,
+        "a click under an open prompt is inert (no redraw)"
+    );
+    assert_eq!(
+        ctrl.tree().cursor(),
+        0,
+        "the click must NOT move the selection while the prompt is open"
+    );
+    assert!(
+        ctrl.prompt_open(),
+        "the prompt stays open after an inert click"
+    );
+
+    // A scroll-wheel over the tree is inert too.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert!(!fx.redraw, "a scroll under an open prompt is inert");
+    assert_eq!(
+        ctrl.tree().cursor(),
+        0,
+        "scroll does not move the selection under the prompt"
+    );
+}
+
+/// A content provider for the go-to-line wrap test: 5 long, space-free lines (`W0…`, 25 cols → 3
+/// rows each at width 10) then 5 short lines (`S5`..`S9`, 1 row each). With wrap on, source line 6
+/// (`S5`) sits at display row 15, not row 5 — so the wrap-aware mapping and the naive `line-1`
+/// disagree, which is exactly what the test pins down.
+struct WrapLines;
+impl ContentProvider for WrapLines {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let mut lines: Vec<String> = (0..5).map(|i| format!("W{i}{}", "x".repeat(23))).collect();
+        lines.extend((5..10).map(|i| format!("S{i}")));
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+        }
+    }
+}
+
+fn controller_with_wrap_lines(root: &Path) -> Controller {
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WrapLines),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn go_to_line_maps_source_line_to_wrapped_row_offset_when_wrap_is_on() {
+    // R1 (MEDIUM, 4 models): with the `w` wrap override on, a source line no longer maps 1:1 to a
+    // display row — earlier long lines wrap into several rows. `:N` must land on source line N (its
+    // cumulative wrapped-row offset), not display row N-1, or the target falls off-screen. (AC-3
+    // under wrap.) 5 W-lines × 3 rows = 15, so source line 6 (the first S-line) is at row 15.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_wrap_lines(dir.path());
+    await_marker(&mut ctrl, "S9"); // 5 long (W) + 5 short (S) lines rendered
+    ctrl.set_content_viewport(10, 5); // width 10 → each 25-char W line wraps to 3 rows
+
+    // Wrap OFF: source line 6 maps 1:1 → display row 5.
+    ctrl.scroll_to_line(6);
+    assert_eq!(
+        ctrl.content_scroll(),
+        5,
+        "wrap off: source line 6 = display row 5 (1:1)"
+    );
+
+    // Wrap ON (the `w` key): the 5 W-lines each occupy 3 rows, so source line 6 sits at row 15.
+    ctrl.handle(Intent::ToggleWrap);
+    ctrl.scroll_to_line(6);
+    assert_eq!(
+        ctrl.content_scroll(),
+        15,
+        "wrap on: source line 6 lands at its wrapped-row offset (15), not display row 5"
+    );
+    assert_ne!(
+        ctrl.content_scroll(),
+        5,
+        "the wrap-aware mapping must differ from the naive line-1"
+    );
+}
+
+#[test]
+fn go_to_line_queues_the_jump_when_a_source_render_is_still_in_flight() {
+    // R1 (MEDIUM): if a source file's render hasn't landed yet, selected_view_mode() reports
+    // SyntaxContent from the path while self.content is still stale. Confirming `:N` must NOT clamp
+    // against the stale content — it queues against the in-flight render (applied_seq != latest_seq)
+    // and the jump applies once that render lands.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    // Deliberately do NOT await_marker: the initial render is still in flight.
+    ctrl.set_content_viewport(40, 10);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "source-mapped by path even before its render lands"
+    );
+
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "25".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(25),
+        "the jump is queued against the in-flight render, not clamped against stale content"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "the queued jump never applied");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        24,
+        "after the render lands, jumped to line 25 (offset 24)"
+    );
+}
+
+#[test]
+fn go_to_line_second_confirm_supersedes_an_in_flight_auto_switch_jump() {
+    // R1 (MEDIUM): confirming `:` in a transformed view auto-switches (override → Syntax) and queues
+    // a jump against the switch render; selected_view_mode() then reports SyntaxContent immediately.
+    // A SECOND confirm before that render lands must WIN — the older queued line must not overwrite
+    // it when the render arrives.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = changed_controller_with_lines(dir.path(), "a.txt", 50);
+    await_marker(&mut ctrl, "L0"); // initial Diff render landed
+    ctrl.set_content_viewport(40, 10);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "starts in a transformed view"
+    );
+
+    // First confirm — :10 → auto-switch + queue (render in flight).
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "10".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(10),
+        "first confirm queued line 10"
+    );
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "auto-switched the view (override)"
+    );
+
+    // Second confirm BEFORE polling — :30 must supersede the queued 10.
+    ctrl.handle(Intent::OpenGoToLine);
+    for c in "30".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.pending_goto_line(),
+        Some(30),
+        "the second confirm supersedes the queued jump (30, not 10)"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.pending_goto_line().is_some() {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "the queued jump never applied");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        29,
+        "lands on line 30 (offset 29) — the LAST confirm wins, not line 10"
+    );
+}

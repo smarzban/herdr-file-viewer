@@ -242,8 +242,10 @@ pub struct Controller {
     /// re-root invalidates the old-root candidate list).
     finder: Option<FinderState>,
     /// The open in-file-nav bottom prompt (go-to-line), or `None` when closed. While `Some`, the run
-    /// loop routes raw keys to `handle_prompt_key` (T-4). Closed by confirm/cancel (T-3) and by a
-    /// re-root / new render. Mutually exclusive with the picker/finder modals.
+    /// loop routes raw keys to `handle_prompt_key` (T-4) and the mouse is inert ([`handle_mouse`]
+    /// returns early), so the selection can't change under an open prompt. Closed by confirm/cancel
+    /// (T-3) and by [`re_root`](Self::re_root) (symmetric with the picker/finder teardown).
+    /// Mutually exclusive with the picker/finder modals.
     prompt: Option<PromptState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
@@ -268,6 +270,12 @@ pub struct Controller {
     /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
     /// jump is pending; superseded (cleared) by any newer render dispatch.
     pending_goto: Option<(u64, usize)>,
+    /// The seq of the render result currently held in [`content`](Self::content), bumped by [`poll`]
+    /// each time it applies a result. Equal to `latest_seq` exactly when the latest dispatched render
+    /// has landed; lagging while one is in flight. Lets a synchronous go-to-line jump tell "content is
+    /// current" from "a render is still coming" — so `:N` only jumps in-place when the source-mapped
+    /// content is actually applied, and otherwise queues against the in-flight render (AC-3/AC-7).
+    applied_seq: u64,
 }
 
 impl Controller {
@@ -342,6 +350,7 @@ impl Controller {
             finder: None,
             prompt: None,
             pending_goto: None,
+            applied_seq: 0,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -484,6 +493,10 @@ impl Controller {
         // exclusive and re_root only fires via picker-confirm), but kept structural so a future
         // re-root trigger can't strand a finder. (review-gate R1: G2)
         self.finder = None;
+        // Close the go-to-line prompt too (symmetric teardown). Unreachable today — the prompt is
+        // modal and re_root only fires via picker-confirm — but kept structural so a future re-root
+        // trigger can't strand an open prompt over a freshly re-rooted tree.
+        self.prompt = None;
         self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
@@ -934,6 +947,13 @@ impl Controller {
         // Modal: while the picker is open the mouse is fully inert — the picker is
         // keyboard-only. This mirrors the keyboard modal gate in `handle`. (review-gate R1, E)
         if self.picker.is_some() {
+            return Effects::noop();
+        }
+        // The go-to-line prompt is keyboard-only too: the run loop routes only KEY events to
+        // `handle_prompt_key`, so without this guard a click/wheel would still reach the tree/content
+        // beneath and change the selection mid-prompt — then a confirm would jump (or auto-switch) the
+        // WRONG file, or strand a bogus override on a directory. Make the mouse inert, like the picker.
+        if self.prompt.is_some() {
             return Effects::noop();
         }
         // The finder is also a modal overlay, but it IS mouse-interactive: wheel scrolls the
@@ -1396,17 +1416,23 @@ impl Controller {
             .saturating_sub(self.content_height)
     }
 
-    /// Scroll the content pane so 1-based source line `line_1based` is visible, landing the
-    /// line near the top of the viewport. The line is clamped to `[1, rendered_line_count()]`
-    /// (below 1 → line 1; above the last → the last line), then the offset is clamped to
-    /// `[0, max_content_scroll()]` so a near-the-end line shows the last screenful (the target
-    /// is still within view). In a source-mapped (SyntaxContent) view a source line maps 1:1 to
-    /// a display row, so `content_scroll` (display rows) indexes source lines directly. (AC-3, AC-4)
+    /// Scroll the content pane so 1-based source line `line_1based` is visible, landing the line near
+    /// the top of the viewport. The source line is clamped to `[1, source_line_count]` (below 1 →
+    /// line 1; above the last → the last line), mapped to its display-row offset, then that offset is
+    /// clamped to `[0, max_content_scroll()]` so a near-the-end line shows the last screenful (the
+    /// target stays within view). Without wrap a source line maps 1:1 to a display row, so the offset
+    /// is `line-1`; with wrap on (the `w` override wraps every mode) earlier long lines occupy several
+    /// rows, so the offset is the cumulative wrapped-row count of the lines BEFORE the target — the
+    /// same mapping the wrapped-row total uses, so `:N` lands on source line N either way. (AC-3, AC-4)
     pub fn scroll_to_line(&mut self, line_1based: usize) {
-        let last = self.rendered_line_count() as usize;
-        let line = line_1based.max(1).min(last.max(1));
-        let target = (line - 1) as u16;
-        self.content_scroll = target.min(self.max_content_scroll());
+        let source_lines = self.content.lines.len();
+        let line = line_1based.max(1).min(source_lines.max(1));
+        let offset = if self.effective_wrap() {
+            self.wrapped_rows_before(line - 1)
+        } else {
+            line - 1
+        };
+        self.content_scroll = (offset.min(u16::MAX as usize) as u16).min(self.max_content_scroll());
     }
 
     /// How many rows the content occupies once laid out, so the vertical scroll clamps to the
@@ -1427,19 +1453,29 @@ impl Controller {
     /// vertical scrollbar must size/position against — raw `lines.len()` undercounts under wrap.
     fn rendered_line_count_for(&self, wrap: bool) -> u16 {
         let count = if wrap {
-            let w = self.content_width.max(1) as usize;
-            self.content
-                .lines
-                .iter()
-                .map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
-                })
-                .sum::<usize>()
+            self.wrapped_rows_before(self.content.lines.len())
         } else {
             self.content.lines.len()
         };
         count.min(u16::MAX as usize) as u16
+    }
+
+    /// Cumulative display rows the first `n` content (source) lines occupy at the current content
+    /// width when wrapping is on (each line is ≥ 1 row). Shared by [`rendered_line_count_for`] (with
+    /// `n` = the whole line count → the wrapped-row total) and [`scroll_to_line`] (with `n` = line-1 →
+    /// the display-row offset of a source line), so the scroll clamp and the go-to-line target are
+    /// computed by the SAME wrapping logic and therefore always agree (AC-3/AC-4).
+    fn wrapped_rows_before(&self, n: usize) -> usize {
+        let w = self.content_width.max(1) as usize;
+        self.content
+            .lines
+            .iter()
+            .take(n)
+            .map(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
+            })
+            .sum::<usize>()
     }
 
     /// Scroll the content pane horizontally by `delta` columns, clamped to `[0, max]`.
@@ -1897,21 +1933,35 @@ impl Controller {
                     .map(|p| p.input.query().to_string())
                     .unwrap_or_default();
                 self.prompt = None; // confirm always closes (AC-5 empty also closes)
+                // A new confirm supersedes any auto-switch jump still queued from an earlier confirm,
+                // so the older line can't overwrite this one when its render lands.
+                self.pending_goto = None;
                 if !q.is_empty() {
                     // The buffer holds only ASCII digits (non-digits are rejected above), so a
                     // parse failure can only be an overflow → treat as "beyond the last line";
                     // scroll_to_line clamps usize::MAX to the last line (AC-4).
                     let n = q.parse::<usize>().unwrap_or(usize::MAX);
-                    if self.selected_view_mode() == Some(ViewMode::SyntaxContent) {
-                        // Already source-mapped: the content is current, jump synchronously (AC-3).
+                    let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
+                    if source_mapped && self.applied_seq == self.latest_seq {
+                        // Source-mapped AND the displayed content is the latest render → the line→row
+                        // mapping is valid now, so jump synchronously (AC-3).
                         self.scroll_to_line(n);
-                    } else if let Some(path) = self.tree.selected().map(|n| n.path.clone()) {
-                        // Transformed view (markdown / diff): a source line has no display row here,
-                        // so switch this file to the source-mapped content view and jump once the
-                        // re-render lands (AC-7). The new content renders off-thread, so the jump is
-                        // queued against the dispatched render's seq and applied by `poll`.
-                        self.overrides.insert(path, ViewMode::SyntaxContent);
-                        self.dispatch_render();
+                    } else if let Some(path) = self
+                        .tree
+                        .selected()
+                        .filter(|node| node.kind == NodeKind::File)
+                        .map(|node| node.path.clone())
+                    {
+                        // Either a transformed view (a source line has no display row here) or a
+                        // source render still in flight (the override reports SyntaxContent before its
+                        // render lands — jumping now would clamp against stale content). Queue the jump
+                        // for the render that carries the source-mapped content, and only (re)dispatch
+                        // when we must actually switch the view mode (AC-7); `poll` applies the queued
+                        // jump once the matching render lands.
+                        if !source_mapped {
+                            self.overrides.insert(path, ViewMode::SyntaxContent);
+                            self.dispatch_render();
+                        }
                         self.pending_goto = Some((self.latest_seq, n));
                     }
                 }
@@ -2185,6 +2235,7 @@ impl Controller {
             if seq == self.latest_seq {
                 self.content = result.content;
                 self.content_notices = result.notices;
+                self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
                 applied = true;
                 // A queued go-to-line jump (auto-switch from a transformed view, AC-7) applies once
                 // ITS render lands: now that the source-mapped content is in, scroll to the line.

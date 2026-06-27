@@ -285,8 +285,8 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
 
 /// T-5 — go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
 /// typing a line number and Enter scrolls the content to that line (AC-3 jump + AC-21 routing);
-/// pressing `:` on a RenderedMarkdown file shows the "unavailable" notice without opening a prompt
-/// (AC-7).
+/// pressing `:` on a RenderedMarkdown file ALSO opens the prompt (AC-7 revised — it opens in every
+/// view; the switch-then-jump on confirm is proven by the controller unit test).
 ///
 /// Routing proof (AC-21): after opening the prompt with `:`, we send `j` (NavDown in the normal
 /// viewer key-map) and then `40`. If routing were broken, `j` would move the tree cursor onto
@@ -301,7 +301,7 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
 /// scroll → ratatui writes the row in one contiguous run and `expect("DEEPMARKER")` is reliable.
 /// `DEEPMARKER` is on line 40, below the initial viewport, so it only appears after the jump.
 #[test]
-fn go_to_line_jumps_to_a_source_line_and_is_unavailable_in_markdown() {
+fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
     let dir = TempDir::new();
     let p = dir.path();
     init_repo_with_commit(p);
@@ -321,12 +321,12 @@ fn go_to_line_jumps_to_a_source_line_and_is_unavailable_in_markdown() {
     }
     std::fs::write(p.join("long.txt"), lines.join("\n") + "\n").unwrap();
 
-    // notes.md: RenderedMarkdown view-mode → `:` is unavailable.
+    // notes.md: RenderedMarkdown view-mode → `:` opens the prompt too (AC-7 revised).
     std::fs::write(p.join("notes.md"), "# MDHEADERMARK\nSome note text.\n").unwrap();
 
-    // Commit both so view-policy picks the right modes: long.txt → SyntaxContent (`:` works);
-    // notes.md → RenderedMarkdown (`:` unavailable). `long.txt` sorts before `notes.md`, so the
-    // cursor starts on long.txt at launch.
+    // Commit both so view-policy picks the right modes: long.txt → SyntaxContent (`:` jumps in-place);
+    // notes.md → RenderedMarkdown (`:` opens, confirm auto-switches). `long.txt` sorts before
+    // `notes.md`, so the cursor starts on long.txt at launch.
     git(p, &["add", "long.txt", "notes.md"]);
     git(p, &["commit", "-q", "-m", "go-to-line test files"]);
 

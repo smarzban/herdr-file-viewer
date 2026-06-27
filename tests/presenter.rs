@@ -2349,7 +2349,7 @@ fn finder_geometry_exposes_the_scrollbar_track_only_when_rows_overflow() {
     );
 }
 
-// ── T-4: bottom prompt line (AC-1) + unavailable-notice path (AC-7) ──────────
+// ── T-4: bottom prompt line (AC-1) + no-file-notice path (AC-7) ──────────────
 
 #[test]
 fn an_open_go_to_line_prompt_renders_a_bottom_line() {
@@ -2391,15 +2391,16 @@ fn no_prompt_open_leaves_layout_unchanged() {
 }
 
 #[test]
-fn unavailable_notice_renders_for_ac7() {
-    // AC-7: when go-to-line is invoked on a non-text view (e.g. diff or binary), the controller
-    // emits an action notice. This test verifies the Presenter surfaces that notice in the content
-    // area — the existing notices channel renders it without any new code paths.
+fn go_to_line_no_file_notice_renders_for_ac7() {
+    // AC-7 (revised): the ONLY go-to-line notice is the no-file case — `:` with a directory / nothing
+    // selected emits "Go to line: select a file first" and opens no prompt. (A transformed view no
+    // longer shows an "unavailable" notice — confirming there auto-switches and jumps.) This verifies
+    // the Presenter surfaces that notice via the existing notices channel, with no new code path.
     let mut st = sample_state();
-    st.notices = vec!["Go to line is unavailable in this view".into()];
+    st.notices = vec!["Go to line: select a file first".into()];
     let out = render(&st, 100, 24);
     assert!(
-        out.contains("Go to line is unavailable in this view"),
-        "unavailable notice (AC-7) must appear in the rendered frame\n{out}"
+        out.contains("Go to line: select a file first"),
+        "the no-file go-to-line notice (AC-7) must appear in the rendered frame\n{out}"
     );
 }
