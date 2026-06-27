@@ -237,7 +237,8 @@ pub struct Controller {
     /// (AC-13); the switch itself is wired in later tasks.
     picker: Option<PickerState>,
     /// The open go-to-file finder's state, or `None` when closed (AC-1). Opened by the `f` key
-    /// (OpenFinder intent); confirm/cancel wired in T-7.
+    /// (OpenFinder intent); closed by confirm/cancel (T-7) and by [`re_root`](Self::re_root) (a
+    /// re-root invalidates the old-root candidate list).
     finder: Option<FinderState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
@@ -445,6 +446,13 @@ impl Controller {
         self.action_notice = None;
         self.changed = BTreeMap::new();
         self.picker = None;
+        // Close the finder too (symmetric teardown). A re-root invalidates its candidate list,
+        // which is rooted at the OLD root — a stale `confirm_finder` would then `root.join(old_rel)`
+        // against the NEW root and reveal nothing. Unreachable today (finder/picker are mutually
+        // exclusive and re_root only fires via picker-confirm), but kept structural so a future
+        // re-root trigger can't strand a finder. (review-gate R1: G2)
+        self.finder = None;
+        self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
         // changed_only, split_pct, wrap_override, baseline keep their current values. The fresh
@@ -740,6 +748,13 @@ impl Controller {
         // every other intent is inert (a modal selection). (AC-5)
         if self.picker.is_some() {
             return self.handle_picker_intent(intent);
+        }
+        // The finder is modal too: while it is open the run loop (app.rs) routes raw keys to
+        // `handle_finder_key`, so `handle` should not be reached. Guard structurally anyway —
+        // symmetric with the picker guard above — so a future or test caller can't leak an intent
+        // to the tree or open a second modal beneath the finder overlay. (review-gate R1: O2)
+        if self.finder.is_some() {
+            return Effects::noop();
         }
         match intent {
             Intent::NavUp => self.navigate(-1),
@@ -1707,7 +1722,7 @@ impl Controller {
         let Some(finder) = self.finder.as_mut() else {
             return Effects::noop();
         };
-        match key.code {
+        let effects = match key.code {
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 finder.push(c);
                 Effects::redraw()
@@ -1735,15 +1750,24 @@ impl Controller {
                 finder.scroll_right();
                 Effects::redraw()
             }
-            KeyCode::Enter => self.confirm_finder(),
+            // Enter/Esc dismiss or confirm; both already reset `last_click` (confirm_finder, and
+            // the Esc arm) and return early, so they never reach the reset below.
+            KeyCode::Enter => return self.confirm_finder(),
             KeyCode::Esc => {
                 self.finder = None;
                 self.last_click = None; // closing the finder resets double-click state so a
                 // finder click cannot pair with the next tree click
-                Effects::redraw()
+                return Effects::redraw();
             }
             _ => Effects::noop(),
-        }
+        };
+        // review-gate R1 (O1): a query edit, selection move, or scroll resets a PENDING mouse
+        // double-click. Without this, a finder click → keystroke/nav → click on the SAME screen
+        // row within the double-click window would be misread as a double-click (confirm), opening
+        // a file the user only single-clicked — often a different one, since typing changed the
+        // match list. Mirrors the open/Esc/confirm `last_click` clears for the keystroke/nav vector.
+        self.last_click = None;
+        effects
     }
 
     /// Confirm the current finder selection: take the selected candidate's root-relative path,

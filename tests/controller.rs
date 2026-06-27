@@ -2755,6 +2755,12 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
             ctrl.picker().is_none(),
             "AC-N5: intent {intent:?} must not open the picker (and leave it auto-confirmed)"
         );
+        // OpenFinder (in Intent::ALL) opens the finder; close it so each intent is exercised from a
+        // clean no-modal state — and so it is not left open for Part 2, where the finder's modal
+        // guard would otherwise make SwitchWorktree inert. (review-gate R1: O2)
+        if ctrl.finder_open() {
+            ctrl.handle_finder_key(key(KeyCode::Esc));
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -3315,6 +3321,13 @@ fn enter_with_match_resyncs_changed_only_mirror_after_reveal() {
     // to false. The controller's mirror must be re-synced — otherwise the next `c` toggle
     // would read the stale mirror and re-apply the wrong filter.
     let (_dir, mut ctrl) = finder_dir_git();
+    // finder_dir_git() opens the finder; close it so the changed-only toggle below isn't swallowed
+    // by the finder's modal guard (handle() is inert while the finder is open). (review-gate R1: O2)
+    ctrl.handle_finder_key(key(KeyCode::Esc));
+    assert!(
+        !ctrl.finder_open(),
+        "finder closed before toggling the filter"
+    );
 
     // Turn on changed-only filter (only beta.rs is in the changed-set).
     ctrl.handle(Intent::ToggleChangedOnly);
@@ -3700,6 +3713,89 @@ fn last_click_not_shared_between_finder_and_tree_scenario_b() {
     assert!(
         ctrl.finder_open(),
         "finder must stay open after single click (no spurious confirm from cross-contamination)"
+    );
+}
+
+#[test]
+fn last_click_cleared_by_a_finder_keystroke_scenario_c() {
+    // review-gate R1 (O1): a finder click → KEYSTROKE → click on the SAME screen row within the
+    // double-click window must NOT be misread as a double-click (confirm). Without the fix, the
+    // keystroke arms of handle_finder_key leave `last_click` populated, so the second click pairs
+    // with the first as a double-click and opens a file the user only single-clicked — often a
+    // DIFFERENT file, since typing changed the match list. (scenario_a/b cover the open/Esc vector;
+    // this covers the keystroke/nav vector.)
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+
+    // Query "a" matches all three files; ranked by path length the row-0 match is "beta.rs".
+    ctrl.handle_finder_key(key(KeyCode::Char('a')));
+    assert!(
+        ctrl.finder_matches().len() >= 2,
+        "precondition: 'a' matches multiple files"
+    );
+
+    // Step 1: click finder row 0 (screen row 12) → selects it, finder stays open, last_click set.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(
+        ctrl.finder_open(),
+        "finder open after the first single click"
+    );
+
+    // Step 2: a keystroke that narrows the match list ("al" → only "alpha.txt"), so row 0 now maps
+    // to a DIFFERENT file than the first click selected. The fix clears last_click here.
+    ctrl.handle_finder_key(key(KeyCode::Char('l')));
+    assert!(ctrl.finder_open(), "finder still open after the keystroke");
+    assert!(
+        !ctrl.finder_matches().is_empty(),
+        "precondition: 'al' still matches a file at row 0"
+    );
+
+    // Step 3: click the SAME screen row again within the double-click window.
+    // Without the fix is_double_click fires → confirm_finder() closes the finder (opening alpha.txt
+    // even though the user only single-clicked beta.rs then alpha.txt). With the fix the keystroke
+    // cleared last_click, so this is a single click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 12));
+    assert!(
+        ctrl.finder_open(),
+        "a keystroke between two same-row clicks clears the pending double-click: no spurious confirm"
+    );
+}
+
+#[test]
+fn intents_are_inert_while_the_finder_is_open() {
+    // review-gate R1 (O2): handle() is modal for the finder too. While the finder is open every
+    // intent is a no-op — the run loop routes keys to handle_finder_key, and this structural guard
+    // (symmetric with the picker guard) stops a future/test caller from leaking an intent to the
+    // tree beneath the overlay or opening a SECOND modal over it.
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // query "a", matches present
+    assert_eq!(ctrl.finder_query(), "a", "precondition: query is 'a'");
+
+    for intent in [
+        Intent::NavDown,
+        Intent::Activate,
+        Intent::ToggleHidden,
+        Intent::SwitchWorktree, // must NOT open a second modal
+        Intent::OpenFinder,     // must NOT rebuild/reset the finder
+    ] {
+        let fx = ctrl.handle(intent);
+        assert!(
+            !fx.redraw && !fx.quit,
+            "intent {intent:?} is inert (noop) while the finder is open"
+        );
+        assert!(
+            ctrl.finder_open(),
+            "the finder stays open through intent {intent:?}"
+        );
+        assert!(
+            ctrl.picker().is_none(),
+            "no second modal (picker) opened by intent {intent:?}"
+        );
+    }
+    assert_eq!(
+        ctrl.finder_query(),
+        "a",
+        "the query is untouched — OpenFinder did not reset the finder, no intent leaked"
     );
 }
 
@@ -4162,6 +4258,85 @@ fn ac_n4_fresh_controller_rebuilds_candidates_from_disk_with_no_persistent_state
     assert_eq!(
         got, expected_candidates,
         "AC-N4: a fresh Controller must rebuild candidates from disk (no persisted state)"
+    );
+}
+
+#[test]
+fn ac_18_same_controller_reopen_sees_created_and_dropped_files() {
+    // AC-18: the candidate index is rebuilt each time the finder OPENS. Existing coverage
+    // (index::build sees a new file; a fresh Controller rebuilds) left the same-controller
+    // close→mutate→reopen flow and the REMOVED-file half untested. This drives that vector:
+    // open → Esc → create one file + remove another on disk → reopen → the new file is present
+    // and the removed file is absent. (review-gate R1: LS4)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::OpenFinder);
+    assert!(
+        ctrl.finder_candidates().iter().any(|c| c == "alpha.txt"),
+        "first session: alpha.txt is a candidate"
+    );
+    ctrl.handle_finder_key(key(KeyCode::Esc));
+    assert!(
+        !ctrl.finder_open(),
+        "finder closed before the filesystem mutation"
+    );
+
+    // Mutate the filesystem between sessions: add one file, remove another.
+    std::fs::write(dir.path().join("delta.md"), "d").unwrap();
+    std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+
+    // Reopen the SAME controller → the index is rebuilt from disk (AC-18).
+    ctrl.handle(Intent::OpenFinder);
+    let candidates = ctrl.finder_candidates().to_vec();
+    assert!(
+        candidates.iter().any(|c| c == "delta.md"),
+        "reopen sees the file created since the previous session"
+    );
+    assert!(
+        !candidates.iter().any(|c| c == "alpha.txt"),
+        "reopen no longer lists the file removed since the previous session"
+    );
+}
+
+#[test]
+fn ac_n3_finder_ignores_file_contents_matches_path_only() {
+    // AC-N3: the finder matches by PATH/NAME only, never file CONTENTS. A token that appears
+    // inside a file's bytes but is not a subsequence of any path must yield zero matches. The
+    // fuzzy-level test only covered a token in neither path nor content; this drives the full
+    // index→matcher pipeline to prove content is never read. (review-gate R1: LS5)
+    let dir = TempDir::new();
+    // The token "zqxhiddentoken" lives ONLY inside the file's CONTENTS — its leading 'z' is in no path.
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "zqxhiddentoken appears only in here",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("readme.md"), "nothing special").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::OpenFinder);
+    for c in "zqxhiddentoken".chars() {
+        ctrl.handle_finder_key(key(KeyCode::Char(c)));
+    }
+    assert!(
+        ctrl.finder_matches().is_empty(),
+        "a token found only inside file contents must yield NO finder matches (AC-N3)"
+    );
+
+    // Sanity: a token that IS in a path matches — proving the empty result above was
+    // content-blindness, not a dead finder.
+    for _ in 0.."zqxhiddentoken".len() {
+        ctrl.handle_finder_key(key(KeyCode::Backspace));
+    }
+    for c in "notes".chars() {
+        ctrl.handle_finder_key(key(KeyCode::Char(c)));
+    }
+    assert!(
+        !ctrl.finder_matches().is_empty(),
+        "sanity: a path token ('notes') matches, so the empty result above was content-blindness"
     );
 }
 
