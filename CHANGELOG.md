@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Go to file (`f`).** Open a fuzzy finder over every file in the tree and jump straight to one by
+  name — type to filter, `↑` / `↓` to move, `Enter` to open, `Esc` to cancel; `←` / `→` (or the
+  horizontal wheel) scroll long result rows, and the result list has a draggable scrollbar.
+  Read-only navigation; it never modifies a file. ([#51](https://github.com/smarzban/herdr-file-viewer/pull/51))
+- **The tree names its root and branch.** The tree column's top border shows the root directory's
+  name and its bottom border the current git branch (omitted outside a git repo / on a detached
+  HEAD), with long names middle-ellipsized to fit — so you can always see *which* directory and
+  branch you're viewing. ([#52](https://github.com/smarzban/herdr-file-viewer/pull/52))
+
 ### Changed
 - **Installing now reuses the latest released binary even when `main` is ahead of the tag.** The
   install step (`scripts/fetch-or-build.sh`) matches the prebuilt by **version** rather than by exact
@@ -13,6 +23,11 @@ All notable changes to this project are documented here. The format is based on
   the last released, SHA-256-verified binary instead. A version with no published release still falls
   back to building from source, and when the checkout is ahead of the release it's installing, the
   install prints a note saying the binary doesn't yet include the unreleased source.
+
+### Fixed
+- **The worktree picker's `←` now responds immediately after over-scrolling right.** The picker's
+  horizontal scroll offset is clamped to the measured maximum each frame (mirroring the file
+  finder), so it can't park past the widest row and swallow the first few `←` presses. ([#52](https://github.com/smarzban/herdr-file-viewer/pull/52))
 
 ## [1.5.0] - 2026-06-25
 

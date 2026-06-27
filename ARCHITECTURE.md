@@ -33,6 +33,10 @@ is unit-testable with stubs.
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
 | `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; scroll the tree to keep the selection in view (and horizontally for long rows) and draw scrollbars where a pane overflows; report the content viewport + tree scroll offset + widest tree row + pane geometry back, so the controller can hit-test a tree click and map a scrollbar drag. |
 | `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
+| `finder` | The modal go-to-file finder overlay state (query, ranked matches, cursor, scroll) drawn over the layout; captures its own keys while open and navigates the tree selection on confirm. |
+| `fuzzy` | A pure fuzzy matcher: rank file paths against a typed query (the finder's scoring), no I/O. |
+| `index` | Build the flat, `.gitignore`-aware list of repo file paths the finder searches. |
+| `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |

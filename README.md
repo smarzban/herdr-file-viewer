@@ -43,7 +43,12 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 - **Tree, scoped to your work** — rooted at the worktree root inside a git repo, else the
   launch directory. Honors `.gitignore` (toggle to reveal ignored files), and a separate toggle
-  (`.`) hides dot-prefixed "hidden" files when a directory is full of them.
+  (`.`) hides dot-prefixed "hidden" files when a directory is full of them. The tree's top border
+  names the root directory and its bottom border shows the current branch, so you always know
+  *where* and *on what branch* you're looking.
+- **Jump to any file** — press `f` to open a fuzzy finder over every file in the tree
+  (`.gitignore`-aware); type to filter, `↑` / `↓` to move, and `Enter` to open — far faster than
+  scrolling the tree in a large repo.
 - **Switch worktree on the fly** — press `W` to re-root the viewer at another git worktree of
   the repo without relaunching; it pre-selects the worktree a herdr agent is working in, so you
   can jump straight to it. Read-only — it changes only *what you're viewing*, never the branch
@@ -108,6 +113,7 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` |
+| `f` | **Go to file** — open a fuzzy finder over every file in the tree; type to filter, `↑` / `↓` move, `Enter` opens the selected file, `Esc` cancels (`←` / `→` scroll long paths) |
 | `y` | Copy the selected file's **repo-relative** path to the clipboard (e.g. `src/app.rs`) |
 | `Y` | Copy the selected file's **absolute** path to the clipboard |
 | `Tab` | Move focus between the tree and content columns |
@@ -220,7 +226,7 @@ A few things on the way:
 
 - **In-app help overlay** — a `?` key to show every keybinding (and setup tips) without leaving the viewer.
 - **Settings & customization** — a config file for keymaps, the default split, themes, and your own renderer/editor commands.
-- **Go to file** — fuzzy-find a file by name and jump straight to it.
+- **In-file navigation** — `/` to search within the open file and `:` to jump to a line.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) — bug reports and feature requests are very welcome.
 
