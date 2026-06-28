@@ -60,6 +60,9 @@ right into the tree. It opens beside whatever you're doing and never touches you
   the repo without relaunching; it pre-selects the worktree a herdr agent is working in, so you
   can jump straight to it. Read-only — it changes only *what you're viewing*, never the branch
   or any files.
+- **In-app help** — press `?` to open a view-only help overlay showing What's New (the latest
+  changelog entries, rendered as markdown) and About (version, repo, license, and update status).
+  Keyboard and mouse; `Esc` or `q` closes it.
 - **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), **colored** so changes read at
   a glance (changed files and folders containing changes are red, new files green); a
   changed-files-only filter; and a baseline you can switch between the merge-base of your
@@ -132,6 +135,7 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `z` | Zoom — hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state — pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `W` (Shift+`w`) | **Switch worktree** — open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels |
+| `?` (Shift+`/`) | Open the **help overlay** — What's New (latest changelog, rendered markdown) + About (version, repo, license, update status); `Esc` / `q` closes it |
 | `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
 
@@ -147,7 +151,7 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`).
+never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`, `?`).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path — handy for pasting into a prompt, a command, or an agent. The copy uses the
@@ -234,7 +238,6 @@ startup files), the viewer won't see it. To fix it:
 
 A few things on the way:
 
-- **In-app help overlay** — a `?` key to show every keybinding (and setup tips) without leaving the viewer.
 - **Settings & customization** — a config file for keymaps, the default split, themes, and your own renderer/editor commands.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) — bug reports and feature requests are very welcome.

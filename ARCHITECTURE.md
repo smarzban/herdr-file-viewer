@@ -40,6 +40,7 @@ is unit-testable with stubs.
 | `highlight` | Overlay match highlighting onto the content pane: re-segment each line's spans at the match byte boundaries and patch a highlight style over the matched runs, with a distinct style on the current match. Pure; composes over the delegated render rather than re-rendering. |
 | `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
 | `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line or in-file search), its `prompt` input buffer, the live `SearchState` (query, matches, current match), and the content-scroll snapshot for cancel-restore. |
+| `help` | Help overlay state: the embedded changelog source and About text, plus the section and vertical scroll position for the `?` overlay. Pure; no I/O — the changelog is compiled in at build time. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |

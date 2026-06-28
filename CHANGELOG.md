@@ -24,6 +24,11 @@ All notable changes to this project are documented here. The format is based on
   name — type to filter, `↑` / `↓` to move, `Enter` to open, `Esc` to cancel; `←` / `→` (or the
   horizontal wheel) scroll long result rows, and the result list has a draggable scrollbar.
   Read-only navigation; it never modifies a file. ([#51](https://github.com/smarzban/herdr-file-viewer/pull/51))
+- **Help overlay (`?`).** Press `?` (Shift+`/`) to open a view-only overlay with two sections:
+  **What's New** — the changelog rendered as markdown so you can read release notes without leaving
+  the viewer — and **About** — version, repository URL, license, and update status. Navigate with
+  `↑` / `↓` (or the mouse wheel); `Esc` or `q` closes the overlay and returns to where you were.
+  Read-only; no files are modified.
 - **The tree names its root and branch.** The tree column's top border shows the root directory's
   name and its bottom border the current git branch (omitted outside a git repo / on a detached
   HEAD), with long names middle-ellipsized to fit — so you can always see *which* directory and
