@@ -2960,7 +2960,7 @@ pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{DOUBLE_CLICK, is_double_click, wrapped_rows};
+    use super::{DOUBLE_CLICK, HELP_RENDER_TIMEOUT, is_double_click, wrapped_rows};
     use std::time::Instant;
 
     #[test]
@@ -2995,5 +2995,18 @@ mod tests {
         assert_eq!(wrapped_rows("hello", 80), 1);
         assert_eq!(wrapped_rows("", 80), 1);
         assert_eq!(wrapped_rows("anything", 0), 1);
+    }
+
+    #[test]
+    fn help_render_timeout_within_ac22_budget() {
+        // FIX-B / AC-22: open_help renders What's New synchronously on the input thread, so the
+        // worst-case input-thread block is HELP_RENDER_TIMEOUT — a slow/wedged renderer is killed
+        // at it and the plain-text fallback applies. This pins that bound deterministically within
+        // the 300 ms responsiveness budget: bumping the timeout past it fails HERE, covering the
+        // slow real-renderer path that a wall-clock timing assertion could only check flakily.
+        assert!(
+            HELP_RENDER_TIMEOUT <= std::time::Duration::from_millis(300),
+            "HELP_RENDER_TIMEOUT ({HELP_RENDER_TIMEOUT:?}) must stay within the 300ms AC-22 budget"
+        );
     }
 }
