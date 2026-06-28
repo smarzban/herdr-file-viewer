@@ -112,17 +112,21 @@ impl HelpState {
         }
     }
 
-    /// Pin the active section's scroll to `[0, body_lines − viewport_height]`.
+    /// Pin the active section's scroll to `[0, total_rows − viewport_height]`.
     ///
-    /// Called each frame after the presenter has measured the visible viewport height so that
-    /// over-shoots from `scroll_by` are resolved against the real content size (AC-9).
-    pub fn clamp_scroll(&mut self, viewport_height: u16) {
+    /// Called each frame after the presenter has measured the visible viewport height *and* the
+    /// body's total row count, so over-shoots from `scroll_by` are resolved against the real
+    /// content size (AC-9). The caller decides what `total_rows` means: the body is drawn with
+    /// `Paragraph::wrap`, so the scroll offset is in **wrapped (rendered) rows**, not raw lines —
+    /// the Presenter therefore passes the body's WRAPPED row count at the draw width (mirroring how
+    /// the content pane clamps against `rendered_line_count_for`). Tests over non-wrapping bodies
+    /// pass the raw `body.lines.len()`, which is correct because wrapped == raw there.
+    pub fn clamp_scroll(&mut self, total_rows: u16, viewport_height: u16) {
         if self.sections.is_empty() {
             return;
         }
         let s = &mut self.sections[self.active];
-        let line_count = s.body.lines.len() as u16;
-        let max_scroll = line_count.saturating_sub(viewport_height);
+        let max_scroll = total_rows.saturating_sub(viewport_height);
         s.scroll = s.scroll.min(max_scroll);
     }
 }
@@ -303,10 +307,11 @@ mod tests {
     fn clamp_scroll_pins_to_max() {
         let mut state = HelpState::new(vec![make_section("A", 10)]);
         state.scroll_by(100); // over-shoot: saturates at u16::MAX in scroll_by, clamped by clamp
-        state.clamp_scroll(4); // viewport_height = 4 → max offset = 10 - 4 = 6
+        // Non-wrapping fixture → total_rows == raw lines (10). viewport_height = 4 → max = 10 - 4 = 6.
+        state.clamp_scroll(10, 4);
         assert_eq!(
             state.sections[0].scroll, 6,
-            "clamp_scroll must pin offset to lines - viewport_height"
+            "clamp_scroll must pin offset to total_rows - viewport_height"
         );
     }
 
@@ -314,7 +319,8 @@ mod tests {
     fn clamp_scroll_zero_when_body_fits() {
         let mut state = HelpState::new(vec![make_section("A", 3)]);
         state.scroll_by(10);
-        state.clamp_scroll(10); // viewport >= lines → max = 0
+        // total_rows (3) <= viewport (10) → max = 0.
+        state.clamp_scroll(3, 10);
         assert_eq!(
             state.sections[0].scroll, 0,
             "clamp_scroll must zero offset when body fits in the viewport"

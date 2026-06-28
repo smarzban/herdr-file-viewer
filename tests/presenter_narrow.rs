@@ -48,6 +48,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         branch: None,
         prompt: None,
         search: None,
+        help: None,
     }
 }
 

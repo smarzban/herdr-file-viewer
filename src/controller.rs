@@ -24,7 +24,7 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    ContentSearch, FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState,
+    ContentSearch, FinderView, Focus, HelpView, PaneGeometry, PickerRowView, PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
@@ -55,6 +55,10 @@ const WHEEL_STEP: isize = 3;
 /// Two left-clicks at the same cell within this window are a double-click (a folder toggles
 /// expand/collapse; a file opens in zoom mode — the editor hand-off is the `e` key).
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// The help overlay's self-operating key-hints footer (AC-11) — at minimum how to switch sections
+/// and how to close. Carried in `HelpView` so the Presenter stays mode-agnostic; matches the keys
+/// `handle_help_key` actually handles (Tab/←→ switch · digits/1-9 also; Esc/q/`?` close).
+const HELP_FOOTER_HINT: &str = "Tab/←→ switch · 1-9 jump · j/k scroll · Esc/q close";
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
 /// the run loop injects an implementation bound to the real repository. `Send + Sync` so the
@@ -724,12 +728,23 @@ impl Controller {
         // this an over-scroll right parks the offset past the widest row (SMA-229).
         let finder_max_hscroll = geom.finder_max_hscroll;
         let picker_max_hscroll = geom.picker_max_hscroll;
+        // The help body's measured viewport height and its WRAPPED row total — used to enforce the
+        // scroll bottom-bound that T-5 deferred (AC-9): `scroll_by` only saturates at 0, so the lower
+        // clamp is applied here against the live geometry, exactly as the finder/picker re-clamp their
+        // hscroll. The body is drawn with `Paragraph::wrap`, so its offset is in wrapped rows — clamp
+        // against the wrapped total the Presenter measured (`help_body_rows`), NOT raw `lines.len()`,
+        // or a long changelog's last entries stay unreachable (mirrors the content pane's clamp).
+        let help_body_height = geom.help_body_height;
+        let help_body_rows = geom.help_body_rows;
         self.geom = geom;
         if let Some(finder) = self.finder.as_mut() {
             finder.clamp_hscroll(finder_max_hscroll);
         }
         if let Some(picker) = self.picker.as_mut() {
             picker.clamp_hscroll(picker_max_hscroll);
+        }
+        if let Some(help) = self.help.as_mut() {
+            help.clamp_scroll(help_body_rows, help_body_height);
         }
     }
 
@@ -790,6 +805,7 @@ impl Controller {
                 matches: s.matches.clone(),
                 current: s.current,
             }),
+            help: self.help_view(),
         }
     }
 
@@ -896,6 +912,27 @@ impl Controller {
                 .collect(),
             cursor: f.cursor(),
             hscroll: f.hscroll(),
+        })
+    }
+
+    /// The owned help-overlay draw model for the Presenter (AC-5, AC-11), or `None` when the
+    /// overlay is closed. Projects [`HelpState`] → [`HelpView`]: the active index, the section
+    /// labels, the active body (cloned so the Presenter stays borrow-free) + its scroll, and the
+    /// self-operating key-hints footer string (AC-11). The footer is built here so the Presenter
+    /// stays mode-agnostic — it shows, at minimum, how to switch sections and how to close.
+    fn help_view(&self) -> Option<HelpView> {
+        let help = self.help.as_ref()?;
+        let active = help.active_index();
+        Some(HelpView {
+            active,
+            labels: help
+                .section_labels()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            body: help.active_body().clone(),
+            scroll: help.sections[active].scroll,
+            hint: HELP_FOOTER_HINT.to_string(),
         })
     }
 
@@ -2825,7 +2862,7 @@ fn is_markdown(path: &Path) -> bool {
 /// would make the bottom of wrapped prose unreachable via the scroll clamp. Char counts stand
 /// in for display width — close enough for the clamp, and the caller floors with the
 /// all-columns char-wrap so it never undershoots.
-fn wrapped_rows(text: &str, width: usize) -> usize {
+pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
     if width == 0 {
         return 1;
     }

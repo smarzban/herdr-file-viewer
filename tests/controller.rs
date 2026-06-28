@@ -1026,6 +1026,10 @@ fn wide_geometry() -> PaneGeometry {
         finder_max_hscroll: 0,
         finder_vbar: None,
         picker_max_hscroll: 0,
+        help_body: None,
+        help_body_height: 0,
+        help_body_rows: 0,
+        help_vbar: None,
     }
 }
 
@@ -7138,6 +7142,54 @@ fn help_up_from_zero_stays_at_zero() {
     ctrl.handle_help_key(key(KeyCode::Up));
     let scroll = ctrl.help_state().unwrap().sections[0].scroll;
     assert_eq!(scroll, 0, "Up from scroll=0 must stay at 0 (saturates)");
+}
+
+// T-6 follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
+// scroll offset is in WRAPPED rows. `set_pane_geometry` must clamp the stored scroll against the
+// WRAPPED total the Presenter measured (`help_body_rows`), NOT raw `body.lines.len()`. We feed a
+// geometry whose wrapped total exceeds both the viewport height AND the raw line count, then prove
+// the scroll is clamped to `help_body_rows - help_body_height` — strictly larger than the raw
+// `lines.len() - height` would allow, i.e. the last wrapped row is reachable.
+#[test]
+fn help_scroll_clamps_against_wrapped_row_total_not_raw_lines() {
+    let mut ctrl = open_help_ctrl();
+
+    // The active "What's New" body's raw line count (the changelog).
+    let raw_lines = ctrl.help_state().unwrap().active_body().lines.len() as u16;
+    assert!(
+        raw_lines > 0,
+        "precondition: the changelog body is non-empty"
+    );
+
+    // A geometry whose WRAPPED total exceeds the raw line count AND the viewport — as it would when
+    // the prose wraps. Pick the height first, then a wrapped total clearly above raw_lines.
+    let height = 18u16;
+    let wrapped_rows = raw_lines + 25; // > raw_lines and > height
+    let geom = PaneGeometry {
+        help_body_height: height,
+        help_body_rows: wrapped_rows,
+        ..wide_geometry()
+    };
+
+    // Over-scroll far past any bound (scroll_by only saturates at 0; the bottom bound is the clamp).
+    for _ in 0..200 {
+        ctrl.handle_help_key(key(KeyCode::Char('j')));
+    }
+
+    ctrl.set_pane_geometry(geom);
+
+    let scroll = ctrl.help_state().unwrap().sections[0].scroll;
+    let wrapped_max = wrapped_rows - height;
+    let raw_max = raw_lines.saturating_sub(height);
+    assert_eq!(
+        scroll, wrapped_max,
+        "scroll must clamp to the WRAPPED max (help_body_rows - height = {wrapped_max})"
+    );
+    assert!(
+        scroll > raw_max,
+        "the wrapped clamp ({scroll}) must exceed the raw-lines clamp ({raw_max}) — the last \
+         wrapped row is reachable, which a raw-line clamp would forbid"
+    );
 }
 
 // AC-2 / AC-3: '?', Esc, and 'q' each close the overlay.

@@ -3,7 +3,7 @@
 
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
-    ContentSearch, FinderView, Focus, PickerRowView, PickerView, ViewState, draw,
+    ContentSearch, FinderView, Focus, HelpView, PickerRowView, PickerView, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -83,6 +83,7 @@ fn sample_state() -> ViewState {
         branch: None,
         prompt: None,
         search: None,
+        help: None,
     }
 }
 
@@ -2568,5 +2569,151 @@ fn search_highlight_snapshot() {
     insta::assert_snapshot!(
         "presenter_search_highlight",
         render(&search_state(), 100, 24)
+    );
+}
+
+// ── Help overlay tests (T-6, AC-5, AC-11) ────────────────────────────────────
+
+/// A `ViewState` with the help overlay open. Two sections, active = the SECOND (About) so the
+/// snapshot proves the active indicator picks the active tab — not just the first. The body is a
+/// few lines of plain text; the hint string is what the controller carries (AC-11).
+fn help_state() -> ViewState {
+    let mut state = sample_state();
+    state.help = Some(HelpView {
+        active: 1, // About is active (the second tab) — proves the active indicator
+        labels: vec!["What's New".to_string(), "About".to_string()],
+        body: to_text(
+            "herdr-file-viewer v1.5.0\n\
+             A git-aware, read-only file viewer\n\
+             Repository: https://github.com/smarzban/herdr-file-viewer\n\
+             License: MIT\n\
+             Up to date",
+        ),
+        scroll: 0,
+        hint: "Tab/←→ switch · Esc/q close".to_string(),
+    });
+    state
+}
+
+#[test]
+fn help_overlay_indicates_active_section_and_shows_footer_hints() {
+    // AC-5: the section tabs are shown with the ACTIVE one (About) visibly indicated.
+    // AC-11: the footer shows how to switch sections and how to close.
+    let out = render(&help_state(), 100, 24);
+    assert!(out.contains("What's New"), "What's New tab is shown\n{out}");
+    assert!(out.contains("About"), "About tab is shown\n{out}");
+    // The footer hints (switch + close) appear (AC-11).
+    assert!(
+        out.contains("switch") && out.contains("close"),
+        "footer shows how to switch sections and close\n{out}"
+    );
+    // The active body (About) is shown.
+    assert!(
+        out.contains("herdr-file-viewer"),
+        "the active section's body is drawn\n{out}"
+    );
+    // The two-column layout is still underneath (AC-1 — partial overlay).
+    assert!(
+        out.contains("┌r"),
+        "the tree column is drawn under the overlay\n{out}"
+    );
+}
+
+#[test]
+fn help_overlay_active_tab_is_reversed() {
+    // AC-5: the active tab ("About") is rendered with a visible indicator (REVERSED), distinct
+    // from the inactive tab ("What's New").
+    use ratatui::style::Modifier;
+
+    let st = help_state();
+    let buf = render_buffer(&st, 100, 24);
+    let (w, h) = (buf.area().width, buf.area().height);
+
+    // Locate "About" in the buffer and confirm its first cell is REVERSED (the active indicator).
+    let needle = "About";
+    let mut found: Option<(u16, u16)> = None;
+    'outer: for y in 0..h {
+        for x in 0..w {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|c| c.symbol() == ch.to_string())
+            });
+            if matches {
+                found = Some((x, y));
+                break 'outer;
+            }
+        }
+    }
+    let (ax, ay) = found.expect("the active tab label 'About' is in the buffer");
+    assert!(
+        buf.cell((ax, ay))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the active tab (About) is REVERSED-highlighted (AC-5)"
+    );
+}
+
+#[test]
+fn help_overlay_snapshot() {
+    insta::assert_snapshot!("presenter_help", render(&help_state(), 100, 24));
+}
+
+// T-6 follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
+// scroll extent must be measured in WRAPPED rows, not raw `lines.len()`. A body with only a few
+// raw lines that each wrap many times overflows the viewport even though the raw line count fits —
+// `geometry()` must report `help_body_rows > body.lines.len()` AND surface the vertical scrollbar.
+// Without this, the bottom of a long (wrapping) changelog is unreachable and the bar is mis-sized.
+#[test]
+fn geometry_help_body_rows_counts_wrapped_rows_and_triggers_scrollbar() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+
+    // Four raw lines, each ~300 cols of space-separated words → each wraps to several rows at the
+    // ~72-col body width. Raw count (4) easily FITS the viewport; the wrapped total does NOT.
+    let long_line = "word ".repeat(60); // 300 chars
+    let body_str = format!("{long_line}\n{long_line}\n{long_line}\n{long_line}");
+    let raw_lines = 4usize;
+
+    let mut state = help_state();
+    state.help = Some(HelpView {
+        active: 0,
+        labels: vec!["What's New".to_string(), "About".to_string()],
+        body: to_text(&body_str),
+        scroll: 0,
+        hint: "Tab/←→ switch · Esc/q close".to_string(),
+    });
+
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let g = geometry(area, &state);
+
+    let body_height = g.help_body_height;
+    assert!(
+        body_height as usize >= raw_lines,
+        "precondition: the {raw_lines} raw lines fit the viewport (height {body_height}) — \
+         so a RAW-line trigger would not show a scrollbar"
+    );
+    assert!(
+        g.help_body_rows as usize > raw_lines,
+        "help_body_rows ({}) must exceed the raw line count ({raw_lines}) — wrapped rows are counted",
+        g.help_body_rows
+    );
+    assert!(
+        g.help_body_rows > body_height,
+        "help_body_rows ({}) must exceed the viewport height ({body_height}) so the body overflows",
+        g.help_body_rows
+    );
+    assert!(
+        g.help_vbar.is_some(),
+        "the vertical scrollbar must be present when the WRAPPED body overflows, even though the \
+         raw line count fits"
     );
 }
