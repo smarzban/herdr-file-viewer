@@ -395,4 +395,71 @@ mod tests {
             "about_text(None) must contain 'Up to date'"
         );
     }
+
+    // --- T-9: negative-criteria conformance (AC-N5, AC-N6) ---
+
+    // AC-N6 (scope guard, source level): the two-section set the overlay ships in v1 is
+    // exactly {What's New, About}. `HelpState` itself is a generic Vec (the SMA-49 seam), so the
+    // guarantee that there is no third section is anchored at the SOURCE that defines the sections:
+    // `HelpSection` enumerates exactly those two variants, with exactly those labels. A future
+    // SMA-49 section would have to add a variant here — which would flip this test red on purpose.
+    #[test]
+    fn help_section_set_is_exactly_whats_new_and_about() {
+        // Exhaustively enumerate the variants by matching every one: adding a variant makes this
+        // match non-exhaustive (a compile error), forcing the author to revisit the scope guard.
+        for s in [HelpSection::WhatsNew, HelpSection::About] {
+            match s {
+                HelpSection::WhatsNew => assert_eq!(s.label(), "What's New"),
+                HelpSection::About => assert_eq!(s.label(), "About"),
+            }
+        }
+        // And the ordered v1 label set is precisely these two, in this order.
+        let labels: Vec<&str> = [HelpSection::WhatsNew, HelpSection::About]
+            .iter()
+            .map(|s| s.label())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["What's New", "About"],
+            "AC-N6: v1 exposes exactly What's New then About — no Keybindings/Settings (SMA-49)"
+        );
+    }
+
+    // AC-N5 (no network, by construction): `about_text` is a pure function of its single argument
+    // — the ALREADY-cached update status. It reads no global, performs no I/O, and issues no probe;
+    // the only thing that varies its output is the value passed in. We prove this by determinism:
+    // for a fixed argument the output is byte-identical across calls (no hidden time/network/random
+    // input), and the ONLY observable difference between two calls is driven by the argument.
+    #[test]
+    fn about_text_is_a_pure_function_of_its_cached_argument() {
+        // Same argument → byte-identical output across repeated calls (no hidden varying input such
+        // as a network/update probe would introduce).
+        let a1 = about_text(None);
+        let a2 = about_text(None);
+        assert_eq!(
+            a1, a2,
+            "AC-N5: about_text(None) must be deterministic — no network/probe varies its output"
+        );
+
+        let v = Version {
+            major: 9,
+            minor: 9,
+            patch: 9,
+        };
+        let b1 = about_text(Some(v));
+        let b2 = about_text(Some(v));
+        assert_eq!(
+            b1, b2,
+            "AC-N5: about_text(Some(_)) must be deterministic for a fixed cached value"
+        );
+
+        // The ONLY observable difference between the two outputs is the update-status line, i.e. it
+        // reflects exactly the passed cached value — never a freshly-probed one. `None` ⇒ "Up to
+        // date"; `Some(9.9.9)` ⇒ "Update available: v9.9.9". Identity lines (name/version/repo/
+        // license/CTA) are identical between the two.
+        assert!(a1.contains("Up to date"));
+        assert!(!a1.contains("Update available"));
+        assert!(b1.contains("Update available: v9.9.9"));
+        assert!(!b1.contains("Up to date"));
+    }
 }

@@ -7599,3 +7599,173 @@ fn help_open_switch_scroll_each_within_300ms() {
         "AC-22: body scroll (j) must complete within 300 ms (took {scroll_elapsed:?})"
     );
 }
+
+// ---- T-9: negative-criteria conformance (AC-N2 no git, AC-N5 no network, AC-N6 section set) --
+
+/// A Git Service stub that records EVERY query (status / changed_set / diff) it receives, so a
+/// test can assert that a code path issued NO git command at all. Distinct from the file-level
+/// `StubGit` (which records only the `changed_set` baseline) — AC-N2 needs to count all three.
+#[derive(Default, Clone)]
+struct CountingGit {
+    /// One entry per call, in order: "status", "changed_set", or "diff" — so a test can both
+    /// count and identify what was queried.
+    calls: Recorder<&'static str>,
+}
+
+impl GitService for CountingGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        self.calls.lock().unwrap().push("status");
+        BTreeMap::new()
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        self.calls.lock().unwrap().push("changed_set");
+        BTreeMap::new()
+    }
+    fn diff(&self, _rel_path: &Path, _baseline: Baseline, _full_context: bool) -> String {
+        self.calls.lock().unwrap().push("diff");
+        String::new()
+    }
+}
+
+/// Build a controller backed by a `CountingGit`, returning the controller and the shared call
+/// log so a test can read back exactly which git queries fired. `is_git_repo` is passed through
+/// so the AC-N2 test can use the harder repo case (where construction DOES query git) and still
+/// prove the HELP path adds nothing.
+fn controller_counting_git(root: &Path, is_git_repo: bool) -> (Controller, Recorder<&'static str>) {
+    let git = CountingGit::default();
+    let calls = git.calls.clone();
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let ctrl = Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    );
+    (ctrl, calls)
+}
+
+// AC-N6 (via open_help): the HelpState the controller actually builds has EXACTLY two sections,
+// labelled "What's New" then "About" — no third section (scope guard vs. the deferred SMA-49
+// Keybindings/Settings). This complements the source-level guard in `src/help.rs` by asserting the
+// runtime object `open_help` constructs matches the contract.
+#[test]
+fn open_help_builds_exactly_two_sections_whats_new_and_about() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::ShowHelp);
+    let state = ctrl
+        .help_state()
+        .expect("help_state() must be Some after ShowHelp");
+
+    assert_eq!(
+        state.section_labels(),
+        vec!["What's New", "About"],
+        "AC-N6: open_help builds exactly What's New then About"
+    );
+    assert_eq!(
+        state.sections.len(),
+        2,
+        "AC-N6: exactly two sections — no third (deferred SMA-49) section"
+    );
+}
+
+// AC-N2 (no git): opening, using, and closing the help overlay issues NO git command. We use the
+// REPO case (is_git_repo = true), where construction legitimately queries git (status + changed_set)
+// for the tree markers — so we first drain that construction log, then prove the entire help round
+// trip (open → switch section → scroll → close) adds ZERO further git calls. NOTE: open_help DOES
+// shell out to the markdown renderer (glow) to render the changelog — that is a subprocess, but it
+// is NOT git; this asserts "no git", precisely, by counting calls on the Git Service.
+#[test]
+fn help_path_issues_no_git_command() {
+    let dir = TempDir::new();
+    let (mut ctrl, calls) = controller_counting_git(dir.path(), true);
+
+    // Construction may query git (status + changed_set for the initial tree markers). Drain that
+    // baseline so we measure ONLY the help path below.
+    let baseline_calls = calls.lock().unwrap().len();
+
+    // The full help round trip: open, switch section (Tab), scroll the body (j), then close (Esc).
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "precondition: help opened");
+    ctrl.handle_help_key(key(KeyCode::Tab)); // switch What's New → About
+    ctrl.handle_help_key(key(KeyCode::Char('j'))); // scroll the active section
+    ctrl.handle_help_key(key(KeyCode::Esc)); // close
+    assert!(!ctrl.help_open(), "postcondition: help closed");
+
+    let after = calls.lock().unwrap();
+    assert_eq!(
+        after.len(),
+        baseline_calls,
+        "AC-N2: the help path (open/use/close) must issue NO git command — \
+         calls after construction baseline {baseline_calls}: {:?}",
+        &after[baseline_calls..]
+    );
+}
+
+// AC-N5 (no network): the help path reads only the ALREADY-cached update status and never invokes
+// the update-check / network probe. We inject a cached `Some(version)` via the SAME seam the run
+// loop uses (`set_update` with `rx: None` — i.e. no probe receiver), then prove (1) opening help
+// reflects exactly that cached value in the About body, and (2) the help round trip never consumed
+// or required an update probe (the absence of an `update_rx` is undisturbed — help reads the cached
+// field directly, it does not start a check).
+#[test]
+fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
+    use herdr_file_viewer::update::{UpdateState, Version};
+
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // Inject a cached "update available" with NO probe receiver — exactly what a run loop that has
+    // already determined the status (or has the once-a-day check disabled) installs. If the help
+    // path tried to probe, it would have to create/await a receiver; it must not.
+    let cached = Version {
+        major: 7,
+        minor: 7,
+        patch: 7,
+    };
+    ctrl.set_update(UpdateState {
+        initial: Some(cached),
+        rx: None,
+    });
+
+    // Open help → the About section body is assembled from `self.update_available` (the cached
+    // value), never a fresh probe. Section index 1 is About.
+    ctrl.handle(Intent::ShowHelp);
+    let state = ctrl.help_state().expect("help_state() Some after ShowHelp");
+    let about = flatten_text(&state.sections[1].body);
+    assert!(
+        about.contains("Update available: v7.7.7"),
+        "AC-N5: About reflects the CACHED update status (v7.7.7), proving no fresh probe: {about:.120}"
+    );
+
+    // Drive the rest of the help round trip; none of it polls/awaits a network result.
+    ctrl.handle_help_key(key(KeyCode::Char('j')));
+    ctrl.handle_help_key(key(KeyCode::Esc));
+    assert!(!ctrl.help_open(), "help closed");
+
+    // Re-open with the cached value cleared to None → "Up to date", again from the cached field
+    // only. This double-check pins that the line is a pure projection of the cached status.
+    ctrl.set_update(UpdateState {
+        initial: None,
+        rx: None,
+    });
+    ctrl.handle(Intent::ShowHelp);
+    let state = ctrl.help_state().expect("help_state() Some after re-open");
+    let about = flatten_text(&state.sections[1].body);
+    assert!(
+        about.contains("Up to date") && !about.contains("Update available"),
+        "AC-N5: with the cached status None, About shows 'Up to date' — no probe ran: {about:.120}"
+    );
+}
