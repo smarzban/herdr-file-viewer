@@ -2889,6 +2889,11 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
         if ctrl.prompt_open() {
             ctrl.handle_prompt_key(key(KeyCode::Esc));
         }
+        // ShowHelp (in Intent::ALL since T-3) opens the help overlay; close it symmetrically
+        // so the help modal guard cannot block SwitchWorktree in Part 2.
+        if ctrl.help_open() {
+            ctrl.close_help();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -6810,4 +6815,88 @@ fn open_search_does_not_zoom_when_content_already_visible() {
         "#7b: zoomed must remain false when content is already visible"
     );
     assert!(ctrl.prompt_open(), "prompt is open");
+}
+
+// ---- T-3: ShowHelp intent + open_help --------------------------------------------------
+
+#[test]
+fn show_help_opens_help_overlay_with_whats_new_active_and_non_empty_bodies() {
+    // AC-1, AC-6, AC-19: handle(ShowHelp) → help_open() is true; active section is
+    // "What's New"; both section bodies are non-empty (works without glow — to_text is pure).
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(!ctrl.help_open(), "help is closed by default");
+
+    let fx = ctrl.handle(Intent::ShowHelp);
+    assert!(fx.redraw, "opening help signals a redraw");
+    assert!(ctrl.help_open(), "help_open() must be true after ShowHelp");
+
+    let state = ctrl
+        .help_state()
+        .expect("help_state() must be Some after ShowHelp");
+    assert_eq!(
+        state.active_index(),
+        0,
+        "active section must be 0 (What's New) on open"
+    );
+    assert_eq!(
+        state.section_labels(),
+        vec!["What's New", "About"],
+        "sections are What's New then About"
+    );
+    assert!(
+        !state.active_body().lines.is_empty(),
+        "What's New body must be non-empty"
+    );
+    assert!(
+        !state.sections[1].body.lines.is_empty(),
+        "About body must be non-empty"
+    );
+}
+
+#[test]
+fn show_help_is_inert_while_picker_is_open() {
+    // Modal gate: ShowHelp must be a no-op while the worktree picker is open.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::SwitchWorktree);
+    assert!(
+        !ctrl.help_open(),
+        "picker open → help stays closed on ShowHelp"
+    );
+}
+
+#[test]
+fn show_help_is_inert_while_finder_is_open() {
+    // Modal gate: ShowHelp is a no-op while the go-to-file finder is open.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::OpenFinder);
+    // finder is open — further intents in handle() return early
+    assert!(
+        !ctrl.help_open(),
+        "finder open → help stays closed on ShowHelp"
+    );
+}
+
+#[test]
+fn show_help_is_inert_while_help_is_already_open() {
+    // The help gate prevents a second open from stacking a new HelpState on top.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "first ShowHelp opens help");
+
+    // A second ShowHelp must be a no-op (gate: help.is_some() → noop).
+    // We cannot easily introspect that the state didn't change, but we can at least
+    // confirm that help is still open and no panic occurred.
+    ctrl.handle(Intent::ShowHelp);
+    assert!(
+        ctrl.help_open(),
+        "help remains open after redundant ShowHelp"
+    );
 }

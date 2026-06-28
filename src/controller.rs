@@ -18,6 +18,7 @@
 
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
+use crate::help::{HelpSection, HelpSectionState, HelpState};
 use crate::herdr::HerdrCli;
 use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
@@ -287,6 +288,10 @@ pub struct Controller {
     /// search + its highlighting (AC-20). The incremental-typing path (`refresh_search`) does NOT
     /// call `dispatch_render`, so live typing is never wiped by that clear.
     search: Option<SearchState>,
+    /// The open help overlay's state, or `None` when closed (AC-1, AC-6). Opened by the `?`
+    /// key (ShowHelp intent); dismissed by Esc/`q` (T-5). Modal — while `Some`, handle() and
+    /// handle_mouse() return early (AC-N4).
+    help: Option<HelpState>,
 }
 
 impl Controller {
@@ -363,6 +368,7 @@ impl Controller {
             pending_goto: None,
             applied_seq: 0,
             search: None,
+            help: None,
             herdr: None,
             our_workspace_id: None,
             base_branch,
@@ -914,6 +920,11 @@ impl Controller {
         if self.prompt.is_some() {
             return Effects::noop();
         }
+        // The help overlay is modal: while it is open, all other intents are inert. The run loop
+        // (T-5) will route keys to handle_help_key instead; this guard mirrors finder/prompt.
+        if self.help.is_some() {
+            return Effects::noop();
+        }
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
@@ -941,6 +952,7 @@ impl Controller {
             Intent::OpenSearch => self.open_search(),
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
+            Intent::ShowHelp => self.open_help(),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -1036,6 +1048,12 @@ impl Controller {
         // beneath and change the selection mid-prompt — then a confirm would jump (or auto-switch) the
         // WRONG file, or strand a bogus override on a directory. Make the mouse inert, like the picker.
         if self.prompt.is_some() {
+            return Effects::noop();
+        }
+        // The help overlay is modal and keyboard-only: while it is open the mouse is inert,
+        // mirroring the picker and prompt gates (T-5 will add handle_help_key; there is no
+        // handle_help_mouse — the overlay has no mouse interaction).
+        if self.help.is_some() {
             return Effects::noop();
         }
         // The finder is also a modal overlay, but it IS mouse-interactive: wheel scrolls the
@@ -1948,6 +1966,45 @@ impl Controller {
     /// Whether the go-to-file finder overlay is currently open.
     pub fn finder_open(&self) -> bool {
         self.finder.is_some()
+    }
+
+    /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds two sections:
+    ///
+    /// - What's New: the embedded CHANGELOG rendered as plain text (T-4 upgrades to markdown).
+    /// - About: the about_text() string rendered as plain text.
+    ///
+    /// Sets the active section to 0 (What's New) and returns `Effects::redraw()`.
+    fn open_help(&mut self) -> Effects {
+        let whats_new = HelpSectionState {
+            label: HelpSection::WhatsNew.label(),
+            body: crate::render::to_text(crate::help::CHANGELOG_MD),
+            scroll: 0,
+        };
+        let about_body = crate::help::about_text(self.update_available);
+        let about = HelpSectionState {
+            label: HelpSection::About.label(),
+            body: crate::render::to_text(&about_body),
+            scroll: 0,
+        };
+        self.help = Some(HelpState::new(vec![whats_new, about]));
+        Effects::redraw()
+    }
+
+    /// Whether the help overlay is currently open.
+    pub fn help_open(&self) -> bool {
+        self.help.is_some()
+    }
+
+    /// The current help overlay state, or `None` when closed.
+    /// Exposed for tests and (T-6) the `ViewState` projection.
+    pub fn help_state(&self) -> Option<&HelpState> {
+        self.help.as_ref()
+    }
+
+    /// Dismiss the help overlay. Called by T-5's handle_help_key on Esc/`q`.
+    /// A no-op when the overlay is already closed.
+    pub fn close_help(&mut self) {
+        self.help = None;
     }
 
     /// Open the go-to-line prompt (AC-1). Opens whenever a **file** is selected, in any view: in a

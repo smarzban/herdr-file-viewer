@@ -44,6 +44,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('z') => Some(Intent::ToggleZoom),
         KeyCode::Char('r') => Some(Intent::Refresh),
         KeyCode::Char('u') => Some(Intent::DismissUpdate),
+        KeyCode::Char('?') => Some(Intent::ShowHelp),
         KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
         _ => None,
     }
@@ -90,6 +91,7 @@ mod tests {
         (KeyCode::Char('z'), Intent::ToggleZoom),
         (KeyCode::Char('r'), Intent::Refresh),
         (KeyCode::Char('u'), Intent::DismissUpdate),
+        (KeyCode::Char('?'), Intent::ShowHelp),
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
     ];
@@ -193,6 +195,32 @@ mod tests {
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
             None
+        );
+    }
+
+    #[test]
+    fn question_mark_maps_to_show_help_and_modifier_chords_are_inert() {
+        // `?` (Shift+/) opens the help overlay (AC-1, AC-N4). Ctrl-? / Alt-? must not fire an
+        // intent. `?` is a shifted character — SHIFT bit set must still map.
+        assert_eq!(
+            map_key(k(KeyCode::Char('?'))),
+            Some(Intent::ShowHelp),
+            "'?' must map to ShowHelp"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            Some(Intent::ShowHelp),
+            "'?' with SHIFT must still map to ShowHelp"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-? must not fire an intent"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::ALT)),
+            None,
+            "Alt-? must not fire an intent"
         );
     }
 

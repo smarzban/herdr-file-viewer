@@ -79,6 +79,11 @@ pub enum Intent {
     /// Unlike `:` (go-to-line) the search prompt opens in **every** view mode — it is not
     /// view-gated. Opened only by the explicit `/` key — no event hook (AC-N6).
     OpenSearch,
+    /// Open the in-app help overlay (`?` key) showing the What's New and About sections.
+    /// Read-only — touches only in-memory UI state; no file, git, or network access
+    /// (AC-1, AC-6, AC-19, AC-N1, AC-N3, AC-N4). Opened only by the explicit `?` key —
+    /// no event hook (AC-N4).
+    ShowHelp,
     /// Advance to the next match, wrapping at the end of the match list. Read-only navigation —
     /// scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when there is no
     /// committed search with ≥1 match. Bound to `n` only — no event hook (AC-N6).
@@ -94,7 +99,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 27] = [
+    pub const ALL: [Intent; 28] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -121,6 +126,7 @@ impl Intent {
         Intent::OpenSearch,
         Intent::NextMatch,
         Intent::PrevMatch,
+        Intent::ShowHelp,
         Intent::Close,
     ];
 }
@@ -164,6 +170,7 @@ mod tests {
                 | Intent::OpenSearch
                 | Intent::NextMatch
                 | Intent::PrevMatch
+                | Intent::ShowHelp
                 | Intent::Close => false,
             };
             assert!(
@@ -232,11 +239,19 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_27() {
+    fn all_length_is_28() {
         assert_eq!(
             Intent::ALL.len(),
-            27,
-            "Intent::ALL must have exactly 27 variants after adding OpenSearch/NextMatch/PrevMatch"
+            28,
+            "Intent::ALL must have exactly 28 variants after adding ShowHelp"
+        );
+    }
+
+    #[test]
+    fn show_help_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::ShowHelp),
+            "Intent::ALL must contain ShowHelp"
         );
     }
 }
