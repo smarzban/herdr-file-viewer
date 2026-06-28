@@ -683,7 +683,7 @@ fn columns(area: Rect, state: &ViewState) -> (Option<Rect>, Option<Rect>, Option
 /// `tree_inner.y + r` is index `r + tree_scroll` (the tree scrolls to keep the selection in
 /// view, #45). `content_inner` is the content column interior. `divider_x` is the draggable
 /// boundary column (wide layout only).
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct PaneGeometry {
     pub area_x: u16,
     pub area_width: u16,
@@ -745,6 +745,12 @@ pub struct PaneGeometry {
     /// The help body's vertical scrollbar track rect (1-cell gutter right of the body), present only
     /// when the body overflows. `None` when the overlay is closed or the body fits.
     pub help_vbar: Option<Rect>,
+    /// The screen rect of each section tab in the help overlay's top-border tab row, paired with its
+    /// section index — `(index, cell_rect)`. Computed inside [`help_overlay_layout`] from the SAME
+    /// widths [`draw_help_overlay`] uses (the `"Help: "` prefix + cumulative `sanitize_label(label)`
+    /// widths + `HELP_TAB_SEP`), so a click maps to the tab actually drawn. Empty when the overlay is
+    /// closed. The controller hit-tests a left-click against these to switch sections (AC-10).
+    pub help_tabs: Vec<(usize, Rect)>,
 }
 
 /// Compute the [`PaneGeometry`] for hit-testing the current frame — the same layout [`draw`]
@@ -824,13 +830,13 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     // Help: the SAME helper `draw_help_overlay` uses, so the fed-back body HEIGHT matches what is
     // drawn — the controller clamps the stored scroll to `[0, body_lines − height]` each frame, the
     // bottom bound deferred from T-5 (AC-9). All `None`/`0` when the overlay is closed.
-    let (help_body, help_body_height, help_body_rows, help_vbar) = match &state.help {
+    let (help_body, help_body_height, help_body_rows, help_vbar, help_tabs) = match &state.help {
         Some(help) => {
             let hl = help_overlay_layout(area, help);
             let height = hl.body.map_or(0, |b| b.height);
-            (hl.body, height, hl.body_rows, hl.vbar)
+            (hl.body, height, hl.body_rows, hl.vbar, hl.tabs)
         }
-        None => (None, 0, 0, None),
+        None => (None, 0, 0, None, Vec::new()),
     };
 
     PaneGeometry {
@@ -854,6 +860,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         help_body_height,
         help_body_rows,
         help_vbar,
+        help_tabs,
     }
 }
 
@@ -1463,6 +1470,12 @@ struct HelpLayout {
     /// `Paragraph::wrap` (raw `lines.len()` undercounts and leaves a long changelog's tail
     /// unreachable). `0` when the interior is degenerate. Fed back via `PaneGeometry::help_body_rows`.
     body_rows: u16,
+    /// Each section tab's screen rect in the top-border tab row, paired with its section index —
+    /// `(index, cell_rect)`. Derived from the SAME widths `draw_help_overlay` renders the tab Line
+    /// with (the `"Help: "` prefix + cumulative `sanitize_label(label)` widths + `HELP_TAB_SEP`), so
+    /// the drawn tabs and the hit-test rects can never drift. Each rect is the tab label's own cells
+    /// (1 row tall, at `popup.y`); a tab clipped past the popup's right edge is dropped.
+    tabs: Vec<(usize, Rect)>,
 }
 
 /// Compute the help overlay's layout geometry for the given frame `area` and `help` draw model.
@@ -1488,6 +1501,14 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     let block = Block::bordered().padding(Padding::uniform(PICKER_PADDING));
     let inner = block.inner(popup);
 
+    // Section-tab rects in the top-border tab row, derived from the SAME span widths the draw path
+    // lays out: a left-aligned `title_top` Line begins at the first interior border column
+    // (`popup.x + 1`), starting with the `"Help: "` prefix; each tab is `sanitize_label(label)`
+    // wide, separated by `HELP_TAB_SEP`. We walk those widths to place each tab's cell rect, so a
+    // click maps to the tab actually drawn (the whole point of the shared helper). Rects fully past
+    // the popup's right border are dropped (clipped off-screen, not clickable).
+    let tabs = help_tab_rects(popup, &help.labels);
+
     // The body fills the whole interior (tabs + footer ride the border, not inner rows). Reserve a
     // 1-cell vertical scrollbar gutter (with a 1-cell gap) only when the body overflows — there is
     // no horizontal overflow because the body wraps. A degenerate (zero-size) interior yields no body.
@@ -1497,6 +1518,7 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
             body: None,
             vbar: None,
             body_rows: 0,
+            tabs,
         };
     }
     // The body wraps (prose), so its height in rendered rows — not raw lines — is what the scroll
@@ -1523,7 +1545,53 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
         body: Some(text),
         vbar,
         body_rows,
+        tabs,
     }
+}
+
+/// Compute each section tab's screen rect in the help overlay's top-border tab row, paired with its
+/// section index. This is the single place the tab x-positions are derived; both the draw path (via
+/// the tab `Line` it builds with the same spans) and the hit-test (via [`PaneGeometry::help_tabs`])
+/// flow from it, so a click can never map to a different tab than the one drawn.
+///
+/// Layout mirrors [`draw_help_overlay`]'s `title_top`: a left-aligned title begins at the first
+/// interior border column (`popup.x + 1`) with the `"{HELP_TITLE}: "` prefix, then each label —
+/// `sanitize_label(label)` wide — separated by [`HELP_TAB_SEP`]. A tab whose cells fall entirely
+/// past the popup's right border is dropped (ratatui clips it off-screen, so it isn't clickable).
+fn help_tab_rects(popup: Rect, labels: &[String]) -> Vec<(usize, Rect)> {
+    // The title row is the popup's top border; left-aligned titles start one cell in from the corner.
+    let row = popup.y;
+    let mut x = popup.x.saturating_add(1).saturating_add(prefix_width());
+    // The rightmost interior column (exclusive of the right border corner): popup.x + width - 1.
+    let right_edge = popup.x.saturating_add(popup.width.saturating_sub(1));
+    let mut out = Vec::with_capacity(labels.len());
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            x = x.saturating_add(HELP_TAB_SEP.chars().count() as u16);
+        }
+        let w = sanitize_label(label).chars().count() as u16;
+        // Keep only a tab that begins before the right border — its visible cells are clickable.
+        if w > 0 && x < right_edge {
+            // Clip the tab's width to what fits before the right border.
+            let visible_w = w.min(right_edge.saturating_sub(x));
+            out.push((
+                i,
+                Rect {
+                    x,
+                    y: row,
+                    width: visible_w,
+                    height: 1,
+                },
+            ));
+        }
+        x = x.saturating_add(w);
+    }
+    out
+}
+
+/// The display width (columns) of the help tab row's leading `"{HELP_TITLE}: "` prefix.
+fn prefix_width() -> u16 {
+    format!("{HELP_TITLE}: ").chars().count() as u16
 }
 
 /// Draw the in-app help overlay as a centered, bordered, fixed-size modal over everything else

@@ -2717,3 +2717,78 @@ fn geometry_help_body_rows_counts_wrapped_rows_and_triggers_scrollbar() {
          raw line count fits"
     );
 }
+
+// T-7 crux (AC-10): the section-tab rects `geometry()` feeds back (`help_tabs`) must line up with
+// where the tabs are ACTUALLY drawn, so a click maps to the tab actually drawn (draw + hit-test
+// can't drift). Render the overlay, scan the buffer for each label, and assert the drawn label
+// sits inside its reported rect; also assert the ACTIVE tab's REVERSED cell falls in its rect.
+#[test]
+fn help_tab_rects_agree_with_drawn_tab_positions() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::{Position, Rect};
+    use ratatui::style::Modifier;
+
+    let st = help_state(); // active = 1 (About); labels = ["What's New", "About"]
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let buf = render_buffer(&st, w, h);
+
+    // Find the first (x,y) where `needle` is drawn contiguously.
+    let find_cell = |needle: &str| -> (u16, u16) {
+        for y in 0..h {
+            for x in 0..w {
+                let hit = needle.chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < w
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|c| c.symbol() == ch.to_string())
+                });
+                if hit {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("{needle:?} not found in buffer — draw did not render it");
+    };
+
+    let g = geometry(area, &st);
+    assert_eq!(g.help_tabs.len(), 2, "both section tabs have a rect");
+
+    // Each label's drawn start cell must be contained in its reported tab rect.
+    let labels = ["What's New", "About"];
+    for (idx, rect) in &g.help_tabs {
+        let (dx, dy) = find_cell(labels[*idx]);
+        assert!(
+            rect.contains(Position { x: dx, y: dy }),
+            "tab {idx} ({:?}) drawn at ({dx},{dy}) must lie inside its reported rect {rect:?}",
+            labels[*idx]
+        );
+        assert_eq!(rect.y, dy, "the tab rect row must match the drawn row");
+        assert_eq!(
+            rect.x, dx,
+            "the tab rect start col must match the drawn col"
+        );
+    }
+
+    // The ACTIVE tab (index 1 = About) is REVERSED; its first cell must be inside its rect.
+    let (about_idx, about_rect) = g
+        .help_tabs
+        .iter()
+        .find(|(i, _)| *i == 1)
+        .copied()
+        .expect("the active tab (About) has a rect");
+    assert_eq!(about_idx, 1);
+    assert!(
+        buf.cell((about_rect.x, about_rect.y))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the active tab's first cell (at its rect origin) is REVERSED — the rect tracks the drawn tab"
+    );
+}

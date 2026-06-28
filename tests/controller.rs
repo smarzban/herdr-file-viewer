@@ -1030,6 +1030,7 @@ fn wide_geometry() -> PaneGeometry {
         help_body_height: 0,
         help_body_rows: 0,
         help_vbar: None,
+        help_tabs: Vec::new(),
     }
 }
 
@@ -7260,4 +7261,178 @@ fn handle_help_key_is_noop_when_help_is_closed() {
     assert!(!ctrl.help_open(), "precondition: help is closed");
     let fx = ctrl.handle_help_key(key(KeyCode::Tab));
     assert!(!fx.redraw, "noop when help is closed");
+}
+
+// ---- T-7: handle_help_mouse + mouse gate + section-tab hit-test (AC-8, AC-10, AC-21) -----
+
+/// A frame area large enough for the help overlay's fixed centered box (≥ its want size).
+fn help_area() -> Rect {
+    Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    }
+}
+
+/// Feed the controller the live help geometry the Presenter would draw this frame, computed from
+/// the controller's own `view_state()` — exactly as the run loop does after each draw. Returns the
+/// geometry so the test can read its `help_tabs`.
+fn set_live_help_geometry(ctrl: &mut Controller) -> PaneGeometry {
+    let area = help_area();
+    let vs = ctrl.view_state();
+    let g = herdr_file_viewer::presenter::geometry(area, &vs);
+    ctrl.set_pane_geometry(g.clone());
+    g
+}
+
+// AC-8 via mouse: a wheel ScrollDown while help is open scrolls the active section's body.
+#[test]
+fn help_wheel_scrolls_active_section() {
+    let mut ctrl = open_help_ctrl();
+    // Geometry that lets the body overflow (so the bottom clamp does not pin scroll to 0): a tall
+    // wrapped changelog over a short viewport.
+    let raw_lines = ctrl.help_state().unwrap().active_body().lines.len() as u16;
+    let geom = PaneGeometry {
+        help_body_height: 5,
+        help_body_rows: raw_lines + 200,
+        ..wide_geometry()
+    };
+    ctrl.set_pane_geometry(geom);
+
+    let before = ctrl.help_state().unwrap().sections[0].scroll;
+    // Position is irrelevant — the help overlay owns all wheel events while open.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert!(fx.redraw, "ScrollDown redraws");
+    let after = ctrl.help_state().unwrap().sections[0].scroll;
+    assert!(
+        after > before,
+        "ScrollDown must increase the active section's scroll (was {before}, now {after})"
+    );
+}
+
+#[test]
+fn help_wheel_up_scrolls_active_section_back() {
+    let mut ctrl = open_help_ctrl();
+    let raw_lines = ctrl.help_state().unwrap().active_body().lines.len() as u16;
+    let geom = PaneGeometry {
+        help_body_height: 5,
+        help_body_rows: raw_lines + 200,
+        ..wide_geometry()
+    };
+    ctrl.set_pane_geometry(geom.clone());
+
+    // Scroll down a couple of wheel steps first, then back up.
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    let mid = ctrl.help_state().unwrap().sections[0].scroll;
+    assert!(mid > 0, "precondition: scrolled down off the top");
+    ctrl.set_pane_geometry(geom); // re-feed so the clamp stays the same
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 6, 3));
+    let after = ctrl.help_state().unwrap().sections[0].scroll;
+    assert!(
+        after < mid,
+        "ScrollUp must decrease the active section's scroll (was {mid}, now {after})"
+    );
+}
+
+// AC-10: a left-click whose (col,row) lands on a section-tab cell activates that section. Driven
+// from the LIVE geometry so the click maps to the tab actually drawn (draw + hit-test can't drift).
+#[test]
+fn help_click_on_tab_activates_that_section() {
+    let mut ctrl = open_help_ctrl();
+    // Active starts at 0 (What's New). We will click the OTHER tab and assert the active changes.
+    assert_eq!(
+        ctrl.help_state().unwrap().active_index(),
+        0,
+        "precondition: section 0 is active at open"
+    );
+
+    let g = set_live_help_geometry(&mut ctrl);
+    assert!(
+        !g.help_tabs.is_empty(),
+        "geometry() must expose the section-tab rects while help is open"
+    );
+
+    // Find the tab rect for a section other than the active one (index 1 = About).
+    let (target_idx, rect) = g
+        .help_tabs
+        .iter()
+        .find(|(i, _)| *i != ctrl.help_state().unwrap().active_index())
+        .copied()
+        .expect("there is at least one non-active tab rect to click");
+    assert_eq!(target_idx, 1, "the non-active tab is index 1 (About)");
+
+    // Press the left button on a cell INSIDE that tab's rect. The tab activates on press
+    // (Down(Left)), per the T-7 contract — a tab is a chrome control, not a list row.
+    let col = rect.x + rect.width / 2;
+    let row = rect.y;
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+    assert!(fx.redraw, "a press on a tab redraws");
+    assert_eq!(
+        ctrl.help_state().unwrap().active_index(),
+        target_idx,
+        "pressing a section tab activates that section (AC-10)"
+    );
+}
+
+// AC-21: a click or wheel ANYWHERE while help is open must not move the tree cursor, change the
+// tree selection, or scroll the content pane — every mouse event is consumed by handle_help_mouse.
+#[test]
+fn help_mouse_never_leaks_to_tree_or_content() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "precondition: help is open");
+
+    // Capture the pre-state of everything the mouse could leak into.
+    let tree_cursor_before = ctrl.tree().cursor();
+    let content_scroll_before = ctrl.content_scroll();
+
+    set_live_help_geometry(&mut ctrl);
+
+    // A click on what WOULD be a tree row (col 6, row 3) under the overlay.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
+    // A wheel over what WOULD be the content pane.
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    // A press + drag (divider/scrollbar gestures) — also inert.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 0));
+
+    assert_eq!(
+        ctrl.tree().cursor(),
+        tree_cursor_before,
+        "the tree cursor must not move while help is open (AC-21)"
+    );
+    assert_eq!(
+        ctrl.content_scroll(),
+        content_scroll_before,
+        "the content pane must not scroll while help is open (AC-21)"
+    );
+    assert!(
+        ctrl.help_open(),
+        "the help overlay stays open under stray mouse events (modal — Esc/q/'?' close it)"
+    );
+}
+
+// A click that misses every tab rect (e.g. on the body) is a consumed no-op: help stays open, no
+// section change. Mirrors handle_finder_click's outside-rows inert path.
+#[test]
+fn help_click_off_tabs_is_inert_noop() {
+    let mut ctrl = open_help_ctrl();
+    let g = set_live_help_geometry(&mut ctrl);
+    let active_before = ctrl.help_state().unwrap().active_index();
+
+    // A cell well below the tab row (the body) — inside the popup but on no tab rect.
+    let body_row = g.help_body.expect("help body present").y.saturating_add(1);
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, body_row));
+    assert!(
+        !fx.redraw,
+        "a press off every tab is a consumed no-op (no redraw)"
+    );
+    assert_eq!(
+        ctrl.help_state().unwrap().active_index(),
+        active_before,
+        "a press off the tabs does not change the active section"
+    );
+    assert!(ctrl.help_open(), "the overlay stays open");
 }

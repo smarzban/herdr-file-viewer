@@ -1107,11 +1107,11 @@ impl Controller {
         if self.prompt.is_some() {
             return Effects::noop();
         }
-        // The help overlay is modal and keyboard-only: while it is open the mouse is inert,
-        // mirroring the picker and prompt gates (T-5 will add handle_help_key; there is no
-        // handle_help_mouse — the overlay has no mouse interaction).
+        // The help overlay is modal but IS mouse-interactive (like the finder): the wheel scrolls
+        // the active section's body and a click on a section tab switches sections. Route to its own
+        // handler, which consumes every event and never leaks to the tree/content beneath (AC-21).
         if self.help.is_some() {
-            return Effects::noop();
+            return self.handle_help_mouse(ev);
         }
         // The finder is also a modal overlay, but it IS mouse-interactive: wheel scrolls the
         // selection, click selects a result row, double-click confirms. Route to the finder's
@@ -1320,6 +1320,63 @@ impl Controller {
             return self.confirm_finder();
         }
         Effects::redraw()
+    }
+
+    /// Handle a mouse event while the help overlay is open. The help overlay owns all mouse while
+    /// open and never leaks events to the tree/content beneath (AC-21) — mirroring
+    /// [`handle_finder_mouse`](Self::handle_finder_mouse).
+    ///
+    /// - `ScrollDown`/`ScrollUp` → `scroll_by(±WHEEL_STEP)` on the active section (AC-8 via mouse).
+    ///   No clamp here: [`set_pane_geometry`](Self::set_pane_geometry) re-clamps the stored scroll to
+    ///   the live measured body height after the next draw (the same split the keyboard path uses).
+    /// - `Down(Left)` whose `(col,row)` lands on a section-tab rect → `select(that index)` (AC-10).
+    /// - `Shift`+mouse → inert (terminal selection, same as the main gate).
+    /// - everything else → consumed no-op (`Effects::noop()`).
+    fn handle_help_mouse(&mut self, ev: MouseEvent) -> Effects {
+        use ratatui::layout::Position;
+        // Shift+mouse: terminal selection — inert, same as the main mouse gate.
+        if ev.modifiers.contains(KeyModifiers::SHIFT) {
+            return Effects::noop();
+        }
+        match ev.kind {
+            MouseEventKind::ScrollDown => self.help_scroll(WHEEL_STEP),
+            MouseEventKind::ScrollUp => self.help_scroll(-WHEEL_STEP),
+            // A left press on a section tab switches sections (AC-10). Hit-test against the tab rects
+            // the Presenter fed back (`geom.help_tabs`), so the click maps to the tab actually drawn.
+            MouseEventKind::Down(MouseButton::Left) => {
+                let pos = Position {
+                    x: ev.column,
+                    y: ev.row,
+                };
+                let hit = self
+                    .geom
+                    .help_tabs
+                    .iter()
+                    .find(|(_, r)| r.contains(pos))
+                    .map(|(idx, _)| *idx);
+                if let Some(idx) = hit
+                    && let Some(help) = self.help.as_mut()
+                {
+                    help.select(idx);
+                    return Effects::redraw();
+                }
+                // A press off every tab is a consumed no-op (modal — the overlay stays open).
+                Effects::noop()
+            }
+            // Other events (drag, release, right/middle button, Moved): inert, but consumed.
+            _ => Effects::noop(),
+        }
+    }
+
+    /// Scroll the active help section by `delta` rows. A no-op when help is closed. The bottom bound
+    /// is enforced by [`set_pane_geometry`](Self::set_pane_geometry) against the live body height.
+    fn help_scroll(&mut self, delta: isize) -> Effects {
+        if let Some(help) = self.help.as_mut() {
+            help.scroll_by(delta as i32);
+            Effects::redraw()
+        } else {
+            Effects::noop()
+        }
     }
 
     /// A completed left-click: select the tree row it landed on (or focus the content pane). A
