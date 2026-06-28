@@ -646,7 +646,10 @@ mod tests {
         // (fast EOF → the recv_timeout(stdout) phase returns promptly), but the shell then sleeps
         // 2s before exiting — so the exit-wait is what would burn a second full `timeout` under
         // the old code. The combined deadline caps the TOTAL at roughly one `timeout`.
-        let timeout = Duration::from_millis(200);
+        // A generous 1s timeout so the (roughly fixed, ~100ms) process-spawn/scheduling overhead on a
+        // loaded CI runner is a SMALL fraction of it — a tight bound on a small timeout flaked here
+        // (a 200ms timeout + ~120ms overhead blew a 1.4× bound on a busy macOS runner).
+        let timeout = Duration::from_millis(1000);
         // Two phases, each timed to expose the double-bound: the renderer holds stdout open for
         // ~0.8× the timeout (so the `recv_timeout(stdout)` phase nearly burns a full timeout, but
         // still returns Ok), THEN lingers ~2s before exiting (so the Ok-path exit-wait would burn
@@ -657,18 +660,21 @@ mod tests {
         let cmd = vec![
             "sh".to_string(),
             "-c".to_string(),
-            "cat >/dev/null; sleep 0.16; exec 1>&-; sleep 2".to_string(),
+            "cat >/dev/null; sleep 0.8; exec 1>&-; sleep 3".to_string(),
         ];
         let start = std::time::Instant::now();
         let _ = run_renderer(&cmd, "hello", timeout);
         let elapsed = start.elapsed();
         // The bug applies `timeout` twice → ~2×. A single combined deadline keeps it ~1×; allow
         // slack for the 10ms poll + scheduling, but well under the ~1.8× the bug produces here.
+        // Single combined deadline → total ≈ 1× the timeout (+overhead). The 2× bug here ≈ 1.8×
+        // (0.8× recv + a fresh 1.0× exit-wait). Assert < 1.5×: comfortably above 1×+CI-overhead
+        // (~380ms headroom), comfortably below the bug's ~1.8× (~300ms margin).
         assert!(
-            elapsed < timeout.mul_f32(1.4),
+            elapsed < timeout.mul_f32(1.5),
             "run_renderer must bound TOTAL wall-clock to a single timeout (~{timeout:?}); \
              took {elapsed:?} (the 2× bug would take ~{:?})",
-            timeout * 2
+            timeout.mul_f32(1.8)
         );
     }
 

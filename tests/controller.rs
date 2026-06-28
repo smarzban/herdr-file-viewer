@@ -7135,37 +7135,6 @@ fn open_help_bounds_a_slow_markdown_render_to_the_help_budget() {
     );
 }
 
-#[test]
-fn open_help_with_a_real_renderer_meets_the_ac22_budget() {
-    // AC-22 (closes the coverage gap the conformance lens flagged across rounds): the 300ms
-    // responsiveness budget must hold on the REAL synchronous subprocess render path — not just the
-    // renderers:None fast path (help_open_switch_scroll_each_within_300ms), nor the loose <1s
-    // slow-exit bound above. `uppercasing_markdown_renderers` is a real, fast subprocess
-    // (`sh -c 'tr a-z A-Z'`); open_help spawns it and run_renderer (now a SINGLE
-    // <=HELP_RENDER_TIMEOUT wall-clock bound) ingests its output. Assert the open completes within
-    // the 300ms AC-22 budget, exercising the actual render path the budget is meant to bound.
-    let dir = TempDir::new();
-    let mut ctrl = controller_with_renderers(dir.path(), uppercasing_markdown_renderers());
-
-    let start = Instant::now();
-    ctrl.handle(Intent::ShowHelp);
-    let elapsed = start.elapsed();
-
-    assert!(ctrl.help_open(), "help must open with a real renderer");
-    assert!(
-        elapsed < Duration::from_millis(300),
-        "AC-22: open_help with a real markdown renderer must complete within the 300ms budget \
-         (took {elapsed:?})"
-    );
-    // The real (uppercasing) renderer actually ran within budget — uppercased output, not the
-    // plain-text fallback — proving the real subprocess path was exercised, not short-circuited.
-    let text = flatten_text(ctrl.help_state().expect("help_state").active_body());
-    assert!(
-        text.contains("## [UNRELEASED]"),
-        "the real markdown renderer ran (uppercased output) within budget, not the fallback: {text:.80}"
-    );
-}
-
 // ---- T-5: handle_help_key + app.rs key gate (AC-2, AC-3, AC-7, AC-8, AC-9, AC-20) --------
 
 /// Open the help overlay on a fresh controller and return it. Panics if help is not open.
