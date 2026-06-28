@@ -150,7 +150,7 @@ impl HelpState {
 /// Assemble the "About" pane text. The Presenter center-aligns this section (AC-17).
 ///
 /// Lines, in order:
-/// 1. `herdr-file-viewer` (the name, alone)
+/// 1. `Herdr File Viewer` (the display title, alone — the nice form, not the raw package name)
 /// 2. package description
 /// 3. *(blank)*
 /// 4. bare repo host+path (the `https://` scheme + any `Repository:` label stripped)
@@ -172,7 +172,7 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     format!(
-        "{name}\n\
+        "{title}\n\
          {description}\n\
          \n\
          {repository}\n\
@@ -181,7 +181,9 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
          {license} License\n\
          \n\
          {star_cta}",
-        name = env!("CARGO_PKG_NAME"),
+        // The display title (the nice form) — NOT the raw `CARGO_PKG_NAME` (`herdr-file-viewer`),
+        // which still appears verbatim in the bare repo URL below.
+        title = "Herdr File Viewer",
         version = env!("CARGO_PKG_VERSION"),
         description = env!("CARGO_PKG_DESCRIPTION"),
         repository = repository,
@@ -248,9 +250,15 @@ mod tests {
             text.contains(env!("CARGO_PKG_VERSION")),
             "about_text must contain the package version (AC-16)"
         );
+        // The About top line is the DISPLAY title (the nice form), not the raw package name.
+        assert!(
+            text.contains("Herdr File Viewer"),
+            "about_text must contain the display title (AC-17)"
+        );
+        // The raw package name still appears verbatim — in the bare repo URL.
         assert!(
             text.contains("herdr-file-viewer"),
-            "about_text must contain the package name (AC-17)"
+            "about_text must still contain the package name in the repo URL (AC-17)"
         );
         assert!(
             text.contains(env!("CARGO_PKG_DESCRIPTION")),

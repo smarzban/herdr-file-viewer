@@ -177,6 +177,32 @@ pub fn render(
     }
 }
 
+/// Return a copy of a markdown renderer command (e.g. glow) with its wrap width set to `width`:
+/// replace the argument following the `-w` flag, or append `-w <width>` if absent. Used by the help
+/// overlay's What's New render so glow wraps the changelog to the fixed help-box body width (with its
+/// own hanging indents) instead of the default `-w 0` (no wrap → the Presenter's flat re-wrap loses
+/// the indents). The base command (and its `{name}`/`-` args) is otherwise unchanged.
+pub(crate) fn with_wrap_width(command: &[String], width: u16) -> Vec<String> {
+    let mut out = command.to_vec();
+    let w = width.to_string();
+    match out.iter().position(|a| a == "-w") {
+        // Replace the value after `-w`; if `-w` is the trailing arg with no value, append one.
+        Some(i) => match out.get_mut(i + 1) {
+            Some(v) => *v = w,
+            None => out.push(w),
+        },
+        // No `-w` at all: append the flag + value (kept ahead of any trailing positional is not
+        // required — glow accepts flags after `-`, but we insert before the final `-` if present
+        // for tidiness).
+        None => {
+            let insert_at = out.iter().rposition(|a| a == "-").unwrap_or(out.len());
+            out.insert(insert_at, w);
+            out.insert(insert_at, "-w".to_string());
+        }
+    }
+    out
+}
+
 /// Substitute the `{name}` placeholder in a renderer command with the selected file name,
 /// so a stdin-fed renderer (e.g. `bat --file-name={name}`) can still infer the language —
 /// keeping the secure stdin design while enabling syntax highlighting (AC-10).
@@ -457,6 +483,31 @@ mod tests {
         let p = tmp("bin", &[0x00, 0x01, 0x02, b'h', b'i']);
         assert_eq!(classify(&std::env::temp_dir(), &p), Prepared::Binary); // AC-12
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn with_wrap_width_replaces_the_w_value_without_disturbing_the_rest() {
+        // The default markdown command: glow with `-w 0` (no wrap). The help overlay rewrites the
+        // 0 to the box body width so glow wraps with its own hanging indents.
+        let base: Vec<String> = ["glow", "-s", "dark", "-w", "0", "-"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = with_wrap_width(&base, 70);
+        assert_eq!(got, ["glow", "-s", "dark", "-w", "70", "-"]);
+        // The wrap value is non-zero (the whole point — `-w 0` disables wrapping → flat re-wrap).
+        let i = got.iter().position(|a| a == "-w").expect("-w present");
+        assert_ne!(got[i + 1], "0", "the help render must use a non-zero -w");
+    }
+
+    #[test]
+    fn with_wrap_width_inserts_the_flag_when_absent() {
+        let base: Vec<String> = ["glow", "-"].iter().map(|s| s.to_string()).collect();
+        let got = with_wrap_width(&base, 70);
+        let i = got.iter().position(|a| a == "-w").expect("-w inserted");
+        assert_eq!(got[i + 1], "70");
+        // The trailing stdin positional is preserved at the end.
+        assert_eq!(got.last().map(String::as_str), Some("-"));
     }
 
     #[test]

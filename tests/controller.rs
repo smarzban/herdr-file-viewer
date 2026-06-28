@@ -6936,9 +6936,22 @@ fn flatten_text(t: &ratatui::text::Text) -> String {
 /// proves the renderer actually ran and its OUTPUT — not the raw embedded text — reached the
 /// overlay (AC-14). A `cat` passthrough could not distinguish "rendered" from a plain `to_text`
 /// of the same string; a transforming command can. (`tr` is POSIX — Linux & macOS.)
+///
+/// The command is wrapped in `sh -c '…'` and carries a trailing `-w 0` so it mirrors the real glow
+/// command's shape: `open_help` rewrites the `-w` value to the help-box body width
+/// (`with_wrap_width`), and the wrapper makes that flag harmlessly inert (it lands in `sh`'s ignored
+/// positional params `$1 $2`, while the `-c` body reads stdin). This keeps the test exercising the
+/// `-w`-replace path real glow takes, rather than a special-cased command with no `-w`.
 fn uppercasing_markdown_renderers() -> Renderers {
     Renderers {
-        markdown: vec!["tr".into(), "a-z".into(), "A-Z".into()],
+        markdown: vec![
+            "sh".into(),
+            "-c".into(),
+            "tr a-z A-Z".into(),
+            "sh".into(),
+            "-w".into(),
+            "0".into(),
+        ],
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],

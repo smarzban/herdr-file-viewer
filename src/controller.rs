@@ -2117,8 +2117,19 @@ impl Controller {
         // — a slow/wedged renderer must not freeze input. On timeout `render::render` already falls
         // back to plain text + a notice (AC-15), so no new handling is needed here. This reconciles
         // the design's prerender-at-open with AC-22's responsiveness budget.
+        //
+        // Wrap the changelog at the help box's fixed body width (NOT the default `-w 0`): glow then
+        // wraps with its own hanging indents, and the Presenter's `Paragraph::wrap` becomes a no-op
+        // that preserves them. The width is the SAME constant the layout draws the body at
+        // (`presenter::help_body_text_width`), so glow's wrapped lines fit exactly — never wider (a
+        // wider glow wrap would re-introduce a flat 1-char re-wrap in the Presenter). The box is
+        // fixed-width, so there is nothing to re-render on resize.
         let r = Renderers {
             timeout: HELP_RENDER_TIMEOUT,
+            markdown: crate::render::with_wrap_width(
+                &self.renderers.markdown,
+                crate::presenter::help_body_text_width(),
+            ),
             ..self.renderers.clone()
         };
         let (whats_new_body, _notice) =

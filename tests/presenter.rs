@@ -2583,7 +2583,7 @@ fn help_state() -> ViewState {
         active: 1, // About is active (the second tab) — proves the active indicator
         labels: vec!["What's New".to_string(), "About".to_string()],
         body: to_text(
-            "herdr-file-viewer\n\
+            "Herdr File Viewer\n\
              A git-aware, read-only file viewer\n\
              \n\
              github.com/smarzban/herdr-file-viewer\n\
@@ -2612,9 +2612,9 @@ fn help_overlay_indicates_active_section_and_shows_footer_hints() {
         out.contains("switch") && out.contains("close"),
         "footer shows how to switch sections and close\n{out}"
     );
-    // The active body (About) is shown.
+    // The active body (About) is shown — its top line is the display title.
     assert!(
-        out.contains("herdr-file-viewer"),
+        out.contains("Herdr File Viewer"),
         "the active section's body is drawn\n{out}"
     );
     // The two-column layout is still underneath (AC-1 — partial overlay).

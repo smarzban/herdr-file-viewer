@@ -1215,6 +1215,22 @@ const HELP_WANT_INNER_H: u16 = 20;
 /// The separator between section tabs in the help overlay's top border.
 const HELP_TAB_SEP: &str = "  ";
 
+/// The columns [`bar_layout`] reserves for a vertical scrollbar when the body overflows: a 1-cell
+/// gap before the bar + the 1-cell bar itself (see `bar_layout`'s `saturating_sub(2)`).
+const VSCROLL_GUTTER_W: u16 = 2;
+
+/// The help overlay's body **text width** (columns) on a standard terminal — the unclamped interior
+/// ([`HELP_WANT_INNER_W`]) minus the vertical-scrollbar gutter that [`bar_layout`] reserves. The
+/// changelog body always overflows the fixed-height box, so the vbar is always present and the body
+/// is always drawn this narrow. This is the SINGLE source the help layout AND the What's New glow
+/// `-w` both derive from, so glow wraps its markdown to exactly the width the body is drawn at — the
+/// Presenter's `Paragraph::wrap` then becomes a no-op and glow's hanging indents survive (the box is
+/// fixed-width, so this never changes on resize for a terminal ≥ ~76 cols; `Paragraph::wrap` is the
+/// graceful fallback for narrower frames where the box clamps below this width).
+pub(crate) const fn help_body_text_width() -> u16 {
+    HELP_WANT_INNER_W.saturating_sub(VSCROLL_GUTTER_W)
+}
+
 /// The computed layout geometry of the finder overlay, shared between [`draw_finder_overlay`]
 /// and [`geometry`] so neither can drift from the other. Both functions call
 /// [`finder_overlay_layout`] and operate on the returned rects.
@@ -1554,6 +1570,17 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     };
     let needs_v = body_rows_at(inner.width) > inner.height;
     let (text, vbar, _hbar) = bar_layout(inner, needs_v, false);
+    // When the box is NOT clamped (terminal ≥ ~76 cols, the common case) AND the body overflows — the
+    // real changelog always does, so the vbar is always present — the body is drawn at exactly
+    // `help_body_text_width()`, the width the What's New glow render wraps to. Pin that agreement so
+    // the shared constant can never silently drift from the `bar_layout` math it models. (A short body
+    // with no vbar is drawn at the full interior, which is still ≥ the glow wrap width — fits fine.)
+    debug_assert!(
+        inner.width < HELP_WANT_INNER_W || vbar.is_none() || text.width == help_body_text_width(),
+        "help body text width {} must match help_body_text_width() {} when unclamped + overflowing",
+        text.width,
+        help_body_text_width(),
+    );
     // Recompute against the width the body is genuinely drawn into (post-gutter), so the scroll clamp
     // reaches the true last wrapped row — this now genuinely matches how the content pane measures.
     let body_rows = body_rows_at(text.width);
@@ -1714,6 +1741,57 @@ mod tests {
             !sanitize_label("\u{1b}\u{07}\u{7f}\u{9b}z")
                 .chars()
                 .any(|c| c.is_control())
+        );
+    }
+
+    #[test]
+    fn help_body_text_width_is_the_interior_minus_the_scrollbar_gutter() {
+        // The glow `-w` target: the unclamped interior minus the 1-gap + 1-bar vbar gutter.
+        assert_eq!(help_body_text_width(), HELP_WANT_INNER_W - 2);
+        assert_eq!(help_body_text_width(), 70);
+        assert!(
+            help_body_text_width() < HELP_WANT_INNER_W,
+            "the body text width must be narrower than the full interior (gutter reserved)"
+        );
+        assert!(
+            help_body_text_width() > 0,
+            "the body text width must be a usable positive column count"
+        );
+    }
+
+    #[test]
+    fn help_body_text_width_matches_the_drawn_body_on_a_wide_frame() {
+        use ratatui::text::{Line, Text};
+        // A body tall enough to overflow the fixed box → the vbar is present, so the drawn body
+        // width equals `help_body_text_width()`. This pins the shared constant to the SAME width
+        // `help_overlay_layout` actually draws (and that the glow `-w` is given), preventing drift.
+        let body = Text::from(
+            (0..200)
+                .map(|i| Line::from(format!("line {i}")))
+                .collect::<Vec<_>>(),
+        );
+        let help = HelpView {
+            active: 0,
+            labels: vec!["What's New".to_string(), "About".to_string()],
+            body,
+            scroll: 0,
+            hint: "x".to_string(),
+            center: false,
+        };
+        // A frame comfortably wider than the fixed box so it is NOT clamped.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let layout = help_overlay_layout(area, &help);
+        let body_rect = layout.body.expect("a non-degenerate body");
+        assert!(layout.vbar.is_some(), "an overflowing body shows the vbar");
+        assert_eq!(
+            body_rect.width,
+            help_body_text_width(),
+            "the drawn body width must equal the shared help_body_text_width()"
         );
     }
 }
