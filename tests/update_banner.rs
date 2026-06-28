@@ -63,6 +63,7 @@ fn controller_in(dir: &Path) -> Controller {
             }),
             editor: Box::new(Editor),
             clipboard: Box::new(common::RecordingClipboard::default()),
+            renderers: None,
         },
     )
 }

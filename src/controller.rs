@@ -26,6 +26,7 @@ use crate::picker::PickerState;
 use crate::presenter::{
     ContentSearch, FinderView, Focus, PaneGeometry, PickerRowView, PickerView, ViewState,
 };
+use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
@@ -116,6 +117,11 @@ pub struct Components {
     pub providers: Box<dyn Fn(&Resolved) -> RootProviders>,
     pub editor: Box<dyn EditorHandoff>,
     pub clipboard: Box<dyn Clipboard>,
+    /// The external renderer commands used for the in-app help overlay's What's New section
+    /// (T-4: render CHANGELOG_MD as markdown via the same renderer the content pane uses).
+    /// `None` ⇒ the markdown renderer is absent; `render::render` falls back to plain text
+    /// and a notice (AC-15) — the same fallback it applies for any missing renderer.
+    pub renderers: Option<Renderers>,
 }
 
 /// What the run loop should do after an intent is handled.
@@ -213,6 +219,9 @@ pub struct Controller {
     /// The provider factory (ADR-0004), kept so a re-root can rebuild the root-bound providers
     /// (Git Service + Content Renderer) against the new root.
     providers: Box<dyn Fn(&Resolved) -> RootProviders>,
+    /// The external renderer commands for the help overlay's What's New section (T-4).
+    /// Built from `Components::renderers` at construction; `None` ⇒ fallback.
+    renderers: Renderers,
     /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
     /// dispatched job; a `poll`ed result with a smaller seq is stale and dropped.
     job_tx: mpsc::Sender<RenderJob>,
@@ -306,7 +315,17 @@ impl Controller {
             providers,
             editor,
             clipboard,
+            renderers,
         } = components;
+        // Materialise the renderers: `None` ⇒ a Renderers with an absent markdown command so
+        // `render::render` falls back to plain text + a notice (AC-15) without extra branching.
+        let renderers = renderers.unwrap_or_else(|| Renderers {
+            markdown: vec!["herdr-no-such-markdown-renderer".into()],
+            diff: vec!["herdr-no-such-diff-renderer".into()],
+            full_diff: vec!["herdr-no-such-full-diff-renderer".into()],
+            syntax: vec!["herdr-no-such-syntax-renderer".into()],
+            timeout: std::time::Duration::from_millis(100),
+        });
         let RootProviders { git, content } = providers(&resolved);
         let root = resolved.root.clone();
         let is_git_repo = resolved.is_git_repo;
@@ -352,6 +371,7 @@ impl Controller {
             editor,
             clipboard,
             providers,
+            renderers,
             job_tx,
             result_rx,
             latest_seq: 0,
@@ -1970,14 +1990,26 @@ impl Controller {
 
     /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds two sections:
     ///
-    /// - What's New: the embedded CHANGELOG rendered as plain text (T-4 upgrades to markdown).
+    /// - What's New: the embedded CHANGELOG rendered as markdown via `render::render` (T-4,
+    ///   AC-14). If the markdown renderer is absent/times out, `render::render` falls back to
+    ///   plain text + a notice (AC-15) — no extra handling needed here.
     /// - About: the about_text() string rendered as plain text.
     ///
     /// Sets the active section to 0 (What's New) and returns `Effects::redraw()`.
     fn open_help(&mut self) -> Effects {
+        let prepared = Prepared::Full {
+            text: crate::help::CHANGELOG_MD.to_owned(),
+        };
+        let (whats_new_body, _notice) = crate::render::render(
+            &self.renderers,
+            &prepared,
+            ViewMode::RenderedMarkdown,
+            None,
+            None,
+        );
         let whats_new = HelpSectionState {
             label: HelpSection::WhatsNew.label(),
-            body: crate::render::to_text(crate::help::CHANGELOG_MD),
+            body: whats_new_body,
             scroll: 0,
         };
         let about_body = crate::help::about_text(self.update_available);

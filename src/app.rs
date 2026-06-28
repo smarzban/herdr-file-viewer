@@ -81,6 +81,7 @@ pub fn run() -> io::Result<()> {
             providers,
             editor,
             clipboard,
+            renderers: Some(default_renderers()),
         },
     );
     // Kick off the once-a-day update check (off the UI thread; disabled by

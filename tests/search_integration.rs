@@ -164,6 +164,7 @@ fn ctrl_with_content<P: ContentProvider + Clone + 'static>(root: &Path, content:
         }),
         editor: Box::new(NoopEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), false),
@@ -191,6 +192,7 @@ fn ctrl_with_git_and_content<P: ContentProvider + Clone + 'static>(
         }),
         editor: Box::new(NoopEditor),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), true), // is_git_repo = true

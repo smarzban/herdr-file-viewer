@@ -117,6 +117,7 @@ fn controller_builds_from_a_provider_factory_and_renders_the_first_frame() {
         providers,
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), false),
@@ -167,6 +168,7 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -335,6 +337,7 @@ fn re_root_status_fills_in_asynchronously() {
         providers: factory_varying_by_root(b.path().to_path_buf(), b_status, String::new()),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -399,6 +402,7 @@ fn re_root_markers_reflect_new_root_git() {
         providers: factory_varying_by_root(b.path().to_path_buf(), b_status, String::new()),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -450,6 +454,7 @@ fn re_root_to_missing_path_keeps_root_and_sets_notice() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -514,6 +519,7 @@ fn re_root_to_current_root_is_a_noop() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -563,6 +569,7 @@ fn re_root_clears_an_open_picker() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -603,6 +610,7 @@ fn re_root_render_resolves_through_the_respawned_worker() {
         providers: factory_varying_by_root(b.path().to_path_buf(), BTreeMap::new(), String::new()),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -695,6 +703,7 @@ fn re_root_renders_changed_file_in_diff_mode_after_status_lands() {
         providers: echo_diff_factory(b.path().to_path_buf(), b_status, b_diff.clone()),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -739,6 +748,7 @@ fn pending_reroot_status_does_not_clobber_a_later_sync_refresh() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(repo.path().to_path_buf(), true),
@@ -789,6 +799,7 @@ fn pending_reroot_status_does_not_clobber_a_later_toggle_baseline() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(repo.path().to_path_buf(), true),
@@ -841,6 +852,7 @@ fn re_root_carries_the_base_branch_hint() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(resolved, Baseline::Head, components);
     assert_eq!(
@@ -882,6 +894,7 @@ fn re_root_is_interactive_within_budget_on_a_large_repo() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(a.path().to_path_buf(), true),
@@ -1012,6 +1025,7 @@ fn switch_mutates_no_file_and_no_worktree() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(repo.path().to_path_buf(), true),
@@ -1102,6 +1116,7 @@ fn switch_does_not_persist_root() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl_a = Controller::new(original_resolved.clone(), Baseline::Head, components_a);
 
@@ -1152,6 +1167,7 @@ fn switch_does_not_persist_root() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl_b = Controller::new(original_resolved, Baseline::Head, components_b);
 
@@ -1246,6 +1262,7 @@ fn picker_lists_only_this_repos_worktrees() {
         providers: fake_factory(),
         editor: Box::new(FakeEditor),
         clipboard: Box::new(FakeClipboard),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(repo_r.path().to_path_buf(), true),

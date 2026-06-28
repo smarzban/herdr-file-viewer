@@ -15,6 +15,7 @@ use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::herdr::HerdrCli;
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
+use herdr_file_viewer::render::Renderers;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
@@ -104,6 +105,7 @@ fn controller(
             opened: opened.clone(),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let ctrl = Controller::new(
         common::resolved(root.to_path_buf(), is_git_repo),
@@ -586,6 +588,7 @@ fn controller_with_lines(root: &Path, n: usize) -> Controller {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), false),
@@ -773,6 +776,7 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), false),
@@ -844,6 +848,7 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), false),
@@ -1495,6 +1500,7 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), false),
@@ -1573,6 +1579,7 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), true),
@@ -1680,6 +1687,7 @@ fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), true),
@@ -1723,6 +1731,7 @@ fn controller_with_clipboard(root: &Path, is_git_repo: bool) -> (Controller, Rec
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(clipboard),
+        renderers: None,
     };
     let ctrl = Controller::new(
         common::resolved(root.to_path_buf(), is_git_repo),
@@ -4987,6 +4996,7 @@ fn changed_controller_with_lines(root: &Path, file: &str, n: usize) -> Controlle
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), true),
@@ -5122,6 +5132,7 @@ fn controller_with_wrap_lines(root: &Path) -> Controller {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), false),
@@ -5429,6 +5440,7 @@ fn controller_with_search_content(root: &Path) -> Controller {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), false),
@@ -6152,6 +6164,7 @@ fn poll_clears_stale_committed_search_after_content_swap() {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     let mut ctrl = Controller::new(
         common::resolved(dir.path().to_path_buf(), false),
@@ -6392,6 +6405,7 @@ fn controller_with_sentinel_excluded_content(root: &Path) -> Controller {
             opened: Arc::new(Mutex::new(Vec::new())),
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
     };
     Controller::new(
         common::resolved(root.to_path_buf(), false),
@@ -6898,5 +6912,123 @@ fn show_help_is_inert_while_help_is_already_open() {
     assert!(
         ctrl.help_open(),
         "help remains open after redundant ShowHelp"
+    );
+}
+
+// ---- T-4: Render What's New as markdown (AC-14, AC-15) ----------------------------------
+
+/// Flatten a `Text<'static>` to a plain string for assertions.
+fn flatten_text(t: &ratatui::text::Text) -> String {
+    t.lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+/// A Renderers whose markdown command UPPERCASES its stdin (`tr a-z A-Z`). The raw CHANGELOG
+/// has mixed-case `## [Unreleased]`, so a help body containing the UPPERCASED `## [UNRELEASED]`
+/// proves the renderer actually ran and its OUTPUT — not the raw embedded text — reached the
+/// overlay (AC-14). A `cat` passthrough could not distinguish "rendered" from a plain `to_text`
+/// of the same string; a transforming command can. (`tr` is POSIX — Linux & macOS.)
+fn uppercasing_markdown_renderers() -> Renderers {
+    Renderers {
+        markdown: vec!["tr".into(), "a-z".into(), "A-Z".into()],
+        diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
+        syntax: vec!["cat".into()],
+        timeout: Duration::from_secs(5),
+    }
+}
+
+/// Build a Renderers whose markdown command is a non-existent binary — simulates the
+/// "renderer absent" fallback path (AC-15).
+fn absent_markdown_renderers() -> Renderers {
+    Renderers {
+        markdown: vec!["herdr-no-such-binary-xyz".into()],
+        diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
+        syntax: vec!["cat".into()],
+        timeout: Duration::from_secs(5),
+    }
+}
+
+/// Build a controller that receives a specific `Renderers` for the help overlay.
+fn controller_with_renderers(root: &std::path::Path, renderers: Renderers) -> Controller {
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: Some(renderers),
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), false),
+        Baseline::Head,
+        components,
+    )
+}
+
+#[test]
+fn whats_new_body_is_rendered_via_markdown_renderer_when_present() {
+    // AC-14: with a markdown renderer available, What's New shows the renderer's OUTPUT.
+    // The stub uppercases stdin (`tr a-z A-Z`), so the rendered body carries `## [UNRELEASED]`
+    // — a string the raw CHANGELOG (mixed-case `## [Unreleased]`) does not contain. This
+    // proves open_help routed the changelog through render::render and displayed its output,
+    // not a plain `to_text` of the embedded string.
+    let dir = TempDir::new();
+    let mut ctrl = controller_with_renderers(dir.path(), uppercasing_markdown_renderers());
+
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "help must be open");
+
+    let state = ctrl.help_state().expect("help_state() must be Some");
+    let body = state.active_body(); // section 0 = What's New
+    assert!(
+        !body.lines.is_empty(),
+        "AC-14: What's New body must be non-empty with a renderer"
+    );
+    let text = flatten_text(body);
+    assert!(
+        text.contains("## [UNRELEASED]"),
+        "AC-14: What's New shows the markdown renderer's (uppercased) output: {text:.80}"
+    );
+    assert!(
+        !text.contains("## [Unreleased]"),
+        "AC-14: the raw mixed-case heading must NOT survive — proving rendering was applied"
+    );
+}
+
+#[test]
+fn whats_new_body_falls_back_to_plain_text_when_renderer_is_absent() {
+    // AC-15: with the markdown renderer absent (non-existent binary), render::render falls
+    // back to plain text + a notice.  open_help() must not crash; the body must still be
+    // non-empty (the CHANGELOG text is shown as plain text).
+    let dir = TempDir::new();
+    let mut ctrl = controller_with_renderers(dir.path(), absent_markdown_renderers());
+
+    ctrl.handle(Intent::ShowHelp);
+    assert!(
+        ctrl.help_open(),
+        "help must open even when renderer is absent"
+    );
+
+    let state = ctrl.help_state().expect("help_state() must be Some");
+    let body = state.active_body();
+    assert!(
+        !body.lines.is_empty(),
+        "AC-15: plain-text fallback must produce a non-empty body"
+    );
+    let text = flatten_text(body);
+    // The fallback shows the RAW embedded changelog (mixed-case heading), not a transformed
+    // render — contrast with the AC-14 case above.
+    assert!(
+        text.contains("## [Unreleased]"),
+        "AC-15: the plain-text fallback still shows the (raw) changelog: {text:.80}"
     );
 }
