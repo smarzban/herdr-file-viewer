@@ -7436,3 +7436,166 @@ fn help_click_off_tabs_is_inert_noop() {
     );
     assert!(ctrl.help_open(), "the overlay stays open");
 }
+
+// ---- T-8: No-side-effect + responsiveness (AC-4, AC-22) ----------------------------------
+
+/// Capture a snapshot of the viewer state that AC-4 asserts is unchanged after help use:
+/// the tree cursor, the visible node paths (expansions encode which dirs are open), the
+/// content scroll offset, and the effective view mode.
+struct ViewerSnapshot {
+    tree_cursor: usize,
+    visible_paths: Vec<std::path::PathBuf>,
+    content_scroll: u16,
+    view_mode: Option<ViewMode>,
+}
+
+fn capture_viewer_snapshot(ctrl: &Controller) -> ViewerSnapshot {
+    ViewerSnapshot {
+        tree_cursor: ctrl.tree().cursor(),
+        visible_paths: ctrl
+            .tree()
+            .visible_nodes()
+            .iter()
+            .map(|n| n.path.clone())
+            .collect(),
+        content_scroll: ctrl.content_scroll(),
+        view_mode: ctrl.selected_view_mode(),
+    }
+}
+
+fn assert_snapshot_unchanged(before: &ViewerSnapshot, after: &ViewerSnapshot, label: &str) {
+    assert_eq!(
+        after.tree_cursor, before.tree_cursor,
+        "AC-4 ({label}): tree cursor must be unchanged"
+    );
+    assert_eq!(
+        after.visible_paths, before.visible_paths,
+        "AC-4 ({label}): visible node list (expansions) must be unchanged"
+    );
+    assert_eq!(
+        after.content_scroll, before.content_scroll,
+        "AC-4 ({label}): content scroll must be unchanged"
+    );
+    assert_eq!(
+        after.view_mode, before.view_mode,
+        "AC-4 ({label}): view mode must be unchanged"
+    );
+}
+
+// AC-4: opening, using, and closing the overlay over a file selection leaves all viewer
+// state (root, tree cursor, expansions, content scroll, view mode) unchanged.
+#[test]
+fn help_open_use_close_does_not_mutate_viewer_state_with_file_selected() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+    std::fs::write(dir.path().join("b.md"), "# B\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // Move the cursor to the second file (b.md) and set a non-zero content scroll so we
+    // have something to verify is preserved.
+    ctrl.handle(Intent::NavDown);
+    // content_scroll stays 0 here (StubContent returns a short body); that's fine —
+    // the test still asserts it is unchanged (0 == 0).
+
+    let before = capture_viewer_snapshot(&ctrl);
+
+    // Open, switch section (Tab), scroll body (j), close via Esc.
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "precondition: help opened");
+    ctrl.handle_help_key(key(KeyCode::Tab)); // switch to About
+    ctrl.handle_help_key(key(KeyCode::Char('j'))); // scroll down
+    ctrl.handle_help_key(key(KeyCode::Esc)); // close
+    assert!(!ctrl.help_open(), "postcondition: help closed");
+
+    let after = capture_viewer_snapshot(&ctrl);
+    assert_snapshot_unchanged(&before, &after, "file selected");
+}
+
+// AC-4 (directory-selected variant): same round-trip over a directory selection.
+#[test]
+fn help_open_use_close_does_not_mutate_viewer_state_with_directory_selected() {
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("c.rs"), "fn c() {}").unwrap();
+    std::fs::write(dir.path().join("top.txt"), "top").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    // The tree starts with the cursor on `sub/` (first visible node — a directory).
+    // Keep it there so selected_view_mode() is None (directory).
+
+    let before = capture_viewer_snapshot(&ctrl);
+
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open(), "precondition: help opened (dir selected)");
+    ctrl.handle_help_key(key(KeyCode::Tab)); // switch section
+    ctrl.handle_help_key(key(KeyCode::Char('j'))); // scroll
+    ctrl.handle_help_key(key(KeyCode::Char('j'))); // scroll again
+    ctrl.handle_help_key(key(KeyCode::Char('q'))); // close via q
+
+    assert!(!ctrl.help_open(), "postcondition: help closed via q");
+    let after = capture_viewer_snapshot(&ctrl);
+    assert_snapshot_unchanged(&before, &after, "directory selected");
+}
+
+// AC-4 (close_help path): close via the controller's close_help() method directly.
+#[test]
+fn help_close_help_method_does_not_mutate_viewer_state() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("notes.md"), "# Notes\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::NavDown); // put cursor on notes.md if present (or stays at 0)
+
+    let before = capture_viewer_snapshot(&ctrl);
+
+    ctrl.handle(Intent::ShowHelp);
+    ctrl.handle_help_key(key(KeyCode::Char('2'))); // jump to section index 1 (About)
+    ctrl.handle_help_key(key(KeyCode::Char('j'))); // scroll the About section
+    ctrl.close_help(); // close via public API, not a key
+
+    assert!(!ctrl.help_open(), "postcondition: help closed");
+    let after = capture_viewer_snapshot(&ctrl);
+    assert_snapshot_unchanged(&before, &after, "close_help() API path");
+}
+
+// AC-22: opening the overlay, switching a section, and scrolling the body are each well
+// within the 300 ms AC-23 budget. The `renderers: None` path makes `open_help` call
+// `render::render` in-process (no external subprocess), so the timed paths are O(1) on the
+// prerendered bodies — purely in-process operations.
+#[test]
+fn help_open_switch_scroll_each_within_300ms() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    // Use the default controller (renderers: None → no glow subprocess on the timed path).
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // --- open_help (handle(ShowHelp)) ---
+    let t_open = Instant::now();
+    ctrl.handle(Intent::ShowHelp);
+    let open_elapsed = t_open.elapsed();
+    assert!(
+        ctrl.help_open(),
+        "precondition: help must be open for section-switch + scroll"
+    );
+    assert!(
+        open_elapsed < Duration::from_millis(300),
+        "AC-22: handle(ShowHelp) must complete within 300 ms (took {open_elapsed:?})"
+    );
+
+    // --- section switch (Tab) — O(1) index bump on the prerendered bodies ---
+    let t_switch = Instant::now();
+    ctrl.handle_help_key(key(KeyCode::Tab));
+    let switch_elapsed = t_switch.elapsed();
+    assert!(
+        switch_elapsed < Duration::from_millis(300),
+        "AC-22: section switch (Tab) must complete within 300 ms (took {switch_elapsed:?})"
+    );
+
+    // --- body scroll (j) — O(1) integer increment + clamp ---
+    let t_scroll = Instant::now();
+    ctrl.handle_help_key(key(KeyCode::Char('j')));
+    let scroll_elapsed = t_scroll.elapsed();
+    assert!(
+        scroll_elapsed < Duration::from_millis(300),
+        "AC-22: body scroll (j) must complete within 300 ms (took {scroll_elapsed:?})"
+    );
+}
