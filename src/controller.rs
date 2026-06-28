@@ -64,7 +64,7 @@ const HELP_RENDER_TIMEOUT: Duration = Duration::from_millis(250);
 /// The help overlay's self-operating key-hints footer (AC-11) — at minimum how to switch sections
 /// and how to close. Carried in `HelpView` so the Presenter stays mode-agnostic; matches the keys
 /// `handle_help_key` actually handles (Tab/←→ switch · digits/1-9 also; Esc/q/`?` close).
-const HELP_FOOTER_HINT: &str = "Tab/←→ switch · 1-9 jump · j/k scroll · Esc/q close";
+const HELP_FOOTER_HINT: &str = "Tab/←→ switch · 1-9 jump · j/k scroll · Esc/q/? close";
 
 /// Read-only git queries the controller coordinates. Behind a trait so tests stub it and
 /// the run loop injects an implementation bound to the real repository. `Send + Sync` so the
@@ -1384,11 +1384,18 @@ impl Controller {
         }
     }
 
-    /// Scroll the active help section by `delta` rows. A no-op when help is closed. The bottom bound
-    /// is enforced by [`set_pane_geometry`](Self::set_pane_geometry) against the live body height.
+    /// Scroll the active help section by `delta` rows. A no-op when help is closed. After scrolling
+    /// it clamps EAGERLY against the last-known geometry (mirrors the `j`/`Down` key path), so a
+    /// wheel-down at the bottom never over-scrolls past the last wrapped row on the shown frame; the
+    /// post-draw clamp in [`set_pane_geometry`](Self::set_pane_geometry) stays the resize backstop.
     fn help_scroll(&mut self, delta: isize) -> Effects {
+        let (rows, height) = (self.geom.help_body_rows, self.geom.help_body_height);
         if let Some(help) = self.help.as_mut() {
             help.scroll_by(delta as i32);
+            // Eager clamp only once a frame has measured the body (rows > 0) — see handle_help_key.
+            if rows > 0 {
+                help.clamp_scroll(rows, height);
+            }
             Effects::redraw()
         } else {
             Effects::noop()
@@ -1669,8 +1676,9 @@ impl Controller {
     /// real last row. Without wrapping each source line is one (truncated) row. With wrapping a
     /// line spans multiple rows: ratatui's exact `line_count` is private, and an arithmetic
     /// `ceil`/`floor` undercounts word wrapping (words don't pack to the column), which would
-    /// leave the bottom of wrapped prose unreachable — so [`wrapped_rows`] simulates the word
-    /// packing, floored by the all-columns char-wrap count so leading/interior spaces can't
+    /// leave the bottom of wrapped prose unreachable — so [`crate::text_layout::wrapped_rows`]
+    /// simulates the word packing, floored by the all-columns char-wrap count so leading/interior
+    /// spaces can't
     /// make it undershoot. Off the per-frame path: only scroll / resize / wrap-toggle keypaths
     /// reach it (`set_content_viewport` early-returns on an unchanged size).
     fn rendered_line_count(&self) -> u16 {
@@ -1703,7 +1711,7 @@ impl Controller {
             .take(n)
             .map(|l| {
                 let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
+                crate::text_layout::wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
             })
             .sum::<usize>()
     }
@@ -2146,6 +2154,9 @@ impl Controller {
             scroll: 0,
         };
         self.help = Some(HelpState::new(vec![whats_new, about]));
+        // Reset double-click state (mirrors open_finder): a tree click made just before the overlay
+        // opened must not pair with a same-row click made just after it closes as a double-click.
+        self.last_click = None;
         Effects::redraw()
     }
 
@@ -2179,6 +2190,16 @@ impl Controller {
     ///
     /// When the overlay is not open, all keys are a defensive no-op.
     pub fn handle_help_key(&mut self, key: KeyEvent) -> Effects {
+        // Ignore Ctrl/Alt chords (mirrors input::map_key): Shift is allowed (Shift+Tab = BackTab
+        // retreats), but a Ctrl+'?' / Alt+1 must NOT close or switch — consume it as a no-op so it
+        // neither acts here nor leaks past the modal. (R3 item 3, consistency with map_key.)
+        if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
+            return Effects::noop();
+        }
+        // Read the last-known help-body geometry up front (the borrow of `self.help` below is
+        // exclusive), so the scroll-down arm can clamp eagerly against it.
+        let (help_body_rows, help_body_height) =
+            (self.geom.help_body_rows, self.geom.help_body_height);
         let Some(help) = self.help.as_mut() else {
             return Effects::noop();
         };
@@ -2204,9 +2225,19 @@ impl Controller {
                 help.select(idx);
                 Effects::redraw()
             }
-            // Scroll down: j / Down → scroll_by(+1) (AC-8).
+            // Scroll down: j / Down → scroll_by(+1) (AC-8), then clamp EAGERLY against the
+            // last-known geometry so the drawn offset never over-scrolls past the last wrapped row
+            // on the shown frame (mirrors scroll_content's max_content_scroll). The post-draw clamp
+            // in set_pane_geometry stays as the backstop for resize/width changes. (R3 item 5/AC-9.)
             KeyCode::Char('j') | KeyCode::Down => {
                 help.scroll_by(1);
+                // Clamp eagerly only once a frame has measured the body (help_body_rows > 0);
+                // before the first draw there is no geometry to clamp against and clamping to a
+                // zero total would wrongly forbid all scroll. set_pane_geometry remains the
+                // per-frame backstop. (R3 item 5.)
+                if help_body_rows > 0 {
+                    help.clamp_scroll(help_body_rows, help_body_height);
+                }
                 Effects::redraw()
             }
             // Scroll up: k / Up → scroll_by(-1) (saturates at 0, AC-9 top bound).
@@ -2945,41 +2976,9 @@ fn is_markdown(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// How many rows one rendered line occupies under ratatui's word wrapper (`Wrap{trim:false}`)
-/// at `width` columns: greedy word packing — fill the row with space-separated words until the
-/// next one doesn't fit, then wrap; a word wider than the row is broken across rows. A plain
-/// `ceil(width/col)` undercounts this (words rarely pack flush to the column), which is what
-/// would make the bottom of wrapped prose unreachable via the scroll clamp. Char counts stand
-/// in for display width — close enough for the clamp, and the caller floors with the
-/// all-columns char-wrap so it never undershoots.
-pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
-    if width == 0 {
-        return 1;
-    }
-    let mut rows = 1usize;
-    let mut col = 0usize;
-    for (i, word) in text.split(' ').enumerate() {
-        let wl = word.chars().count();
-        let sep = usize::from(i > 0);
-        if col != 0 && col + sep + wl > width {
-            rows += 1; // doesn't fit → start a new row
-            col = 0;
-        }
-        if col == 0 {
-            // word starts a fresh row; a word wider than the row breaks across full rows
-            let extra = wl.saturating_sub(1) / width;
-            rows += extra;
-            col = wl - extra * width;
-        } else {
-            col += sep + wl;
-        }
-    }
-    rows
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DOUBLE_CLICK, HELP_RENDER_TIMEOUT, is_double_click, wrapped_rows};
+    use super::{DOUBLE_CLICK, HELP_RENDER_TIMEOUT, is_double_click};
     use std::time::Instant;
 
     #[test]
@@ -3002,27 +3001,16 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_rows_counts_word_wrapping_not_just_char_wrapping() {
-        // Four width-6 words in a 10-col pane pack one per row → 4 rows, even though the
-        // 27-column line char-wraps to only 3. The scroll clamp must use the larger count.
-        assert_eq!(wrapped_rows("aaaaaa aaaaaa aaaaaa aaaaaa", 10), 4);
-        // A single over-long word is broken like char wrapping.
-        assert_eq!(wrapped_rows(&"x".repeat(100), 25), 4);
-        // Words that pack flush share rows.
-        assert_eq!(wrapped_rows("ab cd ef", 8), 1); // "ab cd ef" = 8 cols, fits exactly
-        // Short / empty / zero-width are one row.
-        assert_eq!(wrapped_rows("hello", 80), 1);
-        assert_eq!(wrapped_rows("", 80), 1);
-        assert_eq!(wrapped_rows("anything", 0), 1);
-    }
-
-    #[test]
     fn help_render_timeout_within_ac22_budget() {
         // FIX-B / AC-22: open_help renders What's New synchronously on the input thread, so the
-        // worst-case input-thread block is HELP_RENDER_TIMEOUT — a slow/wedged renderer is killed
-        // at it and the plain-text fallback applies. This pins that bound deterministically within
-        // the 300 ms responsiveness budget: bumping the timeout past it fails HERE, covering the
-        // slow real-renderer path that a wall-clock timing assertion could only check flakily.
+        // worst-case input-thread block is HELP_RENDER_TIMEOUT. Since R3 item 1, `run_renderer`
+        // enforces a SINGLE combined wall-clock deadline (the stdout-wait and the exit-wait share
+        // one `timeout`, not two), so the real worst-case is now exactly `HELP_RENDER_TIMEOUT`, not
+        // ~2× it — making this `≤ 300ms` assertion a TRUE single wall-clock bound rather than a
+        // best-case one. A slow/wedged renderer is killed at it and the plain-text fallback applies.
+        // This pins that bound deterministically within the 300 ms responsiveness budget: bumping
+        // the timeout past it fails HERE, covering the slow real-renderer path that a wall-clock
+        // timing assertion could only check flakily.
         assert!(
             HELP_RENDER_TIMEOUT <= std::time::Duration::from_millis(300),
             "HELP_RENDER_TIMEOUT ({HELP_RENDER_TIMEOUT:?}) must stay within the 300ms AC-22 budget"

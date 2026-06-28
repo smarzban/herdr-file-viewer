@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The size cap: files at or above this many bytes are previewed, not shown whole (AC-13).
 const MAX_BYTES: u64 = 1024 * 1024; // 1 MB
@@ -346,11 +346,21 @@ fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<St
         let _ = tx.send(buf);
     });
 
+    // A SINGLE combined wall-clock deadline for the whole invocation (the doc'd "per-invocation
+    // wall-clock bound"), NOT `timeout` applied twice. The stdout phase below waits up to
+    // `timeout`, then the Ok-path exit-wait gets only the REMAINING budget — so a renderer that
+    // closes stdout late and then lingers on exit can't burn ~2× the timeout (which, for the
+    // synchronous help render, would blow AC-22's responsiveness budget). See item 1 / AC-22.
+    let deadline = Instant::now() + timeout;
     match rx.recv_timeout(timeout) {
         Ok(buf) => {
-            // stdout closed; the process should exit promptly. Bound that wait too, so a
-            // renderer that closes stdout then hangs is still killed (no indefinite block).
-            match wait_bounded(&mut child, timeout) {
+            // stdout closed; the process should exit promptly. Bound that wait by what's LEFT of
+            // the single deadline, so a renderer that closes stdout then hangs is still killed and
+            // the TOTAL never exceeds `timeout` (no indefinite block, no doubled budget).
+            match wait_bounded(
+                &mut child,
+                deadline.saturating_duration_since(Instant::now()),
+            ) {
                 Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
                 Some(status) => Err(format!("{prog} exited with {status}")),
                 None => Err(format!("{prog} did not exit")),
@@ -625,6 +635,40 @@ mod tests {
         assert!(
             forced,
             "CLICOLOR_FORCE=1 must be set on the renderer subprocess"
+        );
+    }
+
+    #[test]
+    fn run_renderer_bounds_total_wall_clock_to_a_single_timeout_on_slow_exit() {
+        // R3 item 1 / AC-22: `run_renderer` must enforce a SINGLE combined wall-clock deadline,
+        // not apply `timeout` twice (once waiting for stdout, again waiting for exit). This
+        // exercises the Ok→wait_bounded slow-exit path: `cat` echoes stdin then closes stdout
+        // (fast EOF → the recv_timeout(stdout) phase returns promptly), but the shell then sleeps
+        // 2s before exiting — so the exit-wait is what would burn a second full `timeout` under
+        // the old code. The combined deadline caps the TOTAL at roughly one `timeout`.
+        let timeout = Duration::from_millis(200);
+        // Two phases, each timed to expose the double-bound: the renderer holds stdout open for
+        // ~0.8× the timeout (so the `recv_timeout(stdout)` phase nearly burns a full timeout, but
+        // still returns Ok), THEN lingers ~2s before exiting (so the Ok-path exit-wait would burn
+        // a SECOND full timeout under the bug). `exec 1>&-` closes stdout precisely at the phase
+        // boundary so the reader thread sees EOF and `recv_timeout` returns Ok → the slow-exit
+        // `wait_bounded` path. Under the 2× bug: ~0.8×+1.0× ≈ 1.8×. Under the single combined
+        // deadline: ~0.8× + remaining(~0.2×) ≈ 1.0×.
+        let cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat >/dev/null; sleep 0.16; exec 1>&-; sleep 2".to_string(),
+        ];
+        let start = std::time::Instant::now();
+        let _ = run_renderer(&cmd, "hello", timeout);
+        let elapsed = start.elapsed();
+        // The bug applies `timeout` twice → ~2×. A single combined deadline keeps it ~1×; allow
+        // slack for the 10ms poll + scheduling, but well under the ~1.8× the bug produces here.
+        assert!(
+            elapsed < timeout.mul_f32(1.4),
+            "run_renderer must bound TOTAL wall-clock to a single timeout (~{timeout:?}); \
+             took {elapsed:?} (the 2× bug would take ~{:?})",
+            timeout * 2
         );
     }
 

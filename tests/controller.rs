@@ -6875,6 +6875,37 @@ fn show_help_opens_help_overlay_with_whats_new_active_and_non_empty_bodies() {
 }
 
 #[test]
+fn open_help_resets_double_click_state() {
+    // R3 item 2: open_help must clear last_click (mirrors open_finder), so a tree click made just
+    // before the overlay opened can't pair with a same-row click made just after it closes and be
+    // mistaken for a double-click (which would zoom a file). We exercise it behaviorally: a first
+    // click selects+arms last_click; ShowHelp then close_help clear it; a second same-row click
+    // must therefore be a SINGLE click (no zoom), not a double-click.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+
+    // First click on the file row — selects and arms last_click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    assert!(!ctrl.zoomed(), "a single click does not zoom");
+
+    // Open then close help — open_help must reset last_click.
+    ctrl.handle(Intent::ShowHelp);
+    assert!(ctrl.help_open());
+    ctrl.close_help();
+
+    // Second click on the SAME row. Were last_click still armed from the first click (and within
+    // the double-click window), this would be treated as a double-click and zoom. With the reset
+    // it is a fresh single click → no zoom.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    assert!(
+        !ctrl.zoomed(),
+        "open_help must reset last_click so a pre-overlay click can't pair as a double-click"
+    );
+}
+
+#[test]
 fn show_help_is_inert_while_picker_is_open() {
     // Modal gate: ShowHelp must be a no-op while the worktree picker is open.
     let dir = TempDir::new();
@@ -7256,6 +7287,162 @@ fn help_scroll_clamps_against_wrapped_row_total_not_raw_lines() {
         scroll > raw_max,
         "the wrapped clamp ({scroll}) must exceed the raw-lines clamp ({raw_max}) — the last \
          wrapped row is reachable, which a raw-line clamp would forbid"
+    );
+}
+
+// R3 item 3: handle_help_key must ignore Ctrl/Alt chords (mirroring input::map_key's guard), so
+// Ctrl+'?' / Alt+1 don't close or switch sections. Shift is the exception — it IS allowed (Shift+Tab
+// = BackTab retreats sections).
+#[test]
+fn help_ctrl_chord_is_consumed_as_a_noop_does_not_close() {
+    let mut ctrl = open_help_ctrl();
+    // Ctrl+'?' must NOT close the overlay (a bare '?' would).
+    let fx = ctrl.handle_help_key(key_ctrl('?'));
+    assert!(
+        ctrl.help_open(),
+        "Ctrl+'?' must not close the help overlay (modifier chord)"
+    );
+    assert!(!fx.redraw, "Ctrl+'?' is a consumed no-op (no redraw)");
+
+    // Ctrl+Tab must NOT switch sections.
+    let before = ctrl.help_state().unwrap().active_index();
+    ctrl.handle_help_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL));
+    assert_eq!(
+        ctrl.help_state().unwrap().active_index(),
+        before,
+        "Ctrl+Tab must not switch sections"
+    );
+}
+
+#[test]
+fn help_shift_tab_still_retreats_shift_is_allowed() {
+    // Shift is the allowed modifier (Shift+Tab = BackTab). Prove a Tab WITH Shift held still drives
+    // section navigation — the guard must subtract SHIFT before rejecting, like map_key does.
+    let mut ctrl = open_help_ctrl();
+    ctrl.handle_help_key(key(KeyCode::Tab)); // → section 1
+    assert_eq!(ctrl.help_state().unwrap().active_index(), 1);
+    // BackTab carrying SHIFT (as crossterm reports Shift+Tab) must still retreat.
+    ctrl.handle_help_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(
+        ctrl.help_state().unwrap().active_index(),
+        0,
+        "Shift+Tab (BackTab) must still retreat — Shift is allowed"
+    );
+}
+
+// R3 item 5 (AC-9): the scroll-down handler must clamp EAGERLY against the last-known geometry, so
+// the drawn offset never over-scrolls past the last wrapped row even on the SHOWN frame (no 1-frame
+// over-scroll fixed only by the next set_pane_geometry). We set a known geometry first, over-scroll
+// with j, and assert the in-handler offset is already pinned to help_body_rows - help_body_height —
+// WITHOUT any further set_pane_geometry call after the keypresses.
+#[test]
+fn help_scroll_down_clamps_eagerly_in_handler() {
+    let mut ctrl = open_help_ctrl();
+
+    let raw_lines = ctrl.help_state().unwrap().active_body().lines.len() as u16;
+    let height = 6u16;
+    let wrapped_rows = raw_lines + 50; // overflowing body
+    let geom = PaneGeometry {
+        help_body_height: height,
+        help_body_rows: wrapped_rows,
+        ..wide_geometry()
+    };
+    // Feed the geometry ONCE up front (as a draw would), then never again — the clamp under test
+    // must be applied by the key handler itself, not by a later set_pane_geometry.
+    ctrl.set_pane_geometry(geom);
+
+    let max = wrapped_rows - height;
+    // Over-scroll far past the bottom with j.
+    for _ in 0..300 {
+        ctrl.handle_help_key(key(KeyCode::Char('j')));
+    }
+    let scroll = ctrl.help_state().unwrap().sections[0].scroll;
+    assert_eq!(
+        scroll, max,
+        "j at the bottom must clamp eagerly to help_body_rows - help_body_height ({max}), \
+         not over-scroll waiting for the next frame's set_pane_geometry"
+    );
+
+    // The wheel path (help_scroll) clamps eagerly too.
+    for _ in 0..50 {
+        ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    }
+    let scroll = ctrl.help_state().unwrap().sections[0].scroll;
+    assert_eq!(
+        scroll, max,
+        "wheel ScrollDown at the bottom must also clamp eagerly to {max}"
+    );
+}
+
+// R3 item 7a (AC-11): the shipped help footer hint must carry BOTH the switch affordance and the
+// close affordance — so emptying or truncating HELP_FOOTER_HINT fails the suite. Read it through the
+// `help_view()` projection (`view_state().help.hint`), since the const itself is private.
+#[test]
+fn help_footer_hint_advertises_switch_and_close() {
+    let ctrl = open_help_ctrl();
+    let vs = ctrl.view_state();
+    let hint = vs
+        .help
+        .expect("help is open → view_state().help is Some")
+        .hint;
+    // Switch affordance: Tab is the canonical section-switch key.
+    assert!(
+        hint.contains("Tab") && hint.contains("switch"),
+        "footer hint must advertise how to switch sections (got {hint:?})"
+    );
+    // Close affordance: both Esc and '?' (the toggle key) close the overlay.
+    assert!(
+        hint.contains("close") && hint.contains("Esc") && hint.contains('?'),
+        "footer hint must advertise how to close, including '?' (got {hint:?})"
+    );
+}
+
+// R3 item 7b (AC-5 / AC-7): the help_view() projection must TRACK the active section. Opening help
+// then switching with Tab must move the projection's `active` index, swap the visible `body` to the
+// new section's body, keep labels ["What's New","About"], and set `center` true only for About.
+#[test]
+fn help_view_projection_tracks_the_active_section() {
+    let mut ctrl = open_help_ctrl();
+
+    // Section 0 = What's New: active 0, labels in order, NOT centered, body == What's New body.
+    let vs = ctrl.view_state();
+    let hv = vs.help.expect("help open");
+    assert_eq!(hv.active, 0, "active section is What's New (0) on open");
+    assert_eq!(
+        hv.labels,
+        vec!["What's New".to_string(), "About".to_string()],
+        "labels are What's New then About"
+    );
+    assert!(!hv.center, "What's New is left-aligned (not centered)");
+    let whats_new_body = flatten_text(&hv.body);
+    let about_state_body = flatten_text(&ctrl.help_state().unwrap().sections[1].body);
+    assert_eq!(
+        whats_new_body,
+        flatten_text(ctrl.help_state().unwrap().active_body()),
+        "the projected body matches the active (What's New) section body"
+    );
+
+    // Switch to About (Tab → section 1): projection follows.
+    ctrl.handle_help_key(key(KeyCode::Tab));
+    let vs = ctrl.view_state();
+    let hv = vs.help.expect("help still open");
+    assert_eq!(
+        hv.active, 1,
+        "Tab moves the projection's active index to About (1)"
+    );
+    assert!(
+        hv.center,
+        "About is centered (center == true only for About)"
+    );
+    assert_eq!(
+        flatten_text(&hv.body),
+        about_state_body,
+        "the projected body now follows the active (About) section body"
+    );
+    assert_ne!(
+        flatten_text(&hv.body),
+        whats_new_body,
+        "the body changed when the active section changed"
     );
 }
 
