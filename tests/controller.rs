@@ -6963,7 +6963,7 @@ fn flatten_text(t: &ratatui::text::Text) -> String {
 }
 
 /// A Renderers whose markdown command UPPERCASES its stdin (`tr a-z A-Z`). The raw CHANGELOG
-/// has mixed-case `## [Unreleased]`, so a help body containing the UPPERCASED `## [UNRELEASED]`
+/// has mixed-case `### Added` section headings, so a help body containing the UPPERCASED `### ADDED`
 /// proves the renderer actually ran and its OUTPUT — not the raw embedded text — reached the
 /// overlay (AC-14). A `cat` passthrough could not distinguish "rendered" from a plain `to_text`
 /// of the same string; a transforming command can. (`tr` is POSIX — Linux & macOS.)
@@ -7026,8 +7026,8 @@ fn controller_with_renderers(root: &std::path::Path, renderers: Renderers) -> Co
 #[test]
 fn whats_new_body_is_rendered_via_markdown_renderer_when_present() {
     // AC-14: with a markdown renderer available, What's New shows the renderer's OUTPUT.
-    // The stub uppercases stdin (`tr a-z A-Z`), so the rendered body carries `## [UNRELEASED]`
-    // — a string the raw CHANGELOG (mixed-case `## [Unreleased]`) does not contain. This
+    // The stub uppercases stdin (`tr a-z A-Z`), so the rendered body carries `### ADDED`
+    // — a string the raw CHANGELOG (mixed-case `### Added`) does not contain. This
     // proves open_help routed the changelog through render::render and displayed its output,
     // not a plain `to_text` of the embedded string.
     let dir = TempDir::new();
@@ -7044,11 +7044,11 @@ fn whats_new_body_is_rendered_via_markdown_renderer_when_present() {
     );
     let text = flatten_text(body);
     assert!(
-        text.contains("## [UNRELEASED]"),
+        text.contains("### ADDED"),
         "AC-14: What's New shows the markdown renderer's (uppercased) output: {text:.80}"
     );
     assert!(
-        !text.contains("## [Unreleased]"),
+        !text.contains("### Added"),
         "AC-14: the raw mixed-case heading must NOT survive — proving rendering was applied"
     );
 }
@@ -7077,7 +7077,7 @@ fn whats_new_body_falls_back_to_plain_text_when_renderer_is_absent() {
     // The fallback shows the RAW embedded changelog (mixed-case heading), not a transformed
     // render — contrast with the AC-14 case above.
     assert!(
-        text.contains("## [Unreleased]"),
+        text.contains("### Added"),
         "AC-15: the plain-text fallback still shows the (raw) changelog: {text:.80}"
     );
 }
@@ -7130,7 +7130,7 @@ fn open_help_bounds_a_slow_markdown_render_to_the_help_budget() {
     );
     let text = flatten_text(body);
     assert!(
-        text.contains("## [Unreleased]"),
+        text.contains("### Added"),
         "on timeout the body is the plain-text fallback (the raw changelog): {text:.80}"
     );
 }

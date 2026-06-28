@@ -1,7 +1,8 @@
 # Architecture
 
 A high-level map of how `herdr-file-viewer` is built, for contributors and for anyone
-reviewing the implementation. It's a small crate (~3.5k lines of source), so this stays brief.
+reviewing the implementation. It's a small crate (~11k lines of Rust, inline tests included), so
+this stays brief.
 
 ## The shape: one in-process TUI owning both columns
 
@@ -38,12 +39,15 @@ is unit-testable with stubs.
 | `index` | Build the flat, `.gitignore`-aware list of repo file paths the finder searches. |
 | `search` | A pure in-file substring matcher: find every occurrence of a query within the displayed content's lines (smartcase, literal — never a regex), returning byte-offset match ranges in document order. No I/O. |
 | `highlight` | Overlay match highlighting onto the content pane: re-segment each line's spans at the match byte boundaries and patch a highlight style over the matched runs, with a distinct style on the current match. Pure; composes over the delegated render rather than re-rendering. |
+| `text_layout` | A pure text-wrapping helper: how many display rows a line occupies at a given width — shared by the content pane, the finder, and the help overlay. No I/O. |
 | `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
 | `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line or in-file search), its `prompt` input buffer, the live `SearchState` (query, matches, current match), and the content-scroll snapshot for cancel-restore. |
 | `help` | Help overlay state: the embedded changelog source and About text, plus the section and vertical scroll position for the `?` overlay. Pure; no I/O — the changelog is compiled in at build time. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold the ephemeral session state; dispatch renders to the worker; map mouse events (clicks, wheel, divider + scrollbar drags) against the fed-back geometry; on a worktree switch, rebuild the root-bound services through a provider factory and respawn the render worker. |
+| `app` | The event loop (`run()`): assemble the live components, then `draw → poll input → route to the controller (or the active modal) → drain finished renders`, until the user closes the viewer. |
+| `update` | The bounded, read-only, fail-silent update check: at most once per 24h a hardened `git ls-remote --tags` (off the UI thread, in a private temp dir) compares the latest release to the running build and feeds the dismissable "update available" banner; opt out via `HERDR_FILE_VIEWER_NO_UPDATE_CHECK`. |
 | `editor` | Hand a file off to `$EDITOR` (launch only — never reads or writes the file). |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
 

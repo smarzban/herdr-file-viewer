@@ -4,14 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-06-28
 
 ### Added
 - **Go to line (`:`).** Press `:` to open a prompt and jump the content pane to a source line by
   number — `Enter` jumps (out-of-range clamps to the last line), `Esc` cancels. Works in every view:
   in a rendered-markdown or diff view (where a source line has no 1:1 display row) confirming switches
   the file to the line-numbered content view and jumps there. Read-only navigation. (The first half of
-  in-file navigation.)
+  in-file navigation.) ([#54](https://github.com/smarzban/herdr-file-viewer/pull/54))
 - **Search in file (`/`, `n`/`N`).** Press `/` to search the open file's content: every match
   highlights as you type and the content scrolls to the first match; `Enter` commits the search
   (highlights persist) and `n` / `N` cycle through matches in document order, wrapping at the ends
@@ -19,7 +19,7 @@ All notable changes to this project are documented here. The format is based on
   uppercase letter is case-sensitive — and **literal** (regex metacharacters match literally). Search
   works in **every** view (code, rendered markdown, or diff), over the content **as displayed**; `Esc`
   cancels and restores the scroll, and the search clears when the displayed content changes.
-  Read-only navigation. (The second half of in-file navigation.)
+  Read-only navigation. (The second half of in-file navigation.) ([#55](https://github.com/smarzban/herdr-file-viewer/pull/55))
 - **Go to file (`f`).** Open a fuzzy finder over every file in the tree and jump straight to one by
   name — type to filter, `↑` / `↓` to move, `Enter` to open, `Esc` to cancel; `←` / `→` (or the
   horizontal wheel) scroll long result rows, and the result list has a draggable scrollbar.
@@ -28,7 +28,7 @@ All notable changes to this project are documented here. The format is based on
   **What's New** — the changelog rendered as markdown so you can read release notes without leaving
   the viewer — and **About** — version, repository URL, license, and update status. Navigate with
   `↑` / `↓` (or the mouse wheel); `Esc` or `q` closes the overlay and returns to where you were.
-  Read-only; no files are modified.
+  Read-only; no files are modified. ([#56](https://github.com/smarzban/herdr-file-viewer/pull/56))
 - **The tree names its root and branch.** The tree column's top border shows the root directory's
   name and its bottom border the current git branch (omitted outside a git repo / on a detached
   HEAD), with long names middle-ellipsized to fit — so you can always see *which* directory and
@@ -41,6 +41,7 @@ All notable changes to this project are documented here. The format is based on
   the last released, SHA-256-verified binary instead. A version with no published release still falls
   back to building from source, and when the checkout is ahead of the release it's installing, the
   install prints a note saying the binary doesn't yet include the unreleased source.
+  ([#50](https://github.com/smarzban/herdr-file-viewer/pull/50))
 
 ### Fixed
 - **The worktree picker's `←` now responds immediately after over-scrolling right.** The picker's
