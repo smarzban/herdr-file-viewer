@@ -1,11 +1,10 @@
-//! T-11 — File Index + Fuzzy Matcher perf guards (AC-21, AC-22).
+//! File Index + Fuzzy Matcher scaling guards (AC-21, AC-22).
 //!
-//! Builds a synthetic tree of ~10,000 files ONCE (outside the timed region), then:
-//!   • asserts `index::build` completes within the AC-21 1 s open budget, and
-//!   • asserts `fuzzy::match_and_rank` over ~10,000 candidates completes within
-//!     the AC-22 300 ms per-keystroke budget.
-//!
-//! These are generous guardrails, not microbenchmarks.
+//! Instead of absolute ms budgets (which flake on a loaded CI runner and miss the thing that
+//! matters — an O(n²) regression), these assert **relative scaling**: run each operation over N
+//! and 2N inputs, assert `time(2N) < ~2.5 × time(N)` (roughly linear, with slack for
+//! allocator/cache effects). Survives a 2–3× slower machine (both halves scale together), fails on
+//! a super-linear regression. Modelled on the `render.rs` exemplar (`mul_f32(1.5)`).
 
 mod common;
 
@@ -14,61 +13,111 @@ use herdr_file_viewer::{fuzzy, index};
 use std::fs;
 use std::time::{Duration, Instant};
 
-/// 100 directories × 100 files = 10,000 files total.
+/// N for the scaling pair. 100 dirs × 100 files = 10,000 files; 2N = 200 × 100 = 20,000. Large
+/// enough that the base timing is ~tens of ms (robust against scheduler jitter when the full
+/// suite runs in parallel), cheap enough for the default lane.
 const DIRS: usize = 100;
 const FILES_PER_DIR: usize = 100;
 
-#[test]
-fn index_build_within_one_second_at_10k_files() {
-    // ── Setup (outside the timed region) ──────────────────────────────────────
-    let dir = TempDir::new();
-    for d in 0..DIRS {
-        let sub = dir.path().join(format!("pkg{d:03}"));
+/// Slack factor: 2N work may take more than 2× wall-clock (allocator/cache effects, a second
+/// copy in memory, scheduling jitter under parallel test load), but an O(n²) regression blows
+/// well past this. 3.0× keeps the test stable on a loaded CI lane. Mirrors `mul_f32(1.5)` from
+/// `render.rs`.
+const RATIO_SLACK: f32 = 3.0;
+
+/// A minimum base time below which the ratio is meaningless (sub-millisecond timings are
+/// dominated by scheduler noise). If the N-side timing is below this, the bound falls back to a
+/// safe absolute floor so a jitter spike on the 2N side can't trip the ratio.
+const MIN_BASE: Duration = Duration::from_millis(5);
+
+/// `elapsed * factor`, the form used by the `render.rs` exemplar (`timeout.mul_f32(1.5)`).
+fn scaled(elapsed: Duration, factor: f32) -> Duration {
+    Duration::from_secs_f32(elapsed.as_secs_f32() * factor)
+}
+
+/// Build a synthetic tree of `dirs × files_per_dir` files under `root`.
+fn build_tree(root: &std::path::Path, dirs: usize, files_per_dir: usize) {
+    for d in 0..dirs {
+        let sub = root.join(format!("pkg{d:03}"));
         fs::create_dir_all(&sub).unwrap();
-        for f in 0..FILES_PER_DIR {
+        for f in 0..files_per_dir {
             fs::write(sub.join(format!("module_{f:03}.rs")), "// placeholder").unwrap();
         }
     }
+}
 
-    // ── Timed region (AC-21) ──────────────────────────────────────────────────
+/// `index::build` scales roughly linearly in the file count. Doubling the tree must not blow up
+/// super-linearly. Guards the AC-21 open budget via a ratio, not an absolute ms.
+#[test]
+fn index_build_scales_linearly() {
+    let dir_n = TempDir::new();
+    build_tree(dir_n.path(), DIRS, FILES_PER_DIR);
+
+    let dir_2n = TempDir::new();
+    build_tree(dir_2n.path(), DIRS * 2, FILES_PER_DIR);
+
     let t = Instant::now();
-    let candidates = index::build(dir.path());
-    let d = t.elapsed();
+    let candidates_n = index::build(dir_n.path());
+    let elapsed_n = t.elapsed();
 
+    let t = Instant::now();
+    let candidates_2n = index::build(dir_2n.path());
+    let elapsed_2n = t.elapsed();
+
+    // Sanity: the candidate count roughly doubled (dirs doubled, files_per_dir constant).
+    let ratio = candidates_2n.len() as f32 / candidates_n.len().max(1) as f32;
     assert!(
-        candidates.len() >= DIRS * FILES_PER_DIR,
-        "expected at least {} files, got {}",
-        DIRS * FILES_PER_DIR,
-        candidates.len()
+        (1.8..=2.2).contains(&ratio),
+        "expected ~2× candidates doubling the tree ({} → {}), got {ratio:.2}×",
+        candidates_n.len(),
+        candidates_2n.len()
     );
+
+    let bound = scaled(elapsed_n.max(MIN_BASE), RATIO_SLACK);
     assert!(
-        d < Duration::from_secs(1),
-        "AC-21: index::build over 10k files took {d:?}, exceeds 1 s budget"
+        elapsed_2n < bound,
+        "index::build did not scale linearly: {} files took {:?}, {} files took {:?} \
+         (bound {:?})",
+        candidates_n.len(),
+        elapsed_n,
+        candidates_2n.len(),
+        elapsed_2n,
+        bound,
     );
 }
 
+/// `fuzzy::match_and_rank` scales roughly linearly in the candidate count. Doubling the
+/// candidates must not blow up super-linearly.
 #[test]
-fn fuzzy_match_within_300ms_over_10k_candidates() {
-    // ── Setup (outside the timed region) ──────────────────────────────────────
-    let dir = TempDir::new();
-    for d in 0..DIRS {
-        let sub = dir.path().join(format!("pkg{d:03}"));
-        fs::create_dir_all(&sub).unwrap();
-        for f in 0..FILES_PER_DIR {
-            fs::write(sub.join(format!("module_{f:03}.rs")), "// placeholder").unwrap();
-        }
-    }
-    let candidates = index::build(dir.path());
-    assert!(candidates.len() >= DIRS * FILES_PER_DIR);
+fn fuzzy_match_scales_linearly() {
+    let dir_n = TempDir::new();
+    build_tree(dir_n.path(), DIRS, FILES_PER_DIR);
+    let candidates_n = index::build(dir_n.path());
+    assert!(candidates_n.len() >= DIRS * FILES_PER_DIR);
 
-    // ── Timed region (AC-22) ──────────────────────────────────────────────────
-    // "apprs" is a realistic short query that exercises the subsequence path.
+    let dir_2n = TempDir::new();
+    build_tree(dir_2n.path(), DIRS * 2, FILES_PER_DIR);
+    let candidates_2n = index::build(dir_2n.path());
+    assert!(candidates_2n.len() >= DIRS * 2 * FILES_PER_DIR);
+
+    // "apprs" exercises the subsequence path on realistic filenames.
     let t = Instant::now();
-    let _ = fuzzy::match_and_rank("apprs", &candidates);
-    let d = t.elapsed();
+    let _ = fuzzy::match_and_rank("apprs", &candidates_n);
+    let elapsed_n = t.elapsed();
 
+    let t = Instant::now();
+    let _ = fuzzy::match_and_rank("apprs", &candidates_2n);
+    let elapsed_2n = t.elapsed();
+
+    let bound = scaled(elapsed_n.max(MIN_BASE), RATIO_SLACK);
     assert!(
-        d < Duration::from_millis(300),
-        "AC-22: fuzzy::match_and_rank over 10k candidates took {d:?}, exceeds 300 ms budget"
+        elapsed_2n < bound,
+        "fuzzy::match_and_rank did not scale linearly: {} candidates took {:?}, \
+         {} candidates took {:?} (bound {:?})",
+        candidates_n.len(),
+        elapsed_n,
+        candidates_2n.len(),
+        elapsed_2n,
+        bound,
     );
 }

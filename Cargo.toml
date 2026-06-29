@@ -28,6 +28,12 @@ ignore = "0.4.26"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
+[features]
+# Enables the absolute-stopwatch perf-budget tests (render_perf, tree_perf, the
+# reroot AC-17 budget). Off the default PR lane — run via `cargo test --features perf`.
+# The relative-scaling perf tests (search_perf, index_perf) run on the default lane.
+perf = []
+
 [dev-dependencies]
 insta = "1.48.0"
 expectrl = "0.9.0"

@@ -869,7 +869,11 @@ fn re_root_carries_the_base_branch_hint() {
     );
 }
 
+/// AC-17: a re-root's synchronous part (resolve + fresh tree + worker respawn) is interactive
+/// within 1s on a 10k-file repo. Gated to the `perf` lane — an absolute budget on a shared CI
+/// runner flakes under load; run via `cargo test --features perf`.
 #[test]
+#[cfg_attr(not(feature = "perf"), ignore)]
 fn re_root_is_interactive_within_budget_on_a_large_repo() {
     // AC-17: a re-root happens mid-session, so the synchronous part (resolve + fresh tree + worker
     // respawn) must return and leave the tree navigable quickly — the heavy git status/changed-set

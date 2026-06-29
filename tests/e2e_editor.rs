@@ -80,7 +80,9 @@ fn open_in_editor_invokes_the_editor_on_the_selected_file_without_modifying_it()
     );
 
     // The recorder is written before the editor exits, and the viewer re-enables raw mode
-    // only after it returns; give that a moment so the close key is read in raw mode.
+    // only after it returns; give that a moment so the close key is read in raw mode. This is
+    // the terminal-resume settle (raw-mode re-entry after the editor returns) — there's no new
+    // stable screen content to `expect` for, so a short sleep stays in place of a poll.
     std::thread::sleep(Duration::from_millis(150));
     s.send("q").expect("send close");
     s.expect(Eof)

@@ -33,6 +33,20 @@ All notable changes to this project are documented here. The format is based on
   `controller.rs` (in-file search is fully implemented). No code behavior changed.
 - `CHANGELOG.md`: added the missing `[1.1.0]`–`[1.6.0]` release-tag link references (only
   `[1.0.0]` had one).
+- **Test timing hardening (SMA-334/335/336/337):** added a `perf` cargo feature to gate the
+  absolute-stopwatch perf-budget tests (`render_perf`, `tree_perf`, the `reroot` AC-17 budget)
+  off the default PR lane — a plain `cargo test` no longer runs them (they flake on a loaded
+  shared runner for reasons unrelated to a regression); run via `cargo test --features perf`.
+  Rewrote `search_perf` and `index_perf` as **relative-scaling** asserts (`time(2N) < ~3×
+  time(N)`, modelled on the `render.rs` `mul_f32(1.5)` exemplar) so they catch an O(n²)
+  regression without flaking on a 2–3× slower machine — these run on the default lane. Replaced
+  the pty e2e tests' fixed `thread::sleep` "screen is ready" assumptions with `expectrl`
+  wait-for-content (`expect` on the prompt/overlay label the next key depends on), eliminating
+  the torn-read flake class; the deliberate Esc inter-byte gaps and terminal-resume settles are
+  kept (they prevent Alt+char decoding and have no screen-content anchor). The 2 macOS
+  `#[ignore]` e2e tests (`e2e_help`, `e2e_editor`) are retained with their existing rationale —
+  they may now pass on macOS CI after the timing fix, but that can only be confirmed on the
+  macOS CI matrix, so the ignores stay until verified.
 
 ## [1.6.0] - 2026-06-28
 

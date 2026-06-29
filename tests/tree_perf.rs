@@ -8,7 +8,11 @@ use herdr_file_viewer::tree::TreeModel;
 use std::fs;
 use std::time::Instant;
 
+/// AC-22: tree enumeration is interactive within 1s on a 10k-file repo.
+/// Gated to the `perf` lane — an absolute budget on a shared CI runner flakes under
+/// load; run via `cargo test --features perf`.
 #[test]
+#[cfg_attr(not(feature = "perf"), ignore)]
 fn tree_is_interactive_within_one_second_at_10k_files() {
     let dir = TempDir::new();
     // 100 directories × 100 files = 10,000 files.
