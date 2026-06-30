@@ -23,6 +23,21 @@ fn exit_failure() -> ExitStatus {
     ExitStatus::from_raw(1)
 }
 
+// Windows `ExitStatusExt::from_raw` takes the raw u32 process exit code directly (no
+// unix-style encoded signal/exit-byte split), so 0/1 give the same success/failure shape
+// these hermetic tests need.
+#[cfg(windows)]
+fn exit_success() -> ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    ExitStatus::from_raw(0)
+}
+
+#[cfg(windows)]
+fn exit_failure() -> ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    ExitStatus::from_raw(1)
+}
+
 fn make_output(status: ExitStatus, stdout: &str) -> Output {
     Output {
         status,

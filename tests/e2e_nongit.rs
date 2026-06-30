@@ -1,6 +1,10 @@
 //! e2e (pty): in a plain (non-git) directory the viewer degrades to a working file
 //! browser — the tree lists files and a file renders — while the git-only keys (changed-only,
 //! baseline) are inert and never error (AC-26).
+//!
+//! Unix-only: see `tests/cli_smoke.rs` for why this `expectrl`-pty e2e suite is not ported to
+//! Windows's `conpty` backend in this feature.
+#![cfg(unix)]
 
 mod common;
 

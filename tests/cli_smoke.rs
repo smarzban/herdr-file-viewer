@@ -3,6 +3,14 @@
 //! the close key and asserts a clean exit(0). External renderers (glow/delta/bat) need not
 //! be installed — the Content Renderer falls back to plain text, and the tree draws either
 //! way.
+//!
+//! Unix-only: drives the viewer over a real pty via `expectrl`'s unix process backend
+//! (`WaitStatus`). `expectrl`'s Windows backend (`conpty`) exposes a materially different API
+//! (a raw `u32` exit code, no signal/stop semantics) — porting this pty-driven e2e suite is
+//! out of this feature's scope (not named in the windows-support plan); Windows coverage for
+//! what these tests exercise is the unit/integration suite plus AC-15..AC-17's reviewer-checked
+//! criteria.
+#![cfg(unix)]
 
 mod common;
 

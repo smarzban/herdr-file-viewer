@@ -358,6 +358,11 @@ fn diff_refuses_paths_outside_the_root() {
     );
 }
 
+// The malicious payload is a `#!/bin/sh` script made executable via unix permission bits; the
+// hardening it exercises (core.fsmonitor/core.hooksPath/textconv neutralization) is
+// platform-agnostic and already covered by `git_command_applies_every_untrusted_repo_guard` in
+// `src/git.rs`, which runs on every platform.
+#[cfg(unix)]
 #[test]
 fn malicious_repo_config_is_not_executed_during_queries() {
     // A planted .git/config must not run programs via fsmonitor/textconv when the viewer
@@ -403,6 +408,10 @@ fn malicious_repo_config_is_not_executed_during_queries() {
     );
 }
 
+// Creating a symlink reliably without elevated privilege is a unix assumption (Windows
+// symlink creation needs Developer Mode or admin rights, not guaranteed on a CI runner); the
+// escape-via-symlink guard itself (`is_within_root`'s canonicalize check) is platform-agnostic.
+#[cfg(unix)]
 #[test]
 fn diff_refuses_symlink_escaping_the_root() {
     // A symlinked intermediate directory must not let a path resolve outside the root.
