@@ -467,9 +467,16 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     let mut s = Session::spawn(cmd).expect("spawn the viewer");
     s.set_expect_timeout(Some(Duration::from_secs(15)));
 
-    // Step 1: viewer is up; tree lists both files. `aaa.txt` is the initial selection (top row).
-    s.expect("aaa.txt")
-        .expect("tree lists aaa.txt on launch (first row, initial selection)");
+    // Step 1: viewer is up; `aaa.txt` is the initial selection (top row) and is rendered on
+    // launch. Synchronize on its TOP-OF-FILE content marker — this proves both that the tree
+    // selected aaa.txt AND that its content finished its off-thread render. We anchor on the
+    // content here, at the stable launch point, rather than after `/` zooms it: the zoom only
+    // changes the layout, not aaa.txt's text, so a fresh re-emission of the marker after the
+    // async zoom-render is NOT guaranteed (a plain-text fallback render — e.g. on a CI runner
+    // with no `bat`/`glow` — can redraw the same cells, which ratatui diffs as unchanged and
+    // does not re-emit). Anchoring on the first, guaranteed emission removes that race.
+    s.expect("TOPMARK")
+        .expect("aaa.txt content (TOPMARK, line 1) is rendered and visible on launch");
 
     // Step 2: open the search prompt with `/`. Give the event loop a moment to open before
     // the next key so `j` lands inside the prompt (same pattern as go-to-line e2e).
@@ -479,12 +486,6 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     s.expect("Search:").expect(
         "the search prompt opens and renders its label before the next key lands inside it",
     );
-    // Synchronize before searching: `/` zooms the selected file (FIX 7b) so its content becomes
-    // visible. Wait for the top-of-file anchor so the SEARCHMARK search below runs against
-    // fully-rendered content, not an in-flight (empty) off-thread render — the render is slower on
-    // macOS CI and otherwise raced the search, making the `SEARCHMARK` expect flaky there.
-    s.expect("TOPMARK")
-        .expect("aaa.txt content is rendered and visible (zoomed) before the search flow");
 
     // Step 3: AC-21 routing proof — send `j` (NavDown) and `w` (ToggleWrap) into the prompt.
     // If routing were broken, `j` would move the tree cursor to `jfile.txt`; the subsequent
