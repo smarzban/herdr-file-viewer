@@ -15,9 +15,7 @@
 
 use crate::root::Resolved;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::io::Read;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -65,6 +63,27 @@ pub fn status(repo_root: &Path) -> BTreeMap<PathBuf, Status> {
     }
 }
 
+/// Decode one raw path field from git's NUL-delimited (`-z`) output into a [`PathBuf`].
+///
+/// unix: a lossless byte-for-byte mapping (today's `OsStr::from_bytes`) — any filename
+/// (spaces, control chars, non-UTF-8 bytes) maps to the real filesystem path, since unix
+/// `OsStr` is an arbitrary byte sequence.
+///
+/// Windows: git always emits UTF-8 path bytes (Windows paths are UTF-16 internally, so a
+/// non-UTF-8 byte sequence from git is essentially unreachable there). Bytes are decoded as
+/// UTF-8; a path that somehow fails to decode is dropped (`None`) rather than panicking,
+/// consistent with this module's degrade-to-neutral rule (AC-5).
+#[cfg(unix)]
+fn path_from_git_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+}
+
+#[cfg(windows)]
+fn path_from_git_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(bytes).ok().map(PathBuf::from)
+}
+
 /// Parse `git status --porcelain=v1 -z -uall` output into a per-path status map.
 ///
 /// Extracted from [`status`] so the parser's defensive branches (truncated records,
@@ -84,8 +103,10 @@ fn parse_porcelain_status(out: &[u8]) -> BTreeMap<PathBuf, Status> {
         if code.contains('R') || code.contains('C') {
             fields.next();
         }
-        if let Some(s) = classify(code) {
-            map.insert(PathBuf::from(OsStr::from_bytes(path)), s);
+        if let Some(s) = classify(code)
+            && let Some(p) = path_from_git_bytes(path)
+        {
+            map.insert(p, s);
         }
     }
     map
@@ -109,8 +130,10 @@ fn parse_name_status(out: &[u8]) -> BTreeMap<PathBuf, Status> {
             fields.next()
         };
         let Some(path) = path else { break };
-        if let Some(s) = classify_name_status(code) {
-            map.insert(PathBuf::from(OsStr::from_bytes(path)), s);
+        if let Some(s) = classify_name_status(code)
+            && let Some(p) = path_from_git_bytes(path)
+        {
+            map.insert(p, s);
         }
     }
     map
@@ -426,6 +449,52 @@ fn classify_name_status(code: &str) -> Option<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- path_from_git_bytes: platform path-decode seam (AC-5, T-1) ------------
+
+    /// unix: a byte sequence with spaces and non-ASCII (but valid UTF-8) bytes maps
+    /// losslessly to the equivalent `PathBuf`, matching today's `OsStr::from_bytes` behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn path_from_git_bytes_unix_maps_arbitrary_bytes_losslessly() {
+        let bytes = "my résumé file.txt".as_bytes();
+        assert_eq!(
+            path_from_git_bytes(bytes),
+            Some(PathBuf::from("my résumé file.txt"))
+        );
+    }
+
+    /// unix: even non-UTF-8 bytes (which a real OS filename can legally contain) decode
+    /// without loss — `OsStr` is an arbitrary byte sequence on unix.
+    #[cfg(unix)]
+    #[test]
+    fn path_from_git_bytes_unix_preserves_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = [b'a', 0xFF, b'b'];
+        let decoded = path_from_git_bytes(&bytes).expect("non-UTF-8 bytes still decode on unix");
+        assert_eq!(decoded.as_os_str().as_bytes(), &bytes);
+    }
+
+    /// Windows: git emits UTF-8 path bytes; a UTF-8 byte path decodes to the equivalent
+    /// `PathBuf` (the contract this seam exists to satisfy — AC-5).
+    #[cfg(windows)]
+    #[test]
+    fn path_from_git_bytes_windows_decodes_utf8_paths() {
+        let bytes = "my résumé file.txt".as_bytes();
+        assert_eq!(
+            path_from_git_bytes(bytes),
+            Some(PathBuf::from("my résumé file.txt"))
+        );
+    }
+
+    /// Windows: a non-UTF-8 byte sequence (essentially unreachable from real git output)
+    /// is dropped (`None`), never a panic — the module's degrade-to-neutral rule.
+    #[cfg(windows)]
+    #[test]
+    fn path_from_git_bytes_windows_drops_invalid_utf8_without_panic() {
+        let bytes = [0xFFu8, 0xFE, 0xFD];
+        assert_eq!(path_from_git_bytes(&bytes), None);
+    }
 
     /// The shared hardened builder must apply *every* untrusted-repo guard. This is the
     /// regression guard that keeps the Git Service and the Root Resolver — which now build
