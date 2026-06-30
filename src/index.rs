@@ -45,11 +45,23 @@ pub fn build(root: &Path) -> Vec<String> {
         .build()
         .filter_map(Result::ok) // skip unreadable entries; traversal continues
         .filter(|e| e.file_type().is_some_and(|t| t.is_file())) // files only — AC-15
-        .filter_map(|e| {
-            e.path()
-                .strip_prefix(root)
-                .ok()
-                .map(|rel| rel.to_string_lossy().into_owned())
-        })
+        .filter_map(|e| e.path().strip_prefix(root).ok().map(rel_to_slash))
         .collect()
+}
+
+/// Render a root-relative path as a forward-slash string on every platform. The rest of the app
+/// (git status/diff/worktree paths, the tree, the content title) speaks git's forward-slash
+/// convention; on Windows the native separator is `\`, so a raw stringification would make the
+/// finder's listing inconsistent with the rest of the UI. Joining the path's `Normal` components
+/// with `/` is identical to today's output on unix (the separator already is `/`) and converts
+/// `a\b` → `a/b` on Windows. It also enforces AC-N5 (root-relative, no `..`/absolute leak) by
+/// construction.
+fn rel_to_slash(rel: &Path) -> String {
+    rel.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
