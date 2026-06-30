@@ -2,6 +2,8 @@
 //! projection. Part of the Session Controller (split out of `controller/mod.rs`, M6).
 
 use super::*;
+// The shared double-click timing rule lives with click handling in the `mouse` submodule.
+use super::mouse::is_double_click;
 
 impl Controller {
     /// The owned finder draw model for the Presenter (AC-1, AC-2, AC-5), or `None` when the finder
