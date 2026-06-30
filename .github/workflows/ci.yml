@@ -55,3 +55,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit --locked
       - run: cargo audit
+
+  # Windows support is preview (AC-19, AC-N2): this job is advisory/non-blocking
+  # (continue-on-error) and deliberately separate from the required `test` matrix above, so a
+  # Windows-only flake can never block an unrelated Linux/macOS PR. Re-evaluate (fold into the
+  # required matrix) once Windows graduates out of preview.
+  windows:
+    name: test (windows-latest, advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        run: cargo test
