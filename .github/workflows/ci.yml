@@ -68,5 +68,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
+      # A release build exercises AC-1 (the crate links for the MSVC target) on every PR, not only
+      # at tag time — so a release-only/target-specific break shows here, not first on a release.
+      - name: build (release)
+        run: cargo build --release
       - name: test
         run: cargo test

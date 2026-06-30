@@ -530,6 +530,14 @@ function Invoke-WebRequest {{
     /// - `serve_binary == false` → the mocked download throws (simulates a 404 / missing asset).
     /// - `corrupt_sums == true`  → the published SHA256SUMS holds a wrong hash (checksum mismatch).
     fn run(version: &str, serve_binary: bool, corrupt_sums: bool) -> Outcome {
+        // Default to the coreutils TEXT-mode two-space separator.
+        run_sep(version, serve_binary, corrupt_sums, "  ")
+    }
+
+    /// Like [`run`], but with an explicit SHA256SUMS hash→filename separator, so a test can feed
+    /// the BINARY-mode ` *` marker that Git-for-Windows `sha256sum` emits on the release runner
+    /// (vs the two-space text form Linux/macOS produce).
+    fn run_sep(version: &str, serve_binary: bool, corrupt_sums: bool, sums_sep: &str) -> Outcome {
         let root = tmp("root-ps1");
         let stub = root.join("bin");
         let server = root.join("server");
@@ -555,7 +563,11 @@ function Invoke-WebRequest {{
         } else {
             real_hash
         };
-        fs::write(server.join("SHA256SUMS"), format!("{hash}  {asset}\n")).unwrap();
+        fs::write(
+            server.join("SHA256SUMS"),
+            format!("{hash}{sums_sep}{asset}\n"),
+        )
+        .unwrap();
         // No COMMIT fixture: FV_REPO_ROOT below is not a git work tree, so the ahead-note path
         // is skipped and the platform/download/verify logic is what's under test (mirrors the
         // sh test's default `run`).
@@ -633,6 +645,25 @@ function Invoke-WebRequest {{
             o.urls.iter().any(|u| u.ends_with("/v1.2.0/SHA256SUMS")),
             "urls: {:?}",
             o.urls
+        );
+    }
+
+    /// (a') the SHA256SUMS line uses the BINARY-mode ` *` marker (what Git-for-Windows
+    /// `sha256sum` emits on the release runner) — the parser must still match it and install the
+    /// verified prebuilt, never fall back to a source build. Regression guard against the
+    /// two-space-only parser that would have made EVERY real Windows install source-build.
+    #[test]
+    fn binary_mode_checksum_marker_still_installs_prebuilt() {
+        let o = run_sep("1.2.0", true, false, " *");
+        assert!(
+            o.installed_prebuilt(),
+            "binary-mode `*` checksum line must still verify; stdout: {}\nstderr: {}",
+            o.stdout,
+            o.stderr
+        );
+        assert!(
+            !o.fell_back(),
+            "must not source-build when the prebuilt's binary-mode `*` line is valid"
         );
     }
 

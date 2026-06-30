@@ -50,12 +50,18 @@ fn the_required_test_matrix_does_not_include_windows() {
 }
 
 #[test]
-fn the_windows_job_runs_cargo_test() {
+fn the_windows_job_builds_release_and_runs_cargo_test() {
     let w = workflow();
     let idx = w
         .find("windows-latest")
         .expect("windows-latest job must exist");
-    let window = &w[idx..(idx + 400).min(w.len())];
+    let window = &w[idx..(idx + 700).min(w.len())];
+    // A release build exercises AC-1 (the crate links for the MSVC target) on every PR; the test
+    // run exercises AC-2/3/4 on real Windows.
+    assert!(
+        window.contains("cargo build --release"),
+        "the windows-latest job must run a release build (AC-1): {window}"
+    );
     assert!(
         window.contains("cargo test"),
         "the windows-latest job must run cargo test: {window}"

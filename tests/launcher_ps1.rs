@@ -25,10 +25,11 @@ fn assert_parses(name: &str) {
     let path = script_path(name);
     assert!(path.is_file(), "{name} must exist at {}", path.display());
 
-    let cmd = format!(
-        "$null = [ScriptBlock]::Create((Get-Content -Raw -LiteralPath '{}'))",
-        path.display()
-    );
+    // Single-quote the path for PowerShell and escape any embedded `'` by doubling it, so a repo
+    // checked out under a path containing a quote can't terminate the literal (defensive — these
+    // are our own fixed-name scripts, but the interpolation should still be robust).
+    let quoted = path.display().to_string().replace('\'', "''");
+    let cmd = format!("$null = [ScriptBlock]::Create((Get-Content -Raw -LiteralPath '{quoted}'))");
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-Command", &cmd])
         .output()

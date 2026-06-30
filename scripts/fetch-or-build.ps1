@@ -141,8 +141,12 @@ if (-not (Invoke-FvDownload $SumsUrl $TmpSums)) { Invoke-FvFallback "checksums n
 # Expected hash = the SHA256SUMS line for our asset filename.
 $Expected = $null
 $assetPattern = [regex]::Escape($Asset)
+# The separator before the filename is `  ` (two spaces, coreutils TEXT mode) on Linux/macOS, but
+# ` *` (one space + `*`, BINARY mode) when the line is produced by Git-for-Windows `sha256sum` on
+# the release runner — accept either marker (`[ *]`), or every Windows install would miss the
+# prebuilt and fall back to a source build (defeats AC-11/12/13).
 Get-Content $TmpSums | ForEach-Object {
-    if (-not $Expected -and $_ -match "^([0-9a-fA-F]{64})  ${assetPattern}`$") {
+    if (-not $Expected -and $_ -match "^([0-9a-fA-F]{64}) [ *]${assetPattern}`$") {
         $Expected = $Matches[1].ToLowerInvariant()
     }
 }

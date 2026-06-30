@@ -304,7 +304,20 @@ fn resolve_editor(editor: Option<OsString>) -> Option<OsString> {
 
 #[cfg(windows)]
 fn resolve_editor(editor: Option<OsString>) -> Option<OsString> {
-    editor.or_else(|| Some(OsString::from("notepad.exe")))
+    editor.or_else(|| {
+        // Default to Notepad, resolved to its ABSOLUTE `System32` path. A bare `notepad.exe`
+        // would be subject to Windows' executable search order — which can include the process
+        // working directory, here an *untrusted* browsed repo — so a `notepad.exe` planted in the
+        // repo could be spawned instead of the system editor, breaking the read-only/no-repo-code
+        // boundary (constitution #1). Resolving via `%SystemRoot%` closes that hole. If
+        // `SystemRoot` is somehow unset, fall back to no editor (a "no editor configured" notice)
+        // rather than a hijackable bare name.
+        let root = std::env::var_os("SystemRoot").filter(|r| !r.is_empty())?;
+        let mut p = std::path::PathBuf::from(root);
+        p.push("System32");
+        p.push("notepad.exe");
+        Some(p.into_os_string())
+    })
 }
 
 /// The live Editor Launcher: spawn `$EDITOR <file>` as a blocking hand-off, suspending and
@@ -543,11 +556,24 @@ mod tests {
         assert_eq!(resolve_editor(None), None);
     }
 
-    /// Windows: an unset `$EDITOR` falls back to a known default (`notepad.exe`).
+    /// Windows: an unset `$EDITOR` falls back to an ABSOLUTE `System32\notepad.exe` (never a
+    /// bare, search-path-hijackable `notepad.exe` — see the seam's security note). `windows-latest`
+    /// always has `%SystemRoot%` set, so the default resolves to a real absolute path.
     #[cfg(windows)]
     #[test]
-    fn resolve_editor_windows_unset_falls_back_to_notepad() {
-        assert_eq!(resolve_editor(None), Some(OsString::from("notepad.exe")));
+    fn resolve_editor_windows_unset_falls_back_to_absolute_notepad() {
+        let got = resolve_editor(None).expect("a default editor on Windows");
+        let p = std::path::Path::new(&got);
+        assert!(
+            p.is_absolute(),
+            "the default editor path is absolute: {got:?}"
+        );
+        assert!(
+            got.to_string_lossy()
+                .to_lowercase()
+                .ends_with("system32\\notepad.exe"),
+            "defaults to System32\\notepad.exe: {got:?}"
+        );
     }
 
     /// A fresh empty temp dir for a test (no tempfile dep — matches the project's hermetic
