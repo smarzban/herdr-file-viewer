@@ -1367,6 +1367,9 @@ impl Controller {
         if span == 0 || total == 0 {
             return Effects::noop();
         }
+        // Its own mapping, not the shared `track_to_offset`: with a single match the finder maps a
+        // drag to index 0 and selects it, whereas `track_to_offset` no-ops at a zero range — a
+        // deliberate difference for the modal list, so the rounding stays inline here.
         let max = (total - 1) as u32;
         let idx = ((rel * max + span / 2) / span) as usize;
         finder.set_cursor(idx);
@@ -1595,6 +1598,21 @@ impl Controller {
         (rel, len.saturating_sub(1) as u32)
     }
 
+    /// Map a press/drag at `pos` on a scrollbar track `[start, start + len)` onto an offset in
+    /// `[0, max]`, rounded to the nearest integer. `None` (the caller no-ops) when the mapping is
+    /// degenerate — a 1-cell track (`span == 0`) or a zero range (`max == 0`). The single
+    /// track→offset rounding rule every linear scrollbar drag shares: a vertical bar passes the
+    /// row + track `y`/`height`, a horizontal bar the col + track `x`/`width`. (The finder maps a
+    /// drag to a *match index* and intentionally differs at the degenerate boundary, so it keeps
+    /// its own mapping — see `finder_scroll_to_row`.)
+    fn track_to_offset(pos: u16, start: u16, len: u16, max: u32) -> Option<u32> {
+        let (rel, span) = Self::track_fraction(pos, start, len);
+        if span == 0 || max == 0 {
+            return None;
+        }
+        Some((rel * max + span / 2) / span)
+    }
+
     /// Map a vertical press/drag on the content scrollbar track to a content scroll offset. The
     /// track is the fed-back `content_vbar` rect; the fraction maps linearly onto
     /// `[0, max_content_scroll]`, rounded to the nearest line. No-op without overflow.
@@ -1602,12 +1620,12 @@ impl Controller {
         let Some(track) = self.geom.content_vbar else {
             return Effects::noop();
         };
-        let max = self.max_content_scroll();
-        let (rel, span) = Self::track_fraction(row, track.y, track.height);
-        if span == 0 || max == 0 {
+        let Some(off) =
+            Self::track_to_offset(row, track.y, track.height, self.max_content_scroll() as u32)
+        else {
             return Effects::noop();
-        }
-        self.content_scroll = ((rel * max as u32 + span / 2) / span) as u16;
+        };
+        self.content_scroll = off as u16;
         Effects::redraw()
     }
 
@@ -1616,12 +1634,12 @@ impl Controller {
         let Some(track) = self.geom.content_hbar else {
             return Effects::noop();
         };
-        let max = self.max_content_hscroll();
-        let (rel, span) = Self::track_fraction(col, track.x, track.width);
-        if span == 0 || max == 0 {
+        let Some(off) =
+            Self::track_to_offset(col, track.x, track.width, self.max_content_hscroll() as u32)
+        else {
             return Effects::noop();
-        }
-        self.content_hscroll = ((rel * max as u32 + span / 2) / span) as u16;
+        };
+        self.content_hscroll = off as u16;
         Effects::redraw()
     }
 
@@ -1631,11 +1649,10 @@ impl Controller {
             return Effects::noop();
         };
         let max = self.geom.tree_content_width.saturating_sub(track.width);
-        let (rel, span) = Self::track_fraction(col, track.x, track.width);
-        if span == 0 || max == 0 {
+        let Some(off) = Self::track_to_offset(col, track.x, track.width, max as u32) else {
             return Effects::noop();
-        }
-        self.tree_hscroll = ((rel * max as u32 + span / 2) / span) as u16;
+        };
+        self.tree_hscroll = off as u16;
         Effects::redraw()
     }
 
@@ -1647,11 +1664,14 @@ impl Controller {
             return Effects::noop();
         };
         let len = self.tree.visible_nodes().len();
-        let (rel, span) = Self::track_fraction(row, track.y, track.height);
-        if span == 0 || len <= 1 {
+        // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None` here,
+        // exactly the old `span == 0 || len <= 1` no-op.
+        let Some(idx) =
+            Self::track_to_offset(row, track.y, track.height, len.saturating_sub(1) as u32)
+        else {
             return Effects::noop();
-        }
-        let idx = ((rel * (len as u32 - 1) + span / 2) / span) as usize;
+        };
+        let idx = idx as usize;
         self.focus = Focus::Tree;
         // A drag fires many events on the same row; only re-select (and re-render the content, an
         // expensive job) when the target actually changes, so a held scrub doesn't re-render the
