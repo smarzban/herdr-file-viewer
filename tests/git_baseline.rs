@@ -4,7 +4,9 @@
 mod common;
 
 use common::{TempDir, git};
-use herdr_file_viewer::git::{Baseline, Status, changed_set, default_baseline, diff, status};
+#[cfg(unix)]
+use herdr_file_viewer::git::status;
+use herdr_file_viewer::git::{Baseline, Status, changed_set, default_baseline, diff};
 use herdr_file_viewer::root::Resolved;
 use std::fs;
 use std::path::{Path, PathBuf};
