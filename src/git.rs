@@ -22,6 +22,14 @@ use std::process::{Command, Stdio};
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+/// The host's null-device token: the untracked-file diff base and the `core.hooksPath`
+/// neutralization target both need a path that always resolves to "discard" — `/dev/null`
+/// on unix, `NUL` on Windows (AC-6).
+#[cfg(unix)]
+const NULL_DEVICE: &str = "/dev/null";
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+
 /// Unified-context window for a full-context (whole-file) diff: a value far larger than any
 /// real file, so every unchanged line is emitted as context around the changes. The output is
 /// bounded by [`MAX_DIFF_BYTES`] (and the render layer's AC-13 cap), so an enormous file's
@@ -232,7 +240,7 @@ pub fn diff(
         ];
         args.extend(unified);
         args.push("--");
-        args.push("/dev/null");
+        args.push(NULL_DEVICE);
         let mut cmd = git_command(repo_root, &args);
         cmd.arg(path);
         return capture_stdout(cmd);
@@ -276,12 +284,9 @@ pub(crate) fn git_command(repo_root: &Path, args: &[&str]) -> Command {
         // repo-planted `filter=<driver>` (clean/smudge) or `diff=<driver>` (textconv)
         // cannot run a configured program during a read-only query.
         .arg(format!("--attr-source={EMPTY_TREE}"))
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
+        .args(["-c", "core.fsmonitor=false"])
+        .arg("-c")
+        .arg(format!("core.hooksPath={NULL_DEVICE}"))
         .args(args);
     cmd
 }
@@ -496,6 +501,37 @@ mod tests {
         assert_eq!(path_from_git_bytes(&bytes), None);
     }
 
+    // ---- NULL_DEVICE: platform null-device seam (AC-6, T-2) --------------------
+
+    /// unix: the null-device token is `/dev/null`.
+    #[cfg(unix)]
+    #[test]
+    fn null_device_is_dev_null_on_unix() {
+        assert_eq!(NULL_DEVICE, "/dev/null");
+    }
+
+    /// Windows: the null-device token is `NUL`.
+    #[cfg(windows)]
+    #[test]
+    fn null_device_is_nul_on_windows() {
+        assert_eq!(NULL_DEVICE, "NUL");
+    }
+
+    /// `git_command`'s `core.hooksPath` hardening uses the same host null-device token as the
+    /// untracked-diff base (both derive from [`NULL_DEVICE`]), so the two callers cannot drift.
+    #[test]
+    fn hooks_path_hardening_uses_the_null_device_constant() {
+        let cmd = git_command(Path::new("/some/repo"), &["status"]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.contains(&format!("core.hooksPath={NULL_DEVICE}")),
+            "hooksPath uses the platform null-device constant: {args:?}"
+        );
+    }
+
     /// The shared hardened builder must apply *every* untrusted-repo guard. This is the
     /// regression guard that keeps the Git Service and the Root Resolver — which now build
     /// their queries through this one function — from silently dropping a protection (AC-N2).
@@ -517,7 +553,7 @@ mod tests {
             "fsmonitor neutralized: {args:?}"
         );
         assert!(
-            args.contains(&"core.hooksPath=/dev/null".to_string()),
+            args.contains(&format!("core.hooksPath={NULL_DEVICE}")),
             "hooks neutralized: {args:?}"
         );
         assert!(
