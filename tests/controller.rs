@@ -3960,7 +3960,10 @@ fn enter_with_match_closes_finder_and_reveals_file_and_redraws() {
         .strip_prefix(ctrl.root())
         .unwrap()
         .to_string_lossy()
-        .into_owned();
+        // Tree node paths are OS-native (`\` on Windows); the finder's index candidates are
+        // forward-slash (git-style, from `index::build`). Compare on the shared forward-slash
+        // form. No-op on unix.
+        .replace('\\', "/");
     assert_eq!(
         selected_rel, selected_path,
         "tree cursor points to the confirmed file (AC-11)"
@@ -4932,7 +4935,10 @@ fn finder_works_fully_in_a_non_git_directory() {
         .strip_prefix(ctrl.root())
         .unwrap()
         .to_string_lossy()
-        .into_owned();
+        // Tree node paths are OS-native (`\` on Windows); the finder's index candidates are
+        // forward-slash (git-style, from `index::build`). Compare on the shared forward-slash
+        // form. No-op on unix.
+        .replace('\\', "/");
     assert_eq!(
         selected_rel, *matched_path,
         "the tree cursor points to the jumped-to file in a non-git root (AC-19)"
