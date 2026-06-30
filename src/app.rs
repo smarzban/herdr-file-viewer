@@ -68,7 +68,7 @@ pub fn run() -> io::Result<()> {
             RootProviders { git, content }
         });
     let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
-        editor: std::env::var_os("EDITOR"),
+        editor: resolve_editor(std::env::var_os("EDITOR")),
     });
     let clipboard: Box<dyn Clipboard> = Box::new(Osc52Clipboard);
 
@@ -291,6 +291,22 @@ impl ContentProvider for LiveContent {
     }
 }
 
+/// Resolve the editor command to use, given `$EDITOR`'s raw value (AC-8 part).
+///
+/// unix: unchanged (AC-3) — a set `$EDITOR` is used as-is; unset stays `None` (the editor
+/// hand-off then reports "no editor configured", today's behaviour). Windows: a set `$EDITOR`
+/// is likewise used as-is; unset falls back to a known default (`notepad.exe`, always present
+/// on Windows) instead of leaving the hand-off unconfigured.
+#[cfg(not(windows))]
+fn resolve_editor(editor: Option<OsString>) -> Option<OsString> {
+    editor
+}
+
+#[cfg(windows)]
+fn resolve_editor(editor: Option<OsString>) -> Option<OsString> {
+    editor.or_else(|| Some(OsString::from("notepad.exe")))
+}
+
 /// The live Editor Launcher: spawn `$EDITOR <file>` as a blocking hand-off, suspending and
 /// restoring the TUI around it. A missing `$EDITOR` is a non-fatal error the controller
 /// surfaces as a notice.
@@ -508,6 +524,31 @@ fn default_renderers() -> Renderers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- resolve_editor: default-editor platform seam (AC-8, T-5) --------------
+
+    /// A set `$EDITOR` is always used as-is, on every platform.
+    #[test]
+    fn resolve_editor_passes_through_a_set_value() {
+        assert_eq!(
+            resolve_editor(Some(OsString::from("vim"))),
+            Some(OsString::from("vim"))
+        );
+    }
+
+    /// unix: an unset `$EDITOR` stays `None` (today's behaviour, unchanged — AC-3).
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_editor_unix_unset_stays_none() {
+        assert_eq!(resolve_editor(None), None);
+    }
+
+    /// Windows: an unset `$EDITOR` falls back to a known default (`notepad.exe`).
+    #[cfg(windows)]
+    #[test]
+    fn resolve_editor_windows_unset_falls_back_to_notepad() {
+        assert_eq!(resolve_editor(None), Some(OsString::from("notepad.exe")));
+    }
 
     /// A fresh empty temp dir for a test (no tempfile dep — matches the project's hermetic
     /// test style). Distinct per `tag` so parallel unit tests don't collide.
