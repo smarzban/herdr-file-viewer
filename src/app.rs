@@ -324,7 +324,7 @@ impl EditorHandoff for LiveEditor {
         }
         if let Some(e) = launched_err {
             // Distinguish a launch failure from a successful launch that exited non-zero
-            // (SMA-344): only NotLaunched is reported as "could not open editor".
+            //: only NotLaunched is reported as "could not open editor".
             return match e {
                 SpawnError::NotLaunched(e) => EditorOutcome::NotLaunched(e.to_string()),
                 SpawnError::NonZeroExit(detail) => EditorOutcome::NonZeroExit(detail),
@@ -400,7 +400,7 @@ impl Spawner for ProcessSpawner {
             .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty editor command")))?;
         // A failed `Command::status` (e.g. the binary is not on PATH) is a launch failure —
         // the editor never ran. Map it through `NotLaunched` so the controller words the
-        // notice as "could not open editor" rather than as an editor exit (SMA-344).
+        // notice as "could not open editor" rather than as an editor exit.
         let status = Command::new(prog)
             .args(args)
             .status()

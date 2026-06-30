@@ -1,4 +1,4 @@
-//! T-23 — e2e (pty): in a plain (non-git) directory the viewer degrades to a working file
+//! e2e (pty): in a plain (non-git) directory the viewer degrades to a working file
 //! browser — the tree lists files and a file renders — while the git-only keys (changed-only,
 //! baseline) are inert and never error (AC-26).
 

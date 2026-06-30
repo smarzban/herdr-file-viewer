@@ -95,7 +95,7 @@ pub trait ContentProvider: Send {
 }
 
 /// The outcome of an editor hand-off (AC-19). Distinguishing the failure modes lets the
-/// controller word its user-facing notice correctly (SMA-344):
+/// controller word its user-facing notice correctly:
 /// - [`EditorOutcome::TookOver`] — the editor ran and drew over the terminal; the run loop
 ///   must force a full repaint afterwards.
 /// - [`EditorOutcome::NoTakeover`] — the hand-off returned without a terminal takeover (no
@@ -124,7 +124,7 @@ pub enum EditorOutcome {
 }
 
 /// Why the content pane is empty — selects the empty-state copy shown instead of a blank
-/// pane (SMA-345). A directory has nothing to render; an empty/zero-match tree (no files, or
+/// pane. A directory has nothing to render; an empty/zero-match tree (no files, or
 /// a filter — changed-only / gitignore / hidden — that matched nothing) leaves no selection.
 /// The label is a short, first-party, control-byte-free string rendered through the normal
 /// content path (no AC-27 sanitization needed for static first-party text).
@@ -146,7 +146,7 @@ impl EmptyReason {
 }
 
 /// Hand the selected file to an external editor (AC-19). Behind a trait so tests launch
-/// nothing; see [`EditorOutcome`] for the distinguished failure modes (SMA-344).
+/// nothing; see [`EditorOutcome`] for the distinguished failure modes.
 pub trait EditorHandoff {
     fn open(&mut self, file: &Path) -> EditorOutcome;
 }
@@ -270,7 +270,7 @@ pub struct Controller {
     content: Text<'static>,
     content_notices: Vec<String>,
     /// The path of the file whose content is currently displayed in the pane — the title's
-    /// source of truth, so the border label switches in lockstep with the body (SMA-342). `None`
+    /// source of truth, so the border label switches in lockstep with the body. `None`
     /// while no file's content has landed yet (launch, a re-root, or a directory/empty tree
     /// selection — the title then falls back to the selected node's name or "Content"). Updated
     /// only by [`poll`](Self::poll) when a render result is applied, and cleared by
@@ -281,7 +281,7 @@ pub struct Controller {
     /// sends a `RenderJob`, cleared when [`poll`](Self::poll) applies the matching result (and
     /// by [`clear_content`](Self::clear_content), which sends no job). The Presenter uses this
     /// to pick a neutral title while the body shows the loading placeholder, so the title never
-    /// jumps to a freshly-selected file before its content arrives (SMA-342).
+    /// jumps to a freshly-selected file before its content arrives.
     content_rendering: bool,
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
@@ -599,7 +599,7 @@ impl Controller {
         self.overrides.clear();
         // The old root's rendered content is invalid under the new root — drop the displayed-file
         // path so the title falls back to a neutral label until the new selection's render lands
-        // (SMA-342). `dispatch_render` below sets `content_rendering` and the loading placeholder.
+        //. `dispatch_render` below sets `content_rendering` and the loading placeholder.
         self.content_path = None;
         self.action_notice = None;
         self.changed = BTreeMap::new();
@@ -876,7 +876,7 @@ impl Controller {
                 .unwrap_or_default(),
             branch: self.current_branch.clone(),
             prompt: self.bottom_line(),
-            // SMA-342: the content pane's border title. `content_path` is the displayed content's
+            // the content pane's border title. `content_path` is the displayed content's
             // file (set by `poll` when a render lands, cleared by `clear_content`/re-root), so the
             // title switches in lockstep with the body — it never jumps to a freshly-selected file
             // before that file's content arrives. `None` while no file's content has landed (launch,
@@ -1991,7 +1991,7 @@ impl Controller {
             }
             EditorOutcome::NoTakeover => Effects::redraw(), // hand-off without a terminal takeover
             EditorOutcome::NotLaunched(reason) => {
-                // The editor never ran: report the launch failure (SMA-344). The hand-off may
+                // The editor never ran: report the launch failure. The hand-off may
                 // have suspended the terminal before failing, so force a full repaint to
                 // recover from any partial screen state.
                 self.action_notice = Some(format!("Could not open editor: {reason}"));
@@ -2002,7 +2002,7 @@ impl Controller {
                 }
             }
             EditorOutcome::NonZeroExit(detail) => {
-                // The editor DID run and exited non-zero (SMA-344): the terminal was handed
+                // The editor DID run and exited non-zero: the terminal was handed
                 // over, so the file may have changed and a full repaint is still needed — but
                 // this is not a launch failure, so the notice says so (and stays silent-free
                 // for callers that treat a non-zero exit as benign by returning TookOver).
@@ -2901,17 +2901,17 @@ impl Controller {
 
         let Some(node) = self.tree.selected() else {
             // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
-            // that matched nothing. Show guidance instead of a blank pane (SMA-345).
+            // that matched nothing. Show guidance instead of a blank pane.
             return self.clear_content(EmptyReason::NoFiles);
         };
         if node.kind != NodeKind::File {
             // A directory is selected — it has no content to render; show guidance so
-            // the pane is not a blank void (SMA-345).
+            // the pane is not a blank void.
             return self.clear_content(EmptyReason::Directory);
         }
         let mode = self.effective_mode(&node.path);
         let rel = self.rel(&node.path);
-        // SMA-342: a slow render used to leave the PREVIOUS file's body visible under the NEW
+        // a slow render used to leave the PREVIOUS file's body visible under the NEW
         // selection's title (the title is derived from the tree cursor, which moves immediately,
         // while the body arrives off-thread). Show a loading placeholder for the body now and
         // mark a render in flight; `content_path` (the title's source of truth) is NOT touched
@@ -2934,7 +2934,7 @@ impl Controller {
     }
 
     /// Clear the content pane, showing empty-state guidance instead of a blank pane
-    /// (SMA-345). The reason selects the copy: a directory selection vs. an empty/zero-match
+    ///. The reason selects the copy: a directory selection vs. an empty/zero-match
     /// tree. The strings are static and first-party, so they need no AC-27 sanitization (they
     /// carry no control bytes); they flow through the same content path the renderer uses.
     fn clear_content(&mut self, reason: EmptyReason) {
@@ -2942,7 +2942,7 @@ impl Controller {
         self.content_notices.clear();
         // No file content is displayed for a directory/empty tree, and no render is in flight
         // (this path sends no `RenderJob`), so the title falls back to the selected node's name
-        // (SMA-342).
+        //.
         self.content_path = None;
         self.content_rendering = false;
     }
@@ -2957,7 +2957,7 @@ impl Controller {
                 self.content = result.content;
                 self.content_notices = result.notices;
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
-                // SMA-342: the body has landed — now switch the title to match it. The latest
+                // the body has landed — now switch the title to match it. The latest
                 // dispatched render always corresponds to the current tree selection (every
                 // selection change calls `dispatch_render`), so the applied result's file is the
                 // selected node. A stale result for a superseded selection was dropped above by

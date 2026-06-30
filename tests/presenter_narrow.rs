@@ -1,4 +1,4 @@
-//! T-15 — Presenter: narrow-split focus-toggle (< 80 cols), AC-21.
+//! Presenter: narrow-split focus-toggle (< 80 cols), AC-21.
 //! Under 80 columns the focused column takes the full width and the other is hidden;
 //! at ≥ 80 columns both columns are shown.
 
@@ -94,7 +94,7 @@ fn narrow_content_focus_gives_content_full_width_and_hides_tree() {
 
 #[test]
 fn zoom_overrides_narrow_layout_and_fills_with_content() {
-    // review-gate R1: zoom hides the tree even below the 80-col narrow threshold and with the
+    // zoom hides the tree even below the 80-col narrow threshold and with the
     // tree focused — the content pane fills the frame regardless of width or focus.
     let mut st = state(60, Focus::Tree);
     st.zoomed = true;

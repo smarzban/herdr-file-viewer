@@ -1,4 +1,4 @@
-//! T-3 — Root Resolver: tree root + git-presence detection (AC-1, AC-2, AC-26).
+//! Root Resolver: tree root + git-presence detection (AC-1, AC-2, AC-26).
 
 mod common;
 

@@ -1,5 +1,5 @@
-//! T-8 — Tree Model perf: launch is interactive within 1s on a 10k-file repo (AC-22).
-//! A guard that lazy enumeration (T-6) is preserved — eager enumeration would blow this.
+//! Tree Model perf: launch is interactive within 1s on a 10k-file repo (AC-22).
+//! A guard that lazy enumeration is preserved — eager enumeration would blow this.
 
 mod common;
 

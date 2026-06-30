@@ -20,7 +20,7 @@ use crate::search::Match;
 pub const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Cyan);
 
 /// Style applied to the **current** match — visually distinct from `HIGHLIGHT` AND distinguishable
-/// with color stripped (SMA-346): `REVERSED` inverts whatever the terminal theme is (so the active
+/// with color stripped: `REVERSED` inverts whatever the terminal theme is (so the active
 /// position still reads on a non-default palette or to a colorblind user) and `BOLD` adds a weight
 /// cue on top. Previously this was `Black` on `Yellow` — color-only, so a non-default theme or a
 /// colorblind user could lose the "which match am I on" signal entirely. `REVERSED` is theme-relative:

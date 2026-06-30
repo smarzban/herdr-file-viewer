@@ -1,4 +1,4 @@
-//! T-21 — e2e (pty): the viewer is fully keyboard-operable (AC-18). We drive ONLY the
+//! e2e (pty): the viewer is fully keyboard-operable (AC-18). We drive ONLY the
 //! keyboard over a pseudo-terminal — no mouse — exercising every viewer function, and
 //! confirm a clean exit (a key that panicked the run loop would fail the exit assertion).
 //!
@@ -293,7 +293,7 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     }
 }
 
-/// T-5 — go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
+/// go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
 /// typing a line number and Enter scrolls the content to that line (AC-3 jump + AC-21 routing);
 /// pressing `:` on a RenderedMarkdown file ALSO opens the prompt (AC-7 revised — it opens in every
 /// view; the switch-then-jump on confirm is proven by the controller unit test).
@@ -410,7 +410,7 @@ fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
     }
 }
 
-/// T-13 — AC-21 e2e oracle: while the search prompt is open, printable keys edit the query and
+/// AC-21 e2e oracle: while the search prompt is open, printable keys edit the query and
 /// do NOT trigger viewer actions (e.g. `j` does not move the tree cursor); `n`/`N` cycle after
 /// commit; Esc closes the prompt and restores.
 ///

@@ -1,4 +1,4 @@
-//! T-10 — Content Renderer: escape-sequence neutralization (AC-27).
+//! Content Renderer: escape-sequence neutralization (AC-27).
 
 use herdr_file_viewer::render::to_text;
 use ratatui::text::Text;

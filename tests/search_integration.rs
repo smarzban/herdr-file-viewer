@@ -1,9 +1,9 @@
-//! T-13 — All-modes / smartcase / truncation integration + search e2e.
+//! All-modes / smartcase / truncation integration + search e2e.
 //!
 //! Proves the search subsystem end-to-end through the controller:
 //!
 //! - **AC-13** — search finds text as displayed in every view mode (RenderedMarkdown, Diff,
-//!   SyntaxContent). Because the search reads `content.lines` plain text (T-9), it is
+//!   SyntaxContent). Because the search reads `content.lines` plain text, it is
 //!   view-agnostic — we prove it across modes by steering the view-policy with the right file
 //!   extension and git-status metadata.
 //!

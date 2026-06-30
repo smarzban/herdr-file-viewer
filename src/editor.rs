@@ -14,7 +14,7 @@ use std::path::Path;
 /// the editor never ran (e.g. the binary is not on `PATH`) — "could not open editor"; a
 /// [`SpawnError::NonZeroExit`] means the editor *did* run and returned a failing status —
 /// "editor exited with …" (a non-zero vim exit is often benign, so it must not be reported
-/// as a launch failure). See SMA-344.
+/// as a launch failure).
 #[derive(Debug)]
 pub enum SpawnError {
     /// The editor process could not be started at all (binary missing, permission denied,
@@ -40,7 +40,7 @@ pub trait Spawner {
     /// Run a local command for the editor hand-off (`argv[0]` is the program). The result
     /// distinguishes a launch failure ([`SpawnError::NotLaunched`]) from a successful launch
     /// that exited non-zero ([`SpawnError::NonZeroExit`]) so the caller can report each case
-    /// accurately (SMA-344).
+    /// accurately.
     fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError>;
 }
 

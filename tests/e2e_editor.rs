@@ -1,4 +1,4 @@
-//! T-22 — e2e (pty): the open-in-editor hand-off launches the configured `$EDITOR` on the
+//! e2e (pty): the open-in-editor hand-off launches the configured `$EDITOR` on the
 //! selected file and never mutates it (AC-19, AC-N1). The "editor" is a recording shell
 //! script that writes the path it was given to a file and exits — so the assertion is a
 //! filesystem check, independent of any terminal-screen parsing.

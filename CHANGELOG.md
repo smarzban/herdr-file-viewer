@@ -13,19 +13,19 @@ All notable changes to this project are documented here. The format is based on
   for it. New `H` (Shift+`h`) and `L` (Shift+`l`) intents scroll the tree left/right by the same
   step the mouse wheel uses, clamped to the measured max (mirroring the content pane's `←`/`→`
   h-scroll). Inert unless the tree is focused, so the keys never fight the content pane's own
-  horizontal scroll. The lowercase `h`/`l` stay Collapse/Expand — no collision. (SMA-347)
+  horizontal scroll. The lowercase `h`/`l` stay Collapse/Expand — no collision.
 - **Discoverability: a `? help` hint on the content pane's bottom border.** A new user no
   longer has to guess that `?` opens the help overlay — a right-aligned `? help` segment now
   rides the content block's bottom border, visible on the default screen without opening any
   modal. One short segment; it shares the border row (not the layout), so it never crowds the
-  content or steals a row. Sanitized + clipped like the other border titles (AC-27). (SMA-345)
+  content or steals a row. Sanitized + clipped like the other border titles (AC-27).
 - **Empty-state guidance for blank panes.** Selecting a directory now shows
   `Directory — select a file to view` in the content pane (instead of a blank void), and an
   empty / zero-match tree (no files, or a filter — changed-only / gitignore / hidden — that
-  matched nothing) shows `No files`. The copy flows through the normal content path. (SMA-345)
+  matched nothing) shows `No files`. The copy flows through the normal content path.
 
 ### Changed
-- **Non-color cues alongside color-only signalling (SMA-346).** Several key UI states were
+- **Non-color cues alongside color-only signalling.** Several key UI states were
   conveyed by color alone, so a colorblind user or a non-default terminal theme could lose the
   signal entirely. Each now carries a non-color cue too:
   - **Dirty directory** — the tree's `▾ dir` row for a directory containing a git change now shows
@@ -50,7 +50,7 @@ All notable changes to this project are documented here. The format is based on
   `docs/renderers.md` for the not-found case — instead of the raw OS error string (e.g.
   `No such file or directory (os error 2)`, which told you nothing you could act on). AC-24/AC-25
   plain-text-plus-notice fallback is unchanged; the raw detail is retained behind a future
-  debug/verbose path, not the default notice. (SMA-343)
+  debug/verbose path, not the default notice.
 - **Editor hand-off now distinguishes a launch failure from a non-zero editor exit.** Previously
   any error from `open_in_editor` surfaced as `"Could not open editor: …"`, so a successful
   launch that exited non-zero (e.g. a vim exit code) was misleadingly reported as a launch
@@ -60,11 +60,11 @@ All notable changes to this project are documented here. The format is based on
   a launch failure still says `"Could not open editor: {reason}"`, while a non-zero exit says
   `"Editor exited with {detail}"` and still refreshes git state and forces a full repaint (the
   editor did take the terminal). A new `SpawnError` enum at the `Spawner` boundary keeps
-  `LiveEditor`/`ProcessSpawner` the only place that knows about `std::process`. (SMA-344)
+  `LiveEditor`/`ProcessSpawner` the only place that knows about `std::process`.
 - Extracted the duplicated `wait_bounded` subprocess reaper (child wait + poll + timeout-kill)
   from `render.rs` and `update/mod.rs` into one shared `src/proc.rs` helper. Pure dedup — no
-  behavior change; the total wall-clock timeout bound is unchanged (the 4/4-model audit
-  finding, security-adjacent).
+  behavior change; the total wall-clock timeout bound is unchanged (the audit's
+  highest-agreement finding, security-adjacent).
 - Documented `git` as a runtime requirement in `docs/install.md` (the git-aware tree + diff
   views shell out to the system `git` CLI; without it those features degrade but the viewer
   still opens). Also corrected the `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` wording: any value (the
@@ -82,18 +82,19 @@ All notable changes to this project are documented here. The format is based on
   step selects the prebuilt by **declared version match**, not commit exactness; the published
   `COMMIT` marker is informational only (used to note when the checkout is ahead of the
   released binary).
-- Swept `src/**` comments clean of internal build-process references (`T-N`, `SMA-N`,
-  `review-gate R[N]`) and corrected the stale "search keystrokes are no-ops" comment in
-  `controller.rs` (in-file search is fully implemented). No code behavior changed.
+- Swept `src/**` and `tests/**` comments clean of internal build-process references (issue
+  IDs, plan task IDs, and review notes) and corrected the stale "search keystrokes are no-ops"
+  comment in `controller.rs` (in-file search is fully implemented). No code behavior changed.
 - `CHANGELOG.md`: added the missing `[1.1.0]`–`[1.6.0]` release-tag link references (only
   `[1.0.0]` had one).
-- **Test timing hardening (SMA-334/335/336/337):** added a `perf` cargo feature to gate the
+- **Test timing hardening:** added a `perf` cargo feature to gate the
   absolute-stopwatch perf-budget tests (`render_perf`, `tree_perf`, the `reroot` AC-17 budget)
   off the default PR lane — a plain `cargo test` no longer runs them (they flake on a loaded
   shared runner for reasons unrelated to a regression); run via `cargo test --features perf`.
-  Rewrote `search_perf` and `index_perf` as **relative-scaling** asserts (`time(2N) < ~3×
-  time(N)`, modelled on the `render.rs` `mul_f32(1.5)` exemplar) so they catch an O(n²)
-  regression without flaking on a 2–3× slower machine — these run on the default lane. Replaced
+  Rewrote `search_perf` and `index_perf` as **relative-scaling** asserts (`time(2N) < ~4×
+  time(N)`, with a minimum-base floor below which a small absolute bound applies, modelled on
+  the `render.rs` `mul_f32(1.5)` exemplar) so they catch an O(n²) regression without flaking on
+  a 2–3× slower machine — these run on the default lane. Replaced
   the pty e2e tests' fixed `thread::sleep` "screen is ready" assumptions with `expectrl`
   wait-for-content (`expect` on the prompt/overlay label the next key depends on), eliminating
   the torn-read flake class; the deliberate Esc inter-byte gaps and terminal-resume settles are
@@ -101,12 +102,12 @@ All notable changes to this project are documented here. The format is based on
   `#[ignore]` e2e tests (`e2e_help`, `e2e_editor`) are retained with their existing rationale —
   they may now pass on macOS CI after the timing fix, but that can only be confirmed on the
   macOS CI matrix, so the ignores stay until verified.
-- **Test coverage (SMA-338/339/340/341):** strengthened `no_handled_intent_mutates_the_filesystem`
+- **Test coverage:** strengthened `no_handled_intent_mutates_the_filesystem`
   so it routes every `Intent::ALL` variant through the real handler (closing any modal an intent
   opened before the next iteration, so guards don't short-circuit the dispatch) and asserts a
   content-aware FS/git snapshot — the read-only invariant (AC-N1/N2) is now genuinely exercised.
-  Added a modal × intent cross-product guard matrix (5 modal states × all 28 intents = 140 pairs)
-  driving off `Intent::ALL` so a new intent variant is auto-covered — asserts modal isolation
+  Added a modal × intent cross-product guard matrix (5 modal states × every `Intent::ALL`
+  variant) driving off `Intent::ALL` so a new intent variant is auto-covered — asserts modal isolation
   (AC-5/AC-6), no second modal opens, tree/FS unchanged. Extracted the git porcelain/diff parser
   into testable helpers (`parse_porcelain_status`, `parse_name_status`) and added table-driven
   unit tests for malformed/truncated input, rename/copy edge cases, unknown status codes, and
@@ -125,7 +126,7 @@ All notable changes to this project are documented here. The format is based on
   shows a `Rendering…` loading placeholder (and the title stays on the previously-displayed file,
   or a neutral `Content` label at launch / after a re-root when no content has landed yet). The
   existing `latest_seq`/`applied_seq` supersession already keyed stale-result dropping, so a
-  superseded render result (the user moved on) still does not overwrite the pane. (SMA-342)
+  superseded render result (the user moved on) still does not overwrite the pane.
 
 ## [1.6.0] - 2026-06-28
 

@@ -1,7 +1,7 @@
-//! T-6 — Tree Model: gitignore-aware recursive enumeration + root boundary
+//! Tree Model: gitignore-aware recursive enumeration + root boundary
 //! (AC-3, AC-4, AC-N5, AC-N1).
 //!
-//! T-4 — Tree Model `reveal(path)` (AC-10, AC-20, AC-N5).
+//! Tree Model `reveal(path)` (AC-10, AC-20, AC-N5).
 
 mod common;
 
@@ -142,7 +142,7 @@ fn dotfiles_are_browsable_but_dot_git_is_hidden() {
     assert!(!n.contains(&".git".to_string()), ".git is hidden");
 }
 
-// ── T-4: reveal(path) ────────────────────────────────────────────────────────
+// ── reveal(path) ────────────────────────────────────────────────────────
 
 /// (a) Collapse all, reveal a deep file → ancestors expanded and target selected (AC-10).
 #[test]

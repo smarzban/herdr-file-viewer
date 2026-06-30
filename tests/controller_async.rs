@@ -1,4 +1,4 @@
-//! T-19 — Session Controller: off-thread rendering (AC-23). A select intent must dispatch
+//! Session Controller: off-thread rendering (AC-23). A select intent must dispatch
 //! the (potentially slow) content render to a worker thread so `handle()` returns promptly
 //! and never blocks input; the rendered content then arrives as a later effect, drained by
 //! `poll()`. A deliberately slow renderer stub stands in for glow/delta/bat.
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The loading placeholder shown in the content pane while an off-thread render is in flight
-/// (SMA-342). Spelled with the ellipsis here so a change to the placeholder string in
+///. Spelled with the ellipsis here so a change to the placeholder string in
 /// `dispatch_render` is caught by the tests that assert it appears.
 const LOADING_PLACEHOLDER: &str = "Rendering\u{2026}";
 
@@ -337,7 +337,7 @@ fn a_panicking_renderer_is_contained_and_the_worker_survives() {
     }
 }
 
-/// SMA-342: while an off-thread render for a newly-selected file is in flight, the content pane
+/// while an off-thread render for a newly-selected file is in flight, the content pane
 /// must show a loading placeholder (NOT the previous file's body), and the content title must NOT
 /// jump to the new file before its body arrives — title and body switch together when the render
 /// result lands. A superseded render result (user moved on) must not overwrite the pane.
@@ -401,7 +401,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
         flatten(ctrl.content()),
         LOADING_PLACEHOLDER,
         "while a render is in flight the pane shows the loading placeholder, not the previous \
-         file's body (SMA-342)"
+         file's body"
     );
     // (b) The title has NOT jumped to b.rs ahead of its body — it still names the displayed
     //     content's file (a.rs).
@@ -409,7 +409,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
         ctrl.view_state().content_title.as_deref(),
         Some("a.rs"),
         "the content title does not update ahead of the body — it stays on the displayed file \
-         (a.rs) until b.rs's render lands (SMA-342)"
+         (a.rs) until b.rs's render lands"
     );
 
     // Drain poll until b.rs's render lands. The body and the title switch together.
@@ -432,11 +432,11 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
     assert_eq!(
         ctrl.view_state().content_title.as_deref(),
         Some("b.rs"),
-        "the title switched to b.rs together with its body (SMA-342)"
+        "the title switched to b.rs together with its body"
     );
 }
 
-/// SMA-342: a superseded render result (the user navigated on before it landed) must not
+/// a superseded render result (the user navigated on before it landed) must not
 /// overwrite the loading placeholder nor the current pane — it's dropped by the seq guard in
 /// `poll`. Two back-to-back selects leave only the LATEST file's render eligible to land.
 #[test]
@@ -507,6 +507,6 @@ fn a_superseded_render_does_not_overwrite_the_loading_placeholder_nor_the_pane()
     assert_eq!(
         flatten(ctrl.content()),
         "rendered:c.rs",
-        "a superseded render (b.rs) must not overwrite the newer selection (c.rs) — SMA-342"
+        "a superseded render (b.rs) must not overwrite the newer selection (c.rs)"
     );
 }

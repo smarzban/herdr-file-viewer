@@ -1,4 +1,4 @@
-//! T-16 — Editor Launcher: hand-off to an external editor (AC-19, AC-N1).
+//! Editor Launcher: hand-off to an external editor (AC-19, AC-N1).
 //! The spawner is injected and records requests; nothing is really launched, and the file
 //! on disk is never written by the hand-off.
 
@@ -14,7 +14,7 @@ use std::io;
 struct FakeSpawner {
     spawned: Vec<Vec<OsString>>,
     fail: bool,
-    /// When set, the spawn "launches" but exits with this non-zero status string (SMA-344).
+    /// When set, the spawn "launches" but exits with this non-zero status string.
     non_zero_exit: Option<String>,
 }
 
@@ -98,7 +98,7 @@ fn launch_failure_is_an_error_not_a_panic_and_leaves_the_file_intact() {
 
 #[test]
 fn a_non_zero_editor_exit_is_distinguished_from_a_launch_failure() {
-    // SMA-344: a successful launch that exits non-zero must surface as
+    // a successful launch that exits non-zero must surface as
     // `SpawnError::NonZeroExit` (so the controller can say "editor exited with …"), NOT as a
     // `NotLaunched` launch failure — the editor DID run.
     let dir = TempDir::new();

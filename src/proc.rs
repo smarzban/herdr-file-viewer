@@ -3,7 +3,7 @@
 //! The single place that knows how to wait for a child process with a bounded
 //! wall-clock budget and kill/reap it if it overruns. Used by the content
 //! renderer (`render.rs`) and the update check (`update/mod.rs`) so the
-//! timeout-kill semantics are defined once (audit: 4/4 models, security-adjacent).
+//! timeout-kill semantics are defined once.
 
 use std::process::Child;
 use std::time::Duration;

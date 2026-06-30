@@ -1,4 +1,4 @@
-//! T-20 — main wiring smoke test over a real pty (AC-17 launch behavior, AC-20 close).
+//! main wiring smoke test over a real pty (AC-17 launch behavior, AC-20 close).
 //! Spawns the *built* binary in a temp dir, asserts it draws the file tree, then presses
 //! the close key and asserts a clean exit(0). External renderers (glow/delta/bat) need not
 //! be installed — the Content Renderer falls back to plain text, and the tree draws either

@@ -1,4 +1,4 @@
-//! T-9 — e2e (pty): the in-app help overlay is a true keyboard modal (AC-20, AC-21 backing).
+//! e2e (pty): the in-app help overlay is a true keyboard modal (AC-20, AC-21 backing).
 //! We drive ONLY the keyboard over a pseudo-terminal — mirroring `tests/e2e_keyboard.rs`'s
 //! launch idiom, key sends (Esc as `\u{1b}`), screen reads, and timing — and prove that while
 //! `?` is open: (1) the overlay is shown, and (2) a key that WOULD move the tree (`j` = NavDown

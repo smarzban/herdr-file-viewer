@@ -1,6 +1,6 @@
-//! T-12 — Content Renderer perf: the in-process portion (classify + ANSI ingest) of a
+//! Content Renderer perf: the in-process portion (classify + ANSI ingest) of a
 //! 1 MB file stays within the AC-23 300 ms responsiveness bound. The external renderer
-//! runs off-thread (T-19); this guards the part that runs on the UI path.
+//! runs off-thread; this guards the part that runs on the UI path.
 
 mod common;
 

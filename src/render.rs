@@ -281,7 +281,7 @@ fn delegate(
             // Map the typed failure to a short, actionable notice. The raw OS errno / io::Error
             // detail is kept on the error but NOT surfaced in the default notice — a user can't
             // act on "No such file or directory (os error 2)", but can act on "renderer (glow)
-            // not found; install it or see docs/renderers.md" (SMA-343, AC-24/25).
+            // not found; install it or see docs/renderers.md" (AC-24/25).
             let fallback = err.notice(capability(mode));
             let notice = match base_notice {
                 Some(prev) => format!("{prev}\n{fallback}"),
@@ -293,10 +293,10 @@ fn delegate(
 }
 
 /// A typed renderer failure, so the fallback notice can branch on the failure *kind* rather
-/// than string-matching a raw error (SMA-343). The raw detail is retained for a future
+/// than string-matching a raw error. The raw detail is retained for a future
 /// debug/verbose path but is kept out of the user-facing notice.
 #[derive(Debug)]
-#[allow(dead_code)] // `detail` is retained for a future debug/verbose path (SMA-343).
+#[allow(dead_code)] // `detail` is retained for a future debug/verbose path.
 enum RendererError {
     /// The renderer binary could not be found (spawn returned `ErrorKind::NotFound`).
     NotFound { prog: String, detail: String },
@@ -310,7 +310,7 @@ enum RendererError {
 impl RendererError {
     /// Build the user-facing fallback notice for this failure kind, naming the capability
     /// (`cap`) the renderer was meant to provide. Never includes a raw OS errno or
-    /// `io::Error` Debug string (SMA-343).
+    /// `io::Error` Debug string.
     fn notice(&self, cap: &str) -> String {
         match self {
             RendererError::NotFound { prog, .. } => format!(
@@ -371,7 +371,7 @@ fn run_renderer(
         .map_err(|e| {
             // A spawn failure is almost always "binary not installed" — branch on the OS error
             // kind so the notice can name the binary and point to remediation, instead of
-            // leaking the raw "No such file or directory (os error 2)" (SMA-343).
+            // leaking the raw "No such file or directory (os error 2)".
             if e.kind() == std::io::ErrorKind::NotFound {
                 RendererError::NotFound {
                     prog: prog.clone(),

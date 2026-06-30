@@ -1,4 +1,4 @@
-//! T-4 — herdr query seam: `HerdrCli` + `LiveHerdr` + `CommandRunner` (AC-3, AC-15).
+//! herdr query seam: `HerdrCli` + `LiveHerdr` + `CommandRunner` (AC-3, AC-15).
 //! Tests are hermetic — nothing is really spawned.
 
 use herdr_file_viewer::herdr::{CommandRunner, HerdrCli, LiveHerdr};

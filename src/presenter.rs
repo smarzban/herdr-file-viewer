@@ -97,14 +97,14 @@ pub struct ViewState {
     pub branch: Option<String>,
     /// The content pane's border title, derived from the displayed content's file path (not the
     /// live tree cursor), so the title switches in lockstep with the body — it never shows a
-    /// freshly-selected file's name before that file's content arrives (SMA-342). `None` while no
+    /// freshly-selected file's name before that file's content arrives. `None` while no
     /// file's content has landed yet (launch, a re-root, or a directory/empty selection); the
     /// Presenter then falls back to the selected node's name (a directory) or "Content" — unless
     /// [`content_rendering`](Self::content_rendering) is set, in which case it uses a neutral
     /// "Content" label so the title doesn't jump to the still-loading selection.
     pub content_title: Option<String>,
     /// True while an off-thread render for a file is in flight. The Presenter uses this to pick a
-    /// neutral title while the body shows the loading placeholder (SMA-342).
+    /// neutral title while the body shows the loading placeholder.
     pub content_rendering: bool,
     /// When `Some`, the content pane is drawn through [`crate::highlight::apply`] to overlay
     /// match highlights on top of the rendered text (AC-9, AC-11). `None` ⇒ draw the content
@@ -134,7 +134,7 @@ pub struct PickerRowView {
     /// The branch name, or `None` when HEAD is detached.
     pub branch: Option<String>,
     /// `true` when HEAD is detached (no branch) — shown as a detached marker, never an empty
-    /// branch (AC-2, gate L-1).
+    /// branch (AC-2).
     pub detached: bool,
     /// `true` when this is the worktree the viewer is currently rooted at — rendered as a leading
     /// "current" marker, distinct from the selection cursor (AC-18).
@@ -201,7 +201,7 @@ pub struct HelpView {
     pub center: bool,
 }
 
-/// The single-character git-status marker shown beside a tree row (AC-7, SMA-346).
+/// The single-character git-status marker shown beside a tree row (AC-7).
 ///
 /// Files carry their git status letter (`M`/`A`/`D`/`?`); a directory containing any change carries
 /// `●` so the "dirty directory" state is distinguishable with color stripped — previously it was
@@ -556,7 +556,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
 /// Draw the right column: a notices strip (if any) above the content pane. Returns the
 /// content viewport `(width, height)` so the controller can clamp scrolling to it.
 fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) {
-    // SMA-342: the title is derived from the DISPLAYED content's file (`content_title`), not the
+    // the title is derived from the DISPLAYED content's file (`content_title`), not the
     // live tree cursor, so it switches in lockstep with the body — the pane never shows a newly-
     // selected file's name over the previous file's body while the new render is in flight.
     // `content_title` is `None` before any file's content has landed (launch, re-root, or a
@@ -576,7 +576,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     };
     // A persistent `? help` hint rides the content block's bottom border, right-aligned —
     // one short segment, sanitized (AC-27) like the other border titles, so a new user
-    // discovers the help overlay without opening it first (SMA-345). It shares the border
+    // discovers the help overlay without opening it first. It shares the border
     // row (not the layout), so it never crowds the content or steals a row.
     let hint =
         Line::styled(sanitize_label(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
@@ -661,7 +661,7 @@ fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
     (parts[0], Some(parts[1]))
 }
 
-/// Draw the one-row "update available" status line. Reversed (theme-relative, SMA-346) so it reads
+/// Draw the one-row "update available" status line. Reversed (theme-relative) so it reads
 /// as a status bar on any terminal palette — previously `Black`-on-`Cyan`, which ignored the theme
 /// and could be invisible on a cyan-heavy palette. Sanitized (defense-in-depth, AC-27) and clipped
 /// to its row by ratatui.
@@ -690,8 +690,8 @@ fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Opt
     (body, banner, prompt)
 }
 
-/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Reversed (theme-relative,
-/// SMA-346) so it reads as a prompt bar on any palette — previously `Black`-on-`Gray`, which
+/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Reversed (theme-relative)
+/// so it reads as a prompt bar on any palette — previously `Black`-on-`Gray`, which
 /// ignored the terminal theme. Sanitized (AC-27), clipped to its row.
 fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     let line = Line::styled(
@@ -1068,7 +1068,7 @@ fn picker_overlay_layout(area: Rect, picker: &PickerView) -> PickerLayout {
 
 /// Draw the worktree picker as a centered, bordered list overlay on top of the columns (AC-1,
 /// AC-5). Each row is `<path> [branch]`, or `<path> (detached)` when HEAD is detached — never
-/// an empty branch (AC-2, gate L-1). The `cursor` row is highlighted (`REVERSED`, the same
+/// an empty branch (AC-2). The `cursor` row is highlighted (`REVERSED`, the same
 /// idiom `tree_row` uses for the tree selection). The path and branch are both run through
 /// `sanitize_label` first, so a worktree path or branch name carrying control bytes cannot
 /// move the cursor or spoof the UI (AC-27, defense-in-depth — exactly as the tree does).
@@ -1199,7 +1199,7 @@ fn agent_badge_color(status: &str) -> Color {
 ///   at, else a blank — visually distinct from the selection cursor, which stays `REVERSED` on the
 ///   highlighted row (AC-18). A row can be current without being selected and vice versa.
 /// - the path + branch (or `(detached)` when HEAD is detached, AC-2), both sanitized (AC-27).
-/// - a trailing **`(current)` text label** (SMA-346) on the current row, so the "current worktree"
+/// - a trailing **`(current)` text label** on the current row, so the "current worktree"
 ///   state is distinguishable with color stripped — previously the `●` was color-only (cyan) and a
 ///   colorblind user or a non-default theme could miss it. The label rides after the path/branch.
 /// - a trailing **agent badge** (`● <status>`, colored by status) when the worktree's workspace
@@ -1225,14 +1225,14 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     // Leading current marker (AC-18): a cyan ● when current, two spaces otherwise so the path
     // column stays aligned across current and non-current rows. The ● is a glyph cue; the
-    // trailing `(current)` label (below) is the color-stripped cue (SMA-346).
+    // trailing `(current)` label (below) is the color-stripped cue.
     if row.is_current {
         spans.push(Span::styled("● ", base.fg(Color::Cyan)));
     } else {
         spans.push(Span::styled("  ", base));
     }
     spans.push(Span::styled(format!("{path}{suffix}"), base));
-    // Trailing `(current)` text label (SMA-346): a non-color cue on the current row so the
+    // Trailing `(current)` text label: a non-color cue on the current row so the
     // "current worktree" state survives a colorblind palette or a non-default theme. Rendered in
     // the row's base style (so it picks up the REVERSED cursor highlight when selected).
     if row.is_current {
@@ -1263,7 +1263,7 @@ const FINDER_PLACEHOLDER: &str = "> type to find a file…";
 const HELP_TITLE: &str = "Help";
 /// The persistent discoverability hint shown on the content pane's bottom border — a
 /// right-aligned one-segment affordance that `?` opens help, visible on the default screen
-/// without opening any modal (SMA-345). Static (first-party), so no sanitization is needed
+/// without opening any modal. Static (first-party), so no sanitization is needed
 /// beyond the defense-in-depth `sanitize_label` applied at the call site (AC-27).
 const HELP_HINT: &str = "? help";
 /// The help overlay's desired interior WIDTH (columns) before clamping to the frame. A generous
@@ -1275,7 +1275,7 @@ const HELP_WANT_INNER_H: u16 = 20;
 /// The separator between section tabs in the help overlay's top border.
 const HELP_TAB_SEP: &str = "  ";
 /// The leading marker prepended to the ACTIVE help tab so the active section is distinguishable
-/// with color stripped (SMA-346) — previously it was REVERSED+BOLD only, which a colorblind user
+/// with color stripped — previously it was REVERSED+BOLD only, which a colorblind user
 /// or a non-default theme could lose. Inactive tabs carry no marker, so the active one stands out
 /// by glyph alone. Drawn in the SAME `Color::Reset` style as the tab label, and counted in
 /// [`help_tab_rects`] so the hit-test rect tracks the drawn width.
@@ -1680,7 +1680,7 @@ fn help_tab_rects(popup: Rect, labels: &[String], active: usize) -> Vec<(usize, 
         if i > 0 {
             x = x.saturating_add(HELP_TAB_SEP.chars().count() as u16);
         }
-        // The active tab is drawn with a leading `▶ ` marker (SMA-346); include it in the tab's
+        // The active tab is drawn with a leading `▶ ` marker; include it in the tab's
         // hit-test rect (a click on the glyph still switches the right section) and advance past
         // it before placing the label rect.
         let marker_w = if i == active { active_marker_w } else { 0 };
@@ -1739,7 +1739,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
         let mut style = Style::new().fg(Color::Reset);
         if i == help.active {
             // The active tab is REVERSED — the visible active-section indicator (AC-5) — AND carries
-            // a leading `▶ ` marker (SMA-346) so it stays distinguishable with color stripped.
+            // a leading `▶ ` marker so it stays distinguishable with color stripped.
             style = style
                 .add_modifier(Modifier::REVERSED)
                 .add_modifier(Modifier::BOLD);

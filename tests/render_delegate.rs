@@ -1,4 +1,4 @@
-//! T-11 — Content Renderer: delegate to external renderers + fallback + notice
+//! Content Renderer: delegate to external renderers + fallback + notice
 //! (AC-8, AC-9, AC-10, AC-24, AC-25), with binary placeholder (AC-12) reinforced.
 //!
 //! Renderer commands are injected: `cat` echoes stdin (a working renderer), a nonexistent
@@ -120,27 +120,27 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         notice.to_lowercase().contains("markdown"),
         "AC-25: notice names the missing capability: {notice}"
     );
-    // SMA-343: the missing-renderer notice names the binary, points to remediation, and never
+    // the missing-renderer notice names the binary, points to remediation, and never
     // leaks a raw OS errno ("os error 2") or io::Error Debug string.
     assert!(
         notice.contains("herdr-no-such-binary-xyz"),
-        "SMA-343: notice names the missing binary: {notice}"
+        "notice names the missing binary: {notice}"
     );
     assert!(
         notice.contains("not found"),
-        "SMA-343: notice states the renderer was not found: {notice}"
+        "notice states the renderer was not found: {notice}"
     );
     assert!(
         notice.contains("docs/renderers.md"),
-        "SMA-343: notice points to remediation: {notice}"
+        "notice points to remediation: {notice}"
     );
     assert!(
         !notice.contains("os error"),
-        "SMA-343: no raw OS errno in the notice: {notice}"
+        "no raw OS errno in the notice: {notice}"
     );
     assert!(
         !notice.contains("unavailable ("),
-        "SMA-343: no raw error detail leaked in the notice: {notice}"
+        "no raw error detail leaked in the notice: {notice}"
     );
 }
 
