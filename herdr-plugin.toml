@@ -3,24 +3,36 @@
 # A git-aware, read-only file viewer that herdr opens in a split pane beside the
 # user's current work. The viewer appears ONLY in response to an explicit action
 # (its keybinding) — there are no event hooks and no automatic invocation (AC-N4).
+#
+# Windows support is preview (see README's Windows section): the unix and Windows [[build]]/
+# [[actions]] entries below are duplicated and platform-gated via the item-level `platforms`
+# key — herdr's platform filter runs exactly the host-matching entry per id and returns
+# `platform_unsupported` for the others. No aarch64 Windows target is declared (v1 targets
+# x86_64-pc-windows-msvc only).
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
 version = "1.7.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
 min_herdr_version = "0.7.0"
-platforms = ["linux", "macos"]
+platforms = ["linux", "macos", "windows"]
 
-# Build step herdr runs at install time. Fast path: scripts/fetch-or-build.sh downloads the
-# prebuilt binary matching this source's version + platform and verifies its SHA-256. On ANY miss
-# (no matching release, download/checksum failure, unsupported platform) it falls back to building
-# from source with cargo — so installing never gets harder than before, and no Rust toolchain is
-# needed when a matching prebuilt release exists.
+# Build step herdr runs at install time. Fast path: the platform's fetch-or-build script
+# downloads the prebuilt binary matching this source's version + platform and verifies its
+# SHA-256. On ANY miss (no matching release, download/checksum failure, unsupported platform) it
+# falls back to building from source with cargo — so installing never gets harder than before,
+# and no Rust toolchain is needed when a matching prebuilt release exists.
 [[build]]
+platforms = ["linux", "macos"]
 command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
 
 # The viewer pane. herdr performs the split placement on launch (AC-17); the [[actions]]
 # below summon it — declaring placement = "split" is what opens it beside the current pane.
+# Platform-agnostic: no shell is involved in opening the pane itself (AC-15).
 [[panes]]
 id = "file-viewer"
 title = "Files"
@@ -32,15 +44,31 @@ command = ["./target/release/herdr-file-viewer"]
 # run a `command`; the launcher script opens the [[panes]] entry below as a split.
 [[actions]]
 id = "open-file-viewer"
+platforms = ["linux", "macos"]
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
 command = ["bash", "scripts/open-file-viewer.sh"]
+
+[[actions]]
+id = "open-file-viewer"
+platforms = ["windows"]
+title = "Open file viewer"
+description = "Open the git-aware file viewer in a split pane beside the current work."
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-file-viewer.ps1"]
 
 # The same viewer, opened in its own tab instead of a split. Idempotent across tabs: switches
 # to an existing viewer tab rather than duplicating it, and toggles off when already on it.
 # Bind a key to it (e.g. `prefix+shift+f`) in ~/.config/herdr/config.toml.
 [[actions]]
 id = "open-file-viewer-tab"
+platforms = ["linux", "macos"]
 title = "Open file viewer (tab)"
 description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
 command = ["bash", "scripts/open-file-viewer-tab.sh"]
+
+[[actions]]
+id = "open-file-viewer-tab"
+platforms = ["windows"]
+title = "Open file viewer (tab)"
+description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-file-viewer-tab.ps1"]

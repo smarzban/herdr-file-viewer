@@ -98,10 +98,69 @@ fn declares_a_release_build_command() {
 }
 
 #[test]
-fn declares_linux_and_macos_platforms() {
+fn declares_linux_macos_and_windows_platforms() {
+    // AC-20: Windows is a declared platform, alongside the existing two.
     assert!(
-        manifest().contains(r#"platforms = ["linux", "macos"]"#),
-        "manifest must declare platforms = [\"linux\", \"macos\"]"
+        manifest().contains(r#"platforms = ["linux", "macos", "windows"]"#),
+        "manifest must declare platforms = [\"linux\", \"macos\", \"windows\"]"
+    );
+}
+
+#[test]
+fn build_step_is_platform_gated_unix_and_windows() {
+    // AC-14: exactly one [[build]] entry runs per host — the /bin/sh entry on unix, the
+    // PowerShell entry on Windows — via herdr's platform filter on the item-level `platforms`
+    // key (which overrides the top-level list).
+    let m = manifest();
+    assert!(
+        m.contains("[[build]]\nplatforms = [\"linux\", \"macos\"]\ncommand = [\"/bin/sh\", \"scripts/fetch-or-build.sh\"]"),
+        "unix [[build]] must be gated to [\"linux\", \"macos\"] and run fetch-or-build.sh: {m}"
+    );
+    assert!(
+        m.contains("[[build]]\nplatforms = [\"windows\"]\ncommand = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/fetch-or-build.ps1\"]"),
+        "Windows [[build]] must be gated to [\"windows\"] and run fetch-or-build.ps1: {m}"
+    );
+}
+
+#[test]
+fn open_file_viewer_action_is_platform_gated_unix_and_windows() {
+    // AC-14, AC-16: the open-file-viewer action has a unix (bash .sh) and a Windows
+    // (PowerShell .ps1) variant, each gated to its platform.
+    let m = manifest();
+    assert!(
+        m.contains("id = \"open-file-viewer\"\nplatforms = [\"linux\", \"macos\"]")
+            && m.contains("command = [\"bash\", \"scripts/open-file-viewer.sh\"]"),
+        "open-file-viewer's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
+    );
+    assert!(
+        m.contains("id = \"open-file-viewer\"\nplatforms = [\"windows\"]")
+            && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer.ps1\"]"),
+        "open-file-viewer's Windows variant must be gated to [\"windows\"] and run the .ps1 launcher: {m}"
+    );
+}
+
+#[test]
+fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
+    let m = manifest();
+    assert!(
+        m.contains("id = \"open-file-viewer-tab\"\nplatforms = [\"linux\", \"macos\"]")
+            && m.contains("command = [\"bash\", \"scripts/open-file-viewer-tab.sh\"]"),
+        "open-file-viewer-tab's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
+    );
+    assert!(
+        m.contains("id = \"open-file-viewer-tab\"\nplatforms = [\"windows\"]")
+            && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer-tab.ps1\"]"),
+        "open-file-viewer-tab's Windows variant must be gated to [\"windows\"] and run the .ps1 launcher: {m}"
+    );
+}
+
+#[test]
+fn no_entry_declares_an_aarch64_windows_target() {
+    // AC-N4: v1 targets x86_64-pc-windows-msvc only — no Windows-on-ARM declaration (comments
+    // are stripped first, so this checks actual entries, not explanatory prose).
+    assert!(
+        !manifest().contains("aarch64"),
+        "manifest must not declare any aarch64 (Windows-on-ARM) target"
     );
 }
 
