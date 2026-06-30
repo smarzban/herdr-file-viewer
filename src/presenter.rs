@@ -1605,8 +1605,9 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     }
     // The body wraps (prose), so its height in rendered rows — not raw lines — is what the scroll
     // offset and scrollbar must be measured against. Sum the per-line WRAPPED rows with the EXACT
-    // counter the content pane uses (`text_layout::wrapped_rows`), so the help clamp and the content
-    // clamp can never drift. A long changelog otherwise can't scroll to its last entry (AC-8/AC-9).
+    // helper the content pane uses (`text_layout::line_wrapped_rows`), so the help clamp and the
+    // content clamp can never drift. A long changelog otherwise can't scroll to its last entry
+    // (AC-8/AC-9).
     //
     // Two-pass, mirroring the content pane (which measures at its live text width): the wrapped count
     // depends on the width the body is ACTUALLY drawn into, and reserving the 1-col vbar gutter
@@ -1614,15 +1615,12 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     // leaving the changelog's tail unreachable (FIX-A). Pass 1 estimates at `inner.width` to decide
     // whether the bar is needed; pass 2 recomputes against the post-gutter `text.width` actually drawn.
     let body_rows_at = |w: u16| -> u16 {
-        let w = (w as usize).max(1);
+        let w = w as usize;
         let rows: usize = help
             .body
             .lines
             .iter()
-            .map(|line| {
-                let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                crate::text_layout::wrapped_rows(&line_text, w).max(line.width().max(1).div_ceil(w))
-            })
+            .map(|line| crate::text_layout::line_wrapped_rows(line, w))
             .sum();
         rows.min(u16::MAX as usize) as u16
     };

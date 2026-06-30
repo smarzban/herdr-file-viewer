@@ -1801,15 +1801,12 @@ impl Controller {
     /// the display-row offset of a source line), so the scroll clamp and the go-to-line target are
     /// computed by the SAME wrapping logic and therefore always agree (AC-3/AC-4).
     fn wrapped_rows_before(&self, n: usize) -> usize {
-        let w = self.content_width.max(1) as usize;
+        let w = self.content_width as usize;
         self.content
             .lines
             .iter()
             .take(n)
-            .map(|l| {
-                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                crate::text_layout::wrapped_rows(&text, w).max(l.width().max(1).div_ceil(w))
-            })
+            .map(|l| crate::text_layout::line_wrapped_rows(l, w))
             .sum::<usize>()
     }
 

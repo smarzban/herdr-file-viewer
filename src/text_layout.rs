@@ -7,6 +7,8 @@
 //! `sanitize_control` lives here for the same reason: the Presenter (every displayed string) and
 //! the controller (the clipboard path) share one AC-27 neutralizer rather than two copies.
 
+use ratatui::text::Line;
+
 /// How many rows one rendered line occupies under ratatui's word wrapper (`Wrap{trim:false}`)
 /// at `width` columns: greedy word packing — fill the row with space-separated words until the
 /// next one doesn't fit, then wrap; a word wider than the row is broken across rows. A plain
@@ -37,6 +39,17 @@ pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
         }
     }
     rows
+}
+
+/// Wrapped rows a single rendered [`Line`] occupies at `width` columns: flatten its spans to text,
+/// run the word-wrap simulation, and floor by the all-columns char-wrap so the simulation can never
+/// undershoot (a leading/interior over-long word still costs its char-wrapped rows). `width` is
+/// clamped to ≥ 1 so a zero width can't divide-by-zero. The content-pane scroll clamp and the
+/// help-overlay body measurement both call this, so their per-line row counts can never drift.
+pub(crate) fn line_wrapped_rows(line: &Line, width: usize) -> usize {
+    let width = width.max(1);
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    wrapped_rows(&text, width).max(line.width().max(1).div_ceil(width))
 }
 
 /// Neutralize a string for display (a label/title) or for the clipboard: drop control characters
