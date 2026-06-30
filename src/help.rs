@@ -1,7 +1,7 @@
 //! Help content source and overlay state for the in-app help overlay.
 //!
-//! Content source (T-1): embedded changelog and about text, no I/O, no side effects.
-//! Overlay state (T-2): `HelpSectionState` and `HelpState` — pure in-memory navigation.
+//! Content source: embedded changelog and about text, no I/O, no side effects.
+//! Overlay state: `HelpSectionState` and `HelpState` — pure in-memory navigation.
 
 /// The full `CHANGELOG.md`, embedded at compile time (AC-12, AC-13).
 pub const CHANGELOG_MD: &str = include_str!("../CHANGELOG.md");
@@ -12,7 +12,7 @@ pub const CHANGELOG_MD: &str = include_str!("../CHANGELOG.md");
 /// Versioning" paragraph, and link references — file metadata an in-app "What's New" doesn't want.
 /// This returns the slice starting at the first `## [` version heading, so only the version
 /// sections (`## [..]` + their `### Added`/`### Fixed` entries) render. Falls back to the whole
-/// string if no version heading is found (the const stays whole; T-1's newest-first test reads it).
+/// string if no version heading is found (the const stays whole; the newest-first test reads it).
 pub fn changelog_display() -> &'static str {
     match CHANGELOG_MD.find("## [") {
         Some(idx) => &CHANGELOG_MD[idx..],
@@ -38,7 +38,7 @@ impl HelpSection {
 }
 
 // ---------------------------------------------------------------------------
-// T-2: Help Overlay State
+// Help Overlay State
 // ---------------------------------------------------------------------------
 
 /// State for a single tab in the help overlay: its label, body text, and scroll offset.
@@ -53,8 +53,8 @@ pub struct HelpSectionState {
 
 /// Active state for the help overlay: an ordered list of sections and the active index.
 ///
-/// Sections are a generic `Vec` (the seam for future SMA-49 additions) — no hard-coded pair.
-/// SHORTCUT(T-2): linear scan over sections — fine for ≤20 sections; index if the list can grow large.
+/// Sections are a generic `Vec` (the seam for future settings additions) — no hard-coded pair.
+/// SHORTCUT: linear scan over sections — fine for ≤20 sections; index if the list can grow large.
 pub struct HelpState {
     pub sections: Vec<HelpSectionState>,
     active: usize,
@@ -236,7 +236,7 @@ mod tests {
         // The const stays whole — the preamble is only sliced off for display.
         assert!(
             CHANGELOG_MD.contains("Keep a Changelog"),
-            "CHANGELOG_MD const must remain whole (preamble intact for T-1's newest-first test)"
+            "CHANGELOG_MD const must remain whole (preamble intact for the newest-first test)"
         );
     }
 
@@ -315,7 +315,7 @@ mod tests {
         );
     }
 
-    // --- T-2: HelpState / HelpSectionState tests ---
+    // --- HelpState / HelpSectionState tests ---
 
     fn make_section(label: &'static str, lines: usize) -> HelpSectionState {
         use ratatui::text::{Line, Text};
@@ -478,13 +478,13 @@ mod tests {
         );
     }
 
-    // --- T-9: negative-criteria conformance (AC-N5, AC-N6) ---
+    // --- negative-criteria conformance (AC-N5, AC-N6) ---
 
     // AC-N6 (scope guard, source level): the two-section set the overlay ships in v1 is
-    // exactly {What's New, About}. `HelpState` itself is a generic Vec (the SMA-49 seam), so the
+    // exactly {What's New, About}. `HelpState` itself is a generic Vec (the settings seam), so the
     // guarantee that there is no third section is anchored at the SOURCE that defines the sections:
     // `HelpSection` enumerates exactly those two variants, with exactly those labels. A future
-    // SMA-49 section would have to add a variant here — which would flip this test red on purpose.
+    // settings section would have to add a variant here — which would flip this test red on purpose.
     #[test]
     fn help_section_set_is_exactly_whats_new_and_about() {
         // Exhaustively enumerate the variants by matching every one: adding a variant makes this
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(
             labels,
             vec!["What's New", "About"],
-            "AC-N6: v1 exposes exactly What's New then About — no Keybindings/Settings (SMA-49)"
+            "AC-N6: v1 exposes exactly What's New then About — no Keybindings/Settings"
         );
     }
 

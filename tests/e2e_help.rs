@@ -1,4 +1,4 @@
-//! T-9 — e2e (pty): the in-app help overlay is a true keyboard modal (AC-20, AC-21 backing).
+//! e2e (pty): the in-app help overlay is a true keyboard modal (AC-20, AC-21 backing).
 //! We drive ONLY the keyboard over a pseudo-terminal — mirroring `tests/e2e_keyboard.rs`'s
 //! launch idiom, key sends (Esc as `\u{1b}`), screen reads, and timing — and prove that while
 //! `?` is open: (1) the overlay is shown, and (2) a key that WOULD move the tree (`j` = NavDown
@@ -78,9 +78,8 @@ fn help_overlay_consumes_nav_keys_and_esc_returns() {
     s.expect("About")
         .expect("the help overlay renders its `About` section tab after `?`");
 
-    // Give the event loop a beat so the next key is read while the overlay is open (mirrors the
-    // go-to-line / search e2e idiom — lets `j` land inside the modal, not as a NavDown).
-    std::thread::sleep(Duration::from_millis(300));
+    // `About` above already synchronized on the overlay's chrome rendering, so the overlay is
+    // up and routing keys to its handler — the next `j` lands inside it (not as a NavDown).
 
     // --- AC-20: `j` (NavDown in the normal key map) must be CONSUMED by the overlay, not move the
     // tree cursor off `Adir/`. We can't assert absence directly over a raw pty, so we prove it by
@@ -89,10 +88,13 @@ fn help_overlay_consumes_nav_keys_and_esc_returns() {
         .expect("send `j` into the open overlay — it must be consumed, not NavDown the tree");
 
     // Settle before Esc so crossterm reads a lone ESC (a bare Esc immediately followed by a char is
-    // decoded as Alt+char, which maps to no intent) — same timing discipline as the other e2es.
+    // decoded as Alt+char, which maps to no intent) — inter-byte gap, stays.
     std::thread::sleep(Duration::from_millis(150));
     s.send("\u{1b}")
         .expect("send Esc to close the help overlay (AC-3)");
+    // Settle after Esc closed the overlay before the next key — no positive content anchor for
+    // the close (the tree was never overwritten, the overlay was drawn on top), and the gap keeps
+    // Esc and the next key apart (lone-ESC, not Alt+char). Stays a short sleep.
     std::thread::sleep(Duration::from_millis(150));
 
     // --- Esc returned to the prior view (AC-20): the cursor is STILL on `Adir/` (the in-help `j`

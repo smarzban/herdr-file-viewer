@@ -1,4 +1,4 @@
-//! T-7 — Tree filters: show-ignored toggle (AC-5) + changed-only filter (AC-6),
+//! Tree filters: show-ignored toggle (AC-5) + changed-only filter (AC-6),
 //! plus status markers on nodes (AC-7, tree side).
 
 mod common;

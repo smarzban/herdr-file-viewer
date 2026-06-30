@@ -1,6 +1,6 @@
-//! T-6 — Provider Factory (ADR-0004). The controller is built from a *factory* closure that
+//! Provider Factory (ADR-0004). The controller is built from a *factory* closure that
 //! yields the root-bound providers (Git Service + Content Renderer) for a given [`Resolved`],
-//! rather than from fixed instances. This is the construction shape a later re-root (T-7/T-8)
+//! rather than from fixed instances. This is the construction shape a later re-root
 //! re-invokes to rebuild those providers against a new root. Here we prove the seam in
 //! isolation: a fake factory returns fake providers, `Controller::new` builds, and the first
 //! frame renders the fake content — touching no real git, renderer, or editor.
@@ -9,8 +9,8 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::controller::{
-    Clipboard, Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult,
-    RootProviders,
+    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -74,8 +74,8 @@ impl ContentProvider for FakeContent {
 
 struct FakeEditor;
 impl EditorHandoff for FakeEditor {
-    fn open(&mut self, _file: &Path) -> io::Result<bool> {
-        Ok(false)
+    fn open(&mut self, _file: &Path) -> EditorOutcome {
+        EditorOutcome::NoTakeover
     }
 }
 
@@ -243,7 +243,7 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(!ctrl.zoomed(), "unzoomed after re_root");
     assert_eq!(ctrl.focus(), Focus::Tree, "focus back on the tree");
 
-    // T-8: the git-derived state (status markers + the changed-only filter built from the
+    // the git-derived state (status markers + the changed-only filter built from the
     // changed-set) now fills in ASYNCHRONOUSLY, applied by `poll` rather than synchronously in
     // `re_root`. Wait for the carried `changed_only` filter to actually be applied against B's
     // (empty) changed-set — observable as the filtered tree becoming empty — before inspecting
@@ -869,7 +869,11 @@ fn re_root_carries_the_base_branch_hint() {
     );
 }
 
+/// AC-17: a re-root's synchronous part (resolve + fresh tree + worker respawn) is interactive
+/// within 1s on a 10k-file repo. Gated to the `perf` lane — an absolute budget on a shared CI
+/// runner flakes under load; run via `cargo test --features perf`.
 #[test]
+#[cfg_attr(not(feature = "perf"), ignore)]
 fn re_root_is_interactive_within_budget_on_a_large_repo() {
     // AC-17: a re-root happens mid-session, so the synchronous part (resolve + fresh tree + worker
     // respawn) must return and leave the tree navigable quickly — the heavy git status/changed-set
@@ -920,7 +924,7 @@ fn re_root_is_interactive_within_budget_on_a_large_repo() {
 }
 
 // ---------------------------------------------------------------------------
-// T-16 — Read-only / ephemeral / repo-only invariants (AC-N1, AC-N2, AC-N3, AC-N4)
+// Read-only / ephemeral / repo-only invariants (AC-N1, AC-N2, AC-N3, AC-N4)
 // ---------------------------------------------------------------------------
 
 /// Recursively collect all entries under `root` into a sorted Vec of (relative_path, contents).

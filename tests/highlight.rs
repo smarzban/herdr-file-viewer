@@ -1,4 +1,4 @@
-//! Tests for the Match Highlighter (T-7 / AC-9, AC-11).
+//! Tests for the Match Highlighter (AC-9, AC-11).
 //!
 //! We build small `Line`s from `Span`s with known styles and assert on the
 //! output spans' content + style produced by `highlight::apply`.

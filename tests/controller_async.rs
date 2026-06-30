@@ -1,4 +1,4 @@
-//! T-19 — Session Controller: off-thread rendering (AC-23). A select intent must dispatch
+//! Session Controller: off-thread rendering (AC-23). A select intent must dispatch
 //! the (potentially slow) content render to a worker thread so `handle()` returns promptly
 //! and never blocks input; the rendered content then arrives as a later effect, drained by
 //! `poll()`. A deliberately slow renderer stub stands in for glow/delta/bat.
@@ -7,17 +7,22 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
+    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// The loading placeholder shown in the content pane while an off-thread render is in flight
+///. Spelled with the ellipsis here so a change to the placeholder string in
+/// `dispatch_render` is caught by the tests that assert it appears.
+const LOADING_PLACEHOLDER: &str = "Rendering\u{2026}";
 
 /// A renderer that sleeps before producing output — the stand-in for a slow external CLI.
 struct SlowContent {
@@ -69,8 +74,8 @@ impl GitService for NoGit {
 
 struct NoEditor;
 impl EditorHandoff for NoEditor {
-    fn open(&mut self, _: &Path) -> io::Result<bool> {
-        Ok(false)
+    fn open(&mut self, _: &Path) -> EditorOutcome {
+        EditorOutcome::NoTakeover
     }
 }
 
@@ -330,4 +335,178 @@ fn a_panicking_renderer_is_contained_and_the_worker_survives() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// while an off-thread render for a newly-selected file is in flight, the content pane
+/// must show a loading placeholder (NOT the previous file's body), and the content title must NOT
+/// jump to the new file before its body arrives — title and body switch together when the render
+/// result lands. A superseded render result (user moved on) must not overwrite the pane.
+#[test]
+fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "2\n").unwrap();
+    std::fs::write(dir.path().join("c.rs"), "3\n").unwrap();
+
+    let delay = Duration::from_millis(120);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent { delay }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+
+    // Land the initial render for a.rs so a real (non-placeholder) title + body are on screen,
+    // giving the loading-state assertion below a meaningful "previous file" to compare against.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()) == "rendered:a.rs" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "initial render never landed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Precondition: a.rs is the displayed file — its name is the content title.
+    assert_eq!(
+        ctrl.view_state().content_title.as_deref(),
+        Some("a.rs"),
+        "precondition: a.rs content landed, title is a.rs"
+    );
+
+    // Select b.rs — dispatch_render fires. While the render is in flight:
+    //   - the body must be the loading placeholder (NOT a.rs's "rendered:a.rs"), and
+    //   - the title must still be a.rs (NOT b.rs) — title + body switch together on landing.
+    let start = Instant::now();
+    let fx = ctrl.handle(Intent::NavDown);
+    let handle_took = start.elapsed();
+    assert!(
+        fx.redraw,
+        "the select asks for a redraw (loading state needs a repaint)"
+    );
+    assert!(
+        handle_took < delay,
+        "handle() must not block on the slow render (took {handle_took:?}, render is {delay:?})"
+    );
+    // (a) The body is the loading placeholder — the previous file's content is gone.
+    assert_eq!(
+        flatten(ctrl.content()),
+        LOADING_PLACEHOLDER,
+        "while a render is in flight the pane shows the loading placeholder, not the previous \
+         file's body"
+    );
+    // (b) The title has NOT jumped to b.rs ahead of its body — it still names the displayed
+    //     content's file (a.rs).
+    assert_eq!(
+        ctrl.view_state().content_title.as_deref(),
+        Some("a.rs"),
+        "the content title does not update ahead of the body — it stays on the displayed file \
+         (a.rs) until b.rs's render lands"
+    );
+
+    // Drain poll until b.rs's render lands. The body and the title switch together.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(p) = ctrl.poll() {
+            assert!(p.redraw, "the landing render signals a redraw");
+        }
+        if flatten(ctrl.content()) == "rendered:b.rs" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "b.rs render never landed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        flatten(ctrl.content()),
+        "rendered:b.rs",
+        "the selected file's rendered content arrived"
+    );
+    assert_eq!(
+        ctrl.view_state().content_title.as_deref(),
+        Some("b.rs"),
+        "the title switched to b.rs together with its body"
+    );
+}
+
+/// a superseded render result (the user navigated on before it landed) must not
+/// overwrite the loading placeholder nor the current pane — it's dropped by the seq guard in
+/// `poll`. Two back-to-back selects leave only the LATEST file's render eligible to land.
+#[test]
+fn a_superseded_render_does_not_overwrite_the_loading_placeholder_nor_the_pane() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "2\n").unwrap();
+    std::fs::write(dir.path().join("c.rs"), "3\n").unwrap();
+
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent {
+                delay: Duration::from_millis(80),
+            }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+
+    // Land the initial render for a.rs first (real content on screen).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()) == "rendered:a.rs" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "initial render never landed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Rapid back-to-back navigation: a.rs → b.rs → c.rs. Each dispatch bumps `latest_seq`, so
+    // b.rs's render is superseded the moment c.rs is selected — its result must be dropped by
+    // `poll` (never applied), leaving only c.rs eligible to land.
+    ctrl.handle(Intent::NavDown); // b.rs (loading placeholder showing; b.rs render in flight)
+    assert_eq!(
+        flatten(ctrl.content()),
+        LOADING_PLACEHOLDER,
+        "after selecting b.rs the pane shows the loading placeholder"
+    );
+    ctrl.handle(Intent::NavDown); // c.rs (supersedes b.rs; loading placeholder still showing)
+    assert_eq!(
+        flatten(ctrl.content()),
+        LOADING_PLACEHOLDER,
+        "after selecting c.rs the pane still shows the loading placeholder (b.rs's render was \
+         superseded, not applied)"
+    );
+
+    // Only c.rs's render may land. Give any stale (b.rs) result a chance to wrongly land, then
+    // re-check that c.rs is the displayed content.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()) == "rendered:c.rs" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "c.rs render never landed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    ctrl.poll();
+    assert_eq!(
+        flatten(ctrl.content()),
+        "rendered:c.rs",
+        "a superseded render (b.rs) must not overwrite the newer selection (c.rs)"
+    );
 }

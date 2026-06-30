@@ -1,4 +1,4 @@
-//! T-14 — Presenter: two-column layout, recursive tree display, status markers, notices.
+//! Presenter: two-column layout, recursive tree display, status markers, notices.
 //! AC-3 (display), AC-7 (display), AC-13 (truncation notice), AC-25 (fallback notice).
 
 use herdr_file_viewer::git::Status;
@@ -82,6 +82,8 @@ fn sample_state() -> ViewState {
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
         prompt: None,
+        content_title: Some("main.rs".to_string()),
+        content_rendering: false,
         search: None,
         help: None,
     }
@@ -99,7 +101,7 @@ fn render(state: &ViewState, w: u16, h: u16) -> String {
 
 #[test]
 fn tree_borders_show_root_name_on_top_and_branch_on_bottom() {
-    // SMA-249: the tree column's TOP border is the root directory basename (not the old static
+    // the tree column's TOP border is the root directory basename (not the old static
     // "Files"), and the BOTTOM border is the current branch when present.
     let mut state = sample_state();
     state.root_name = "myrepo".to_string();
@@ -133,7 +135,7 @@ fn tree_borders_show_root_name_on_top_and_branch_on_bottom() {
 
 #[test]
 fn tree_title_truncates_an_overlong_root_name() {
-    // SMA-249: a root name wider than the tree column is truncated with an ellipsis so it can't
+    // a root name wider than the tree column is truncated with an ellipsis so it can't
     // break the border.
     let mut state = sample_state();
     state.root_name = "x".repeat(80);
@@ -150,7 +152,7 @@ fn tree_title_truncates_an_overlong_root_name() {
 
 #[test]
 fn tree_branch_uses_middle_ellipsis_when_long() {
-    // SMA-249 refinement: a long branch on the bottom border is truncated in the MIDDLE so both the
+    // A long branch on the bottom border is truncated in the MIDDLE so both the
     // prefix and the trailing (most distinctive) part stay visible, instead of losing the tail.
     let mut state = sample_state();
     state.root_name = "repo".to_string();
@@ -208,6 +210,110 @@ fn shows_status_markers_for_each_state() {
             "status marker {marker:?} should appear\n{out}"
         );
     }
+}
+
+#[test]
+fn dirty_directory_carries_a_non_color_glyph_marker() {
+    // a directory containing any change (dir_dirty) shows a `●` glyph beside it, so the
+    // "dirty directory" state is distinguishable with color stripped — previously it was color-only
+    // (LightRed) and lost to a colorblind user or a non-default theme. Files keep their M/A/D/?
+    // letters; clean directories and clean files show a blank, so the column stays aligned.
+    let mut state = sample_state();
+    state.notices = vec![];
+    // A dirty directory (dir_dirty = true) at the root, plus a clean directory for contrast.
+    state.nodes = vec![
+        Node {
+            path: PathBuf::from("/r/changed"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: true,
+        },
+        Node {
+            path: PathBuf::from("/r/clean"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: false,
+        },
+    ];
+    state.selected = 1; // the clean dir, so the dirty dir row isn't REVERSED
+    let out = render(&state, 100, 24);
+    // The dirty directory row carries `●`; the clean directory row carries a blank.
+    let dirty_line = out
+        .lines()
+        .find(|l| l.contains("▾ changed") || l.contains("▸ changed"))
+        .expect("the dirty directory row is drawn");
+    assert!(
+        dirty_line.contains('●'),
+        "the dirty directory shows a `●` glyph (non-color cue)\n{dirty_line}"
+    );
+    let clean_line = out
+        .lines()
+        .find(|l| l.contains("▾ clean") || l.contains("▸ clean"))
+        .expect("the clean directory row is drawn");
+    assert!(
+        !clean_line.contains('●'),
+        "a clean directory shows no `●` glyph (only dirty dirs do)\n{clean_line}"
+    );
+}
+
+#[test]
+fn dirty_directory_glyph_snapshot() {
+    // snapshot the tree with a dirty directory so the `●` glyph is locked into the
+    // recorded layout — a regression that drops the glyph (back to color-only) is caught here.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = vec![
+        Node {
+            path: PathBuf::from("/r/changed"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: true,
+        },
+        node(
+            "/r/changed/a.rs",
+            NodeKind::File,
+            1,
+            false,
+            Some(Status::Modified),
+        ),
+        node(
+            "/r/changed/b.rs",
+            NodeKind::File,
+            1,
+            false,
+            Some(Status::Added),
+        ),
+        Node {
+            path: PathBuf::from("/r/clean"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: false,
+            status: None,
+            dir_dirty: false,
+        },
+        node(
+            "/r/gone.txt",
+            NodeKind::File,
+            0,
+            false,
+            Some(Status::Deleted),
+        ),
+        node(
+            "/r/scratch.log",
+            NodeKind::File,
+            0,
+            false,
+            Some(Status::Untracked),
+        ),
+    ];
+    state.selected = 5; // scratch.log, so the dirty dir row isn't REVERSED
+    insta::assert_snapshot!("presenter_dirty_dir_glyph", render(&state, 60, 14));
 }
 
 #[test]
@@ -1229,7 +1335,7 @@ fn picker_overlay_renders_rows_over_the_two_columns() {
         "the feature branch label is shown\n{out}"
     );
     // The two columns are still drawn underneath (the overlay is partial, centered). The tree's
-    // titled top border ("┌r…") proves its column drew beneath the modal (SMA-249: the title is
+    // titled top border ("┌r…") proves its column drew beneath the modal (the title is
     // the root basename, not the old static "Files").
     assert!(
         out.contains("┌r"),
@@ -1943,7 +2049,7 @@ fn banner_carves_exactly_one_row_off_the_columns() {
     );
 }
 
-// ── Finder overlay tests (T-8, AC-1, AC-2, AC-5) ─────────────────────────────
+// ── Finder overlay tests (AC-1, AC-2, AC-5) ─────────────────────────────
 
 /// A `ViewState` with the finder open and an EMPTY query (no matches yet).
 fn finder_state_empty_query() -> ViewState {
@@ -1989,7 +2095,7 @@ fn finder_overlay_empty_query_shows_title_and_placeholder_no_rows() {
     );
     // No file rows (matches is empty so no paths appear yet).
     // The tree still renders under the overlay (AC-1 — partial overlay). Its titled top border
-    // ("┌r…") proves the column drew beneath the modal (SMA-249: root basename, not "Files").
+    // ("┌r…") proves the column drew beneath the modal (root basename, not "Files").
     assert!(
         out.contains("┌r"),
         "the tree column is drawn under the overlay (AC-1)\n{out}"
@@ -2024,7 +2130,7 @@ fn finder_overlay_with_matches_shows_rows_and_highlights_cursor() {
     );
     assert!(out.contains("README.md"), "third match row is shown\n{out}");
     // The two-column layout is still underneath (AC-1). Its titled top border ("┌r…") proves the
-    // tree column drew beneath the modal (SMA-249: root basename, not the old static "Files").
+    // tree column drew beneath the modal (root basename, not the old static "Files").
     assert!(
         out.contains("┌r"),
         "the tree column is drawn under the overlay (AC-1)\n{out}"
@@ -2354,7 +2460,7 @@ fn finder_geometry_exposes_the_scrollbar_track_only_when_rows_overflow() {
     );
 }
 
-// ── T-4: bottom prompt line (AC-1) + no-file-notice path (AC-7) ──────────────
+// ── bottom prompt line (AC-1) + no-file-notice path (AC-7) ──────────────
 
 #[test]
 fn an_open_go_to_line_prompt_renders_a_bottom_line() {
@@ -2383,7 +2489,7 @@ fn an_open_go_to_line_prompt_renders_a_bottom_line() {
 
 #[test]
 fn no_prompt_open_leaves_layout_unchanged() {
-    // AC-1 (negative): with `prompt: None` the layout is byte-identical to the pre-T-4 baseline —
+    // AC-1 (negative): with `prompt: None` the layout is byte-identical to the pre-prompt baseline —
     // body_footer_prompt falls through to body_and_footer with no prompt row reserved.
     let st = sample_state(); // prompt: None (set by the sample_state helper)
     let out_no_prompt = render(&st, 100, 24);
@@ -2410,7 +2516,7 @@ fn go_to_line_no_file_notice_renders_for_ac7() {
     );
 }
 
-// ── T-12: ContentSearch overlay — AC-8, AC-9, AC-11 ─────────────────────────
+// ── ContentSearch overlay — AC-8, AC-9, AC-11 ─────────────────────────
 
 /// A `ViewState` with a known three-line content and two search matches:
 /// - match 0 on line 0 (bytes 3..7 = "main") — non-current, gets `HIGHLIGHT`
@@ -2449,10 +2555,12 @@ fn search_state() -> ViewState {
 #[test]
 fn search_highlight_colors_match_cells_with_highlight_style() {
     // AC-9: every non-current match is highlighted with HIGHLIGHT (black on cyan).
-    // AC-11: the current match is highlighted with CURRENT_HIGHLIGHT (black on yellow), distinct from the non-current ones.
+    // AC-11: the current match is highlighted with CURRENT_HIGHLIGHT (REVERSED+BOLD, a
+    // theme-relative style distinguishable with color stripped), distinct from the non-current ones.
     use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
     use herdr_file_viewer::presenter::geometry;
     use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
 
     let st = search_state();
     let (w, h) = (100u16, 24u16);
@@ -2503,26 +2611,24 @@ fn search_highlight_colors_match_cells_with_highlight_style() {
         "AC-9: the non-current match 'main' must have the HIGHLIGHT foreground (black), got {main_fg:?}"
     );
 
-    // AC-11: "}" (match 1, current) must carry CURRENT_HIGHLIGHT — visually distinct from HIGHLIGHT.
+    // AC-11: "}" (match 1, current) must carry CURRENT_HIGHLIGHT — REVERSED+BOLD (a
+    // theme-relative style, not a hardcoded color), so it is distinguishable with color stripped.
     let (cx2, cy2) = find_in_content("}").expect("'}' must appear in the content area");
-    let cur_bg = buf.cell((cx2, cy2)).unwrap().bg;
-    assert_eq!(
-        cur_bg,
-        CURRENT_HIGHLIGHT.bg.unwrap(),
-        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT background (yellow), got {cur_bg:?}"
+    let cur_modifier = buf.cell((cx2, cy2)).unwrap().modifier;
+    assert!(
+        cur_modifier.contains(Modifier::REVERSED),
+        "AC-11: the current match '}}' must be REVERSED (theme-relative), got modifier {cur_modifier:?}"
     );
-    let cur_fg = buf.cell((cx2, cy2)).unwrap().fg;
-    assert_eq!(
-        cur_fg,
-        CURRENT_HIGHLIGHT.fg.unwrap(),
-        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT foreground (black), got {cur_fg:?}"
+    assert!(
+        cur_modifier.contains(Modifier::BOLD),
+        "AC-11: the current match '}}' must be BOLD (weight cue), got modifier {cur_modifier:?}"
     );
 
-    // AC-11 distinctness: the two highlight backgrounds are different.
+    // AC-11 distinctness: the two highlight styles differ — HIGHLIGHT is color-only (cyan bg),
+    // CURRENT_HIGHLIGHT is theme-relative (REVERSED+BOLD). They must not be equal.
     assert_ne!(
-        HIGHLIGHT.bg.unwrap(),
-        CURRENT_HIGHLIGHT.bg.unwrap(),
-        "AC-11: HIGHLIGHT and CURRENT_HIGHLIGHT backgrounds must differ"
+        HIGHLIGHT, CURRENT_HIGHLIGHT,
+        "AC-11: HIGHLIGHT and CURRENT_HIGHLIGHT must differ"
     );
 }
 
@@ -2572,7 +2678,7 @@ fn search_highlight_snapshot() {
     );
 }
 
-// ── Help overlay tests (T-6, AC-5, AC-11) ────────────────────────────────────
+// ── Help overlay tests (AC-5, AC-11) ────────────────────────────────────
 
 /// A `ViewState` with the help overlay open. Two sections, active = the SECOND (About) so the
 /// snapshot proves the active indicator picks the active tab — not just the first. The body is a
@@ -2667,7 +2773,7 @@ fn help_overlay_snapshot() {
     insta::assert_snapshot!("presenter_help", render(&help_state(), 100, 24));
 }
 
-// T-6 follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
+// follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
 // scroll extent must be measured in WRAPPED rows, not raw `lines.len()`. A body with only a few
 // raw lines that each wrap many times overflows the viewport even though the raw line count fits —
 // `geometry()` must report `help_body_rows > body.lines.len()` AND surface the vertical scrollbar.
@@ -2791,7 +2897,7 @@ fn geometry_help_body_rows_measured_at_post_gutter_width() {
     );
 }
 
-// T-7 crux (AC-10): the section-tab rects `geometry()` feeds back (`help_tabs`) must line up with
+// crux (AC-10): the section-tab rects `geometry()` feeds back (`help_tabs`) must line up with
 // where the tabs are ACTUALLY drawn, so a click maps to the tab actually drawn (draw + hit-test
 // can't drift). Render the overlay, scan the buffer for each label, and assert the drawn label
 // sits inside its reported rect; also assert the ACTIVE tab's REVERSED cell falls in its rect.
@@ -2843,13 +2949,25 @@ fn help_tab_rects_agree_with_drawn_tab_positions() {
             labels[*idx]
         );
         assert_eq!(rect.y, dy, "the tab rect row must match the drawn row");
-        assert_eq!(
-            rect.x, dx,
-            "the tab rect start col must match the drawn col"
-        );
+        // the active tab carries a leading `▶ ` marker, so its rect start col is the
+        // marker's col (the label follows 2 cells later). Inactive tabs have no marker, so the
+        // rect start col equals the label's drawn col.
+        if *idx == 1 {
+            assert_eq!(
+                dx - rect.x,
+                2,
+                "the active tab's rect starts at the `▶ ` marker (2 cells before the label)"
+            );
+        } else {
+            assert_eq!(
+                rect.x, dx,
+                "the inactive tab rect start col matches the drawn col (no marker)"
+            );
+        }
     }
 
-    // The ACTIVE tab (index 1 = About) is REVERSED; its first cell must be inside its rect.
+    // The ACTIVE tab (index 1 = About) is REVERSED; its first cell (the `▶ ` marker)
+    // must be inside its rect and REVERSED — the rect tracks the drawn tab including the marker.
     let (about_idx, about_rect) = g
         .help_tabs
         .iter()
@@ -2864,4 +2982,117 @@ fn help_tab_rects_agree_with_drawn_tab_positions() {
             .contains(Modifier::REVERSED),
         "the active tab's first cell (at its rect origin) is REVERSED — the rect tracks the drawn tab"
     );
+}
+
+// ── discoverability — help hint + empty-state guidance ──────────────
+
+#[test]
+fn content_pane_shows_a_help_hint_on_its_bottom_border() {
+    // The `? help` affordance rides the content block's bottom border so a new user discovers
+    // the help overlay without opening it first. Visible on the default (file-selected) screen.
+    let out = render(&sample_state(), 100, 24);
+    assert!(
+        out.contains("? help"),
+        "the '? help' hint must be visible on the content pane's bottom border\n{out}"
+    );
+    // It sits on the LAST line (the content block's bottom border), not in the tree column.
+    let last = out.lines().last().unwrap();
+    assert!(
+        last.contains("? help"),
+        "the hint is on the bottom border row\n{last}"
+    );
+}
+
+#[test]
+fn content_pane_shows_help_hint_even_when_a_file_is_loaded() {
+    // Sanity: the hint is persistent, not only on an empty pane.
+    let out = render(&sample_state(), 100, 24);
+    assert!(out.contains("fn main()"), "a file is loaded\n{out}");
+    assert!(out.contains("? help"), "the hint is still shown\n{out}");
+}
+
+#[test]
+fn selecting_a_directory_shows_empty_state_guidance_not_a_blank_pane() {
+    // a directory selection shows "Directory — select a file to view" in the content
+    // pane, instead of a blank void. Built directly in the Presenter (the controller's
+    // clear_content sets this copy).
+    let mut state = sample_state();
+    // Select the directory row (index 0 = /r/src).
+    state.selected = 0;
+    state.content = to_text("Directory — select a file to view");
+    state.notices.clear();
+    // a directory selection has no displayed file content, so the title falls back to
+    // the selected node's name (the directory). Mirrors the controller's `clear_content`.
+    state.content_title = None;
+    state.content_rendering = false;
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("Directory — select a file to view"),
+        "a directory selection shows guidance, not a blank pane\n{out}"
+    );
+}
+
+#[test]
+fn an_empty_tree_shows_empty_state_guidance_not_a_blank_pane() {
+    // an empty / zero-match tree (no files, or a filter matched nothing) shows "No
+    // files" in the content pane instead of leaving it blank.
+    let mut state = sample_state();
+    state.nodes = vec![]; // empty tree
+    state.selected = 0;
+    state.content = to_text("No files");
+    state.notices.clear();
+    // no file content displayed → title falls back to "Content" (no selected node).
+    state.content_title = None;
+    state.content_rendering = false;
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("No files"),
+        "an empty tree shows guidance, not a blank pane\n{out}"
+    );
+}
+
+#[test]
+fn empty_state_directory_snapshot() {
+    // Snapshot the directory-selected empty state so the layout + the guidance are locked.
+    let mut state = sample_state();
+    state.selected = 0; // the /r/src directory
+    state.content = to_text("Directory — select a file to view");
+    state.notices.clear();
+    // directory selected → no file content → title falls back to the directory's name.
+    state.content_title = None;
+    state.content_rendering = false;
+    insta::assert_snapshot!("presenter_empty_directory", render(&state, 100, 24));
+}
+
+#[test]
+fn empty_state_no_files_snapshot() {
+    // Snapshot the empty-tree empty state.
+    let mut state = sample_state();
+    state.nodes = vec![];
+    state.selected = 0;
+    state.content = to_text("No files");
+    state.notices.clear();
+    // no file content displayed → title falls back to "Content" (no selected node).
+    state.content_title = None;
+    state.content_rendering = false;
+    insta::assert_snapshot!("presenter_empty_no_files", render(&state, 100, 24));
+}
+
+#[test]
+fn loading_state_snapshot_while_a_render_is_in_flight() {
+    // while an off-thread render for a newly-selected file is in flight, the content
+    // pane shows a loading placeholder body and a neutral "Content" title (NOT the still-loading
+    // selection's name). The controller's `dispatch_render` sets `content_rendering = true` and
+    // `content_title = None` (no content has landed yet — launch / re-root), so the Presenter
+    // falls back to "Content" instead of picking up the new selection's name. This snapshot locks
+    // that visual: the body is the placeholder and the border title is "Content".
+    let mut state = sample_state();
+    // The cursor has moved to README.md (index 4) but its render hasn't landed — the body is the
+    // placeholder and `content_title` is `None` (no content has landed at all yet, e.g. launch).
+    state.selected = 4; // README.md
+    state.content = to_text("Rendering\u{2026}");
+    state.notices.clear();
+    state.content_title = None;
+    state.content_rendering = true;
+    insta::assert_snapshot!("presenter_loading", render(&state, 100, 24));
 }

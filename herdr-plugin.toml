@@ -19,9 +19,8 @@ platforms = ["linux", "macos"]
 [[build]]
 command = ["/bin/sh", "scripts/fetch-or-build.sh"]
 
-# The viewer pane. herdr performs the split placement on launch (AC-17); no runtime
-# command is issued to open the viewer — declaring placement = "split" is what opens
-# it beside the current pane.
+# The viewer pane. herdr performs the split placement on launch (AC-17); the [[actions]]
+# below summon it — declaring placement = "split" is what opens it beside the current pane.
 [[panes]]
 id = "file-viewer"
 title = "Files"

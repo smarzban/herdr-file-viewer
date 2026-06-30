@@ -1,4 +1,4 @@
-//! T-17 — Host Adapter: parse the injected launch context (AC-26).
+//! Host Adapter: parse the injected launch context (AC-26).
 
 use herdr_file_viewer::host::{from_env, parse_context};
 use std::path::PathBuf;
@@ -83,7 +83,7 @@ fn an_empty_cwd_field_is_ignored_in_favor_of_the_fallback() {
     assert_eq!(ctx.cwd, PathBuf::from("/fallback"));
 }
 
-// T-3 — workspace_id parsing (AC-3, AC-15)
+// workspace_id parsing (AC-3, AC-15)
 
 #[test]
 fn workspace_id_is_parsed_from_json() {

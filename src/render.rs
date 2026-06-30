@@ -277,16 +277,48 @@ fn delegate(
 ) -> (Text<'static>, Option<String>) {
     match run_renderer(command, input, timeout) {
         Ok(out) => (to_text(&out), base_notice),
-        Err(reason) => {
-            let fallback = format!(
-                "{} renderer unavailable ({reason}); showing plain text.",
-                capability(mode)
-            );
+        Err(err) => {
+            // Map the typed failure to a short, actionable notice. The raw OS errno / io::Error
+            // detail is kept on the error but NOT surfaced in the default notice — a user can't
+            // act on "No such file or directory (os error 2)", but can act on "renderer (glow)
+            // not found; install it or see docs/renderers.md" (AC-24/25).
+            let fallback = err.notice(capability(mode));
             let notice = match base_notice {
                 Some(prev) => format!("{prev}\n{fallback}"),
                 None => fallback,
             };
             (to_text(input), Some(notice))
+        }
+    }
+}
+
+/// A typed renderer failure, so the fallback notice can branch on the failure *kind* rather
+/// than string-matching a raw error. The raw detail is retained for a future
+/// debug/verbose path but is kept out of the user-facing notice.
+#[derive(Debug)]
+#[allow(dead_code)] // `detail` is retained for a future debug/verbose path.
+enum RendererError {
+    /// The renderer binary could not be found (spawn returned `ErrorKind::NotFound`).
+    NotFound { prog: String, detail: String },
+    /// The renderer exceeded its wall-clock bound and was killed.
+    Timeout,
+    /// The renderer spawned but failed otherwise (non-zero exit, IO error, no exit). The detail
+    /// is the raw underlying message (kept off the default notice).
+    Failed { detail: String },
+}
+
+impl RendererError {
+    /// Build the user-facing fallback notice for this failure kind, naming the capability
+    /// (`cap`) the renderer was meant to provide. Never includes a raw OS errno or
+    /// `io::Error` Debug string.
+    fn notice(&self, cap: &str) -> String {
+        match self {
+            RendererError::NotFound { prog, .. } => format!(
+                "{cap} renderer ({prog}) not found; showing plain text. \
+                 Install it or see docs/renderers.md."
+            ),
+            RendererError::Timeout => format!("{cap} renderer timed out; showing plain text."),
+            RendererError::Failed { .. } => format!("{cap} renderer failed; showing plain text."),
         }
     }
 }
@@ -322,11 +354,35 @@ fn renderer_command(command: &[String]) -> Result<Command, String> {
 /// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
 /// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
 /// content is untrusted, so there is no argument injection.
-fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<String, String> {
-    let prog = command.first().cloned().ok_or("empty renderer command")?;
-    let mut child = renderer_command(command)?
+fn run_renderer(
+    command: &[String],
+    input: &str,
+    timeout: Duration,
+) -> Result<String, RendererError> {
+    let prog = command
+        .first()
+        .cloned()
+        .ok_or_else(|| RendererError::Failed {
+            detail: "empty renderer command".to_string(),
+        })?;
+    let mut child = renderer_command(command)
+        .map_err(|e| RendererError::Failed { detail: e })?
         .spawn()
-        .map_err(|e| format!("{prog}: {e}"))?;
+        .map_err(|e| {
+            // A spawn failure is almost always "binary not installed" — branch on the OS error
+            // kind so the notice can name the binary and point to remediation, instead of
+            // leaking the raw "No such file or directory (os error 2)".
+            if e.kind() == std::io::ErrorKind::NotFound {
+                RendererError::NotFound {
+                    prog: prog.clone(),
+                    detail: e.to_string(),
+                }
+            } else {
+                RendererError::Failed {
+                    detail: e.to_string(),
+                }
+            }
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         let owned = input.to_owned();
@@ -357,40 +413,23 @@ fn run_renderer(command: &[String], input: &str, timeout: Duration) -> Result<St
             // stdout closed; the process should exit promptly. Bound that wait by what's LEFT of
             // the single deadline, so a renderer that closes stdout then hangs is still killed and
             // the TOTAL never exceeds `timeout` (no indefinite block, no doubled budget).
-            match wait_bounded(
+            match crate::proc::wait_bounded(
                 &mut child,
                 deadline.saturating_duration_since(Instant::now()),
             ) {
                 Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
-                Some(status) => Err(format!("{prog} exited with {status}")),
-                None => Err(format!("{prog} did not exit")),
+                Some(status) => Err(RendererError::Failed {
+                    detail: format!("exited with {status}"),
+                }),
+                None => Err(RendererError::Failed {
+                    detail: "did not exit".to_string(),
+                }),
             }
         }
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(format!("{prog} timed out"))
-        }
-    }
-}
-
-/// Wait for a child to exit within `grace`, polling; kill and reap it if it overruns.
-fn wait_bounded(
-    child: &mut std::process::Child,
-    grace: Duration,
-) -> Option<std::process::ExitStatus> {
-    let deadline = std::time::Instant::now() + grace;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+            Err(RendererError::Timeout)
         }
     }
 }

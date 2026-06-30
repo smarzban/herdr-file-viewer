@@ -21,6 +21,7 @@ pub mod intent;
 pub mod launch;
 pub mod picker;
 pub mod presenter;
+pub mod proc;
 pub mod prompt;
 pub mod render;
 pub mod root;

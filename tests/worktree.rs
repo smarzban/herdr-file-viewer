@@ -1,5 +1,5 @@
-//! T-1 — Worktree model + porcelain parser (AC-1, AC-2, AC-N4).
-//! T-2 — Worktree Provider: live enumeration (AC-1, AC-2, AC-11, AC-N1, AC-N2).
+//! Worktree model + porcelain parser (AC-1, AC-2, AC-N4).
+//! Worktree Provider: live enumeration (AC-1, AC-2, AC-11, AC-N1, AC-N2).
 
 mod common;
 
@@ -162,7 +162,7 @@ fn parses_porcelain_worktrees_real_framing() {
 }
 
 // ---------------------------------------------------------------------------
-// T-2 — live enumeration via `list()` against a real temp git repo
+// live enumeration via `list()` against a real temp git repo
 // ---------------------------------------------------------------------------
 
 /// `list` returns both the main and linked worktree, and marks `is_current` correctly
@@ -326,7 +326,7 @@ fn list_flags_current_when_path_is_a_symlink() {
 }
 
 // ---------------------------------------------------------------------------
-// T-5 — agent_active: tiered pre-selection resolution (AC-3, AC-4, AC-15)
+// agent_active: tiered pre-selection resolution (AC-3, AC-4, AC-15)
 // ---------------------------------------------------------------------------
 
 use herdr_file_viewer::worktree::agent_active;

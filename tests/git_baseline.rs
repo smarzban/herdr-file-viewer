@@ -1,4 +1,4 @@
-//! T-5 — Git Service: baseline resolution, changed-set, diff (AC-9, AC-14, AC-15, AC-16)
+//! Git Service: baseline resolution, changed-set, diff (AC-9, AC-14, AC-15, AC-16)
 //! plus the read-only guarantee across all query methods (AC-N2).
 
 mod common;

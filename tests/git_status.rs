@@ -1,4 +1,4 @@
-//! T-4 — Git Service: per-file status (AC-7) + read-only guarantee (AC-N2).
+//! Git Service: per-file status (AC-7) + read-only guarantee (AC-N2).
 
 mod common;
 

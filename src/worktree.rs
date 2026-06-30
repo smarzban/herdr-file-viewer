@@ -107,7 +107,7 @@ pub fn parse_porcelain(bytes: &[u8], current_root: &Path) -> Vec<Worktree> {
 }
 
 // ---------------------------------------------------------------------------
-// T-5 — Agent-active resolution (AC-3, AC-4, AC-15)
+// Agent-active resolution (AC-3, AC-4, AC-15)
 // ---------------------------------------------------------------------------
 
 /// Serde-only view of one entry from `herdr worktree list --json`.

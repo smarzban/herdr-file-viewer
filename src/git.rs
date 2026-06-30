@@ -56,12 +56,22 @@ pub enum Baseline {
 
 /// Per-file working-tree status, keyed by repo-root-relative path.
 pub fn status(repo_root: &Path) -> BTreeMap<PathBuf, Status> {
-    let mut map = BTreeMap::new();
     // -uall lists each untracked file individually (not a collapsed `dir/`); -z gives
     // verbatim NUL-delimited paths (no quoting/escaping to misparse).
-    let Some(out) = run_bytes(repo_root, &["status", "--porcelain=v1", "-z", "-uall"]) else {
-        return map; // not a repo / git unavailable → empty (AC-26)
-    };
+    match run_bytes(repo_root, &["status", "--porcelain=v1", "-z", "-uall"]) {
+        // Not a repo / git unavailable → empty (AC-26).
+        None => BTreeMap::new(),
+        Some(out) => parse_porcelain_status(&out),
+    }
+}
+
+/// Parse `git status --porcelain=v1 -z -uall` output into a per-path status map.
+///
+/// Extracted from [`status`] so the parser's defensive branches (truncated records,
+/// unknown XY codes, rename/copy `old -> new` form, empty input) are unit-testable
+/// without a live git repo. Pure: bytes in, map out.
+fn parse_porcelain_status(out: &[u8]) -> BTreeMap<PathBuf, Status> {
+    let mut map = BTreeMap::new();
     let mut fields = out.split(|&b| b == 0).filter(|f| !f.is_empty());
     while let Some(rec) = fields.next() {
         // Porcelain v1 record: two status chars, a space, then the path.
@@ -75,6 +85,31 @@ pub fn status(repo_root: &Path) -> BTreeMap<PathBuf, Status> {
             fields.next();
         }
         if let Some(s) = classify(code) {
+            map.insert(PathBuf::from(OsStr::from_bytes(path)), s);
+        }
+    }
+    map
+}
+
+/// Parse `git diff --name-status -z` output into a per-path status map.
+///
+/// Extracted from [`changed_set`] so the parser's defensive branches (rename/copy
+/// `code, old, new` triples, truncated records, unknown codes, empty input) are
+/// unit-testable without a live git repo. Pure: bytes in, map out.
+fn parse_name_status(out: &[u8]) -> BTreeMap<PathBuf, Status> {
+    let mut map = BTreeMap::new();
+    let mut fields = out.split(|&b| b == 0).filter(|f| !f.is_empty());
+    while let Some(code_f) = fields.next() {
+        let code = std::str::from_utf8(code_f).unwrap_or("");
+        // Rename/copy emits code, old, new; everything else code, path.
+        let path = if matches!(code.chars().next(), Some('R' | 'C')) {
+            fields.next(); // old
+            fields.next() // new
+        } else {
+            fields.next()
+        };
+        let Some(path) = path else { break };
+        if let Some(s) = classify_name_status(code) {
             map.insert(PathBuf::from(OsStr::from_bytes(path)), s);
         }
     }
@@ -130,21 +165,7 @@ pub fn changed_set(
                     &fork,
                 ],
             ) {
-                let mut fields = out.split(|&b| b == 0).filter(|f| !f.is_empty());
-                while let Some(code_f) = fields.next() {
-                    let code = std::str::from_utf8(code_f).unwrap_or("");
-                    // Rename/copy emits code, old, new; everything else code, path.
-                    let path = if matches!(code.chars().next(), Some('R' | 'C')) {
-                        fields.next(); // old
-                        fields.next() // new
-                    } else {
-                        fields.next()
-                    };
-                    let Some(path) = path else { break };
-                    if let Some(s) = classify_name_status(code) {
-                        map.insert(PathBuf::from(OsStr::from_bytes(path)), s);
-                    }
-                }
+                map = parse_name_status(&out);
             }
             // Untracked files aren't in `git diff` but are part of the body of work.
             for (path, s) in status(repo_root) {
@@ -462,5 +483,303 @@ mod tests {
                 "{var} is scrubbed from the child env: {envs:?}"
             );
         }
+    }
+
+    // ---- classify: every porcelain XY code → Status -----------------------------
+
+    /// Table-driven coverage for [`classify`]: each row is a (code, expected) pair
+    /// hitting a distinct branch — untracked, deleted, added, the catch-all modified,
+    /// the empty/ignored `None` fallback, and an unknown-but-nonempty code.
+    #[test]
+    fn classify_maps_every_status_code_branch() {
+        let cases: &[(&str, Option<Status>)] = &[
+            // Untracked — the `??` branch.
+            ("??", Some(Status::Untracked)),
+            // Deleted — any code containing `D` (staged, unstaged, both).
+            (" D", Some(Status::Deleted)),
+            ("D ", Some(Status::Deleted)),
+            ("DD", Some(Status::Deleted)),
+            ("MD", Some(Status::Deleted)), // `D` wins over `M`
+            ("AD", Some(Status::Deleted)), // `D` wins over `A`
+            // Added — any code containing `A` and NOT `D`.
+            ("A ", Some(Status::Added)),
+            (" A", Some(Status::Added)),
+            ("AM", Some(Status::Added)), // `A` wins over `M`
+            // Modified — the catch-all for non-empty, non-untracked, non-D/A codes.
+            (" M", Some(Status::Modified)),
+            ("M ", Some(Status::Modified)),
+            ("MM", Some(Status::Modified)),
+            ("MR", Some(Status::Modified)),
+            ("MC", Some(Status::Modified)),
+            ("MT", Some(Status::Modified)),
+            ("RM", Some(Status::Modified)),
+            ("CM", Some(Status::Modified)),
+            ("TM", Some(Status::Modified)),
+            // Empty / whitespace-only → None (unmodified / ignored branch).
+            ("", None),
+            ("  ", None),
+            // Unknown but non-empty code that is neither D/A/M/R/C/T/U → the catch-all
+            // maps it to Modified (the trailing `else`). `!` is git's ignored marker,
+            // which also falls here: `!`.trim().is_empty() is false → Modified.
+            ("!!", Some(Status::Modified)),
+            ("UU", Some(Status::Modified)), // unmerged — still mapped to Modified
+            ("XY", Some(Status::Modified)), // unknown letters → Modified
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                classify(code),
+                *expected,
+                "classify({code:?}) — branch coverage"
+            );
+        }
+    }
+
+    // ---- classify_name_status: every --name-status letter → Status -------------
+
+    /// Table-driven coverage for [`classify_name_status`]: every recognized letter
+    /// plus the unknown-letter `None` fallback.
+    #[test]
+    fn classify_name_status_maps_every_letter() {
+        let cases: &[(&str, Option<Status>)] = &[
+            ("A", Some(Status::Added)),
+            ("D", Some(Status::Deleted)),
+            ("M", Some(Status::Modified)),
+            ("T", Some(Status::Modified)), // type change → Modified
+            ("R", Some(Status::Modified)), // rename → Modified
+            ("C", Some(Status::Modified)), // copy → Modified
+            // Unknown letters / empty / garbage → None.
+            ("X", None),
+            ("", None),
+            ("Z", None),
+            ("?", None),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                classify_name_status(code),
+                *expected,
+                "classify_name_status({code:?}) — letter coverage"
+            );
+        }
+    }
+
+    // ---- parse_porcelain_status: malformed / truncated / edge inputs ----------
+
+    /// Helper: build a `-z` porcelain byte stream by NUL-joining the given field
+    /// slices and trailing a NUL terminator (as git emits).
+    fn porcelain_bytes(fields: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for f in fields {
+            out.extend_from_slice(f);
+            out.push(0);
+        }
+        out
+    }
+
+    /// Empty input (git produced no output) → empty map. Covers the no-records branch.
+    #[test]
+    fn parse_porcelain_status_empty_input() {
+        assert!(parse_porcelain_status(b"").is_empty());
+        assert!(parse_porcelain_status(&porcelain_bytes(&[])).is_empty());
+    }
+
+    /// A record shorter than 3 bytes (`<XY SP path>` minimum) is skipped, not a panic.
+    /// Covers the `rec.len() < 3` defensive branch.
+    #[test]
+    fn parse_porcelain_status_skips_truncated_records() {
+        // 0-byte, 1-byte, and 2-byte (exactly the code, no space/path) records.
+        let out = porcelain_bytes(&[b"", b"X", b"XY", b" M mod.txt"]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(map.len(), 1, "only the well-formed record survives");
+        assert_eq!(map.get(&PathBuf::from("mod.txt")), Some(&Status::Modified));
+    }
+
+    /// A record whose first two bytes are invalid UTF-8 still parses (the `unwrap_or("")`
+    /// branch): `from_utf8` fails, code becomes "", `classify("")` → None, so the
+    /// record is dropped rather than crashing.
+    #[test]
+    fn parse_porcelain_status_invalid_utf8_code_is_dropped() {
+        // 0xFF 0xFF is not valid UTF-8; code resolves to "" → classify → None → dropped.
+        let bad_code = [0xFFu8, 0xFF, b' ', b'p'];
+        let out = porcelain_bytes(&[&bad_code, b" M ok.txt"]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(
+            map.len(),
+            1,
+            "invalid-utf8 code is dropped, the next record still parses"
+        );
+        assert_eq!(map.get(&PathBuf::from("ok.txt")), Some(&Status::Modified));
+    }
+
+    /// A rename record (`R…`) is followed by a separate NUL field with the old path;
+    /// the parser must consume that extra field so the NEW path is keyed and the next
+    /// record is not mis-parsed. This is the most fragile porcelain parse case.
+    #[test]
+    fn parse_porcelain_status_rename_consumes_old_path_field() {
+        // "RM new.txt\0old.txt\0 M after.txt" — R record + old path + trailing record.
+        let out = porcelain_bytes(&[b"RM new.txt", b"old.txt", b" M after.txt"]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(
+            map.get(&PathBuf::from("new.txt")),
+            Some(&Status::Modified),
+            "rename's NEW path is keyed (R → Modified)"
+        );
+        assert!(
+            !map.contains_key(&PathBuf::from("old.txt")),
+            "rename's old path is consumed as the extra field, not keyed"
+        );
+        assert_eq!(
+            map.get(&PathBuf::from("after.txt")),
+            Some(&Status::Modified),
+            "the record after the rename parses correctly (no desync)"
+        );
+    }
+
+    /// A copy record (`C…`) likewise consumes its old-path field.
+    #[test]
+    fn parse_porcelain_status_copy_consumes_old_path_field() {
+        let out = porcelain_bytes(&[b"CM c.txt", b"orig.txt", b"?? untracked.txt"]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(map.get(&PathBuf::from("c.txt")), Some(&Status::Modified));
+        assert!(!map.contains_key(&PathBuf::from("orig.txt")));
+        assert_eq!(
+            map.get(&PathBuf::from("untracked.txt")),
+            Some(&Status::Untracked)
+        );
+    }
+
+    /// A rename record whose trailing old-path field is MISSING (truncated stream)
+    /// must not panic: `fields.next()` returns None, the record's new path is still
+    /// keyed, and the loop ends cleanly.
+    #[test]
+    fn parse_porcelain_status_rename_with_missing_old_field_does_not_panic() {
+        let out = porcelain_bytes(&[b"RM only.txt"]); // no old-path field follows
+        let map = parse_porcelain_status(&out);
+        assert_eq!(map.get(&PathBuf::from("only.txt")), Some(&Status::Modified));
+    }
+
+    /// NUL-delimited edge cases: paths containing bytes that look like the porcelain
+    /// separator (space) or high-bit bytes pass through verbatim because the parser
+    /// slices on NUL, not on spaces.
+    #[test]
+    fn parse_porcelain_status_preserves_paths_with_spaces_and_high_bytes() {
+        // Path "my file.txt" (with a space) and a non-ASCII path.
+        let out = porcelain_bytes(&[b"?? my file.txt", "?? résumé.txt".as_bytes()]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(
+            map.get(&PathBuf::from("my file.txt")),
+            Some(&Status::Untracked)
+        );
+        assert_eq!(
+            map.get(&PathBuf::from("résumé.txt")),
+            Some(&Status::Untracked)
+        );
+    }
+
+    /// An unknown XY code (letters git never emits in porcelain v1) still maps through
+    /// the catch-all → Modified, so the parser never silently drops a recognizable
+    /// change because of an unfamiliar code.
+    #[test]
+    fn parse_porcelain_status_unknown_xy_code_maps_to_modified() {
+        let out = porcelain_bytes(&[b"ZZ weird.txt"]);
+        let map = parse_porcelain_status(&out);
+        assert_eq!(
+            map.get(&PathBuf::from("weird.txt")),
+            Some(&Status::Modified),
+            "unknown XY code falls through classify → Modified"
+        );
+    }
+
+    // ---- parse_name_status: malformed / truncated / edge inputs ----------------
+
+    /// Helper: build a `-z` name-status byte stream by NUL-joining fields + terminator.
+    fn name_status_bytes(fields: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for f in fields {
+            out.extend_from_slice(f);
+            out.push(0);
+        }
+        out
+    }
+
+    /// Empty input → empty map.
+    #[test]
+    fn parse_name_status_empty_input() {
+        assert!(parse_name_status(b"").is_empty());
+        assert!(parse_name_status(&name_status_bytes(&[])).is_empty());
+    }
+
+    /// Rename/copy triples (`code, old, new`) key the NEW path and consume the old.
+    #[test]
+    fn parse_name_status_rename_triple_keys_new_path() {
+        let out = name_status_bytes(&[b"R100", b"old.txt", b"new.txt", b"M", b"mod.txt"]);
+        let map = parse_name_status(&out);
+        assert_eq!(map.get(&PathBuf::from("new.txt")), Some(&Status::Modified));
+        assert!(!map.contains_key(&PathBuf::from("old.txt")));
+        assert_eq!(map.get(&PathBuf::from("mod.txt")), Some(&Status::Modified));
+    }
+
+    #[test]
+    fn parse_name_status_copy_triple_keys_new_path() {
+        let out = name_status_bytes(&[b"C100", b"src.txt", b"dst.txt", b"A", b"add.txt"]);
+        let map = parse_name_status(&out);
+        assert_eq!(map.get(&PathBuf::from("dst.txt")), Some(&Status::Modified));
+        assert!(!map.contains_key(&PathBuf::from("src.txt")));
+        assert_eq!(map.get(&PathBuf::from("add.txt")), Some(&Status::Added));
+    }
+
+    /// A rename record missing its trailing new-path field (truncated stream) must
+    /// not panic: the loop breaks on `None` from `fields.next()`.
+    #[test]
+    fn parse_name_status_rename_with_missing_new_field_breaks_cleanly() {
+        let out = name_status_bytes(&[b"R100", b"old.txt"]); // no new-path field
+        let map = parse_name_status(&out);
+        assert!(map.is_empty(), "truncated rename triple yields no entry");
+    }
+
+    /// A code whose first byte is invalid UTF-8 resolves to "" via `unwrap_or("")`,
+    /// so `classify_name_status("")` → None and the record is dropped (no panic).
+    #[test]
+    fn parse_name_status_invalid_utf8_code_is_dropped() {
+        let bad_code = [0xFFu8, 0xFF];
+        let out = name_status_bytes(&[&bad_code, b"p.txt", b"M", b"ok.txt"]);
+        let map = parse_name_status(&out);
+        assert_eq!(
+            map.len(),
+            1,
+            "invalid-utf8 code dropped, next record parses"
+        );
+        assert_eq!(map.get(&PathBuf::from("ok.txt")), Some(&Status::Modified));
+    }
+
+    /// An unknown code letter (not A/D/M/T/R/C) → None → the record is dropped.
+    #[test]
+    fn parse_name_status_unknown_code_letter_is_dropped() {
+        let out = name_status_bytes(&[b"X", b"weird.txt", b"M", b"ok.txt"]);
+        let map = parse_name_status(&out);
+        assert_eq!(map.len(), 1, "unknown letter dropped");
+        assert_eq!(map.get(&PathBuf::from("ok.txt")), Some(&Status::Modified));
+    }
+
+    /// A code field with trailing content beyond the first char is still mapped by its
+    /// leading letter (e.g. `R100`, `C75`, `M100`), matching git's name-status format.
+    #[test]
+    fn parse_name_status_maps_by_leading_letter_ignoring_trailing_digits() {
+        let out = name_status_bytes(&[b"A100", b"a.txt", b"D100", b"d.txt", b"M100", b"m.txt"]);
+        let map = parse_name_status(&out);
+        assert_eq!(map.get(&PathBuf::from("a.txt")), Some(&Status::Added));
+        assert_eq!(map.get(&PathBuf::from("d.txt")), Some(&Status::Deleted));
+        assert_eq!(map.get(&PathBuf::from("m.txt")), Some(&Status::Modified));
+    }
+
+    /// Paths with spaces and high-bit bytes round-trip verbatim (NUL-delimited parse).
+    #[test]
+    fn parse_name_status_preserves_paths_with_spaces_and_high_bytes() {
+        let out = name_status_bytes(&[b"M", b"my file.txt", b"A", "résumé.txt".as_bytes()]);
+        let map = parse_name_status(&out);
+        assert_eq!(
+            map.get(&PathBuf::from("my file.txt")),
+            Some(&Status::Modified)
+        );
+        assert_eq!(map.get(&PathBuf::from("résumé.txt")), Some(&Status::Added));
     }
 }

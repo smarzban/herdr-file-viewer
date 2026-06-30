@@ -94,12 +94,61 @@ pub trait ContentProvider: Send {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult;
 }
 
-/// Hand the selected file to an external editor (AC-19). Returns `Ok(true)` when the
-/// hand-off took over the terminal (the run loop must force a full repaint afterwards),
-/// `Ok(false)` if it did not. Behind a trait so the controller never edits or even spawns
-/// directly — and tests launch nothing.
+/// The outcome of an editor hand-off (AC-19). Distinguishing the failure modes lets the
+/// controller word its user-facing notice correctly:
+/// - [`EditorOutcome::TookOver`] — the editor ran and drew over the terminal; the run loop
+///   must force a full repaint afterwards.
+/// - [`EditorOutcome::NoTakeover`] — the hand-off returned without a terminal takeover (no
+///   repaint/refresh needed); used by stubs and any future no-op path.
+/// - [`EditorOutcome::NotLaunched`] — the editor process could not be started (e.g. missing
+///   binary, no `$EDITOR` configured). The terminal was not handed over.
+/// - [`EditorOutcome::NonZeroExit`] — the editor launched and ran, then exited with a
+///   non-zero status. The hand-off took place; only the exit code signals a problem.
+///
+/// Behind the trait so the controller never edits or even spawns directly — and tests
+/// launch nothing.
+pub enum EditorOutcome {
+    /// The editor took the terminal (it ran, with any exit status). The run loop forces a
+    /// full repaint to recover from the screen the editor drew over.
+    TookOver,
+    /// The hand-off returned without a terminal takeover — no repaint or git refresh is
+    /// needed. (Used by test stubs that don't really launch an editor, and any future no-op
+    /// hand-off path.)
+    NoTakeover,
+    /// The editor process could not be started — nothing ran. `reason` is a short,
+    /// user-facing message (e.g. "no editor configured (set $EDITOR)").
+    NotLaunched(String),
+    /// The editor launched and ran, then exited with a non-zero status. `detail` is a
+    /// short, user-facing description of the status (e.g. "exit status: 1").
+    NonZeroExit(String),
+}
+
+/// Why the content pane is empty — selects the empty-state copy shown instead of a blank
+/// pane. A directory has nothing to render; an empty/zero-match tree (no files, or
+/// a filter — changed-only / gitignore / hidden — that matched nothing) leaves no selection.
+/// The label is a short, first-party, control-byte-free string rendered through the normal
+/// content path (no AC-27 sanitization needed for static first-party text).
+enum EmptyReason {
+    /// A directory is selected — it has no file content to render.
+    Directory,
+    /// The tree is empty or a filter matched no files (no selection at all).
+    NoFiles,
+}
+
+impl EmptyReason {
+    /// The empty-state guidance copy for this case.
+    fn label(self) -> &'static str {
+        match self {
+            EmptyReason::Directory => "Directory — select a file to view",
+            EmptyReason::NoFiles => "No files",
+        }
+    }
+}
+
+/// Hand the selected file to an external editor (AC-19). Behind a trait so tests launch
+/// nothing; see [`EditorOutcome`] for the distinguished failure modes.
 pub trait EditorHandoff {
-    fn open(&mut self, file: &Path) -> io::Result<bool>;
+    fn open(&mut self, file: &Path) -> EditorOutcome;
 }
 
 /// Copy a string to the system clipboard (the `y` / `Y` path-copy keys). Behind a trait so
@@ -122,13 +171,13 @@ pub struct RootProviders {
 /// The injected components the controller orchestrates.
 pub struct Components {
     /// Builds the root-bound providers for a given [`Resolved`]. Called once at launch, and
-    /// again per re-root (T-7/T-8). `Fn` (not `FnOnce`) because a re-root re-invokes it.
+    /// again per re-root. `Fn` (not `FnOnce`) because a re-root re-invokes it.
     /// ADR-0004.
     pub providers: Box<dyn Fn(&Resolved) -> RootProviders>,
     pub editor: Box<dyn EditorHandoff>,
     pub clipboard: Box<dyn Clipboard>,
     /// The external renderer commands used for the in-app help overlay's What's New section
-    /// (T-4: render CHANGELOG_MD as markdown via the same renderer the content pane uses).
+    /// (render CHANGELOG_MD as markdown via the same renderer the content pane uses).
     /// `None` ⇒ the markdown renderer is absent; `render::render` falls back to plain text
     /// and a notice (AC-15) — the same fallback it applies for any missing renderer.
     pub renderers: Option<Renderers>,
@@ -220,6 +269,20 @@ pub struct Controller {
     /// The content pane's current text and its notices (truncation/fallback).
     content: Text<'static>,
     content_notices: Vec<String>,
+    /// The path of the file whose content is currently displayed in the pane — the title's
+    /// source of truth, so the border label switches in lockstep with the body. `None`
+    /// while no file's content has landed yet (launch, a re-root, or a directory/empty tree
+    /// selection — the title then falls back to the selected node's name or "Content"). Updated
+    /// only by [`poll`](Self::poll) when a render result is applied, and cleared by
+    /// [`clear_content`](Self::clear_content); a render in flight does NOT update it ahead of the
+    /// body, so the pane never shows a new file's title over the old file's body.
+    content_path: Option<PathBuf>,
+    /// True iff an off-thread render for a file is in flight — set when [`dispatch_render`]
+    /// sends a `RenderJob`, cleared when [`poll`](Self::poll) applies the matching result (and
+    /// by [`clear_content`](Self::clear_content), which sends no job). The Presenter uses this
+    /// to pick a neutral title while the body shows the loading placeholder, so the title never
+    /// jumps to a freshly-selected file before its content arrives.
+    content_rendering: bool,
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
     action_notice: Option<String>,
@@ -229,7 +292,7 @@ pub struct Controller {
     /// The provider factory (ADR-0004), kept so a re-root can rebuild the root-bound providers
     /// (Git Service + Content Renderer) against the new root.
     providers: Box<dyn Fn(&Resolved) -> RootProviders>,
-    /// The external renderer commands for the help overlay's What's New section (T-4).
+    /// The external renderer commands for the help overlay's What's New section.
     /// Built from `Components::renderers` at construction; `None` ⇒ fallback.
     renderers: Renderers,
     /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
@@ -260,13 +323,13 @@ pub struct Controller {
     /// (AC-13); the switch itself is wired in later tasks.
     picker: Option<PickerState>,
     /// The open go-to-file finder's state, or `None` when closed (AC-1). Opened by the `f` key
-    /// (OpenFinder intent); closed by confirm/cancel (T-7) and by [`re_root`](Self::re_root) (a
+    /// (OpenFinder intent); closed by confirm/cancel and by [`re_root`](Self::re_root) (a
     /// re-root invalidates the old-root candidate list).
     finder: Option<FinderState>,
     /// The open in-file-nav bottom prompt (go-to-line), or `None` when closed. While `Some`, the run
-    /// loop routes raw keys to `handle_prompt_key` (T-4) and the mouse is inert ([`handle_mouse`]
+    /// loop routes raw keys to `handle_prompt_key` and the mouse is inert ([`handle_mouse`]
     /// returns early), so the selection can't change under an open prompt. Closed by confirm/cancel
-    /// (T-3) and by [`re_root`](Self::re_root) (symmetric with the picker/finder teardown).
+    /// and by [`re_root`](Self::re_root) (symmetric with the picker/finder teardown).
     /// Mutually exclusive with the picker/finder modals.
     prompt: Option<PromptState>,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
@@ -277,8 +340,8 @@ pub struct Controller {
     /// survives a re-root unchanged.
     our_workspace_id: Option<String>,
     /// The launch base-branch hint (the branch a worktree forked from), carried into a re-root's
-    /// re-resolution so the post-switch Base-mode baseline can recover the common shared-base case
-    /// (review-gate R1, F). Session-level — survives a re-root unchanged: the herdr per-worktree
+    /// re-resolution so the post-switch Base-mode baseline can recover the common shared-base case.
+    /// Session-level — survives a re-root unchanged: the herdr per-worktree
     /// hint isn't available cross-worktree, so the launch hint is the best shared-base recovery.
     base_branch: Option<String>,
     /// The current git branch (e.g. `"main"`, `"feat/x"`), shown on the tree's bottom border.
@@ -308,7 +371,7 @@ pub struct Controller {
     /// call `dispatch_render`, so live typing is never wiped by that clear.
     search: Option<SearchState>,
     /// The open help overlay's state, or `None` when closed (AC-1, AC-6). Opened by the `?`
-    /// key (ShowHelp intent); dismissed by Esc/`q` (T-5). Modal — while `Some`, handle() and
+    /// key (ShowHelp intent); dismissed by Esc/`q`. Modal — while `Some`, handle() and
     /// handle_mouse() return early (AC-N4).
     help: Option<HelpState>,
 }
@@ -342,7 +405,7 @@ impl Controller {
         // The launch base-branch hint is session-level — recorded once here and carried across
         // re-roots (F). It is `None` outside a repo / when herdr gave no hint.
         let base_branch = resolved.base_branch.clone();
-        // The current branch for the tree's bottom-border title (SMA-249): queried once here from
+        // The current branch for the tree's bottom-border title: queried once here from
         // the resolved repo root (never per-frame), `None` outside a repo / on detached HEAD.
         let current_branch = resolved
             .repo_root
@@ -376,6 +439,8 @@ impl Controller {
             overrides: HashMap::new(),
             content: Text::raw(""),
             content_notices: Vec::new(),
+            content_path: None,
+            content_rendering: false,
             action_notice: None,
             git,
             editor,
@@ -413,7 +478,7 @@ impl Controller {
     /// (the Content Renderer), returning the job sender and result receiver the controller keeps
     /// (AC-23). The worker runs until the job sender is dropped — so `new` spawns it once, and a
     /// re-root spawns a fresh one and drops the old sender to retire the old worker. The loop
-    /// body is the same one `new` used inline before T-7 extracted it; behavior is unchanged.
+    /// body is the same one `new` used inline before it was extracted; behavior is unchanged.
     fn spawn_worker(
         git: Arc<dyn GitService>,
         content: Box<dyn ContentProvider>,
@@ -427,22 +492,24 @@ impl Controller {
                 while let Ok(newer) = job_rx.try_recv() {
                     job = newer;
                 }
-                // The diff is read here, off the input thread, so a large/slow diff never
-                // blocks input (AC-23). Other modes don't need git. The full-file diff view
-                // asks git for whole-file context; the compact diff uses git's default.
-                let raw_diff =
-                    if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
-                        let full = job.mode == ViewMode::FullDiff;
-                        job.rel
-                            .as_deref()
-                            .map(|rel| git.diff(rel, job.baseline, full))
-                    } else {
-                        None
-                    };
-                // Contain a renderer panic so the worker survives — otherwise the thread would
-                // die and rendering would stop for the rest of the session. The unwind is caught
-                // here and a placeholder is surfaced in place of the failed render.
+                // Contain a panic anywhere in the per-job work — the diff read AND the render —
+                // so the worker thread always survives to send a result. The diff is read here,
+                // off the input thread, so a large/slow diff never blocks input (AC-23); other
+                // modes don't need git, the full-file diff view asks git for whole-file context,
+                // the compact diff uses git's default. The diff read MUST sit inside this guard:
+                // if `git.diff` panicked the worker would die without sending, no result would
+                // ever reach `poll`, and `content_rendering` would never clear — stranding the
+                // pane on the `Rendering…` placeholder for the rest of the session.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let raw_diff =
+                        if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
+                            let full = job.mode == ViewMode::FullDiff;
+                            job.rel
+                                .as_deref()
+                                .map(|rel| git.diff(rel, job.baseline, full))
+                        } else {
+                            None
+                        };
                     content.render(&job.path, job.mode, raw_diff.as_deref())
                 }))
                 .unwrap_or_else(|_| RenderResult {
@@ -479,7 +546,7 @@ impl Controller {
             ));
             return;
         }
-        // Carry the launch base-branch hint into the re-resolution (review-gate R1, F): herdr's
+        // Carry the launch base-branch hint into the re-resolution: herdr's
         // per-worktree hint isn't available cross-worktree, so the launch hint is the best
         // shared-base recovery. `resolve_base_branch` re-validates it against the target repo's
         // refs (worktrees share the repo's refs), recovering a shared base; otherwise it falls
@@ -516,7 +583,7 @@ impl Controller {
         self.root = resolved.root.clone();
         self.is_git_repo = resolved.is_git_repo;
         self.tree = TreeModel::new(resolved.root.clone());
-        // Recompute the cached branch for the new root's bottom-border title (SMA-249). Cheap and
+        // Recompute the cached branch for the new root's bottom-border title. Cheap and
         // synchronous: a single `git rev-parse` against the already-resolved repo root, done once
         // per re-root (not per-frame). `None` when the new root is outside a repo / detached.
         self.current_branch = resolved
@@ -532,6 +599,10 @@ impl Controller {
         self.content_hscroll = 0;
         self.tree_hscroll = 0;
         self.overrides.clear();
+        // The old root's rendered content is invalid under the new root — drop the displayed-file
+        // path so the title falls back to a neutral label until the new selection's render lands
+        //. `dispatch_render` below sets `content_rendering` and the loading placeholder.
+        self.content_path = None;
         self.action_notice = None;
         self.changed = BTreeMap::new();
         self.picker = None;
@@ -539,7 +610,7 @@ impl Controller {
         // which is rooted at the OLD root — a stale `confirm_finder` would then `root.join(old_rel)`
         // against the NEW root and reveal nothing. Unreachable today (finder/picker are mutually
         // exclusive and re_root only fires via picker-confirm), but kept structural so a future
-        // re-root trigger can't strand a finder. (review-gate R1: G2)
+        // re-root trigger can't strand a finder.
         self.finder = None;
         // Close the go-to-line prompt too (symmetric teardown). Unreachable today — the prompt is
         // modal and re_root only fires via picker-confirm — but kept structural so a future re-root
@@ -631,7 +702,7 @@ impl Controller {
     pub fn tree(&self) -> &TreeModel {
         &self.tree
     }
-    /// The current tree root. Exposed so tests can assert re-root results (T-13).
+    /// The current tree root. Exposed so tests can assert re-root results.
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -646,20 +717,19 @@ impl Controller {
     }
 
     /// The open worktree picker's state, or `None` when it is closed. Exposed so the Presenter
-    /// (T-14) can draw it and tests can assert the rows / pre-selected cursor.
+    /// can draw it and tests can assert the rows / pre-selected cursor.
     pub fn picker(&self) -> Option<&PickerState> {
         self.picker.as_ref()
     }
 
     /// Whether a re-root's off-thread status/changed-set fetch is still pending (not yet applied
     /// by [`poll`]). Exposed so a test can assert that a synchronous refresh drops the pending
-    /// async fetch, so a stale async result cannot later clobber the freshly-refreshed state
-    /// (review-gate R1, G).
+    /// async fetch, so a stale async result cannot later clobber the freshly-refreshed state.
     pub fn status_refresh_pending(&self) -> bool {
         self.status_rx.is_some()
     }
 
-    /// The session-level launch base-branch hint, carried across re-roots (review-gate R1, F).
+    /// The session-level launch base-branch hint, carried across re-roots.
     /// Exposed so a test can assert the hint survives a re_root.
     pub fn base_branch_hint(&self) -> Option<&str> {
         self.base_branch.as_deref()
@@ -735,11 +805,11 @@ impl Controller {
     pub fn set_pane_geometry(&mut self, geom: PaneGeometry) {
         // Read the measured maxima before `geom` is moved into `self.geom`, then clamp each modal's
         // stored hscroll to it — both Expand (finder/picker scroll_right) are monotonic, so without
-        // this an over-scroll right parks the offset past the widest row (SMA-229).
+        // this an over-scroll right parks the offset past the widest row.
         let finder_max_hscroll = geom.finder_max_hscroll;
         let picker_max_hscroll = geom.picker_max_hscroll;
         // The help body's measured viewport height and its WRAPPED row total — used to enforce the
-        // scroll bottom-bound that T-5 deferred (AC-9): `scroll_by` only saturates at 0, so the lower
+        // scroll bottom-bound that was deferred (AC-9): `scroll_by` only saturates at 0, so the lower
         // clamp is applied here against the live geometry, exactly as the finder/picker re-clamp their
         // hscroll. The body is drawn with `Paragraph::wrap`, so its offset is in wrapped rows — clamp
         // against the wrapped total the Presenter measured (`help_body_rows`), NOT raw `lines.len()`,
@@ -799,7 +869,7 @@ impl Controller {
             picker: self.picker_view(),
             finder: self.finder_view(),
             // The tree's top-border title is the root directory basename; the bottom is the cached
-            // current branch (SMA-249). The basename is empty only for a filesystem-root `/`, where
+            // current branch. The basename is empty only for a filesystem-root `/`, where
             // the Presenter falls back to "Files".
             root_name: self
                 .root
@@ -808,9 +878,23 @@ impl Controller {
                 .unwrap_or_default(),
             branch: self.current_branch.clone(),
             prompt: self.bottom_line(),
+            // the content pane's border title. `content_path` is the displayed content's
+            // file (set by `poll` when a render lands, cleared by `clear_content`/re-root), so the
+            // title switches in lockstep with the body — it never jumps to a freshly-selected file
+            // before that file's content arrives. `None` while no file's content has landed (launch,
+            // re-root, or a directory/empty selection); the Presenter then falls back to the selected
+            // node's name (a directory) or "Content". `content_rendering` tells the Presenter a
+            // render is in flight so the `None` fallback doesn't pick up the new (still-loading)
+            // selection's name and re-introduce the title-ahead-of-body bug.
+            content_title: self
+                .content_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().into_owned()),
+            content_rendering: self.content_rendering,
             // Populate the highlight overlay from the committed/live search state so the Presenter
             // overlays matches via highlight::apply. `None` when no search is active → draw_content
-            // falls through to `state.content.clone()`, byte-identical to the pre-T-12 path.
+            // falls through to `state.content.clone()`, byte-identical to the prior path.
             search: self.search.as_ref().map(|s| ContentSearch {
                 matches: s.matches.clone(),
                 current: s.current,
@@ -940,7 +1024,7 @@ impl Controller {
             .collect();
         // Center the About section only; What's New stays left-aligned. About is the section whose
         // label is `HelpSection::About::label()` ("About") — matched by label so the projection
-        // stays decoupled from the section index (the Vec is the SMA-49 seam).
+        // stays decoupled from the section index (the Vec is the settings seam).
         let center = labels.get(active).map(String::as_str) == Some(HelpSection::About.label());
         Some(HelpView {
             active,
@@ -984,7 +1068,7 @@ impl Controller {
         // The finder is modal too: while it is open the run loop (app.rs) routes raw keys to
         // `handle_finder_key`, so `handle` should not be reached. Guard structurally anyway —
         // symmetric with the picker guard above — so a future or test caller can't leak an intent
-        // to the tree or open a second modal beneath the finder overlay. (review-gate R1: O2)
+        // to the tree or open a second modal beneath the finder overlay.
         if self.finder.is_some() {
             return Effects::noop();
         }
@@ -994,7 +1078,7 @@ impl Controller {
             return Effects::noop();
         }
         // The help overlay is modal: while it is open, all other intents are inert. The run loop
-        // (T-5) will route keys to handle_help_key instead; this guard mirrors finder/prompt.
+        // routes keys to handle_help_key instead; this guard mirrors finder/prompt.
         if self.help.is_some() {
             return Effects::noop();
         }
@@ -1025,6 +1109,8 @@ impl Controller {
             Intent::OpenSearch => self.open_search(),
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
+            Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
+            Intent::TreeScrollRight => self.scroll_tree_h_focus(HSCROLL_STEP as i32),
             Intent::ShowHelp => self.open_help(),
             Intent::Close => self.close_or_unzoom(),
         }
@@ -1112,7 +1198,7 @@ impl Controller {
     /// on button *release*, so a divider drag is never mistaken for a click.
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Modal: while the picker is open the mouse is fully inert — the picker is
-        // keyboard-only. This mirrors the keyboard modal gate in `handle`. (review-gate R1, E)
+        // keyboard-only. This mirrors the keyboard modal gate in `handle`.
         if self.picker.is_some() {
             return Effects::noop();
         }
@@ -1467,7 +1553,7 @@ impl Controller {
     }
 
     /// Horizontal wheel / trackpad swipe scrolls sideways: the content pane (like the `←`/`→`
-    /// keys, for unwrapped long lines) or the tree (which has no h-scroll keys). Each clamps to
+    /// keys, for unwrapped long lines) or the tree (like the `H`/`L` keys). Each clamps to
     /// `[0, widest − viewport]`, so it is inert when nothing overflows.
     fn hscroll_at(&mut self, col: u16, row: u16, delta: i32) -> Effects {
         match self.hit_test(col, row) {
@@ -1488,6 +1574,17 @@ impl Controller {
         let next = (self.tree_hscroll as i32 + delta).clamp(0, max as i32);
         self.tree_hscroll = next as u16;
         Effects::redraw()
+    }
+
+    /// The keyboard path for tree horizontal scroll (AC-18): `H`/`L` move `tree_hscroll` by the
+    /// same step the mouse wheel uses, clamped to the measured max — mirroring how the content
+    /// pane's `←`/`→` scroll `content_hscroll`. Inert unless the tree is focused, so the keys
+    /// never fight the content pane's own horizontal scroll when the content is focused.
+    fn scroll_tree_h_focus(&mut self, delta: i32) -> Effects {
+        if self.focus != Focus::Tree {
+            return Effects::noop();
+        }
+        self.scroll_tree_h(delta)
     }
 
     /// The fraction `[0,1]` of a press/drag along a scrollbar track of `len` cells starting at
@@ -1717,7 +1814,7 @@ impl Controller {
     }
 
     /// Extract the plain-text content of every displayed line (ANSI spans joined, no styling).
-    /// Used by the incremental search (T-9) to feed `search::find_matches`; search always
+    /// Used by the incremental search to feed `search::find_matches`; search always
     /// operates on the DISPLAYED content, not the source file, so it works identically across
     /// every view mode (SyntaxContent, Diff, RenderedMarkdown — AC-13).
     fn content_plain_lines(&self) -> Vec<String> {
@@ -1849,7 +1946,7 @@ impl Controller {
         // filter consistent with it.
         self.changed = self.git.changed_set(self.baseline);
         self.tree.set_changed_only(self.changed_only, &self.changed);
-        // Drop any pending re-root async status fetch (review-gate R2): this synchronous
+        // Drop any pending re-root async status fetch: this synchronous
         // recompute is now authoritative, so a stale in-flight async result must not clobber
         // it in `poll`. Invariant: every synchronous git-state recompute invalidates a pending
         // re-root async fetch. Mirrors `refresh_git_state` → `drop_pending_status`.
@@ -1882,7 +1979,7 @@ impl Controller {
             return Effects::noop();
         }
         match self.editor.open(&node.path) {
-            Ok(true) => {
+            EditorOutcome::TookOver => {
                 // The editor took the terminal and may have changed the file: re-query git so
                 // status markers and the changed-set reflect the edit, re-render the pane, and
                 // force a full repaint (the external program drew over the screen).
@@ -1894,11 +1991,26 @@ impl Controller {
                     ..Default::default()
                 }
             }
-            Ok(false) => Effects::redraw(), // hand-off without a terminal takeover
-            Err(e) => {
-                self.action_notice = Some(format!("Could not open editor: {e}"));
-                // The hand-off may have suspended the terminal before failing, so force a full
-                // repaint to recover from any partial screen state.
+            EditorOutcome::NoTakeover => Effects::redraw(), // hand-off without a terminal takeover
+            EditorOutcome::NotLaunched(reason) => {
+                // The editor never ran: report the launch failure. The hand-off may
+                // have suspended the terminal before failing, so force a full repaint to
+                // recover from any partial screen state.
+                self.action_notice = Some(format!("Could not open editor: {reason}"));
+                Effects {
+                    redraw: true,
+                    clear: true,
+                    ..Default::default()
+                }
+            }
+            EditorOutcome::NonZeroExit(detail) => {
+                // The editor DID run and exited non-zero: the terminal was handed
+                // over, so the file may have changed and a full repaint is still needed — but
+                // this is not a launch failure, so the notice says so (and stays silent-free
+                // for callers that treat a non-zero exit as benign by returning TookOver).
+                self.action_notice = Some(format!("Editor exited with {detail}"));
+                self.refresh_git_state();
+                self.dispatch_render();
                 Effects {
                     redraw: true,
                     clear: true,
@@ -1945,7 +2057,7 @@ impl Controller {
         // While zoomed the tree is hidden, so there is nothing to switch focus to: keep focus
         // pinned to the content pane (entering zoom set it there). Without this guard, Tab would
         // move focus to the invisible tree and route j/k to its cursor — silently re-rendering a
-        // different file behind the full-screen content (review-gate R1, 4-model finding).
+        // different file behind the full-screen content.
         if self.zoomed {
             return Effects::noop();
         }
@@ -2088,7 +2200,7 @@ impl Controller {
 
     /// Open the go-to-file finder (AC-1). Builds the file index for the current root, then
     /// installs a fresh `FinderState` with an empty query and the full candidate list.
-    /// Returns [`Effects::redraw`] so the run loop paints the overlay on the next tick (T-8).
+    /// Returns [`Effects::redraw`] so the run loop paints the overlay on the next tick.
     ///
     /// Modal mutual-exclusion (finder inert while the picker is open) holds BY CONSTRUCTION:
     /// `handle()` routes to `handle_picker_intent()` while `self.picker.is_some()`, and its
@@ -2108,8 +2220,8 @@ impl Controller {
 
     /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds two sections:
     ///
-    /// - What's New: the embedded CHANGELOG rendered as markdown via `render::render` (T-4,
-    ///   AC-14). If the markdown renderer is absent/times out, `render::render` falls back to
+    /// - What's New: the embedded CHANGELOG rendered as markdown via `render::render`
+    ///   (AC-14). If the markdown renderer is absent/times out, `render::render` falls back to
     ///   plain text + a notice (AC-15) — no extra handling needed here.
     /// - About: the about_text() string rendered as plain text.
     ///
@@ -2166,12 +2278,12 @@ impl Controller {
     }
 
     /// The current help overlay state, or `None` when closed.
-    /// Exposed for tests and (T-6) the `ViewState` projection.
+    /// Exposed for tests and the `ViewState` projection.
     pub fn help_state(&self) -> Option<&HelpState> {
         self.help.as_ref()
     }
 
-    /// Dismiss the help overlay. Called by T-5's handle_help_key on Esc/`q`.
+    /// Dismiss the help overlay. Called by handle_help_key on Esc/`q`.
     /// A no-op when the overlay is already closed.
     pub fn close_help(&mut self) {
         self.help = None;
@@ -2184,7 +2296,7 @@ impl Controller {
     /// - `Shift+Tab` (`BackTab`) / `Left` → `prev()` (retreat section, wrapping, AC-7).
     /// - `'1'..='9'` → `select(n-1)` (jump to section by digit, AC-7).
     /// - `j` / `Down` → `scroll_by(+1)` (AC-8).
-    /// - `k` / `Up` → `scroll_by(-1)` (saturates at 0, AC-9 top bound; bottom clamp is T-6).
+    /// - `k` / `Up` → `scroll_by(-1)` (saturates at 0, AC-9 top bound; bottom clamp is enforced against live geometry).
     /// - Any other key → consumed as a no-op (`Effects::noop()`) — nothing leaks to the tree
     ///   or viewer (AC-20).
     ///
@@ -2323,12 +2435,12 @@ impl Controller {
     }
 
     /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
-    /// (AC-2) and the Presenter's bottom prompt line (T-4). Mirrors `finder_query()`.
+    /// (AC-2) and the Presenter's bottom prompt line. Mirrors `finder_query()`.
     pub fn prompt_query(&self) -> &str {
         self.prompt.as_ref().map(|p| p.input.query()).unwrap_or("")
     }
 
-    /// Route a key event while a bottom-prompt modal is open. The run loop (T-4) calls this
+    /// Route a key event while a bottom-prompt modal is open. The run loop calls this
     /// instead of the normal key→intent map while `prompt_open()`. Dispatches by the prompt's
     /// mode. (AC-2…AC-6)
     pub fn handle_prompt_key(&mut self, key: KeyEvent) -> Effects {
@@ -2338,9 +2450,8 @@ impl Controller {
         };
         match mode {
             PromptMode::GoToLine => self.go_to_line_key(key),
-            // Search key handling lands in T-9 (incremental search); for now the prompt opens
-            // but all keystrokes are no-ops (the prompt is closed by Esc → the go-to-line Esc
-            // arm, reused, will work since the mode is matched by the per-mode handler).
+            // Search key handling: incremental — every printable char or Backspace re-runs the
+            // match query and refreshes the highlight overlay (AC-14); Enter commits, Esc cancels.
             PromptMode::Search => self.search_prompt_key(key),
         }
     }
@@ -2420,10 +2531,10 @@ impl Controller {
         }
     }
 
-    /// Search prompt key handling (T-9/T-10). Incremental: every printable char or Backspace re-runs
+    /// Search prompt key handling. Incremental: every printable char or Backspace re-runs
     /// `find_matches` over the displayed content's plain text and scrolls the first match into
     /// view. Enter commits — closes the prompt and retains the SearchState so n/N can navigate
-    /// the committed matches (AC-14). Esc closes the prompt (cancel-restore semantics are T-11).
+    /// the committed matches (AC-14). Esc closes the prompt (cancel-restore semantics).
     /// All other keys are ignored.
     fn search_prompt_key(&mut self, key: KeyEvent) -> Effects {
         match key.code {
@@ -2443,7 +2554,7 @@ impl Controller {
                 self.refresh_search();
                 Effects::redraw()
             }
-            // Commit — retain the SearchState; Esc-cancel (T-11) is the path that clears it.
+            // Commit — retain the SearchState; Esc-cancel is the path that clears it.
             // Close the prompt but leave self.search intact so n/N can navigate the committed
             // matches (AC-14). The query, matches, and current index persist.
             // Exception: an empty query commits nothing — clear search so no phantom
@@ -2553,32 +2664,32 @@ impl Controller {
     }
 
     /// The live incremental-search state, or `None` when no search is active (no Search prompt
-    /// has been typed into yet, or the prompt was closed and state cleared). Exposed for tests
-    /// (T-9); the Presenter reads it for highlight overlay (T-12).
+    /// has been typed into yet, or the prompt was closed and state cleared). Exposed for tests;
+    /// the Presenter reads it for the highlight overlay.
     pub fn search(&self) -> Option<&SearchState> {
         self.search.as_ref()
     }
 
     /// The full candidate list loaded when the finder was opened, or an empty slice when
-    /// the finder is closed. Exposed for tests (T-5); the Presenter/T-8 read via `finder()`.
+    /// the finder is closed. Exposed for tests; the Presenter reads via `finder()`.
     pub fn finder_candidates(&self) -> &[String] {
         self.finder.as_ref().map(|f| f.candidates()).unwrap_or(&[])
     }
 
     /// The current finder query string, or `""` when the finder is closed or the query is
-    /// empty. Exposed for tests (T-5); the Presenter/T-8 reads via `finder()`.
+    /// empty. Exposed for tests; the Presenter reads via `finder()`.
     pub fn finder_query(&self) -> &str {
         self.finder.as_ref().map(|f| f.query()).unwrap_or("")
     }
 
     /// The current ranked match indices (into `finder_candidates()`), or `&[]` when the finder
-    /// is closed or the query is empty. Exposed for tests (T-6) and the Presenter (T-8).
+    /// is closed or the query is empty. Exposed for tests and the Presenter.
     pub fn finder_matches(&self) -> &[usize] {
         self.finder.as_ref().map(|f| f.matches()).unwrap_or(&[])
     }
 
     /// The cursor position within the match list, or `0` when the finder is closed or the
-    /// list is empty. Exposed for tests (T-6) and confirm (T-7).
+    /// list is empty. Exposed for tests and the confirm path.
     pub fn finder_cursor(&self) -> usize {
         self.finder.as_ref().map(|f| f.cursor()).unwrap_or(0)
     }
@@ -2645,7 +2756,7 @@ impl Controller {
             }
             _ => Effects::noop(),
         };
-        // review-gate R1 (O1): a query edit, selection move, or scroll resets a PENDING mouse
+        // A query edit, selection move, or scroll resets a PENDING mouse
         // double-click. Without this, a finder click → keystroke/nav → click on the SAME screen
         // row within the double-click window would be misread as a double-click (confirm), opening
         // a file the user only single-clicked — often a different one, since typing changed the
@@ -2676,7 +2787,7 @@ impl Controller {
         if self.tree.reveal(&abs) {
             // reveal() may have relaxed the tree's changed_only/hide_hidden fields — re-sync
             // the controller's mirror fields so a later `c`/`.` toggle stays consistent
-            // (T-4 review note: the mirrors at controller.rs:166-168 drive those toggles).
+            // (the mirrors at controller.rs:166-168 drive those toggles).
             self.changed_only = self.tree.changed_only();
             self.hide_hidden = self.tree.hide_hidden();
             // If the content pane isn't currently visible — the narrow, tree-only layout where the
@@ -2706,7 +2817,7 @@ impl Controller {
     /// made this overlay silently fail → always fall back to the current root, AC-4/AC-15.)
     ///
     /// This is the single point both the per-row status badges and the agent-active pre-select
-    /// derive from, so opening the picker issues exactly two herdr calls (T-10 spy test).
+    /// derive from, so opening the picker issues exactly two herdr calls.
     fn herdr_overlay(&self) -> Option<(String, String)> {
         let herdr = self.herdr.as_ref()?;
         let wt_json = herdr.run_json(&["worktree", "list"]).ok()?;
@@ -2745,13 +2856,13 @@ impl Controller {
         self.tree.set_status(&status);
         self.changed = self.git.changed_set(self.baseline);
         self.tree.set_changed_only(self.changed_only, &self.changed);
-        // Refresh the cached branch too (review-gate R1, SMA-249): `refresh_git_state` runs on `r`,
+        // Refresh the cached branch too: `refresh_git_state` runs on `r`,
         // editor-return, and focus-gain to pick up EXTERNAL git changes — so an external
         // `git checkout` must update the tree's bottom-border branch, not just status/changed-set.
         // Without this the label went stale. `git rev-parse` from the tree root resolves the repo
         // even when the root is a subdir; `None` on a detached HEAD (border omits the branch).
         self.current_branch = crate::git::current_branch(&self.root);
-        // Drop any pending re-root async status fetch (review-gate R1, G + R2): this sync
+        // Drop any pending re-root async status fetch: this sync
         // refresh has just produced the authoritative status/changed-set, so an older in-flight
         // async result must not later clobber it in `poll`. Invariant: every synchronous
         // git-state recompute invalidates a pending re-root async fetch.
@@ -2760,7 +2871,7 @@ impl Controller {
 
     /// Drop any pending re-root async status/changed-set fetch so a stale in-flight result
     /// cannot later overwrite a freshly-recomputed synchronous git state in [`poll`]. Must be
-    /// called after every synchronous git-state recompute (review-gate R1 G + R2).
+    /// called after every synchronous git-state recompute.
     fn drop_pending_status(&mut self) {
         self.status_rx = None;
     }
@@ -2791,29 +2902,59 @@ impl Controller {
         self.search = None;
 
         let Some(node) = self.tree.selected() else {
-            return self.clear_content();
+            // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
+            // that matched nothing. Show guidance instead of a blank pane.
+            return self.clear_content(EmptyReason::NoFiles);
         };
         if node.kind != NodeKind::File {
-            return self.clear_content();
+            // A directory is selected — it has no content to render; show guidance so
+            // the pane is not a blank void.
+            return self.clear_content(EmptyReason::Directory);
         }
         let mode = self.effective_mode(&node.path);
         let rel = self.rel(&node.path);
-        // If the worker has gone (channel closed) the send simply fails; the pane keeps its
-        // last content rather than panicking.
-        let _ = self.job_tx.send(RenderJob {
-            seq,
-            path: node.path,
-            rel,
-            mode,
-            baseline: self.baseline,
-            is_git: self.is_git_repo,
-        });
+        // a slow render used to leave the PREVIOUS file's body visible under the NEW
+        // selection's title (the title is derived from the tree cursor, which moves immediately,
+        // while the body arrives off-thread). Show a loading placeholder for the body now and
+        // mark a render in flight; `content_path` (the title's source of truth) is NOT touched
+        // here — it updates only when the matching result lands in `poll`, so the title and body
+        // switch to the new file together. The `latest_seq`/`applied_seq` gap already keys the
+        // supersession, so a stale result for a superseded selection is dropped by `poll`.
+        // Dispatch first, and only show the loading placeholder if the job was actually
+        // queued. If the worker has gone (channel closed) the send fails — keep the last
+        // rendered content instead of stranding the pane on a `Rendering…` placeholder that
+        // no result will ever arrive to clear (`poll` only clears `content_rendering` when a
+        // matching result lands). The send never panics, so the viewer stays alive either way.
+        if self
+            .job_tx
+            .send(RenderJob {
+                seq,
+                path: node.path,
+                rel,
+                mode,
+                baseline: self.baseline,
+                is_git: self.is_git_repo,
+            })
+            .is_ok()
+        {
+            self.content = Text::raw("Rendering\u{2026}");
+            self.content_notices.clear();
+            self.content_rendering = true;
+        }
     }
 
-    /// Clear the content pane (selection is a directory / nothing).
-    fn clear_content(&mut self) {
-        self.content = Text::raw("");
+    /// Clear the content pane, showing empty-state guidance instead of a blank pane
+    ///. The reason selects the copy: a directory selection vs. an empty/zero-match
+    /// tree. The strings are static and first-party, so they need no AC-27 sanitization (they
+    /// carry no control bytes); they flow through the same content path the renderer uses.
+    fn clear_content(&mut self, reason: EmptyReason) {
+        self.content = Text::raw(reason.label());
         self.content_notices.clear();
+        // No file content is displayed for a directory/empty tree, and no render is in flight
+        // (this path sends no `RenderJob`), so the title falls back to the selected node's name
+        //.
+        self.content_path = None;
+        self.content_rendering = false;
     }
 
     /// Drain finished renders from the worker, applying only the one matching the latest
@@ -2826,6 +2967,14 @@ impl Controller {
                 self.content = result.content;
                 self.content_notices = result.notices;
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
+                // the body has landed — now switch the title to match it. The latest
+                // dispatched render always corresponds to the current tree selection (every
+                // selection change calls `dispatch_render`), so the applied result's file is the
+                // selected node. A stale result for a superseded selection was dropped above by
+                // the `seq == latest_seq` guard, so this never points `content_path` at a file
+                // the user has already moved past. The render is no longer in flight.
+                self.content_path = self.tree.selected().map(|n| n.path.clone());
+                self.content_rendering = false;
                 applied = true;
                 // A queued go-to-line jump (auto-switch from a transformed view, AC-7) applies once
                 // ITS render lands: now that the source-mapped content is in, scroll to the line.
@@ -2862,7 +3011,6 @@ impl Controller {
                     // changed-set, so a changed file rendered in content/markdown mode, not Diff.
                     // Now that the real changed-set has landed, re-dispatch so the current
                     // selection re-renders in the correct view mode (changed → Diff, AC-9).
-                    // (review-gate R1, B).
                     self.dispatch_render();
                     applied = true;
                 }

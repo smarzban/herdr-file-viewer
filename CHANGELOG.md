@@ -4,6 +4,130 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Tree horizontal scroll is now keyboard-reachable (AC-18).** The tree's horizontal scroll
+  offset — for reading long or deeply-nested rows that overflow the tree column — was
+  mouse-only (drag the horizontal scrollbar or a horizontal wheel/swipe); there was no key
+  for it. New `H` (Shift+`h`) and `L` (Shift+`l`) intents scroll the tree left/right by the same
+  step the mouse wheel uses, clamped to the measured max (mirroring the content pane's `←`/`→`
+  h-scroll). Inert unless the tree is focused, so the keys never fight the content pane's own
+  horizontal scroll. The lowercase `h`/`l` stay Collapse/Expand — no collision.
+- **Discoverability: a `? help` hint on the content pane's bottom border.** A new user no
+  longer has to guess that `?` opens the help overlay — a right-aligned `? help` segment now
+  rides the content block's bottom border, visible on the default screen without opening any
+  modal. One short segment; it shares the border row (not the layout), so it never crowds the
+  content or steals a row. Sanitized + clipped like the other border titles (AC-27).
+- **Empty-state guidance for blank panes.** Selecting a directory now shows
+  `Directory — select a file to view` in the content pane (instead of a blank void), and an
+  empty / zero-match tree (no files, or a filter — changed-only / gitignore / hidden — that
+  matched nothing) shows `No files`. The copy flows through the normal content path.
+
+### Changed
+- **Non-color cues alongside color-only signalling.** Several key UI states were
+  conveyed by color alone, so a colorblind user or a non-default terminal theme could lose the
+  signal entirely. Each now carries a non-color cue too:
+  - **Dirty directory** — the tree's `▾ dir` row for a directory containing a git change now shows
+    a leading `●` glyph (files already had `M`/`A`/`D`/`?` letters; directories were color-only
+    LightRed). The `tree_rows_max_width` calc flows from the same `tree_row` the tree draws, so the
+    added glyph column stays aligned with the h-scroll clamp / hit-test.
+  - **Active help tab** — the active section in the help overlay now carries a leading `▶ ` marker
+    alongside the existing REVERSED+BOLD indicator (the marker is counted in `help_tab_rects` so the
+    click hit-test still tracks the drawn tab).
+  - **Current worktree** — the picker's current-worktree row now carries a trailing `(current)`
+    text label alongside the existing cyan `●` glyph.
+  - **Current search match** — `CURRENT_HIGHLIGHT` is now `REVERSED|BOLD` (theme-relative: it
+    inverts whatever the terminal palette is) instead of hardcoded `Black`-on-`Yellow`, so the
+    active match is distinguishable with color stripped; the non-current matches keep their
+    black-on-cyan `HIGHLIGHT`.
+  - **Update banner / bottom prompt** — these status bars now use `REVERSED` (theme-relative)
+    instead of hardcoded `Black`-on-`Cyan` / `Black`-on-`Gray`, so they read on any palette.
+  All labels still flow through `sanitize_label` (AC-27).
+- **Renderer fallback notices no longer leak raw OS errors.** When an external renderer
+  (glow/delta/bat) is missing, times out, or otherwise fails, the viewer's fallback notice now
+  reports a short, actionable message — naming the missing binary and pointing to
+  `docs/renderers.md` for the not-found case — instead of the raw OS error string (e.g.
+  `No such file or directory (os error 2)`, which told you nothing you could act on). AC-24/AC-25
+  plain-text-plus-notice fallback is unchanged; the raw detail is retained behind a future
+  debug/verbose path, not the default notice.
+- **Editor hand-off now distinguishes a launch failure from a non-zero editor exit.** Previously
+  any error from `open_in_editor` surfaced as `"Could not open editor: …"`, so a successful
+  launch that exited non-zero (e.g. a vim exit code) was misleadingly reported as a launch
+  failure. The `EditorHandoff` return is now an `EditorOutcome` enum — `NotLaunched(reason)` for
+  a process that never started (e.g. missing binary, no `$EDITOR`) vs `NonZeroExit(detail)` for a
+  process that ran and returned a failing status — and the controller words each case correctly:
+  a launch failure still says `"Could not open editor: {reason}"`, while a non-zero exit says
+  `"Editor exited with {detail}"` and still refreshes git state and forces a full repaint (the
+  editor did take the terminal). A new `SpawnError` enum at the `Spawner` boundary keeps
+  `LiveEditor`/`ProcessSpawner` the only place that knows about `std::process`.
+- Extracted the duplicated `wait_bounded` subprocess reaper (child wait + poll + timeout-kill)
+  from `render.rs` and `update/mod.rs` into one shared `src/proc.rs` helper. Pure dedup — no
+  behavior change; the total wall-clock timeout bound is unchanged (the audit's
+  highest-agreement finding, security-adjacent).
+- Documented `git` as a runtime requirement in `docs/install.md` (the git-aware tree + diff
+  views shell out to the system `git` CLI; without it those features degrade but the viewer
+  still opens). Also corrected the `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` wording: any value (the
+  var's mere presence) disables the check, not just `=1`.
+- `docs/renderers.md`: documented the bundled `assets/markdown-style.json` palette glow is
+  pointed at when present (falling back to glow's built-in `dark` style), and corrected the
+  overclaimed `cargo` fallback — only `delta` and `bat` are cargo-installable; `glow` is Go
+  and the helper prints its manual install link instead.
+- `ARCHITECTURE.md`: noted the one on-disk exception to "ephemeral state only" — the advisory
+  `update-check.json` timestamp cache (safe to delete); added the new `proc` module to the
+  component table.
+- `herdr-plugin.toml`: corrected the pane comment (the `[[actions]]` do summon the viewer at
+  runtime via launcher scripts — the old comment claimed no runtime command did).
+- `.github/workflows/release.yml`: corrected the stale prebuilt-gate comment — the install
+  step selects the prebuilt by **declared version match**, not commit exactness; the published
+  `COMMIT` marker is informational only (used to note when the checkout is ahead of the
+  released binary).
+- Swept `src/**` and `tests/**` comments clean of internal build-process references (issue
+  IDs, plan task IDs, and review notes) and corrected the stale "search keystrokes are no-ops"
+  comment in `controller.rs` (in-file search is fully implemented). No code behavior changed.
+- `CHANGELOG.md`: added the missing `[1.1.0]`–`[1.6.0]` release-tag link references (only
+  `[1.0.0]` had one).
+- **Test timing hardening:** added a `perf` cargo feature to gate the
+  absolute-stopwatch perf-budget tests (`render_perf`, `tree_perf`, the `reroot` AC-17 budget)
+  off the default PR lane — a plain `cargo test` no longer runs them (they flake on a loaded
+  shared runner for reasons unrelated to a regression); run via `cargo test --features perf`.
+  Rewrote `search_perf` and `index_perf` as **relative-scaling** asserts (`time(2N) < ~4×
+  time(N)`, with a minimum-base floor below which a small absolute bound applies, modelled on
+  the `render.rs` `mul_f32(1.5)` exemplar) so they catch an O(n²) regression without flaking on
+  a 2–3× slower machine — these run on the default lane. Replaced
+  the pty e2e tests' fixed `thread::sleep` "screen is ready" assumptions with `expectrl`
+  wait-for-content (`expect` on the prompt/overlay label the next key depends on), eliminating
+  the torn-read flake class; the deliberate Esc inter-byte gaps and terminal-resume settles are
+  kept (they prevent Alt+char decoding and have no screen-content anchor). The 2 macOS
+  `#[ignore]` e2e tests (`e2e_help`, `e2e_editor`) are retained with their existing rationale —
+  they may now pass on macOS CI after the timing fix, but that can only be confirmed on the
+  macOS CI matrix, so the ignores stay until verified.
+- **Test coverage:** strengthened `no_handled_intent_mutates_the_filesystem`
+  so it routes every `Intent::ALL` variant through the real handler (closing any modal an intent
+  opened before the next iteration, so guards don't short-circuit the dispatch) and asserts a
+  content-aware FS/git snapshot — the read-only invariant (AC-N1/N2) is now genuinely exercised.
+  Added a modal × intent cross-product guard matrix (5 modal states × every `Intent::ALL`
+  variant) driving off `Intent::ALL` so a new intent variant is auto-covered — asserts modal isolation
+  (AC-5/AC-6), no second modal opens, tree/FS unchanged. Extracted the git porcelain/diff parser
+  into testable helpers (`parse_porcelain_status`, `parse_name_status`) and added table-driven
+  unit tests for malformed/truncated input, rename/copy edge cases, unknown status codes, and
+  direct `classify`/`classify_name_status` per-code assertions — the defensive branches that were
+  previously unreachable are now exercised. Added an OSC-52 clipboard-exfiltration ingestion test
+  (AC-27 named vector) on the content-renderer path, and gated the CLI smoke test's network path
+  by setting `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` so it performs no network I/O (hermetic).
+
+### Fixed
+- **Content pane no longer shows a stale file under a new title while a render is in flight.**
+  On a slow off-thread render, the content pane used to keep displaying the PREVIOUS file's body
+  while the content title (derived from the live tree cursor) already named the NEW selection —
+  the pane briefly misrepresented what was selected. The content title is now derived from the
+  displayed content's file (`content_path`, updated only when the render result lands in `poll`),
+  so the title and body switch to the new file together; while a render is in flight the body
+  shows a `Rendering…` loading placeholder (and the title stays on the previously-displayed file,
+  or a neutral `Content` label at launch / after a re-root when no content has landed yet). The
+  existing `latest_seq`/`applied_seq` supersession already keyed stale-result dropping, so a
+  superseded render result (the user moved on) still does not overwrite the pane.
+
 ## [1.6.0] - 2026-06-28
 
 ### Added
@@ -181,3 +305,11 @@ First public release: a git-aware, read-only file viewer that runs as a herdr pl
   [SECURITY.md](SECURITY.md).
 
 [1.0.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.0.0
+[1.1.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.1.0
+[1.2.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.2.0
+[1.2.1]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.2.1
+[1.2.2]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.2.2
+[1.3.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.3.0
+[1.4.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.4.0
+[1.5.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.5.0
+[1.6.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.6.0

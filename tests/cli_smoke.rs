@@ -1,4 +1,4 @@
-//! T-20 — main wiring smoke test over a real pty (AC-17 launch behavior, AC-20 close).
+//! main wiring smoke test over a real pty (AC-17 launch behavior, AC-20 close).
 //! Spawns the *built* binary in a temp dir, asserts it draws the file tree, then presses
 //! the close key and asserts a clean exit(0). External renderers (glow/delta/bat) need not
 //! be installed — the Content Renderer falls back to plain text, and the tree draws either
@@ -19,6 +19,9 @@ fn viewer_draws_a_filename_then_exits_zero_on_close() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-file-viewer"));
     cmd.current_dir(dir.path());
+    // Hermetic: disable the `git ls-remote` update check (AC-27/hermetic tests) so the smoke
+    // test performs no network I/O. See `src/update/mod.rs` DISABLE_ENV — any value disables it.
+    cmd.env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK", "1");
 
     let mut p = Session::spawn(cmd).expect("spawn the viewer in a pty");
     p.set_expect_timeout(Some(Duration::from_secs(10)));

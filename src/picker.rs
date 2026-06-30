@@ -23,7 +23,7 @@ impl PickerState {
     /// inner width, which the Presenter measures and feeds back each frame. Expand's `scroll_right`
     /// is monotonic (it can't know the row widths), so without this the offset drifts past the real
     /// maximum on over-scroll and a subsequent Collapse has to burn the overshoot down before the
-    /// view visibly moves. Mirrors [`crate::finder::FinderState::clamp_hscroll`] (SMA-229).
+    /// view visibly moves. Mirrors [`crate::finder::FinderState::clamp_hscroll`].
     pub fn clamp_hscroll(&mut self, max: u16) {
         self.hscroll = self.hscroll.min(max);
     }

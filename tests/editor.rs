@@ -1,11 +1,11 @@
-//! T-16 — Editor Launcher: hand-off to an external editor (AC-19, AC-N1).
+//! Editor Launcher: hand-off to an external editor (AC-19, AC-N1).
 //! The spawner is injected and records requests; nothing is really launched, and the file
 //! on disk is never written by the hand-off.
 
 mod common;
 
 use common::TempDir;
-use herdr_file_viewer::editor::{EditorLauncher, Spawner};
+use herdr_file_viewer::editor::{EditorLauncher, SpawnError, Spawner};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -14,14 +14,22 @@ use std::io;
 struct FakeSpawner {
     spawned: Vec<Vec<OsString>>,
     fail: bool,
+    /// When set, the spawn "launches" but exits with this non-zero status string.
+    non_zero_exit: Option<String>,
 }
 
 impl Spawner for FakeSpawner {
-    fn spawn(&mut self, argv: &[OsString]) -> io::Result<()> {
+    fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
         if self.fail {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "editor not found"));
+            return Err(SpawnError::NotLaunched(io::Error::new(
+                io::ErrorKind::NotFound,
+                "editor not found",
+            )));
         }
         self.spawned.push(argv.to_vec());
+        if let Some(detail) = self.non_zero_exit.clone() {
+            return Err(SpawnError::NonZeroExit(detail));
+        }
         Ok(())
     }
 }
@@ -69,8 +77,9 @@ fn open_splits_a_configured_editor_with_flags() {
 
 #[test]
 fn launch_failure_is_an_error_not_a_panic_and_leaves_the_file_intact() {
-    // A failed launch surfaces as Err (the controller turns it into a non-fatal notice),
-    // never a panic — and the file is untouched (AC-N1).
+    // A failed launch surfaces as `SpawnError::NotLaunched` (the controller turns it into a
+    // non-fatal "could not open editor" notice), never a panic — and the file is untouched
+    // (AC-N1).
     let dir = TempDir::new();
     let file = dir.path().join("x.txt");
     fs::write(&file, "x").unwrap();
@@ -80,6 +89,33 @@ fn launch_failure_is_an_error_not_a_panic_and_leaves_the_file_intact() {
         fail: true,
         ..Default::default()
     };
-    assert!(launcher.open(&file, &mut sp).is_err());
+    match launcher.open(&file, &mut sp) {
+        Err(SpawnError::NotLaunched(_)) => {}
+        other => panic!("expected NotLaunched, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x");
+}
+
+#[test]
+fn a_non_zero_editor_exit_is_distinguished_from_a_launch_failure() {
+    // a successful launch that exits non-zero must surface as
+    // `SpawnError::NonZeroExit` (so the controller can say "editor exited with …"), NOT as a
+    // `NotLaunched` launch failure — the editor DID run.
+    let dir = TempDir::new();
+    let file = dir.path().join("x.txt");
+    fs::write(&file, "x").unwrap();
+
+    let launcher = EditorLauncher::new("vim");
+    let mut sp = FakeSpawner {
+        non_zero_exit: Some("exit status: 1".into()),
+        ..Default::default()
+    };
+    // The argv was still recorded (the editor was launched)…
+    match launcher.open(&file, &mut sp) {
+        Err(SpawnError::NonZeroExit(d)) => assert_eq!(d, "exit status: 1"),
+        other => panic!("expected NonZeroExit, got {other:?}"),
+    }
+    assert_eq!(sp.spawned.len(), 1, "the editor was actually launched");
+    // …and the file is untouched (AC-N1).
     assert_eq!(fs::read_to_string(&file).unwrap(), "x");
 }

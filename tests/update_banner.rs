@@ -7,7 +7,8 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
+    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -15,7 +16,6 @@ use herdr_file_viewer::update::{UpdateState, Version};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
-use std::io;
 use std::path::Path;
 use std::sync::{Arc, mpsc};
 
@@ -46,8 +46,8 @@ impl ContentProvider for Content {
 
 struct Editor;
 impl EditorHandoff for Editor {
-    fn open(&mut self, _file: &Path) -> io::Result<bool> {
-        Ok(false)
+    fn open(&mut self, _file: &Path) -> EditorOutcome {
+        EditorOutcome::NoTakeover
     }
 }
 

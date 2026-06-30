@@ -1,6 +1,11 @@
 # Install & updating
 
-Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**.
+Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**. **Git** must be on `PATH` at
+runtime — the viewer shells out to the system `git` CLI (read-only subcommands) for the
+git-aware tree (status markers, changed-only filter, baseline toggle) and the diff view.
+Without git the viewer still opens, but those features are degraded (no status colors, no
+diffs). The optional renderers (`glow` / `delta` / `bat`) are separate — see
+[external renderers](renderers.md).
 
 > **No Rust toolchain needed when a prebuilt exists.** `herdr plugin install smarzban/herdr-file-viewer`
 > downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64).
@@ -61,7 +66,7 @@ herdr plugin install smarzban/herdr-file-viewer
 - You **don't** need `--ref` to stay current; it only *pins* a specific version (and a pin stays
   pinned until you change it).
 - Want a heads-up the moment a release ships? On GitHub, **Watch → Custom → Releases**.
-- Prefer no network check? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK=1` in the pane's environment —
-  the check (and banner) are disabled entirely. The check otherwise runs at most once per 24h,
-  off the UI thread, over a read-only `git ls-remote`, and never blocks or fails the viewer when
-  offline.
+- Prefer no network check? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` in the pane's environment
+  (to any value — the var's mere presence disables the check) and both the check and banner
+  are disabled entirely. The check otherwise runs at most once per 24h, off the UI thread,
+  over a read-only `git ls-remote`, and never blocks or fails the viewer when offline.

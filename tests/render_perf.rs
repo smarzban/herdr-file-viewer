@@ -1,6 +1,6 @@
-//! T-12 — Content Renderer perf: the in-process portion (classify + ANSI ingest) of a
+//! Content Renderer perf: the in-process portion (classify + ANSI ingest) of a
 //! 1 MB file stays within the AC-23 300 ms responsiveness bound. The external renderer
-//! runs off-thread (T-19); this guards the part that runs on the UI path.
+//! runs off-thread; this guards the part that runs on the UI path.
 
 mod common;
 
@@ -9,7 +9,11 @@ use herdr_file_viewer::render::{Prepared, classify, to_text};
 use std::fs;
 use std::time::Instant;
 
+/// AC-23: in-process classify+ingest of a 1 MB file stays within 300 ms.
+/// Gated to the `perf` lane — an absolute budget on a shared CI runner flakes under
+/// load; run via `cargo test --features perf`. The scaling tests stay on the default lane.
 #[test]
+#[cfg_attr(not(feature = "perf"), ignore)]
 fn classify_and_ingest_one_megabyte_within_300ms() {
     let dir = TempDir::new();
     // ~1.1 MB of realistic text across many lines.

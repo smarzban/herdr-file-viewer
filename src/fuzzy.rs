@@ -17,7 +17,7 @@
 /// are broken by shorter total path length, then by original slice position (stable sort
 /// preserves this).
 ///
-/// SHORTCUT(T-1): linear scan over candidates — fine for typical directory sizes (~1 k);
+/// SHORTCUT: linear scan over candidates — fine for typical directory sizes (~1 k);
 /// index if the caller's candidate list can grow into the tens of thousands.
 pub fn match_and_rank(query: &str, candidates: &[String]) -> Vec<usize> {
     if query.is_empty() {

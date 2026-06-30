@@ -34,6 +34,7 @@ is unit-testable with stubs.
 | `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
 | `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui; scroll the tree to keep the selection in view (and horizontally for long rows) and draw scrollbars where a pane overflows; report the content viewport + tree scroll offset + widest tree row + pane geometry back, so the controller can hit-test a tree click and map a scrollbar drag. |
 | `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
+| `proc` | Shared subprocess reaping: one `wait_bounded` (child wait + poll + timeout-kill) used by both the content renderer and the update check, so the timeout-kill semantics are defined once. |
 | `finder` | The modal go-to-file finder overlay state (query, ranked matches, cursor, scroll) drawn over the layout; captures its own keys while open and navigates the tree selection on confirm. |
 | `fuzzy` | A pure fuzzy matcher: rank file paths against a typed query (the finder's scoring), no I/O. |
 | `index` | Build the flat, `.gitignore`-aware list of repo file paths the finder searches. |
@@ -79,8 +80,9 @@ A renderer panic is contained (`catch_unwind`) so the worker survives. No `tokio
   ANSI output. Each renderer is optional; a missing one degrades to plain text + a notice.
 - **Git is first-class**, woven through the tree (status markers, colors, changed-only filter,
   baseline toggle) and the content pane (diff view) — not a separate mode.
-- **In-memory, ephemeral state only.** No persistent store; the filesystem and git repo are the
-  read-only source of truth.
+- **In-memory, ephemeral state only** — with one on-disk exception: the update-check timestamp
+  cache (`update-check.json` under the cache dir), which is advisory and safe to delete. Apart
+  from that, no persistent store; the filesystem and git repo are the read-only source of truth.
 
 ## Trust boundaries
 

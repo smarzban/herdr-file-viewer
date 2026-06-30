@@ -89,9 +89,18 @@ pub enum Intent {
     /// committed search with ≥1 match. Bound to `n` only — no event hook (AC-N6).
     NextMatch,
     /// Retreat to the previous match, wrapping at the start of the match list. Read-only
-    /// navigation — scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when
-    /// there is no committed search with ≥1 match. Bound to `N` only — no event hook (AC-N6).
+    /// navigation — scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when there
+    /// is no committed search with ≥1 match. Bound to `N` only — no event hook (AC-N6).
     PrevMatch,
+    /// Scroll the tree pane left by the horizontal step (AC-18: the tree's h-scroll was
+    /// mouse-only; this key makes it keyboard-reachable). Read-only navigation — it only
+    /// adjusts an in-memory scroll offset; no file or git mutation (AC-N1, AC-N3). Bound to
+    /// `H` (Shift+`h`) only — no event hook (AC-N6). Inert unless the tree is focused.
+    TreeScrollLeft,
+    /// Scroll the tree pane right by the horizontal step (AC-18). Read-only navigation — like
+    /// [`Intent::TreeScrollLeft`] it only moves the in-pane scroll; no mutation. Bound to `L`
+    /// (Shift+`l`) only — no event hook (AC-N6). Inert unless the tree is focused.
+    TreeScrollRight,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -99,7 +108,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 28] = [
+    pub const ALL: [Intent; 30] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -126,6 +135,8 @@ impl Intent {
         Intent::OpenSearch,
         Intent::NextMatch,
         Intent::PrevMatch,
+        Intent::TreeScrollLeft,
+        Intent::TreeScrollRight,
         Intent::ShowHelp,
         Intent::Close,
     ];
@@ -170,6 +181,8 @@ mod tests {
                 | Intent::OpenSearch
                 | Intent::NextMatch
                 | Intent::PrevMatch
+                | Intent::TreeScrollLeft
+                | Intent::TreeScrollRight
                 | Intent::ShowHelp
                 | Intent::Close => false,
             };
@@ -239,11 +252,23 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_28() {
+    fn all_length_is_30() {
         assert_eq!(
             Intent::ALL.len(),
-            28,
-            "Intent::ALL must have exactly 28 variants after adding ShowHelp"
+            30,
+            "Intent::ALL must have exactly 30 variants after adding TreeScrollLeft/Right"
+        );
+    }
+
+    #[test]
+    fn tree_scroll_intents_are_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::TreeScrollLeft),
+            "Intent::ALL must contain TreeScrollLeft"
+        );
+        assert!(
+            Intent::ALL.contains(&Intent::TreeScrollRight),
+            "Intent::ALL must contain TreeScrollRight"
         );
     }
 

@@ -3,7 +3,7 @@
 //! [`FinderState`] holds a query buffer ([`PromptInput`]), the full candidate list returned
 //! by [`crate::index::build`], the current scored/ranked match indices, and the cursor
 //! position within the match list. Construction populates the candidates; the query, matches,
-//! and cursor start empty/zero and are driven by later tasks (T-6: typing/nav, T-7: confirm).
+//! and cursor start empty/zero and are driven by the run loop (typing/nav and confirm).
 
 use crate::fuzzy;
 use crate::prompt::PromptInput;
@@ -16,17 +16,17 @@ const HSCROLL_STEP: u16 = 8;
 /// Live state of the go-to-file overlay while it is open (AC-1).
 ///
 /// Created by [`crate::controller::Controller::open_finder`] when the user presses `f` and
-/// destroyed when they confirm or cancel (T-7).
+/// destroyed when they confirm or cancel.
 pub struct FinderState {
     /// The current query the user has typed.
     prompt: PromptInput,
     /// Every file under the root, as root-relative strings (from [`crate::index::build`]).
-    /// Populated once at open time; not refreshed mid-session (YAGNI / T-6 concern).
+    /// Populated once at open time; not refreshed mid-session (YAGNI).
     candidates: Vec<String>,
     /// Indices into `candidates` that match the current query, ranked best-first.
-    /// Empty when the query is empty (no matches until the user types). Driven by T-6.
+    /// Empty when the query is empty (no matches until the user types). Driven by the run loop.
     matches: Vec<usize>,
-    /// Cursor position within `matches`. Driven by T-6.
+    /// Cursor position within `matches`. Driven by the run loop.
     cursor: usize,
     /// Horizontal scroll offset for the result rows, in columns. Monotonic here — the Presenter
     /// clamps to `max_row_width − inner_width` at draw so it can never over-scroll. Reset to 0
@@ -90,12 +90,12 @@ impl FinderState {
         self.cursor = (self.cursor as isize + delta).clamp(0, max) as usize;
     }
 
-    /// The ranked match indices (into `candidates`). Exposed for tests and the Presenter (T-8).
+    /// The ranked match indices (into `candidates`). Exposed for tests and the Presenter.
     pub fn matches(&self) -> &[usize] {
         &self.matches
     }
 
-    /// The cursor position within the match list. Exposed for tests and confirm (T-7).
+    /// The cursor position within the match list. Exposed for tests and the confirm path.
     pub fn cursor(&self) -> usize {
         self.cursor
     }

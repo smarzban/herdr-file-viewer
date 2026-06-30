@@ -1,9 +1,9 @@
-//! T-13 — All-modes / smartcase / truncation integration + search e2e.
+//! All-modes / smartcase / truncation integration + search e2e.
 //!
 //! Proves the search subsystem end-to-end through the controller:
 //!
 //! - **AC-13** — search finds text as displayed in every view mode (RenderedMarkdown, Diff,
-//!   SyntaxContent). Because the search reads `content.lines` plain text (T-9), it is
+//!   SyntaxContent). Because the search reads `content.lines` plain text, it is
 //!   view-agnostic — we prove it across modes by steering the view-policy with the right file
 //!   extension and git-status metadata.
 //!
@@ -21,14 +21,14 @@ mod common;
 use common::TempDir;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
+    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,8 +55,8 @@ impl GitService for StubGit {
 
 struct NoopEditor;
 impl EditorHandoff for NoopEditor {
-    fn open(&mut self, _file: &Path) -> io::Result<bool> {
-        Ok(false)
+    fn open(&mut self, _file: &Path) -> EditorOutcome {
+        EditorOutcome::NoTakeover
     }
 }
 

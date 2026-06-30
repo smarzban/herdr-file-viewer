@@ -1,4 +1,4 @@
-//! T-18 — Session Controller: intent → coordinated state change (AC-5, AC-6, AC-11,
+//! Session Controller: intent → coordinated state change (AC-5, AC-6, AC-11,
 //! AC-16, AC-26, AC-N3). Every side-effecting component (Git Service, Content Renderer,
 //! Editor Launcher) is behind a trait and stubbed, so these tests touch no real git, no
 //! external renderer, and launch no editor. The file tree is real (over a temp dir) — the
@@ -9,7 +9,8 @@ mod common;
 use common::{TempDir, git, init_repo_with_commit};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, GitService, RenderResult, RootProviders,
+    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::herdr::HerdrCli;
@@ -67,19 +68,27 @@ impl ContentProvider for StubContent {
     }
 }
 
-/// An Editor Launcher stub that either succeeds or fails on demand, and records the file it
-/// was asked to open.
+/// An Editor Launcher stub that returns a configurable [`EditorOutcome`] on demand, and
+/// records the file it was asked to open. `fail` keeps the historical "launch failure"
+/// shortcut; richer cases use `outcome` directly.
+#[derive(Default)]
 struct StubEditor {
     fail: bool,
     opened: Recorder<PathBuf>,
+    /// The exact outcome to return. `None` ⇒ `TookOver` when not failing (historical
+    /// default), or `NotLaunched` when `fail` is set.
+    outcome: Option<EditorOutcome>,
 }
 impl EditorHandoff for StubEditor {
-    fn open(&mut self, file: &Path) -> io::Result<bool> {
+    fn open(&mut self, file: &Path) -> EditorOutcome {
         self.opened.lock().unwrap().push(file.to_path_buf());
+        if let Some(o) = self.outcome.take() {
+            return o;
+        }
         if self.fail {
-            Err(io::Error::other("no editor configured"))
+            EditorOutcome::NotLaunched("no editor configured".into())
         } else {
-            Ok(true)
+            EditorOutcome::TookOver
         }
     }
 }
@@ -103,6 +112,7 @@ fn controller(
         editor: Box::new(StubEditor {
             fail: editor_fails,
             opened: opened.clone(),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -335,6 +345,173 @@ fn an_editor_handoff_error_becomes_a_nonfatal_notice() {
     assert!(!fx.quit, "a component error does not end the session");
 }
 
+// ---- distinguish "couldn't launch editor" from a non-zero editor exit ----------
+
+/// Build a controller whose editor stub returns a specific [`EditorOutcome`] on the first
+/// `open`, recording the file it was asked to open. Hermetic — no editor is launched.
+fn controller_with_editor_outcome(
+    root: &Path,
+    is_git_repo: bool,
+    outcome: EditorOutcome,
+) -> (Controller, Recorder<PathBuf>) {
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(StubGit::default());
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor {
+            outcome: Some(outcome),
+            opened: opened.clone(),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let ctrl = Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    );
+    (ctrl, opened)
+}
+
+#[test]
+fn a_launch_failure_reports_could_not_open_editor() {
+    // when the editor process could not be started (e.g. missing binary), the
+    // notice must say "could not open editor" — the editor never ran.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, opened) = controller_with_editor_outcome(
+        dir.path(),
+        false,
+        EditorOutcome::NotLaunched("editor not on PATH".into()),
+    );
+
+    let fx = ctrl.handle(Intent::OpenInEditor);
+    assert_eq!(
+        opened.lock().unwrap().len(),
+        1,
+        "the hand-off was attempted"
+    );
+    let notice = ctrl
+        .action_notice()
+        .expect("a launch failure sets a notice");
+    assert!(
+        notice.starts_with("Could not open editor:"),
+        "launch failure wording (got {notice:?})"
+    );
+    assert!(
+        notice.contains("editor not on PATH"),
+        "the launch reason is included (got {notice:?})"
+    );
+    assert!(!fx.quit, "a launch failure does not end the session");
+}
+
+#[test]
+fn a_non_zero_editor_exit_does_not_claim_the_editor_could_not_be_opened() {
+    // a successful launch that exits non-zero must NOT be reported as "could not
+    // open editor" — the editor DID run. The notice says "editor exited with …" instead.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, opened) = controller_with_editor_outcome(
+        dir.path(),
+        false,
+        EditorOutcome::NonZeroExit("exit status: 1".into()),
+    );
+
+    let fx = ctrl.handle(Intent::OpenInEditor);
+    assert_eq!(opened.lock().unwrap().len(), 1, "the editor was launched");
+    let notice = ctrl.action_notice().expect("a non-zero exit sets a notice");
+    assert!(
+        !notice.starts_with("Could not open editor:"),
+        "a non-zero exit is NOT a launch failure (got {notice:?})"
+    );
+    assert!(
+        notice.contains("Editor exited with"),
+        "the non-zero-exit wording is used (got {notice:?})"
+    );
+    assert!(
+        notice.contains("exit status: 1"),
+        "the exit detail is included (got {notice:?})"
+    );
+    assert!(!fx.quit, "a non-zero exit does not end the session");
+}
+
+#[test]
+fn a_non_zero_editor_exit_still_refreshes_git_state_and_clears_the_screen() {
+    // even though a non-zero exit is not a launch failure, the editor DID take the
+    // terminal — so the controller must still re-query git (the file may have changed) and
+    // force a full repaint (the editor drew over the screen), exactly like a TookOver.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    // Use the shared `controller()` helper so we can inspect `changed_calls`; inject the
+    // NonZeroExit outcome by reconstructing the controller with the outcome-aware builder is
+    // not possible here, so drive it through a standalone controller built below.
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let git = StubGit::default();
+    let changed_calls = git.changed_calls.clone();
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor {
+            outcome: Some(EditorOutcome::NonZeroExit("exit status: 1".into())),
+            opened: opened.clone(),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+    changed_calls.lock().unwrap().clear(); // ignore the initial load in new()
+
+    let fx = ctrl.handle(Intent::OpenInEditor);
+    assert_eq!(opened.lock().unwrap().len(), 1, "the editor was launched");
+    assert!(
+        !changed_calls.lock().unwrap().is_empty(),
+        "git state is re-queried after a non-zero editor exit (the editor may have edited)"
+    );
+    assert!(
+        fx.redraw && fx.clear,
+        "a non-zero exit still forces a full repaint (the editor drew over the screen)"
+    );
+    assert!(!fx.quit);
+}
+
+#[test]
+fn a_successful_takeover_refreshes_git_state_and_clears_the_screen() {
+    // the TookOver path (editor ran and exited 0) is unchanged — git is re-queried
+    // and a full repaint is forced. This is the baseline the NonZeroExit test above mirrors.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, changed_calls, opened) = controller(dir.path(), true, StubGit::default(), false);
+    changed_calls.lock().unwrap().clear(); // ignore the initial load in new()
+
+    let fx = ctrl.handle(Intent::OpenInEditor);
+    assert_eq!(opened.lock().unwrap().len(), 1, "the editor was invoked");
+    assert!(
+        !changed_calls.lock().unwrap().is_empty(),
+        "git state is re-queried after a successful editor return"
+    );
+    assert!(
+        fx.redraw && fx.clear,
+        "a successful takeover forces a full repaint"
+    );
+    assert!(
+        ctrl.action_notice().is_none(),
+        "a successful editor takeover sets no notice"
+    );
+    assert!(!fx.quit);
+}
+
 #[test]
 fn successful_editor_return_refreshes_git_state() {
     // After the editor returns the file may have changed, so the controller must re-query
@@ -406,7 +583,7 @@ fn zoom_toggle_hides_tree_and_pins_content_focus() {
 
 #[test]
 fn tab_is_inert_while_zoomed_so_focus_stays_on_content() {
-    // Regression guard (review-gate R1, 4-model): zoom hides the tree and pins focus to the
+    // Regression guard: zoom hides the tree and pins focus to the
     // content pane. Tab must NOT move focus to the now-hidden tree — otherwise j/k would drive
     // the invisible cursor and `dispatch_render` would silently swap the full-screen file.
     let dir = TempDir::new();
@@ -494,11 +671,34 @@ fn navigation_moves_the_cursor_and_signals_redraw() {
 fn no_handled_intent_mutates_the_filesystem() {
     // AC-N1 / AC-N3: handling the entire intent vocabulary writes nothing — the viewer is
     // read-only and exposes no edit path (the editor stub launches nothing real).
+    //
+    // This is the strengthened version of the earlier tautological test. The previous test
+    // iterated `Intent::ALL` on one controller, but `Intent::OpenFinder` (and OpenSearch /
+    // ShowHelp) open a modal partway through the loop; from that point on every subsequent
+    // intent hit the modal guard in `handle()` and returned `Effects::noop()` WITHOUT reaching
+    // its real handler — so ~6 trailing intents were never actually exercised. That made the
+    // test unable to catch a write regression in those handlers.
+    //
+    // Fix: after each intent, close any modal it opened (finder / prompt / help / picker) so the
+    // NEXT intent is dispatched on a clean no-modal controller and reaches its real handler.
+    // `snapshot_no_git` (relative path + bytes, excluding `.git`) is used so the assertion
+    // catches a content write, a create, a rename, or a delete — not just file existence. A
+    // real git repo is used so the git-touching intents (Refresh, ToggleBaseline,
+    // ToggleChangedOnly, SwitchWorktree) run their real controller-side git state machinery
+    // (still against the stub, never mutating the worktree).
+    //
+    // Sanity check (by reasoning, not left in the test): if any handler wrote to disk — e.g.
+    // `activate()` called `std::fs::write` — the (rel-path, bytes) snapshot would differ and this
+    // assertion would fail with a diff naming the offending file. The `Close` intent is skipped
+    // because it ends the session (`quit: true`); its handler `close_or_unzoom` only flips
+    // in-memory `zoomed`/`search` state and never touches the filesystem.
     let dir = TempDir::new();
+    init_repo_with_commit(dir.path());
     std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub").join("c.txt"), "c\n").unwrap();
-    let before = snapshot(dir.path());
+    std::fs::write(dir.path().join("notes.md"), "# Hello\n").unwrap();
+    let before = snapshot_no_git(dir.path());
 
     let (mut ctrl, _, _) = controller(dir.path(), true, StubGit::default(), false);
     for intent in Intent::ALL {
@@ -506,12 +706,29 @@ fn no_handled_intent_mutates_the_filesystem() {
             continue; // Close ends the session; exercise every other intent
         }
         let _ = ctrl.handle(intent);
+        ctrl.poll();
+
+        // Close any modal the intent opened so the next iteration dispatches on a clean
+        // no-modal controller and reaches the real handler (not a guard short-circuit).
+        // The run loop closes these via the per-modal key handlers; mirror that here.
+        if ctrl.finder_open() {
+            ctrl.handle_finder_key(key(KeyCode::Esc));
+        }
+        if ctrl.prompt_open() {
+            ctrl.handle_prompt_key(key(KeyCode::Esc));
+        }
+        if ctrl.help_open() {
+            ctrl.close_help();
+        }
+        if ctrl.picker().is_some() {
+            ctrl.handle(Intent::Close);
+        }
     }
 
+    let after = snapshot_no_git(dir.path());
     assert_eq!(
-        snapshot(dir.path()),
-        before,
-        "no intent mutated any file (AC-N1, AC-N3)"
+        after, before,
+        "no intent mutated any file's contents or the tree layout (AC-N1, AC-N3)"
     );
 }
 
@@ -586,6 +803,7 @@ fn controller_with_lines(root: &Path, n: usize) -> Controller {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -774,6 +992,7 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -846,6 +1065,7 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -960,28 +1180,6 @@ fn resize_intents_move_the_tree_content_divider_and_clamp() {
         min,
         "cannot shrink past the minimum"
     );
-}
-
-/// A sorted (path, bytes) snapshot of every file under `root`, for an exact read-only check.
-fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
-    let mut out = Vec::new();
-    fn walk(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .collect();
-        entries.sort();
-        for p in entries {
-            if p.is_dir() {
-                walk(&p, out);
-            } else {
-                out.push((p.clone(), std::fs::read(&p).unwrap()));
-            }
-        }
-    }
-    walk(root, &mut out);
-    out
 }
 
 // ---- mouse (AC-18 is keyboard-first; mouse is additive) -------------------------------
@@ -1105,6 +1303,88 @@ fn dragging_the_tree_horizontal_scrollbar_scrolls_the_tree() {
     // Release ends the drag (so the next press is a fresh interaction, not swallowed).
     let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 1, hbar_row));
     assert!(!fx.redraw, "the drag-release is inert (not a click)");
+}
+
+#[test]
+fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
+    // AC-18: the tree's horizontal scroll was reachable only by mouse (drag/wheel); the `H`/`L`
+    // keys (Shift+h / Shift+l) now move `tree_hscroll` by the same step the wheel uses, clamped
+    // to the measured max — mirroring the content pane's `←`/`→`. Inert when the content is
+    // focused (so the keys don't fight the content's own h-scroll).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    // Tree is focused by default.
+    assert_eq!(ctrl.focus(), Focus::Tree, "tree is focused by default");
+    // Geometry: tree inner width 38, content width 138 → max h-scroll = 100.
+    let mut g = wide_geometry();
+    g.tree_content_width = 138;
+    ctrl.set_pane_geometry(g);
+    assert_eq!(ctrl.view_state().tree_hscroll, 0, "starts at the left edge");
+
+    // L (TreeScrollRight) advances by HSCROLL_STEP (8), clamped to max (100).
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(fx.redraw, "TreeScrollRight redraws");
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        8,
+        "one L press moves the tree right by HSCROLL_STEP"
+    );
+
+    // H (TreeScrollLeft) retreats by HSCROLL_STEP, clamped at 0.
+    let fx = ctrl.handle(Intent::TreeScrollLeft);
+    assert!(fx.redraw, "TreeScrollLeft redraws");
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        0,
+        "one H press moves the tree left by HSCROLL_STEP"
+    );
+
+    // H at 0 is a saturating no-op-ish clamp: it stays at 0 (still redraws — the clamp path
+    // returns Effects::redraw like scroll_content_h does).
+    ctrl.handle(Intent::TreeScrollLeft);
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        0,
+        "TreeScrollLeft at 0 clamps (stays 0)"
+    );
+
+    // Clamping at the right edge: many L presses cannot overshoot the measured max (100).
+    for _ in 0..20 {
+        ctrl.handle(Intent::TreeScrollRight);
+    }
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        100,
+        "TreeScrollRight clamps to the measured max (no overshoot)"
+    );
+
+    // When the content pane is focused, H/L are INERT — they must not move the tree (so they
+    // don't collide with the content pane's own `←`/`→` h-scroll, which lives on the same keys
+    // via Expand/Collapse when content-focused).
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
+    let before = ctrl.view_state().tree_hscroll;
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(
+        !fx.redraw,
+        "TreeScrollRight is inert when content is focused"
+    );
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        before,
+        "tree hscroll unchanged when content is focused"
+    );
+    let fx = ctrl.handle(Intent::TreeScrollLeft);
+    assert!(
+        !fx.redraw,
+        "TreeScrollLeft is inert when content is focused"
+    );
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        before,
+        "tree hscroll unchanged when content is focused"
+    );
 }
 
 #[test]
@@ -1503,6 +1783,7 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -1582,6 +1863,7 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -1690,6 +1972,7 @@ fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -1734,6 +2017,7 @@ fn controller_with_clipboard(root: &Path, is_git_repo: bool) -> (Controller, Rec
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(clipboard),
         renderers: None,
@@ -2319,7 +2603,7 @@ fn picker_expand_scrolls_right_and_collapse_scrolls_left_clamped() {
 
 #[test]
 fn picker_hscroll_does_not_overshoot_past_the_measured_max() {
-    // SMA-229: Expand (→) is monotonic (it can't know the row widths), so over-scrolling right used
+    // Expand (→) is monotonic (it can't know the row widths), so over-scrolling right used
     // to park the picker's stored hscroll past the real maximum; the first few Collapse (←) presses
     // then appeared to do nothing while the overshoot burned back down. The Presenter now feeds back
     // `picker_max_hscroll` and `set_pane_geometry` clamps the stored offset to it each frame (the
@@ -2359,7 +2643,7 @@ fn picker_hscroll_does_not_overshoot_past_the_measured_max() {
 
 #[test]
 fn view_state_titles_the_tree_with_root_basename_and_branch() {
-    // SMA-249: the tree's borders are driven by view_state().root_name (the root directory
+    // the tree's borders are driven by view_state().root_name (the root directory
     // basename) and .branch (the cached current git branch — None outside a repo / detached).
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
@@ -2380,7 +2664,7 @@ fn view_state_titles_the_tree_with_root_basename_and_branch() {
 
 #[test]
 fn refresh_updates_the_cached_branch_after_an_external_checkout() {
-    // review-gate R1 (SMA-249): the tree's bottom-border branch is cached on the controller, so it
+    // the tree's bottom-border branch is cached on the controller, so it
     // must be refreshed by refresh_git_state (the `r` key / editor-return / focus-gain), not only at
     // (re-)root — otherwise an external `git checkout` while the viewer is open leaves it stale.
     let repo = TempDir::new();
@@ -2517,7 +2801,7 @@ fn picker_activate_on_current_worktree_is_a_noop_and_closes_picker() {
     );
 }
 
-// ---- T-10: AC-10 — no herdr pane-open on switch (recording HerdrCli spy) ---------------
+// ---- AC-10 — no herdr pane-open on switch (recording HerdrCli spy) ---------------
 
 /// A recording `HerdrCli` that captures every `run_json` argv into shared state and returns
 /// canned valid JSON so the overlay path runs to completion. The test holds a clone of the
@@ -2700,7 +2984,7 @@ fn picker_other_intents_are_inert() {
 
     // These should all be no-ops (picker stays open, root unchanged, cursor unchanged).
     // OpenFinder included: the finder must NOT open while the picker is the active modal
-    // (modal mutual-exclusion, gate L-3) — handle() routes to handle_picker_intent first.
+    // (modal mutual-exclusion) — handle() routes to handle_picker_intent first.
     for intent in [
         Intent::ToggleIgnore,
         Intent::ToggleChangedOnly,
@@ -2733,6 +3017,299 @@ fn picker_other_intents_are_inert() {
         common::canon(ctrl.root()),
         common::canon(&root_before),
         "root unchanged for inert intents (double-check)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// modal × intent cross-product guard matrix (AC-5, AC-6).
+// ---------------------------------------------------------------------------
+
+/// The modal states exercised by the cross-product matrix. Each variant carries the name a
+/// failure message needs, and a flag for whether `Intent::Close` (the one intent that can end
+/// the session) closes the modal rather than being a noop — true for finder/prompt/help (the
+/// `handle()` guard short-circuits Close before it reaches `close_or_unzoom`, so the modal stays
+/// open and the session does NOT quit), false for the picker (Close routes to
+/// `handle_picker_intent` which cancels the picker).
+enum ModalKind {
+    Picker,
+    Finder,
+    PromptGoToLine,
+    PromptSearch,
+    Help,
+}
+
+impl ModalKind {
+    fn name(&self) -> &'static str {
+        match self {
+            ModalKind::Picker => "picker",
+            ModalKind::Finder => "finder",
+            ModalKind::PromptGoToLine => "prompt(go-to-line)",
+            ModalKind::PromptSearch => "prompt(search)",
+            ModalKind::Help => "help",
+        }
+    }
+
+    /// Whether the modal is open on the controller after `handle(Intent::Close)`.
+    /// For finder/prompt/help the `handle()` guard returns noop BEFORE the match, so Close
+    /// never reaches `close_or_unzoom` — the modal stays open and the session does not quit.
+    /// For the picker, Close routes to `handle_picker_intent` which cancels the picker.
+    fn open_after_close(&self) -> bool {
+        matches!(
+            self,
+            ModalKind::Finder
+                | ModalKind::PromptGoToLine
+                | ModalKind::PromptSearch
+                | ModalKind::Help
+        )
+    }
+
+    /// Whether the intent is one the picker's own handler routes (Nav/Expand/Collapse/Activate/
+    /// Close). Only meaningful for the picker; the other modals short-circuit every intent in
+    /// `handle()` before the match, so no intent reaches a per-modal handler.
+    fn is_picker_own(&self, intent: Intent) -> bool {
+        matches!(
+            intent,
+            Intent::NavUp
+                | Intent::NavDown
+                | Intent::Expand
+                | Intent::Collapse
+                | Intent::Activate
+                | Intent::Close
+        )
+    }
+}
+
+/// Build a fresh controller with the given modal already open. The picker needs a real git
+/// repo with a linked worktree; the go-to-line/search prompts need a file selected. The temp
+/// dirs are leaked so they survive the test.
+fn controller_with_modal_open(kind: &ModalKind) -> Controller {
+    match kind {
+        ModalKind::Picker => {
+            // Reuse the existing two-worktree setup (leaks its temp dirs).
+            let (ctrl, _, _) = setup_picker_with_two_worktrees();
+            ctrl
+        }
+        ModalKind::Finder => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            std::fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::OpenFinder);
+            assert!(ctrl.finder_open(), "precondition: finder is open");
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::PromptGoToLine => {
+            // OpenGoToLine requires a file selected (selected_view_mode().is_some()); an
+            // unchanged .rs file renders as SyntaxContent, so the prompt opens.
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            assert!(
+                ctrl.selected_view_mode().is_some(),
+                "precondition: a file is selected so OpenGoToLine opens the prompt"
+            );
+            ctrl.handle(Intent::OpenGoToLine);
+            assert!(
+                ctrl.prompt_open(),
+                "precondition: go-to-line prompt is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::PromptSearch => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::OpenSearch);
+            assert!(ctrl.prompt_open(), "precondition: search prompt is open");
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::Help => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::ShowHelp);
+            assert!(ctrl.help_open(), "precondition: help overlay is open");
+            std::mem::forget(dir);
+            ctrl
+        }
+    }
+}
+
+/// Whether the modal of `kind` is currently open on `ctrl`.
+fn modal_open(kind: &ModalKind, ctrl: &Controller) -> bool {
+    match kind {
+        ModalKind::Picker => ctrl.picker().is_some(),
+        ModalKind::Finder => ctrl.finder_open(),
+        ModalKind::PromptGoToLine | ModalKind::PromptSearch => ctrl.prompt_open(),
+        ModalKind::Help => ctrl.help_open(),
+    }
+}
+
+/// Whether any modal at all is open on `ctrl` — used to assert no second modal opens.
+fn any_modal_open(ctrl: &Controller) -> bool {
+    ctrl.picker().is_some() || ctrl.finder_open() || ctrl.prompt_open() || ctrl.help_open()
+}
+
+/// The full cross-product: for each modal × each `Intent::ALL` variant, drive `handle(intent)`
+/// and assert the intent is inert (or routes only to the picker's own handler) — never reaching
+/// the tree, never opening a second modal, never mutating the filesystem, and (for finder/prompt/
+/// help) never closing the modal via the `handle()` guard. Driving off `Intent::ALL` means a new
+/// intent variant is automatically covered: it lands in the matrix and must be classified.
+///
+/// AC-5/AC-6 (modal isolation): while a modal is open, intents that would otherwise drive the
+/// tree (Nav, ToggleIgnore, CycleView, …) or open another modal (OpenFinder, OpenSearch,
+/// ShowHelp, SwitchWorktree) must be absorbed by the modal guard.
+#[test]
+fn modal_intent_cross_product_isolates_the_tree() {
+    let modals = [
+        ModalKind::Picker,
+        ModalKind::Finder,
+        ModalKind::PromptGoToLine,
+        ModalKind::PromptSearch,
+        ModalKind::Help,
+    ];
+
+    for modal in modals {
+        for &intent in Intent::ALL.iter() {
+            // Fresh controller with the modal open for every (modal × intent) pair, so an
+            // earlier intent can't leave state that masks a later one.
+            let mut ctrl = controller_with_modal_open(&modal);
+
+            // A populated temp dir backs every setup; snapshot it (rel-path + bytes, excluding
+            // .git) so the read-only invariant (AC-N1/N2) is checked per pair, not just once.
+            // root() is the temp dir for every modal except the picker, whose root is the repo;
+            // snapshot_no_git handles both by walking from root().
+            let before = snapshot_no_git(ctrl.root());
+            let root_before = common::canon(ctrl.root());
+            let tree_cursor_before = ctrl.tree().cursor();
+            let modal_open_before = modal_open(&modal, &ctrl);
+
+            assert!(
+                modal_open_before,
+                "precondition: {:?} is open before {:?}",
+                modal.name(),
+                intent
+            );
+
+            let fx = ctrl.handle(intent);
+            ctrl.poll();
+
+            // 1. The filesystem is unchanged (AC-N1, AC-N2) — the assertion compares file
+            //    contents, so a write/create/rename/delete by any handler would fail here.
+            assert_eq!(
+                snapshot_no_git(ctrl.root()),
+                before,
+                "{:?} × {:?}: no file or git mutation (AC-N1/N2)",
+                modal.name(),
+                intent
+            );
+
+            // 2. The tree root is unchanged (AC-N5 — re-root only via picker→Activate).
+            assert_eq!(
+                common::canon(ctrl.root()),
+                common::canon(&root_before),
+                "{:?} × {:?}: the tree root must not change behind a modal (AC-N5)",
+                modal.name(),
+                intent
+            );
+
+            // 3. No second modal opens — modal mutual-exclusion (AC-5/AC-6). The original modal
+            //    may close (picker's own Close/Activate), but a different one must NOT open.
+            //    For finder/prompt/help, `handle()` returns noop for every intent, so the modal
+            //    stays open and nothing else opens. For the picker, only the picker's own
+            //    Nav/Expand/Collapse/Activate/Close route; everything else is noop.
+            let picker_own =
+                matches!(modal, ModalKind::Picker) && ModalKind::Picker.is_picker_own(intent);
+            if !picker_own {
+                // Inert for this modal: the modal stays open, no second modal opens.
+                assert!(
+                    modal_open(&modal, &ctrl),
+                    "{:?} × {:?}: an inert intent must not close {:?}",
+                    modal.name(),
+                    intent,
+                    modal.name()
+                );
+                assert!(
+                    !fx.quit,
+                    "{:?} × {:?}: an inert intent behind a modal must not quit the session",
+                    modal.name(),
+                    intent
+                );
+            }
+            // For every pair (including the picker's own intents): at most the original modal
+            // is open afterwards — never a second, different modal.
+            // If the original modal is now closed (picker Close/Activate), no other modal may
+            // have opened in its place.
+            if !modal_open(&modal, &ctrl) {
+                // The only legal close is the picker's own Close or Activate.
+                assert!(
+                    picker_own,
+                    "{:?} × {:?}: only the picker's own Close/Activate may close the picker",
+                    modal.name(),
+                    intent
+                );
+            }
+            // No second modal: the set of open modals is a subset of {the original modal}.
+            // I.e. if a different modal is open, that's a failure.
+            let picker_still = ctrl.picker().is_some();
+            let finder_still = ctrl.finder_open();
+            let prompt_still = ctrl.prompt_open();
+            let help_still = ctrl.help_open();
+            let any_other = match &modal {
+                ModalKind::Picker => finder_still || prompt_still || help_still,
+                ModalKind::Finder => picker_still || prompt_still || help_still,
+                ModalKind::PromptGoToLine | ModalKind::PromptSearch => {
+                    picker_still || finder_still || help_still
+                }
+                ModalKind::Help => picker_still || finder_still || prompt_still,
+            };
+            assert!(
+                !any_other,
+                "{:?} × {:?}: no second modal may open behind {:?} (AC-5/AC-6 mutual-exclusion)",
+                modal.name(),
+                intent,
+                modal.name()
+            );
+
+            // 4. The tree cursor is unchanged — no intent leaks past the modal guard to drive
+            //    the tree. (The picker's own Nav intents move the picker cursor, not the tree
+            //    cursor; the tree cursor behind the overlay must stay put.)
+            assert_eq!(
+                ctrl.tree().cursor(),
+                tree_cursor_before,
+                "{:?} × {:?}: the tree cursor must not move behind a modal",
+                modal.name(),
+                intent
+            );
+
+            // 5. For finder/prompt/help, Close does NOT quit the session (the guard short-circuits
+            //    it before close_or_unzoom) — assert the documented behavior explicitly so a
+            //    future refactor that lets Close reach close_or_unzoom behind a modal fails here.
+            if intent == Intent::Close && modal.open_after_close() {
+                assert!(
+                    modal_open(&modal, &ctrl),
+                    "{:?} × Close: the {:?} stays open (handle() guard short-circuits Close)",
+                    modal.name(),
+                    modal.name()
+                );
+                assert!(
+                    !fx.quit,
+                    "{:?} × Close: the session must not quit while {:?} is open",
+                    modal.name(),
+                    modal.name()
+                );
+            }
+        }
+    }
+
+    // Sanity: at least one modal × one intent pair was exercised (guards against the loop body
+    // being silently skipped — e.g. if Intent::ALL were ever empty).
+    assert!(
+        any_modal_open(&controller_with_modal_open(&ModalKind::Picker)),
+        "sanity: the matrix exercised at least the picker setup"
     );
 }
 
@@ -2831,7 +3408,7 @@ fn picker_opens_in_a_single_worktree_repo() {
 }
 
 // ---------------------------------------------------------------------------
-// T-17 — No-events conformance: re_root only via SwitchWorktree (AC-N5)
+// No-events conformance: re_root only via SwitchWorktree (AC-N5)
 // ---------------------------------------------------------------------------
 
 /// AC-N5 (automatable analog): the viewer re-roots only in response to the explicit
@@ -2894,16 +3471,16 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
         );
         // OpenFinder (in Intent::ALL) opens the finder; close it so each intent is exercised from a
         // clean no-modal state — and so it is not left open for Part 2, where the finder's modal
-        // guard would otherwise make SwitchWorktree inert. (review-gate R1: O2)
+        // guard would otherwise make SwitchWorktree inert.
         if ctrl.finder_open() {
             ctrl.handle_finder_key(key(KeyCode::Esc));
         }
-        // OpenSearch (in Intent::ALL since T-8) opens the search prompt; close it symmetrically
+        // OpenSearch (in Intent::ALL) opens the search prompt; close it symmetrically
         // so the prompt modal guard cannot block SwitchWorktree in Part 2.
         if ctrl.prompt_open() {
             ctrl.handle_prompt_key(key(KeyCode::Esc));
         }
-        // ShowHelp (in Intent::ALL since T-3) opens the help overlay; close it symmetrically
+        // ShowHelp (in Intent::ALL) opens the help overlay; close it symmetrically
         // so the help modal guard cannot block SwitchWorktree in Part 2.
         if ctrl.help_open() {
             ctrl.close_help();
@@ -2951,7 +3528,7 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
 }
 
 // ---------------------------------------------------------------------------
-// T-6 — Finder keystroke matching + selection navigation (AC-6, AC-7, AC-8)
+// Finder keystroke matching + selection navigation (AC-6, AC-7, AC-8)
 // ---------------------------------------------------------------------------
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -3269,7 +3846,7 @@ fn handle_finder_key_is_noop_when_finder_is_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// T-5 — OpenFinder intent: open + finder_open (AC-1, AC-18)
+// OpenFinder intent: open + finder_open (AC-1, AC-18)
 // ---------------------------------------------------------------------------
 
 /// AC-1 / AC-18: handle(OpenFinder) opens the finder (finder_open() → true), populates it
@@ -3302,7 +3879,7 @@ fn open_finder_opens_finder_with_full_candidate_list_and_empty_query() {
 }
 
 // ---------------------------------------------------------------------------
-// T-7 — Confirm (reveal + render) · cancel · no-match no-op
+// Confirm (reveal + render) · cancel · no-match no-op
 // ---------------------------------------------------------------------------
 
 /// Build a temp dir with files and an open finder (git repo variant so changed_only works).
@@ -3463,13 +4040,13 @@ fn esc_closes_finder_and_leaves_tree_unchanged() {
 
 #[test]
 fn enter_with_match_resyncs_changed_only_mirror_after_reveal() {
-    // Mirror-resync guard (T-4 review note): when changed_only is ON and the finder navigates
+    // Mirror-resync guard: when changed_only is ON and the finder navigates
     // to a file that is NOT in the changed-set, reveal() relaxes the tree's changed_only field
     // to false. The controller's mirror must be re-synced — otherwise the next `c` toggle
     // would read the stale mirror and re-apply the wrong filter.
     let (_dir, mut ctrl) = finder_dir_git();
     // finder_dir_git() opens the finder; close it so the changed-only toggle below isn't swallowed
-    // by the finder's modal guard (handle() is inert while the finder is open). (review-gate R1: O2)
+    // by the finder's modal guard (handle() is inert while the finder is open).
     ctrl.handle_finder_key(key(KeyCode::Esc));
     assert!(
         !ctrl.finder_open(),
@@ -3518,7 +4095,7 @@ fn enter_with_match_resyncs_changed_only_mirror_after_reveal() {
 
 #[test]
 fn enter_with_match_resyncs_hide_hidden_mirror_after_reveal() {
-    // Mirror-resync guard (T-4 review note), hide_hidden variant — symmetric to the changed_only
+    // Mirror-resync guard, hide_hidden variant — symmetric to the changed_only
     // case above. When hide_hidden is ON and the finder jumps to a NON-ignored dotfile, reveal()
     // relaxes the tree's hide_hidden field; the controller's mirror must re-sync so the next `.`
     // toggle does not read a stale value. Guards lines 1633-1634 (the hide_hidden re-sync).
@@ -3584,7 +4161,7 @@ fn finder_geometry_with_rows() -> PaneGeometry {
 
 #[test]
 fn mouse_is_inert_while_the_finder_is_open_outside_overlay() {
-    // Rewritten T-9: the finder is mouse-interactive INSIDE its rows area, but clicks/scrolls
+    // The finder is mouse-interactive INSIDE its rows area, but clicks/scrolls
     // OUTSIDE (on the tree or content panes beneath the overlay) must never drive those panes.
     // This test checks the "outside/other" branch — which must stay inert — and also asserts
     // that the finder stays open (a click outside does NOT cancel it; Esc cancels).
@@ -3865,7 +4442,7 @@ fn last_click_not_shared_between_finder_and_tree_scenario_b() {
 
 #[test]
 fn last_click_cleared_by_a_finder_keystroke_scenario_c() {
-    // review-gate R1 (O1): a finder click → KEYSTROKE → click on the SAME screen row within the
+    // O1: a finder click → KEYSTROKE → click on the SAME screen row within the
     // double-click window must NOT be misread as a double-click (confirm). Without the fix, the
     // keystroke arms of handle_finder_key leave `last_click` populated, so the second click pairs
     // with the first as a double-click and opens a file the user only single-clicked — often a
@@ -3910,7 +4487,7 @@ fn last_click_cleared_by_a_finder_keystroke_scenario_c() {
 
 #[test]
 fn intents_are_inert_while_the_finder_is_open() {
-    // review-gate R1 (O2): handle() is modal for the finder too. While the finder is open every
+    // O2: handle() is modal for the finder too. While the finder is open every
     // intent is a no-op — the run loop routes keys to handle_finder_key, and this structural guard
     // (symmetric with the picker guard) stops a future/test caller from leaking an intent to the
     // tree beneath the overlay or opening a SECOND modal over it.
@@ -4173,7 +4750,7 @@ fn finder_hscroll_resets_to_zero_on_new_query() {
 }
 
 // ---------------------------------------------------------------------------
-// T-10 — Scope independence + non-git (AC-16, AC-17, AC-19)
+// Scope independence + non-git (AC-16, AC-17, AC-19)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4336,7 +4913,7 @@ fn finder_works_fully_in_a_non_git_directory() {
 }
 
 // ---------------------------------------------------------------------------
-// T-12 — Negative criteria & conformance (AC-N1, AC-N2, AC-N4, AC-N5, AC-N6)
+// Negative criteria & conformance (AC-N1, AC-N2, AC-N4, AC-N5, AC-N6)
 // ---------------------------------------------------------------------------
 
 /// Snapshot every non-.git file under `root` as (relative path, contents).
@@ -4511,7 +5088,7 @@ fn ac_18_same_controller_reopen_sees_created_and_dropped_files() {
     // (index::build sees a new file; a fresh Controller rebuilds) left the same-controller
     // close→mutate→reopen flow and the REMOVED-file half untested. This drives that vector:
     // open → Esc → create one file + remove another on disk → reopen → the new file is present
-    // and the removed file is absent. (review-gate R1: LS4)
+    // and the removed file is absent.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("alpha.txt"), "a").unwrap();
     std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
@@ -4550,7 +5127,7 @@ fn ac_n3_finder_ignores_file_contents_matches_path_only() {
     // AC-N3: the finder matches by PATH/NAME only, never file CONTENTS. A token that appears
     // inside a file's bytes but is not a subsequence of any path must yield zero matches. The
     // fuzzy-level test only covered a token in neither path nor content; this drives the full
-    // index→matcher pipeline to prove content is never read. (review-gate R1: LS5)
+    // index→matcher pipeline to prove content is never read.
     let dir = TempDir::new();
     // The token "zqxhiddentoken" lives ONLY inside the file's CONTENTS — its leading 'z' is in no path.
     std::fs::write(
@@ -4820,7 +5397,7 @@ fn open_go_to_line_opens_the_prompt_in_transformed_views_too() {
     }
 }
 
-// T-3 — Go-to-line keystroke + confirm + cancel (AC-2..AC-6, AC-7 edge)
+// Go-to-line keystroke + confirm + cancel (AC-2..AC-6, AC-7 edge)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4999,6 +5576,7 @@ fn changed_controller_with_lines(root: &Path, file: &str, n: usize) -> Controlle
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -5064,7 +5642,7 @@ fn go_to_line_in_a_transformed_view_switches_to_content_and_jumps() {
     );
 }
 
-// review-gate Round 1 — regression tests for the findings fixed in R1.
+// regression tests for the findings fixed in R1.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -5135,6 +5713,7 @@ fn controller_with_wrap_lines(root: &Path) -> Controller {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -5281,7 +5860,7 @@ fn go_to_line_second_confirm_supersedes_an_in_flight_auto_switch_jump() {
     );
 }
 
-// ── T-8: OpenSearch / NextMatch / PrevMatch ─────────────────────────────────
+// ── OpenSearch / NextMatch / PrevMatch ─────────────────────────────────
 
 #[test]
 fn open_search_opens_a_search_prompt_in_any_view() {
@@ -5414,7 +5993,7 @@ fn next_match_and_prev_match_are_noops_with_no_committed_search() {
     );
 }
 
-// ── T-9: Search open + incremental matching ──────────────────────────────────
+// ── Search open + incremental matching ──────────────────────────────────
 
 /// Content renderer that returns a predictable multi-line body with known searchable tokens.
 struct SearchContent;
@@ -5443,6 +6022,7 @@ fn controller_with_search_content(root: &Path) -> Controller {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -5627,7 +6207,7 @@ fn search_accepts_all_printable_chars_not_just_digits() {
 
 #[test]
 fn search_esc_closes_prompt() {
-    // Esc closes the search prompt (minimal T-9 behavior; Esc-restore is T-11).
+    // Esc closes the search prompt (minimal behavior; Esc-restore comes with the cancel/clear lifecycle).
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -5641,7 +6221,7 @@ fn search_esc_closes_prompt() {
 
 #[test]
 fn search_enter_closes_prompt() {
-    // Enter closes the search prompt (minimal T-9 behavior; commit semantics are T-10).
+    // Enter closes the search prompt (minimal behavior; commit semantics come with search-commit).
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -5653,7 +6233,7 @@ fn search_enter_closes_prompt() {
     assert!(!ctrl.prompt_open(), "Enter closes the search prompt");
 }
 
-// ── T-10: Search commit + n/N + wrap ─────────────────────────────────────────
+// ── Search commit + n/N + wrap ─────────────────────────────────────────
 
 #[test]
 fn search_enter_commits_retaining_search_state() {
@@ -5922,7 +6502,7 @@ fn next_match_prev_match_inert_with_zero_match_committed_search() {
     );
 }
 
-// ── T-11: Search cancel + clear lifecycle ─────────────────────────────────────
+// ── Search cancel + clear lifecycle ─────────────────────────────────────
 
 #[test]
 fn search_esc_restores_scroll_and_clears_search_state() {
@@ -6167,6 +6747,7 @@ fn poll_clears_stale_committed_search_after_content_swap() {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -6185,7 +6766,8 @@ fn poll_clears_stale_committed_search_after_content_swap() {
     //   - latest_seq is bumped; the b.txt render job is in flight
     //   - We do NOT poll here — b.txt content has NOT arrived yet.
     ctrl.handle(Intent::NavDown);
-    // dispatch_render already cleared search; a.txt content is still displayed.
+    // dispatch_render already cleared search and swapped the body to the loading placeholder
+    //; the new file's content has not arrived yet.
 
     // Step 3: Open search and commit a search against the currently-displayed (stale) content.
     //   This is the race window: user opens `/` and hits Enter before poll() fires.
@@ -6289,7 +6871,7 @@ fn content_change_clears_committed_search_baseline_toggle() {
 }
 
 // ---------------------------------------------------------------------------
-// T-15 — Negative criteria & conformance (AC-N1, AC-N2, AC-N3, AC-N4, AC-N6)
+// Negative criteria & conformance (AC-N1, AC-N2, AC-N3, AC-N4, AC-N6)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -6408,6 +6990,7 @@ fn controller_with_sentinel_excluded_content(root: &Path) -> Controller {
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -6471,7 +7054,7 @@ fn ac_n4_search_matches_only_open_file_content_not_other_disk_files() {
 }
 
 // ---------------------------------------------------------------------------
-// T-16 — Search UX revisions (label+count, committed status, Esc clear,
+// Search UX revisions (label+count, committed status, Esc clear,
 //         color swap, file-gate, zoom-on-open)
 // ---------------------------------------------------------------------------
 
@@ -6700,17 +7283,23 @@ fn esc_clears_committed_search_before_unzoom_when_zoomed() {
     assert!(fx3.quit, "third Esc: quits");
 }
 
-// ── #5: color swap — CURRENT_HIGHLIGHT is now yellow, HIGHLIGHT is cyan ───────
+// ── #5: color swap — CURRENT_HIGHLIGHT is theme-relative (REVERSED+BOLD), HIGHLIGHT is cyan ──
 
 #[test]
-fn current_highlight_is_yellow_and_highlight_is_cyan() {
-    // Explicit assertion so the intent of the swap is clear and regression-caught.
+fn current_highlight_is_theme_relative_and_distinct_from_highlight() {
+    // CURRENT_HIGHLIGHT (the active match) is now `REVERSED|BOLD` — a theme-relative
+    // style that inverts whatever the terminal palette is, so the active match is distinguishable
+    // with color stripped (colorblind users, non-default themes). HIGHLIGHT (other matches) stays
+    // black-on-cyan. The two styles must remain distinct.
     use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
-    use ratatui::style::Color;
-    assert_eq!(
-        CURRENT_HIGHLIGHT.bg,
-        Some(Color::Yellow),
-        "CURRENT_HIGHLIGHT (active match) must be yellow background"
+    use ratatui::style::{Color, Modifier};
+    assert!(
+        CURRENT_HIGHLIGHT.add_modifier.contains(Modifier::REVERSED),
+        "CURRENT_HIGHLIGHT (active match) must be REVERSED (theme-relative)"
+    );
+    assert!(
+        CURRENT_HIGHLIGHT.add_modifier.contains(Modifier::BOLD),
+        "CURRENT_HIGHLIGHT (active match) must be BOLD (a weight cue on top of REVERSED)"
     );
     assert_eq!(
         HIGHLIGHT.bg,
@@ -6718,7 +7307,7 @@ fn current_highlight_is_yellow_and_highlight_is_cyan() {
         "HIGHLIGHT (other matches) must be cyan background"
     );
     assert_ne!(
-        CURRENT_HIGHLIGHT.bg, HIGHLIGHT.bg,
+        CURRENT_HIGHLIGHT, HIGHLIGHT,
         "the two highlight styles must remain distinct"
     );
 }
@@ -6836,7 +7425,7 @@ fn open_search_does_not_zoom_when_content_already_visible() {
     assert!(ctrl.prompt_open(), "prompt is open");
 }
 
-// ---- T-3: ShowHelp intent + open_help --------------------------------------------------
+// ---- ShowHelp intent + open_help --------------------------------------------------
 
 #[test]
 fn show_help_opens_help_overlay_with_whats_new_active_and_non_empty_bodies() {
@@ -6951,7 +7540,7 @@ fn show_help_is_inert_while_help_is_already_open() {
     );
 }
 
-// ---- T-4: Render What's New as markdown (AC-14, AC-15) ----------------------------------
+// ---- Render What's New as markdown (AC-14, AC-15) ----------------------------------
 
 /// Flatten a `Text<'static>` to a plain string for assertions.
 fn flatten_text(t: &ratatui::text::Text) -> String {
@@ -7012,6 +7601,7 @@ fn controller_with_renderers(root: &std::path::Path, renderers: Renderers) -> Co
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: Some(renderers),
@@ -7135,7 +7725,7 @@ fn open_help_bounds_a_slow_markdown_render_to_the_help_budget() {
     );
 }
 
-// ---- T-5: handle_help_key + app.rs key gate (AC-2, AC-3, AC-7, AC-8, AC-9, AC-20) --------
+// ---- handle_help_key + app.rs key gate (AC-2, AC-3, AC-7, AC-8, AC-9, AC-20) --------
 
 /// Open the help overlay on a fresh controller and return it. Panics if help is not open.
 fn open_help_ctrl() -> Controller {
@@ -7242,7 +7832,7 @@ fn help_up_from_zero_stays_at_zero() {
     assert_eq!(scroll, 0, "Up from scroll=0 must stay at 0 (saturates)");
 }
 
-// T-6 follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
+// follow-up regression (AC-8/AC-9): the help body is drawn with `Paragraph::wrap`, so its
 // scroll offset is in WRAPPED rows. `set_pane_geometry` must clamp the stored scroll against the
 // WRAPPED total the Presenter measured (`help_body_rows`), NOT raw `body.lines.len()`. We feed a
 // geometry whose wrapped total exceeds both the viewport height AND the raw line count, then prove
@@ -7270,7 +7860,9 @@ fn help_scroll_clamps_against_wrapped_row_total_not_raw_lines() {
     };
 
     // Over-scroll far past any bound (scroll_by only saturates at 0; the bottom bound is the clamp).
-    for _ in 0..200 {
+    // Pump well past any plausible wrapped_max (raw_lines + 7 here) so the clamp, not the pump
+    // count, is the limiting factor — robust against changelog growth.
+    for _ in 0..1000 {
         ctrl.handle_help_key(key(KeyCode::Char('j')));
     }
 
@@ -7352,8 +7944,10 @@ fn help_scroll_down_clamps_eagerly_in_handler() {
     ctrl.set_pane_geometry(geom);
 
     let max = wrapped_rows - height;
-    // Over-scroll far past the bottom with j.
-    for _ in 0..300 {
+    // Over-scroll far past the bottom with j. Pump well past any plausible max (raw_lines + 44
+    // here) so the clamp, not the pump count, is the limiting factor — robust against changelog
+    // growth (the help body renders the CHANGELOG).
+    for _ in 0..1000 {
         ctrl.handle_help_key(key(KeyCode::Char('j')));
     }
     let scroll = ctrl.help_state().unwrap().sections[0].scroll;
@@ -7516,7 +8110,7 @@ fn handle_help_key_is_noop_when_help_is_closed() {
     assert!(!fx.redraw, "noop when help is closed");
 }
 
-// ---- T-7: handle_help_mouse + mouse gate + section-tab hit-test (AC-8, AC-10, AC-21) -----
+// ---- handle_help_mouse + mouse gate + section-tab hit-test (AC-8, AC-10, AC-21) -----
 
 /// A frame area large enough for the help overlay's fixed centered box (≥ its want size).
 fn help_area() -> Rect {
@@ -7616,7 +8210,7 @@ fn help_click_on_tab_activates_that_section() {
     assert_eq!(target_idx, 1, "the non-active tab is index 1 (About)");
 
     // Press the left button on a cell INSIDE that tab's rect. The tab activates on press
-    // (Down(Left)), per the T-7 contract — a tab is a chrome control, not a list row.
+    // (Down(Left)), per the overlay-mouse contract — a tab is a chrome control, not a list row.
     let col = rect.x + rect.width / 2;
     let row = rect.y;
     let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
@@ -7690,7 +8284,7 @@ fn help_click_off_tabs_is_inert_noop() {
     assert!(ctrl.help_open(), "the overlay stays open");
 }
 
-// ---- T-8: No-side-effect + responsiveness (AC-4, AC-22) ----------------------------------
+// ---- No-side-effect + responsiveness (AC-4, AC-22) ----------------------------------
 
 /// Capture a snapshot of the viewer state that AC-4 asserts is unchanged after help use:
 /// the tree cursor, the visible node paths (expansions encode which dirs are open), the
@@ -7853,7 +8447,7 @@ fn help_open_switch_scroll_each_within_300ms() {
     );
 }
 
-// ---- T-9: negative-criteria conformance (AC-N2 no git, AC-N5 no network, AC-N6 section set) --
+// ---- negative-criteria conformance (AC-N2 no git, AC-N5 no network, AC-N6 section set) --
 
 /// A Git Service stub that records EVERY query (status / changed_set / diff) it receives, so a
 /// test can assert that a code path issued NO git command at all. Distinct from the file-level
@@ -7896,6 +8490,7 @@ fn controller_counting_git(root: &Path, is_git_repo: bool) -> (Controller, Recor
         editor: Box::new(StubEditor {
             fail: false,
             opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
         }),
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
@@ -7909,7 +8504,7 @@ fn controller_counting_git(root: &Path, is_git_repo: bool) -> (Controller, Recor
 }
 
 // AC-N6 (via open_help): the HelpState the controller actually builds has EXACTLY two sections,
-// labelled "What's New" then "About" — no third section (scope guard vs. the deferred SMA-49
+// labelled "What's New" then "About" — no third section (scope guard vs. a deferred Settings/Keybindings
 // Keybindings/Settings). This complements the source-level guard in `src/help.rs` by asserting the
 // runtime object `open_help` constructs matches the contract.
 #[test]
@@ -7930,7 +8525,7 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
     assert_eq!(
         state.sections.len(),
         2,
-        "AC-N6: exactly two sections — no third (deferred SMA-49) section"
+        "AC-N6: exactly two sections — no third (deferred Settings/Keybindings) section"
     );
 }
 

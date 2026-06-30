@@ -1,4 +1,4 @@
-//! T-21 — e2e (pty): the viewer is fully keyboard-operable (AC-18). We drive ONLY the
+//! e2e (pty): the viewer is fully keyboard-operable (AC-18). We drive ONLY the
 //! keyboard over a pseudo-terminal — no mouse — exercising every viewer function, and
 //! confirm a clean exit (a key that panicked the run loop would fail the exit assertion).
 //!
@@ -73,9 +73,12 @@ fn finder_routes_printable_keys_to_query_and_enter_confirms_esc_cancels() {
     // Type `w` — ToggleWrap in the viewer; must also land in the query without toggling anything.
     s.send("w").expect("send `w` into the finder query");
 
-    // Settle before Esc so crossterm sees a lone ESC (not Alt+char).
+    // Settle before Esc so crossterm sees a lone ESC (not Alt+char) — inter-byte gap, stays.
     std::thread::sleep(Duration::from_millis(150));
     s.send("\u{1b}").expect("send Esc to cancel the finder");
+    // Settle after Esc closed the finder before the next key — no positive content anchor for
+    // the close (the tree was never overwritten, the finder was an overlay), so a short gap
+    // stays in place of an `expect`.
     std::thread::sleep(Duration::from_millis(150));
 
     // --- Confirm sub-case (AC-7 reveal): open finder, narrow to the unique file, Enter reveals. ---
@@ -155,7 +158,9 @@ fn every_keyboard_function_drives_the_viewer_and_it_exits_cleanly() {
     ] {
         s.send(key).expect("send key");
     }
-    // The editor hand-off suspends/resumes the terminal; let it settle before the close key.
+    // The editor hand-off suspends/resumes the terminal; this is the terminal-resume settle
+    // (raw-mode re-entry after the editor returns), not a screen-paint wait — `true` exits
+    // instantly and there's no new stable screen content to `expect` for. Keep the short sleep.
     std::thread::sleep(Duration::from_millis(200));
 
     // The close key returns control and exits cleanly (AC-20).
@@ -239,6 +244,9 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     std::thread::sleep(Duration::from_millis(150));
     s.send("\u{1b}")
         .expect("send Esc to cancel the picker (AC-6)");
+    // Settle after Esc closed the picker — no positive content anchor for the close (the tree
+    // is unchanged under the overlay), and the gap also keeps Esc and the next send apart so
+    // crossterm reads a lone ESC (not Alt+char). Stays a short sleep.
     std::thread::sleep(Duration::from_millis(150));
 
     // --- Confirm path: W → j → Enter → re-root to the feature worktree (AC-5/AC-7). ---
@@ -259,6 +267,8 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     // two `q` presses (not Esc-then-q): an ESC immediately followed by a char is read by
     // crossterm as Alt+char, which maps to no intent — so a trailing Esc could swallow the quit.
     s.send("q").expect("send close (un-zoom)");
+    // Inter-key gap between the two `q` presses so the second isn't merged into the first by
+    // the pty stream (keeps the un-zoom then quit sequence distinct).
     std::thread::sleep(Duration::from_millis(150));
     s.send("q").expect("send close (quit)");
     s.expect(Eof)
@@ -283,7 +293,7 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     }
 }
 
-/// T-5 — go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
+/// go-to-line e2e: `:` opens the line-number prompt on a source-mapped (SyntaxContent) file;
 /// typing a line number and Enter scrolls the content to that line (AC-3 jump + AC-21 routing);
 /// pressing `:` on a RenderedMarkdown file ALSO opens the prompt (AC-7 revised — it opens in every
 /// view; the switch-then-jump on confirm is proven by the controller unit test).
@@ -345,7 +355,11 @@ fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
     // event loop a beat to open the prompt before the next key, so `j` lands inside the prompt and
     // not as a NavDown on the tree.
     s.send(":").expect("send `:` to open the go-to-line prompt");
-    std::thread::sleep(Duration::from_millis(300));
+    // Wait for the go-to-line prompt to open and render its bottom-line label before the next
+    // key lands inside it — so `j` is swallowed by the prompt (not a NavDown on the tree).
+    s.expect("Go to line:").expect(
+        "the go-to-line prompt opens and renders its label before the next key lands inside it",
+    );
 
     // Step 3: AC-21 routing proof — `j` (NavDown in normal mode) must be swallowed by the open
     // prompt (a non-digit, ignored), NOT navigate the tree.
@@ -378,6 +392,9 @@ fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
 
     // Step 7: Esc closes the prompt (otherwise the prompt would swallow the quit key), then exit.
     s.send("\u{1b}").expect("send Esc to close the prompt");
+    // Settle after Esc closed the prompt before `q` — no positive content anchor for the close
+    // (the tree/prompt-row was the only new text and it's gone), and the gap keeps Esc and `q`
+    // apart so crossterm reads a lone ESC (not Alt+char). Stays a short sleep.
     std::thread::sleep(Duration::from_millis(150));
     s.send("q").expect("send close");
     s.expect(Eof)
@@ -393,7 +410,7 @@ fn go_to_line_jumps_to_a_source_line_and_opens_in_markdown_too() {
     }
 }
 
-/// T-13 — AC-21 e2e oracle: while the search prompt is open, printable keys edit the query and
+/// AC-21 e2e oracle: while the search prompt is open, printable keys edit the query and
 /// do NOT trigger viewer actions (e.g. `j` does not move the tree cursor); `n`/`N` cycle after
 /// commit; Esc closes the prompt and restores.
 ///
@@ -450,20 +467,25 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     let mut s = Session::spawn(cmd).expect("spawn the viewer");
     s.set_expect_timeout(Some(Duration::from_secs(15)));
 
-    // Step 1: viewer is up; tree lists both files. `aaa.txt` is the initial selection (top row).
-    s.expect("aaa.txt")
-        .expect("tree lists aaa.txt on launch (first row, initial selection)");
+    // Step 1: viewer is up; `aaa.txt` is the initial selection (top row) and is rendered on
+    // launch. Synchronize on its TOP-OF-FILE content marker — this proves both that the tree
+    // selected aaa.txt AND that its content finished its off-thread render. We anchor on the
+    // content here, at the stable launch point, rather than after `/` zooms it: the zoom only
+    // changes the layout, not aaa.txt's text, so a fresh re-emission of the marker after the
+    // async zoom-render is NOT guaranteed (a plain-text fallback render — e.g. on a CI runner
+    // with no `bat`/`glow` — can redraw the same cells, which ratatui diffs as unchanged and
+    // does not re-emit). Anchoring on the first, guaranteed emission removes that race.
+    s.expect("TOPMARK")
+        .expect("aaa.txt content (TOPMARK, line 1) is rendered and visible on launch");
 
     // Step 2: open the search prompt with `/`. Give the event loop a moment to open before
     // the next key so `j` lands inside the prompt (same pattern as go-to-line e2e).
     s.send("/").expect("send `/` to open the search prompt");
-    std::thread::sleep(Duration::from_millis(300));
-    // Synchronize before searching: `/` zooms the selected file (FIX 7b) so its content becomes
-    // visible. Wait for the top-of-file anchor so the SEARCHMARK search below runs against
-    // fully-rendered content, not an in-flight (empty) off-thread render — the render is slower on
-    // macOS CI and otherwise raced the search, making the `SEARCHMARK` expect flaky there.
-    s.expect("TOPMARK")
-        .expect("aaa.txt content is rendered and visible (zoomed) before the search flow");
+    // Wait for the search prompt to open and render its bottom-line label before the next key
+    // lands inside it — so `j` is swallowed by the prompt (not a NavDown on the tree).
+    s.expect("Search:").expect(
+        "the search prompt opens and renders its label before the next key lands inside it",
+    );
 
     // Step 3: AC-21 routing proof — send `j` (NavDown) and `w` (ToggleWrap) into the prompt.
     // If routing were broken, `j` would move the tree cursor to `jfile.txt`; the subsequent
@@ -477,19 +499,27 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     std::thread::sleep(Duration::from_millis(150));
     s.send("\u{1b}")
         .expect("send Esc to cancel the search prompt");
+    // Settle after Esc closed the prompt before the next send — no positive content anchor for
+    // the close (the tree is unchanged under the prompt overlay), and the gap keeps Esc and the
+    // next key apart so crossterm reads a lone ESC (not Alt+char). Stays a short sleep.
     std::thread::sleep(Duration::from_millis(150));
 
     // Step 5: open a fresh search for `SEARCHMARK`. If routing failed (j was NavDown), the
     // cursor is now on `jfile.txt` and this search runs on that file — which has no SEARCHMARK.
     // If routing succeeded, the cursor is still on `aaa.txt` and the search finds two matches.
     s.send("/").expect("re-open the search prompt");
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for the search prompt's label to render before typing the query.
+    s.expect("Search:")
+        .expect("the search prompt re-opens and renders its label before the query is typed");
     for c in "SEARCHMARK".chars() {
         s.send(c.to_string()).expect("send search char");
     }
     // Commit the search with Enter.
     s.send("\r").expect("send Enter to commit the search");
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for the committed-search status bar to render before `n` — `n next` only appears in
+    // the committed-search bar (drawn into the bottom row after commit), so it's a robust anchor.
+    s.expect("n next")
+        .expect("the committed-search status bar renders before `n` is sent");
 
     // Step 6: `n` cycles to the first (and current) match: line 25 of `aaa.txt`. This line was
     // below the initial viewport → its characters land in previously-blank cells → robust anchor.
@@ -505,9 +535,12 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     s.send("N").expect("send `N` to go to previous match");
 
     // Step 8: a bare Esc outside the prompt is inert (maps to no intent — must not crash).
+    // Settle before Esc so crossterm reads a lone ESC (not Alt+char) — inter-byte gap.
     std::thread::sleep(Duration::from_millis(150));
     s.send("\u{1b}")
         .expect("send Esc outside the prompt (inert)");
+    // Settle after the inert Esc before `q` — keeps Esc and `q` apart (lone-ESC, not Alt+char)
+    // and lets the inert Esc be consumed before the quit key arrives. Stays a short sleep.
     std::thread::sleep(Duration::from_millis(150));
 
     // Step 9: clean exit — no search key crashed the run loop (AC-21).

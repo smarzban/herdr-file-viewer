@@ -89,10 +89,11 @@ jobs:
           # Flatten the per-target binaries and concatenate their checksum lines into one file.
           find artifacts -type f -name 'herdr-file-viewer-*' ! -name '*.sha256' -exec cp {} release/ \;
           cat artifacts/*/*.sha256 > release/SHA256SUMS
-          # Record the exact commit this release was built from. The install step compares its
-          # checkout's HEAD to this so the prebuilt is used only when the source IS the released
-          # commit (herdr's install checkout lacks local tags, so HEAD vs. this marker is how the
-          # script verifies the match without resolving a tag).
+          # Record the commit this release was built from. The install step selects the prebuilt
+          # by declared VERSION match (Cargo.toml/herdr-plugin.toml ↔ release tag) — not by commit
+          # exactness — so a checkout ahead of the released tag still uses this binary. COMMIT is
+          # informational only: fetch-or-build.sh fetches it best-effort to note when the working
+          # tree is ahead of the released v$version. Its absence is not an error.
           printf '%s\n' "$GITHUB_SHA" > release/COMMIT
           echo "Publishing:"; ls -l release; echo "--- SHA256SUMS ---"; cat release/SHA256SUMS; echo "--- COMMIT ---"; cat release/COMMIT
 

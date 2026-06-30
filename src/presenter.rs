@@ -55,9 +55,10 @@ pub struct ViewState {
     /// on the first frame and whenever every node fits.
     pub tree_scroll: u16,
     /// The tree's horizontal scroll offset, in columns — so a deeply-nested or long file name can
-    /// be read sideways when it overflows the tree column. Driven by the horizontal wheel and by
-    /// dragging the tree's horizontal scrollbar (the `←`/`→` keys are expand/collapse in the tree).
-    /// The Presenter clamps it to the widest row at draw, so it can never over-scroll.
+    /// be read sideways when it overflows the tree column. Driven by the `H`/`L` keys, the
+    /// horizontal wheel, and by dragging the tree's horizontal scrollbar (the `←`/`→` keys are
+    /// expand/collapse in the tree). The Presenter clamps it to the widest row at draw, so it can
+    /// never over-scroll.
     pub tree_hscroll: u16,
     /// The content's total RENDERED row count — wrapped rows under `wrap`, raw lines otherwise (the
     /// controller's wrapped-aware count). The content vertical scrollbar sizes/positions against
@@ -94,6 +95,17 @@ pub struct ViewState {
     /// border. `None` outside a git repo or on a detached HEAD — in which case the bottom title is
     /// omitted entirely rather than showing a blank/placeholder branch (degrade gracefully).
     pub branch: Option<String>,
+    /// The content pane's border title, derived from the displayed content's file path (not the
+    /// live tree cursor), so the title switches in lockstep with the body — it never shows a
+    /// freshly-selected file's name before that file's content arrives. `None` while no
+    /// file's content has landed yet (launch, a re-root, or a directory/empty selection); the
+    /// Presenter then falls back to the selected node's name (a directory) or "Content" — unless
+    /// [`content_rendering`](Self::content_rendering) is set, in which case it uses a neutral
+    /// "Content" label so the title doesn't jump to the still-loading selection.
+    pub content_title: Option<String>,
+    /// True while an off-thread render for a file is in flight. The Presenter uses this to pick a
+    /// neutral title while the body shows the loading placeholder.
+    pub content_rendering: bool,
     /// When `Some`, the content pane is drawn through [`crate::highlight::apply`] to overlay
     /// match highlights on top of the rendered text (AC-9, AC-11). `None` ⇒ draw the content
     /// as-is (byte-identical to today — the `None` arm is just `state.content.clone()`).
@@ -122,7 +134,7 @@ pub struct PickerRowView {
     /// The branch name, or `None` when HEAD is detached.
     pub branch: Option<String>,
     /// `true` when HEAD is detached (no branch) — shown as a detached marker, never an empty
-    /// branch (AC-2, gate L-1).
+    /// branch (AC-2).
     pub detached: bool,
     /// `true` when this is the worktree the viewer is currently rooted at — rendered as a leading
     /// "current" marker, distinct from the selection cursor (AC-18).
@@ -148,7 +160,7 @@ pub struct ContentSearch {
 }
 
 /// The finder overlay's draw model (an owned snapshot of the controller's finder state).
-/// Built by the Session Controller's `view_state()` (T-8).
+/// Built by the Session Controller's `view_state()`.
 pub struct FinderView {
     /// The current query text drawn on the input line.
     pub query: String,
@@ -190,13 +202,22 @@ pub struct HelpView {
 }
 
 /// The single-character git-status marker shown beside a tree row (AC-7).
-fn status_marker(status: Option<Status>) -> char {
-    match status {
-        Some(Status::Modified) => 'M',
-        Some(Status::Added) => 'A',
-        Some(Status::Deleted) => 'D',
-        Some(Status::Untracked) => '?',
-        None => ' ',
+///
+/// Files carry their git status letter (`M`/`A`/`D`/`?`); a directory containing any change carries
+/// `●` so the "dirty directory" state is distinguishable with color stripped — previously it was
+/// color-only (LightRed) and lost to a colorblind user or a non-default theme. A clean directory
+/// and a clean file both show a blank, so the column stays aligned across clean and dirty rows.
+fn status_marker(node: &Node) -> char {
+    match node.kind {
+        NodeKind::Dir if node.dir_dirty => '●',
+        NodeKind::File => match node.status {
+            Some(Status::Modified) => 'M',
+            Some(Status::Added) => 'A',
+            Some(Status::Deleted) => 'D',
+            Some(Status::Untracked) => '?',
+            None => ' ',
+        },
+        _ => ' ',
     }
 }
 
@@ -301,7 +322,7 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
     };
     let text = format!(
         "{} {}{}{}",
-        status_marker(node.status),
+        status_marker(node),
         "  ".repeat(node.depth),
         glyph,
         sanitize_label(&node_name(node)),
@@ -480,7 +501,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // rather than showing a blank/placeholder branch. Sanitized + truncated like the top title.
     if let Some(branch) = &state.branch {
         // Middle-ellipsis (not tail) so a long branch keeps both its `prefix/` and trailing feature
-        // name visible when the tree column is narrow (SMA-249).
+        // name visible when the tree column is narrow.
         block = block.title_bottom(truncate_middle(&sanitize_label(branch), area.width));
     }
     let inner = block.inner(area);
@@ -495,7 +516,8 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // Reserve an in-pane gutter for whichever scrollbars are needed, then render the rows into the
     // (possibly shrunk) text rect. The vertical offset scrolls minimally from last frame's offset
     // (#45) so selecting a row already in view doesn't jump the viewport; the horizontal offset
-    // lets long / deeply-nested rows be read sideways (no h-scroll keys — ←/→ are expand/collapse).
+    // lets long / deeply-nested rows be read sideways (`H`/`L` scroll the tree; ←/→ are
+    // expand/collapse in the tree).
     // `geometry` recomputes the SAME layout + offset, so hit-testing agrees with what is drawn.
     let max_width = tree_rows_max_width(&state.nodes);
     let (text, vbar, hbar) = tree_bars(inner, state.nodes.len(), max_width);
@@ -534,13 +556,33 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
 /// Draw the right column: a notices strip (if any) above the content pane. Returns the
 /// content viewport `(width, height)` so the controller can clamp scrolling to it.
 fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) {
-    let title = state
-        .nodes
-        .get(state.selected)
-        .map(|n| sanitize_label(&node_name(n)))
-        .unwrap_or_else(|| "Content".to_string());
+    // the title is derived from the DISPLAYED content's file (`content_title`), not the
+    // live tree cursor, so it switches in lockstep with the body — the pane never shows a newly-
+    // selected file's name over the previous file's body while the new render is in flight.
+    // `content_title` is `None` before any file's content has landed (launch, re-root, or a
+    // directory/empty selection); in that case fall back to the selected node's name (a directory)
+    // or "Content" — but only when NO render is in flight, otherwise the fallback would pick up
+    // the still-loading selection's name and re-introduce the title-ahead-of-body bug.
+    let title = if let Some(name) = &state.content_title {
+        sanitize_label(name)
+    } else if !state.content_rendering {
+        state
+            .nodes
+            .get(state.selected)
+            .map(|n| sanitize_label(&node_name(n)))
+            .unwrap_or_else(|| "Content".to_string())
+    } else {
+        "Content".to_string()
+    };
+    // A persistent `? help` hint rides the content block's bottom border, right-aligned —
+    // one short segment, sanitized (AC-27) like the other border titles, so a new user
+    // discovers the help overlay without opening it first. It shares the border
+    // row (not the layout), so it never crowds the content or steals a row.
+    let hint =
+        Line::styled(sanitize_label(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
     let block = Block::bordered()
         .title(title)
+        .title_bottom(hint)
         .border_style(border_style(state.focus == Focus::Content));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -569,7 +611,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // Overlay highlight when a committed search is active. `highlight::apply` returns the same
     // line count and never changes a line's text width — only re-segments spans and patches
     // styles — so `content_rows` and `max_width` (computed above from `state.content`) stay
-    // valid. When `search` is `None`, cloning `state.content` is byte-identical to the pre-T-12
+    // valid. When `search` is `None`, cloning `state.content` is byte-identical to the prior
     // path, so existing snapshots are unaffected (AC zero-churn invariant).
     let content_text = match &state.search {
         Some(cs) => ratatui::text::Text::from(crate::highlight::apply(
@@ -619,14 +661,15 @@ fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
     (parts[0], Some(parts[1]))
 }
 
-/// Draw the one-row "update available" status line. Reversed-ish (dark-on-cyan) so it reads as
-/// a status bar; sanitized (defense-in-depth, AC-27) and clipped to its row by ratatui.
+/// Draw the one-row "update available" status line. Reversed (theme-relative) so it reads
+/// as a status bar on any terminal palette — previously `Black`-on-`Cyan`, which ignored the theme
+/// and could be invisible on a cyan-heavy palette. Sanitized (defense-in-depth, AC-27) and clipped
+/// to its row by ratatui.
 fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
     let line = Line::styled(
         sanitize_label(banner),
         Style::new()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(Paragraph::new(line), area);
@@ -647,11 +690,13 @@ fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Opt
     (body, banner, prompt)
 }
 
-/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Sanitized (AC-27), clipped to its row.
+/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Reversed (theme-relative)
+/// so it reads as a prompt bar on any palette — previously `Black`-on-`Gray`, which
+/// ignored the terminal theme. Sanitized (AC-27), clipped to its row.
 fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     let line = Line::styled(
         sanitize_label(prompt),
-        Style::new().fg(Color::Black).bg(Color::Gray),
+        Style::new().add_modifier(Modifier::REVERSED),
     );
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -734,14 +779,14 @@ pub struct PaneGeometry {
     /// minus the inner width; `0` when rows fit or the picker is closed). Fed back so the controller
     /// clamps the *stored* `hscroll` in state each frame — without it, over-scrolling right (Expand)
     /// parks the offset past the real maximum and the first few Collapse presses appear to do
-    /// nothing while it burns back down (the same fix as `finder_max_hscroll`, SMA-229).
+    /// nothing while it burns back down (the same fix as `finder_max_hscroll`).
     pub picker_max_hscroll: u16,
     /// The screen rect where the help overlay's active body is drawn, `None` when the overlay is
-    /// closed. Exposed for next-frame hit-testing (T-7 adds the tab regions on top).
+    /// closed. Exposed for next-frame hit-testing (the tab regions are layered on top).
     pub help_body: Option<Rect>,
     /// The help body's visible viewport HEIGHT, in rows (`0` when the overlay is closed). Fed back
     /// so the controller re-clamps the stored scroll to `[0, help_body_rows − this]` each frame —
-    /// the bottom bound deferred from T-5, enforced against the live measured height (AC-9).
+    /// the bottom bound enforced against the live measured height (AC-9).
     pub help_body_height: u16,
     /// The help body's total height in **wrapped (rendered) rows** at the body draw width (`0` when
     /// the overlay is closed). The body is drawn with `Paragraph::wrap`, so its scroll offset is in
@@ -827,7 +872,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     };
 
     // Picker: the SAME helper `draw_picker_overlay` uses, so the fed-back `max_hscroll` matches what
-    // is drawn — the controller clamps the stored picker hscroll to it each frame (SMA-229). `0`
+    // is drawn — the controller clamps the stored picker hscroll to it each frame. `0`
     // when the picker is closed.
     let picker_max_hscroll = match &state.picker {
         Some(picker) => picker_overlay_layout(area, picker).max_hscroll,
@@ -836,7 +881,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 
     // Help: the SAME helper `draw_help_overlay` uses, so the fed-back body HEIGHT matches what is
     // drawn — the controller clamps the stored scroll to `[0, body_lines − height]` each frame, the
-    // bottom bound deferred from T-5 (AC-9). All `None`/`0` when the overlay is closed.
+    // bottom bound enforced against the live measured height (AC-9). All `None`/`0` when the overlay is closed.
     let (help_body, help_body_height, help_body_rows, help_vbar, help_tabs) = match &state.help {
         Some(help) => {
             let hl = help_overlay_layout(area, help);
@@ -960,7 +1005,7 @@ struct PickerLayout {
     /// inner width (`0` when every row fits). The single source of truth for the clamp —
     /// [`draw_picker_overlay`] clamps the displayed offset to it AND [`geometry`] feeds it back so
     /// the controller clamps the *stored* `hscroll` to the same value, so the two can never
-    /// disagree (which is what made an over-scroll-right need several left presses to undo, SMA-229).
+    /// disagree (which is what made an over-scroll-right need several left presses to undo).
     max_hscroll: u16,
 }
 
@@ -1023,7 +1068,7 @@ fn picker_overlay_layout(area: Rect, picker: &PickerView) -> PickerLayout {
 
 /// Draw the worktree picker as a centered, bordered list overlay on top of the columns (AC-1,
 /// AC-5). Each row is `<path> [branch]`, or `<path> (detached)` when HEAD is detached — never
-/// an empty branch (AC-2, gate L-1). The `cursor` row is highlighted (`REVERSED`, the same
+/// an empty branch (AC-2). The `cursor` row is highlighted (`REVERSED`, the same
 /// idiom `tree_row` uses for the tree selection). The path and branch are both run through
 /// `sanitize_label` first, so a worktree path or branch name carrying control bytes cannot
 /// move the cursor or spoof the UI (AC-27, defense-in-depth — exactly as the tree does).
@@ -1088,7 +1133,7 @@ fn draw_picker_overlay(frame: &mut Frame, area: Rect, picker: &PickerView) {
     let visible = layout.inner.height as usize;
     // Clamp the displayed hscroll to `layout.max_hscroll` — the SAME value the controller clamps the
     // stored offset to (via geometry feedback), so display and state never disagree. A no-op when
-    // every row fits, and never scrolls past the widest row (SMA-229).
+    // every row fits, and never scrolls past the widest row.
     let hscroll = picker.hscroll.min(layout.max_hscroll);
 
     let window: Vec<Line> = rows.into_iter().skip(layout.offset).take(visible).collect();
@@ -1148,12 +1193,15 @@ fn agent_badge_color(status: &str) -> Color {
     }
 }
 
-/// Render one picker row as `<current-marker> <path> [branch]|(detached) <agent-badge>`:
+/// Render one picker row as `<current-marker> <path> [branch]|(detached) <(current)> <agent-badge>`:
 ///
 /// - a leading **current marker** (`●` in cyan) when the row is the worktree the viewer is rooted
 ///   at, else a blank — visually distinct from the selection cursor, which stays `REVERSED` on the
 ///   highlighted row (AC-18). A row can be current without being selected and vice versa.
 /// - the path + branch (or `(detached)` when HEAD is detached, AC-2), both sanitized (AC-27).
+/// - a trailing **`(current)` text label** on the current row, so the "current worktree"
+///   state is distinguishable with color stripped — previously the `●` was color-only (cyan) and a
+///   colorblind user or a non-default theme could miss it. The label rides after the path/branch.
 /// - a trailing **agent badge** (`● <status>`, colored by status) when the worktree's workspace
 ///   hosts a real agent, else nothing (AC-19). The status is sanitized too (defense-in-depth).
 ///
@@ -1176,13 +1224,20 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     // Leading current marker (AC-18): a cyan ● when current, two spaces otherwise so the path
-    // column stays aligned across current and non-current rows.
+    // column stays aligned across current and non-current rows. The ● is a glyph cue; the
+    // trailing `(current)` label (below) is the color-stripped cue.
     if row.is_current {
         spans.push(Span::styled("● ", base.fg(Color::Cyan)));
     } else {
         spans.push(Span::styled("  ", base));
     }
     spans.push(Span::styled(format!("{path}{suffix}"), base));
+    // Trailing `(current)` text label: a non-color cue on the current row so the
+    // "current worktree" state survives a colorblind palette or a non-default theme. Rendered in
+    // the row's base style (so it picks up the REVERSED cursor highlight when selected).
+    if row.is_current {
+        spans.push(Span::styled(" (current)", base));
+    }
     // Trailing agent badge (AC-19): colored by status, sanitized (AC-27).
     if let Some(status) = &row.agent {
         let status = sanitize_label(status);
@@ -1206,6 +1261,11 @@ const FINDER_PLACEHOLDER: &str = "> type to find a file…";
 
 /// The help overlay's top-left title (the box label).
 const HELP_TITLE: &str = "Help";
+/// The persistent discoverability hint shown on the content pane's bottom border — a
+/// right-aligned one-segment affordance that `?` opens help, visible on the default screen
+/// without opening any modal. Static (first-party), so no sanitization is needed
+/// beyond the defense-in-depth `sanitize_label` applied at the call site (AC-27).
+const HELP_HINT: &str = "? help";
 /// The help overlay's desired interior WIDTH (columns) before clamping to the frame. A generous
 /// fixed size (the changelog/about bodies are unbounded — the box does NOT size to content like the
 /// finder; it clamps to the frame and the body scrolls).
@@ -1214,6 +1274,12 @@ const HELP_WANT_INNER_W: u16 = 72;
 const HELP_WANT_INNER_H: u16 = 20;
 /// The separator between section tabs in the help overlay's top border.
 const HELP_TAB_SEP: &str = "  ";
+/// The leading marker prepended to the ACTIVE help tab so the active section is distinguishable
+/// with color stripped — previously it was REVERSED+BOLD only, which a colorblind user
+/// or a non-default theme could lose. Inactive tabs carry no marker, so the active one stands out
+/// by glyph alone. Drawn in the SAME `Color::Reset` style as the tab label, and counted in
+/// [`help_tab_rects`] so the hit-test rect tracks the drawn width.
+const HELP_ACTIVE_MARKER: &str = "▶ ";
 
 /// The columns [`bar_layout`] reserves for a vertical scrollbar when the body overflows: a 1-cell
 /// gap before the bar + the 1-cell bar itself (see `bar_layout`'s `saturating_sub(2)`).
@@ -1531,7 +1597,7 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     // wide, separated by `HELP_TAB_SEP`. We walk those widths to place each tab's cell rect, so a
     // click maps to the tab actually drawn (the whole point of the shared helper). Rects fully past
     // the popup's right border are dropped (clipped off-screen, not clickable).
-    let tabs = help_tab_rects(popup, &help.labels);
+    let tabs = help_tab_rects(popup, &help.labels, help.active);
 
     // The body fills the whole interior (tabs + footer ride the border, not inner rows). Reserve a
     // 1-cell vertical scrollbar gutter (with a 1-cell gap) only when the body overflows — there is
@@ -1602,22 +1668,28 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
 /// interior border column (`popup.x + 1`) with the `"{HELP_TITLE}: "` prefix, then each label —
 /// `sanitize_label(label)` wide — separated by [`HELP_TAB_SEP`]. A tab whose cells fall entirely
 /// past the popup's right border is dropped (ratatui clips it off-screen, so it isn't clickable).
-fn help_tab_rects(popup: Rect, labels: &[String]) -> Vec<(usize, Rect)> {
+fn help_tab_rects(popup: Rect, labels: &[String], active: usize) -> Vec<(usize, Rect)> {
     // The title row is the popup's top border; left-aligned titles start one cell in from the corner.
     let row = popup.y;
     let mut x = popup.x.saturating_add(1).saturating_add(prefix_width());
     // The rightmost interior column (exclusive of the right border corner): popup.x + width - 1.
     let right_edge = popup.x.saturating_add(popup.width.saturating_sub(1));
+    let active_marker_w = HELP_ACTIVE_MARKER.chars().count() as u16;
     let mut out = Vec::with_capacity(labels.len());
     for (i, label) in labels.iter().enumerate() {
         if i > 0 {
             x = x.saturating_add(HELP_TAB_SEP.chars().count() as u16);
         }
-        let w = sanitize_label(label).chars().count() as u16;
+        // The active tab is drawn with a leading `▶ ` marker; include it in the tab's
+        // hit-test rect (a click on the glyph still switches the right section) and advance past
+        // it before placing the label rect.
+        let marker_w = if i == active { active_marker_w } else { 0 };
+        let label_w = sanitize_label(label).chars().count() as u16;
+        let total_w = marker_w.saturating_add(label_w);
         // Keep only a tab that begins before the right border — its visible cells are clickable.
-        if w > 0 && x < right_edge {
-            // Clip the tab's width to what fits before the right border.
-            let visible_w = w.min(right_edge.saturating_sub(x));
+        if total_w > 0 && x < right_edge {
+            // Clip the tab's width to what fits before the right border (covers marker + label).
+            let visible_w = total_w.min(right_edge.saturating_sub(x));
             out.push((
                 i,
                 Rect {
@@ -1628,7 +1700,7 @@ fn help_tab_rects(popup: Rect, labels: &[String]) -> Vec<(usize, Rect)> {
                 },
             ));
         }
-        x = x.saturating_add(w);
+        x = x.saturating_add(total_w);
     }
     out
 }
@@ -1646,7 +1718,7 @@ fn prefix_width() -> u16 {
 ///   - **Bottom border:** the self-operating key-hints footer (switch + close — AC-11).
 ///
 /// Reuses [`centered_rect_sized`], `PICKER_PADDING`, and the `Clear`/`Block`/`Scrollbar` primitives
-/// — no new layout abstraction. The body `Text` is already produced by the controller (T-4); this
+/// — no new layout abstraction. The body `Text` is already produced by the controller; this
 /// function only lays it out (delegate-rendering, constitution #2).
 fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
     // Delegate all sizing + centering to the shared layout helper, so this and `geometry()` agree.
@@ -1666,10 +1738,12 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
         }
         let mut style = Style::new().fg(Color::Reset);
         if i == help.active {
-            // The active tab is REVERSED — the visible active-section indicator (AC-5).
+            // The active tab is REVERSED — the visible active-section indicator (AC-5) — AND carries
+            // a leading `▶ ` marker so it stays distinguishable with color stripped.
             style = style
                 .add_modifier(Modifier::REVERSED)
                 .add_modifier(Modifier::BOLD);
+            tab_spans.push(Span::styled(HELP_ACTIVE_MARKER, style));
         }
         tab_spans.push(Span::styled(sanitize_label(label), style));
     }
@@ -1704,7 +1778,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
             body_area,
         );
         // Vertical scrollbar when the body overflows — the same `layout.vbar` rect `geometry` feeds
-        // back, so a press/drag on it (T-7) hit-tests where it is drawn. Tracks the scroll OFFSET
+        // back, so a press/drag on it hit-tests where it is drawn. Tracks the scroll OFFSET
         // (the body has a real offset, like the content pane — unlike the cursor-tracking tree bar).
         // Sized against the WRAPPED row total (`layout.body_rows`), not raw `lines.len()`, so the
         // thumb matches the offset extent the scroll clamp uses (the body is drawn with `wrap`).

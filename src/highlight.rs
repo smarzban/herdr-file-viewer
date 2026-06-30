@@ -1,4 +1,4 @@
-//! Match Highlighter — overlay highlight styling onto content-pane spans (T-7 / AC-9, AC-11).
+//! Match Highlighter — overlay highlight styling onto content-pane spans (AC-9, AC-11).
 //!
 //! `apply` re-segments each `Line`'s spans at match boundaries and patches highlight
 //! styles onto the sub-spans that fall within a match's `[start, end)` byte range.
@@ -9,7 +9,7 @@
 //! - **Zero new Cargo deps**: ratatui + std only.
 //! - **Skip, never panic**: stale or out-of-range matches are dropped silently.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::search::Match;
@@ -19,9 +19,15 @@ use crate::search::Match;
 /// Style applied to every non-current highlighted match (black text on cyan).
 pub const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Cyan);
 
-/// Style applied to the **current** match — visually distinct from `HIGHLIGHT`
-/// (black text on yellow; yellow is more prominent so the active position stands out).
-pub const CURRENT_HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
+/// Style applied to the **current** match — visually distinct from `HIGHLIGHT` AND distinguishable
+/// with color stripped: `REVERSED` inverts whatever the terminal theme is (so the active
+/// position still reads on a non-default palette or to a colorblind user) and `BOLD` adds a weight
+/// cue on top. Previously this was `Black` on `Yellow` — color-only, so a non-default theme or a
+/// colorblind user could lose the "which match am I on" signal entirely. `REVERSED` is theme-relative:
+/// it never picks a hardcoded fg/bg that could clash with the theme.
+pub const CURRENT_HIGHLIGHT: Style = Style::new()
+    .add_modifier(Modifier::REVERSED)
+    .add_modifier(Modifier::BOLD);
 
 // ── public API ────────────────────────────────────────────────────────────────
 

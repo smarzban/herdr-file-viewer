@@ -34,6 +34,8 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('/') => Some(Intent::OpenSearch),
         KeyCode::Char('n') => Some(Intent::NextMatch),
         KeyCode::Char('N') => Some(Intent::PrevMatch),
+        KeyCode::Char('H') => Some(Intent::TreeScrollLeft),
+        KeyCode::Char('L') => Some(Intent::TreeScrollRight),
         KeyCode::Char('y') => Some(Intent::CopyRepoPath),
         KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
         KeyCode::Char('W') => Some(Intent::SwitchWorktree),
@@ -81,6 +83,8 @@ mod tests {
         (KeyCode::Char('/'), Intent::OpenSearch),
         (KeyCode::Char('n'), Intent::NextMatch),
         (KeyCode::Char('N'), Intent::PrevMatch),
+        (KeyCode::Char('H'), Intent::TreeScrollLeft),
+        (KeyCode::Char('L'), Intent::TreeScrollRight),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
@@ -290,5 +294,40 @@ mod tests {
             map_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
             None
         );
+    }
+
+    #[test]
+    fn shift_h_l_map_to_tree_horizontal_scroll_and_ctrl_chords_are_inert() {
+        // `H` (Shift+h) and `L` (Shift+l) scroll the tree pane left/right (AC-18 — the tree's
+        // h-scroll was mouse-only). The lowercase `h`/`l` stay Collapse/Expand; no collision.
+        // A Ctrl chord on the same key fires nothing.
+        assert_eq!(map_key(k(KeyCode::Char('H'))), Some(Intent::TreeScrollLeft));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT)),
+            Some(Intent::TreeScrollLeft),
+            "H with SHIFT bit set still maps to TreeScrollLeft"
+        );
+        assert_eq!(
+            map_key(k(KeyCode::Char('L'))),
+            Some(Intent::TreeScrollRight)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            Some(Intent::TreeScrollRight),
+            "L with SHIFT bit set still maps to TreeScrollRight"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-H must not fire an intent"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-L must not fire an intent"
+        );
+        // Lowercase h/l stay Collapse/Expand (no collision).
+        assert_eq!(map_key(k(KeyCode::Char('h'))), Some(Intent::Collapse));
+        assert_eq!(map_key(k(KeyCode::Char('l'))), Some(Intent::Expand));
     }
 }

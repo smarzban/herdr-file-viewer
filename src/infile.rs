@@ -17,8 +17,8 @@ pub enum PromptMode {
 /// State for an open search session: the committed query, the matches it produced, and
 /// which match is currently active (the `current` index into `matches`).
 ///
-/// Fields are `pub` so T-9/T-10 can read and update them from the controller without
-/// needing extra accessors, and to avoid dead-code warnings before those tasks land.
+/// Fields are `pub` so the controller can read and update them without
+/// needing extra accessors, and to avoid dead-code warnings before all paths land.
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
     pub query: String,
