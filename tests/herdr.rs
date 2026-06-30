@@ -138,11 +138,32 @@ fn run_json_returns_err_on_non_zero_exit() {
 // Test 3: resolve_program — pure helper, testable without touching the env
 // ---------------------------------------------------------------------------
 
+// unix/macOS: an explicit configured path is used exactly as given (AC-3, unchanged). On
+// Windows the same input now goes through the `.exe`-suffix seam (AC-9) — a non-existent
+// extension-less explicit path resolves to its `.exe` form, so this exact assertion would no
+// longer hold there; the Windows-specific wiring is covered by the companion test below
+// (hermetic coverage of the seam itself lives in `src/herdr.rs`'s inline test module).
+#[cfg(unix)]
 #[test]
 fn resolve_program_uses_herdr_bin_path_when_set() {
     use herdr_file_viewer::herdr::resolve_program;
     let result = resolve_program(Some("/custom/herdr".to_string()));
     assert_eq!(result, std::ffi::OsString::from("/custom/herdr"));
+}
+
+// Windows: the same kind of input (an explicit path lacking an extension that does not exist
+// on this CI runner) resolves through the live `Path::exists` wiring to its `.exe` form,
+// proving `resolve_program` (the public, real-filesystem entry point) actually applies the
+// seam — not just the injected-predicate unit tests in `src/herdr.rs`.
+#[cfg(windows)]
+#[test]
+fn resolve_program_uses_herdr_bin_path_when_set() {
+    use herdr_file_viewer::herdr::resolve_program;
+    let result = resolve_program(Some(r"C:\definitely\not\a\real\path\herdr".to_string()));
+    assert_eq!(
+        result,
+        std::ffi::OsString::from(r"C:\definitely\not\a\real\path\herdr.exe")
+    );
 }
 
 #[test]
