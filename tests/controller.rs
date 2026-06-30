@@ -2076,7 +2076,7 @@ fn copy_path_strips_control_bytes_from_a_hostile_filename() {
     // A filename is attacker-controllable in a browsed repo and may legally contain control bytes —
     // ESC/BEL (a terminal escape, e.g. a forged OSC 52) or a newline (a shell paste-injection when
     // the copied path is later pasted). Both the clipboard payload and the confirmation notice must
-    // be stripped of control characters, matching the `sanitize_label` defense the tree and update
+    // be stripped of control characters, matching the `sanitize_control` defense the tree and update
     // banner already apply to filesystem-derived strings.
     let dir = TempDir::new();
     let hostile = "a\u{1b}]52;c;evil\u{07}\nrm -rf b";
@@ -3559,6 +3559,24 @@ fn finder_dir() -> (TempDir, Controller) {
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
     ctrl.handle(Intent::OpenFinder);
     (dir, ctrl)
+}
+
+// close_help() must clear ONLY the help overlay — never some other modal that happens to be open.
+// Regression guard for the Modal-enum refactor: the old per-field `self.help = None` was inert
+// unless help was open, so `close_help()` while the finder is open must leave the finder open.
+#[test]
+fn close_help_does_not_close_a_non_help_modal() {
+    let (_dir, mut ctrl) = finder_dir();
+    assert!(
+        ctrl.finder_open(),
+        "precondition: the finder is the open modal"
+    );
+    assert!(!ctrl.help_open(), "precondition: help is not open");
+    ctrl.close_help(); // contract: a no-op unless help is the open modal
+    assert!(
+        ctrl.finder_open(),
+        "close_help() must not close the unrelated finder modal"
+    );
 }
 
 /// Map `finder_matches()` indices through `finder_candidates()` to get paths.

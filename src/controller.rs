@@ -2347,10 +2347,14 @@ impl Controller {
         self.modal.help()
     }
 
-    /// Dismiss the help overlay. Called by handle_help_key on Esc/`q`.
-    /// A no-op when the overlay is already closed.
+    /// Dismiss the help overlay. A no-op when help is not the open modal — so this clears ONLY the
+    /// help overlay, never some other modal that happens to be open (matching the old per-field
+    /// `self.help = None`, which was inert unless help was actually open). The match guard keeps
+    /// that contract now that the four modal slots share one `modal` field.
     pub fn close_help(&mut self) {
-        self.modal = Modal::None;
+        if matches!(self.modal, Modal::Help(_)) {
+            self.modal = Modal::None;
+        }
     }
 
     /// Route a key event while the help overlay is open (AC-2, AC-3, AC-7, AC-8, AC-9, AC-20).
@@ -2372,8 +2376,8 @@ impl Controller {
         if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
             return Effects::noop();
         }
-        // Read the last-known help-body geometry up front (the borrow of `self.help` below is
-        // exclusive), so the scroll-down arm can clamp eagerly against it.
+        // Read the last-known help-body geometry up front (the `self.modal.help_mut()` borrow below
+        // is exclusive), so the scroll-down arm can clamp eagerly against it.
         let (help_body_rows, help_body_height) =
             (self.geom.help_body_rows, self.geom.help_body_height);
         let Some(help) = self.modal.help_mut() else {
