@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Native Windows support (preview).** The viewer now builds and runs on
+  `x86_64-pc-windows-msvc`, declared as a supported herdr platform alongside Linux and macOS.
+  Windows-specific platform seams: correct git path decoding for non-ASCII filenames, a
+  `NUL`-device git hardening target, an `%LOCALAPPDATA%`-based update-check cache, quote-aware
+  `$EDITOR` parsing (so a `"C:\Program Files\...\Code.exe"`-style path works), a `notepad.exe`
+  default editor, and `.exe`-suffix resolution for the configured herdr binary. Install parity
+  via a new `scripts/fetch-or-build.ps1` (PowerShell 5.1) mirroring the existing prebuilt-binary
+  + SHA-256-verified install with a `cargo build` fallback — no Rust toolchain required for a
+  normal install — plus PowerShell launcher scripts
+  (`scripts/open-file-viewer.ps1`/`-tab.ps1`) reproducing the bash launch-or-focus-or-close
+  toggle. `release.yml` publishes an `x86_64-pc-windows-msvc` binary; `ci.yml` runs the test
+  suite on `windows-latest` as an advisory (non-blocking) job while the platform is preview.
+  Windows support requires herdr's **preview channel**; see the README's Windows section. (No
+  Windows-on-ARM, no code-signing, no Windows renderer-install in this release.)
+
 ## [1.7.0] - 2026-06-30
 
 ### Added
