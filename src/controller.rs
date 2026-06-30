@@ -2041,11 +2041,11 @@ impl Controller {
         // A filename is untrusted — an attacker can craft one in a browsed repo, and a path may
         // legally contain control bytes: ESC/BEL (a terminal escape, e.g. a forged OSC 52) or a
         // newline that would paste-inject into a shell. Strip them before the path reaches the
-        // clipboard *or* the notice — the same defense `sanitize_label` applies to every other
-        // filesystem-derived string we display. (The OSC 52 payload is base64-encoded only for
+        // clipboard *or* the notice — the same AC-27 neutralizer the Presenter applies to every
+        // filesystem-derived string it displays. (The OSC 52 payload is base64-encoded only for
         // transport; the terminal decodes it back to this exact string onto the clipboard, so the
         // encoding alone does not make a control-bearing path safe to paste.)
-        let text: String = raw.chars().filter(|c| !c.is_control()).collect();
+        let text = crate::text_layout::sanitize_control(&raw);
         self.action_notice = Some(match self.clipboard.copy(&text) {
             Ok(()) => format!("Copied {text}"),
             Err(e) => format!("Could not copy path: {e}"),

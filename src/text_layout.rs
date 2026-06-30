@@ -1,9 +1,11 @@
-//! Shared text-layout helpers, neutral to the view/controller split.
+//! Shared text helpers, neutral to the view/controller split.
 //!
 //! `wrapped_rows` lives here (not on the Session Controller) so the Presenter can measure wrapped
 //! body heights without importing from the controller — the view layer must not depend on the
 //! orchestration layer. Both the content-pane scroll clamp (controller) and the help-overlay body
 //! measurement (presenter) call this single helper, so their wrapped-row counts can never drift.
+//! `sanitize_control` lives here for the same reason: the Presenter (every displayed string) and
+//! the controller (the clipboard path) share one AC-27 neutralizer rather than two copies.
 
 /// How many rows one rendered line occupies under ratatui's word wrapper (`Wrap{trim:false}`)
 /// at `width` columns: greedy word packing — fill the row with space-separated words until the
@@ -37,9 +39,39 @@ pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
     rows
 }
 
+/// Neutralize a string for display (a label/title) or for the clipboard: drop control characters
+/// (C0, DEL, and C1 — `char::is_control`), so a repo-controlled file name carrying ESC/CSI bytes
+/// cannot move the cursor, clear the screen, spoof the UI, or paste-inject once copied (AC-27,
+/// defense-in-depth). ratatui's renderer also drops control graphemes, but the viewer's security
+/// guarantee must not rest on that internal — and the clipboard path never touches a renderer at
+/// all. Neutral to the view/controller split, so both layers share one definition.
+pub(crate) fn sanitize_control(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::wrapped_rows;
+    use super::{sanitize_control, wrapped_rows};
+
+    #[test]
+    fn sanitize_control_strips_control_bytes_keeps_printable() {
+        // ESC + CSI + C0 controls removed; the printable remainder (incl. unicode) survives.
+        assert_eq!(
+            sanitize_control("evil\u{1b}[2J\u{1b}[10;10Hpwned"),
+            "evil[2J[10;10Hpwned"
+        );
+        assert_eq!(sanitize_control("a\u{07}\u{08}\rb\tc"), "abc");
+        assert_eq!(sanitize_control("plain_name.rs"), "plain_name.rs");
+        assert_eq!(sanitize_control("café—ok"), "café—ok");
+        // C1 controls (U+0080..U+009F) are also dropped.
+        assert_eq!(sanitize_control("x\u{0090}y"), "xy");
+        // No control codepoint survives, ever.
+        assert!(
+            !sanitize_control("\u{1b}\u{07}\u{7f}\u{9b}z")
+                .chars()
+                .any(|c| c.is_control())
+        );
+    }
 
     #[test]
     fn wrapped_rows_counts_word_wrapping_not_just_char_wrapping() {

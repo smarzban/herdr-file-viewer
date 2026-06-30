@@ -8,6 +8,7 @@
 //! Pure view: takes a [`ViewState`] and draws it; holds no state and performs no I/O.
 
 use crate::git::Status;
+use crate::text_layout::sanitize_control;
 use crate::tree::{Node, NodeKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -221,15 +222,6 @@ fn status_marker(node: &Node) -> char {
     }
 }
 
-/// Neutralize a string for display as a label/title: drop control characters (C0, DEL, and
-/// C1 — `char::is_control`), so a repo-controlled file name carrying ESC/CSI bytes cannot
-/// move the cursor, clear the screen, or spoof the UI (AC-27, defense-in-depth). ratatui's
-/// own renderer also drops control graphemes, but the viewer's security guarantee must not
-/// rest on that internal — this makes it explicit.
-fn sanitize_label(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
-}
-
 /// The display name of a node — its final path component, or the whole path for a root.
 fn node_name(node: &Node) -> String {
     node.path
@@ -325,7 +317,7 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
         status_marker(node),
         "  ".repeat(node.depth),
         glyph,
-        sanitize_label(&node_name(node)),
+        sanitize_control(&node_name(node)),
     );
     let mut style = Style::new();
     if let Some(color) = row_color(node) {
@@ -487,7 +479,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // Top title = the root directory basename (mirroring how the content pane titles itself from
     // the selected node), sanitized (a repo dir name is untrusted, AC-27) and truncated to the
     // column so a long name can't break the border. Fall back to "Files" only when it is empty.
-    let name = sanitize_label(&state.root_name);
+    let name = sanitize_control(&state.root_name);
     let title = if name.is_empty() {
         "Files".to_string()
     } else {
@@ -502,7 +494,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     if let Some(branch) = &state.branch {
         // Middle-ellipsis (not tail) so a long branch keeps both its `prefix/` and trailing feature
         // name visible when the tree column is narrow.
-        block = block.title_bottom(truncate_middle(&sanitize_label(branch), area.width));
+        block = block.title_bottom(truncate_middle(&sanitize_control(branch), area.width));
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -564,12 +556,12 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // or "Content" — but only when NO render is in flight, otherwise the fallback would pick up
     // the still-loading selection's name and re-introduce the title-ahead-of-body bug.
     let title = if let Some(name) = &state.content_title {
-        sanitize_label(name)
+        sanitize_control(name)
     } else if !state.content_rendering {
         state
             .nodes
             .get(state.selected)
-            .map(|n| sanitize_label(&node_name(n)))
+            .map(|n| sanitize_control(&node_name(n)))
             .unwrap_or_else(|| "Content".to_string())
     } else {
         "Content".to_string()
@@ -579,7 +571,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // discovers the help overlay without opening it first. It shares the border
     // row (not the layout), so it never crowds the content or steals a row.
     let hint =
-        Line::styled(sanitize_label(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
+        Line::styled(sanitize_control(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
     let block = Block::bordered()
         .title(title)
         .title_bottom(hint)
@@ -594,7 +586,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
         let notice_lines: Vec<Line> = state
             .notices
             .iter()
-            .map(|n| Line::styled(sanitize_label(n), Style::new().fg(Color::Yellow)))
+            .map(|n| Line::styled(sanitize_control(n), Style::new().fg(Color::Yellow)))
             .collect();
         frame.render_widget(Paragraph::new(notice_lines), notices_rect);
     }
@@ -667,7 +659,7 @@ fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
 /// to its row by ratatui.
 fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
     let line = Line::styled(
-        sanitize_label(banner),
+        sanitize_control(banner),
         Style::new()
             .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
@@ -695,7 +687,7 @@ fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Opt
 /// ignored the terminal theme. Sanitized (AC-27), clipped to its row.
 fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     let line = Line::styled(
-        sanitize_label(prompt),
+        sanitize_control(prompt),
         Style::new().add_modifier(Modifier::REVERSED),
     );
     frame.render_widget(Paragraph::new(line), area);
@@ -799,7 +791,7 @@ pub struct PaneGeometry {
     pub help_vbar: Option<Rect>,
     /// The screen rect of each section tab in the help overlay's top-border tab row, paired with its
     /// section index — `(index, cell_rect)`. Computed inside [`help_overlay_layout`] from the SAME
-    /// widths [`draw_help_overlay`] uses (the `"Help: "` prefix + cumulative `sanitize_label(label)`
+    /// widths [`draw_help_overlay`] uses (the `"Help: "` prefix + cumulative `sanitize_control(label)`
     /// widths + `HELP_TAB_SEP`), so a click maps to the tab actually drawn. Empty when the overlay is
     /// closed. The controller hit-tests a left-click against these to switch sections (AC-10).
     pub help_tabs: Vec<(usize, Rect)>,
@@ -1070,7 +1062,7 @@ fn picker_overlay_layout(area: Rect, picker: &PickerView) -> PickerLayout {
 /// AC-5). Each row is `<path> [branch]`, or `<path> (detached)` when HEAD is detached — never
 /// an empty branch (AC-2). The `cursor` row is highlighted (`REVERSED`, the same
 /// idiom `tree_row` uses for the tree selection). The path and branch are both run through
-/// `sanitize_label` first, so a worktree path or branch name carrying control bytes cannot
+/// `sanitize_control` first, so a worktree path or branch name carrying control bytes cannot
 /// move the cursor or spoof the UI (AC-27, defense-in-depth — exactly as the tree does).
 ///
 /// The box is **sized to its content** (the widest rendered row × the row count, plus the
@@ -1207,9 +1199,9 @@ fn agent_badge_color(status: &str) -> Color {
 ///
 /// The whole row is `REVERSED` when it is the cursor row (the same idiom `tree_row` uses).
 fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
-    let path = sanitize_label(&row.path);
+    let path = sanitize_control(&row.path);
     let suffix = match &row.branch {
-        Some(branch) => format!(" [{}]", sanitize_label(branch)),
+        Some(branch) => format!(" [{}]", sanitize_control(branch)),
         None if row.detached => " (detached)".to_string(),
         // No branch and not detached: show nothing rather than an empty `[]` (defensive).
         None => String::new(),
@@ -1240,7 +1232,7 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
     }
     // Trailing agent badge (AC-19): colored by status, sanitized (AC-27).
     if let Some(status) = &row.agent {
-        let status = sanitize_label(status);
+        let status = sanitize_control(status);
         spans.push(Span::styled(
             format!("  ● {status}"),
             base.fg(agent_badge_color(&status)),
@@ -1264,7 +1256,7 @@ const HELP_TITLE: &str = "Help";
 /// The persistent discoverability hint shown on the content pane's bottom border — a
 /// right-aligned one-segment affordance that `?` opens help, visible on the default screen
 /// without opening any modal. Static (first-party), so no sanitization is needed
-/// beyond the defense-in-depth `sanitize_label` applied at the call site (AC-27).
+/// beyond the defense-in-depth `sanitize_control` applied at the call site (AC-27).
 const HELP_HINT: &str = "? help";
 /// The help overlay's desired interior WIDTH (columns) before clamping to the frame. A generous
 /// fixed size (the changelog/about bodies are unbounded — the box does NOT size to content like the
@@ -1335,7 +1327,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
             Style::new().add_modifier(Modifier::DIM),
         )
     } else {
-        let display_query = sanitize_label(&finder.query);
+        let display_query = sanitize_control(&finder.query);
         Line::from(format!("{FINDER_PROMPT}{display_query}"))
     };
 
@@ -1345,7 +1337,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
         .iter()
         .enumerate()
         .map(|(i, path)| {
-            let text = sanitize_label(path);
+            let text = sanitize_control(path);
             let style = if i == finder.cursor {
                 Style::new().add_modifier(Modifier::REVERSED)
             } else {
@@ -1444,9 +1436,9 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
 /// Draw the go-to-file finder as a centered, bordered overlay on top of the columns (AC-1).
 ///
 /// The interior (top to bottom) is:
-///   1. A **query-input line**: `"> "` + the current query text (both through `sanitize_label`
+///   1. A **query-input line**: `"> "` + the current query text (both through `sanitize_control`
 ///      for AC-27 parity). When the query is empty a dim placeholder replaces the prompt.
-///   2. **Match rows**: each matched root-relative path run through `sanitize_label` (AC-5, AC-27);
+///   2. **Match rows**: each matched root-relative path run through `sanitize_control` (AC-5, AC-27);
 ///      the `cursor` row is highlighted with REVERSED — the same idiom the picker uses. When
 ///      `matches` is empty (empty query or no hit) no rows are drawn (AC-2).
 ///
@@ -1467,7 +1459,7 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
             Style::new().add_modifier(Modifier::DIM),
         )
     } else {
-        let display_query = sanitize_label(&finder.query);
+        let display_query = sanitize_control(&finder.query);
         Line::from(format!("{FINDER_PROMPT}{display_query}"))
     };
 
@@ -1477,7 +1469,7 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         .iter()
         .enumerate()
         .map(|(i, path)| {
-            let text = sanitize_label(path);
+            let text = sanitize_control(path);
             let style = if i == finder.cursor {
                 Style::new().add_modifier(Modifier::REVERSED)
             } else {
@@ -1562,7 +1554,7 @@ struct HelpLayout {
     body_rows: u16,
     /// Each section tab's screen rect in the top-border tab row, paired with its section index —
     /// `(index, cell_rect)`. Derived from the SAME widths `draw_help_overlay` renders the tab Line
-    /// with (the `"Help: "` prefix + cumulative `sanitize_label(label)` widths + `HELP_TAB_SEP`), so
+    /// with (the `"Help: "` prefix + cumulative `sanitize_control(label)` widths + `HELP_TAB_SEP`), so
     /// the drawn tabs and the hit-test rects can never drift. Each rect is the tab label's own cells
     /// (1 row tall, at `popup.y`); a tab clipped past the popup's right edge is dropped.
     tabs: Vec<(usize, Rect)>,
@@ -1593,7 +1585,7 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
 
     // Section-tab rects in the top-border tab row, derived from the SAME span widths the draw path
     // lays out: a left-aligned `title_top` Line begins at the first interior border column
-    // (`popup.x + 1`), starting with the `"Help: "` prefix; each tab is `sanitize_label(label)`
+    // (`popup.x + 1`), starting with the `"Help: "` prefix; each tab is `sanitize_control(label)`
     // wide, separated by `HELP_TAB_SEP`. We walk those widths to place each tab's cell rect, so a
     // click maps to the tab actually drawn (the whole point of the shared helper). Rects fully past
     // the popup's right border are dropped (clipped off-screen, not clickable).
@@ -1666,7 +1658,7 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
 ///
 /// Layout mirrors [`draw_help_overlay`]'s `title_top`: a left-aligned title begins at the first
 /// interior border column (`popup.x + 1`) with the `"{HELP_TITLE}: "` prefix, then each label —
-/// `sanitize_label(label)` wide — separated by [`HELP_TAB_SEP`]. A tab whose cells fall entirely
+/// `sanitize_control(label)` wide — separated by [`HELP_TAB_SEP`]. A tab whose cells fall entirely
 /// past the popup's right border is dropped (ratatui clips it off-screen, so it isn't clickable).
 fn help_tab_rects(popup: Rect, labels: &[String], active: usize) -> Vec<(usize, Rect)> {
     // The title row is the popup's top border; left-aligned titles start one cell in from the corner.
@@ -1684,7 +1676,7 @@ fn help_tab_rects(popup: Rect, labels: &[String], active: usize) -> Vec<(usize, 
         // hit-test rect (a click on the glyph still switches the right section) and advance past
         // it before placing the label rect.
         let marker_w = if i == active { active_marker_w } else { 0 };
-        let label_w = sanitize_label(label).chars().count() as u16;
+        let label_w = sanitize_control(label).chars().count() as u16;
         let total_w = marker_w.saturating_add(label_w);
         // Keep only a tab that begins before the right border — its visible cells are clickable.
         if total_w > 0 && x < right_edge {
@@ -1745,12 +1737,13 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
                 .add_modifier(Modifier::BOLD);
             tab_spans.push(Span::styled(HELP_ACTIVE_MARKER, style));
         }
-        tab_spans.push(Span::styled(sanitize_label(label), style));
+        tab_spans.push(Span::styled(sanitize_control(label), style));
     }
     let tabs = Line::from(tab_spans);
 
     // Bottom border: the self-operating key-hints footer (AC-11), centered, in the body's color.
-    let footer = Line::styled(sanitize_label(&help.hint), Style::new().fg(Color::Reset)).centered();
+    let footer =
+        Line::styled(sanitize_control(&help.hint), Style::new().fg(Color::Reset)).centered();
 
     // Clear whatever is beneath the popup so it reads as a true modal (on top of the picker/finder).
     frame.render_widget(Clear, layout.popup);
@@ -1797,26 +1790,6 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sanitize_label_strips_control_bytes_keeps_printable() {
-        // ESC + CSI + C0 controls removed; the printable remainder (incl. unicode) survives.
-        assert_eq!(
-            sanitize_label("evil\u{1b}[2J\u{1b}[10;10Hpwned"),
-            "evil[2J[10;10Hpwned"
-        );
-        assert_eq!(sanitize_label("a\u{07}\u{08}\rb\tc"), "abc");
-        assert_eq!(sanitize_label("plain_name.rs"), "plain_name.rs");
-        assert_eq!(sanitize_label("café—ok"), "café—ok");
-        // C1 controls (U+0080..U+009F) are also dropped.
-        assert_eq!(sanitize_label("x\u{0090}y"), "xy");
-        // No control codepoint survives, ever.
-        assert!(
-            !sanitize_label("\u{1b}\u{07}\u{7f}\u{9b}z")
-                .chars()
-                .any(|c| c.is_control())
-        );
-    }
 
     #[test]
     fn help_body_text_width_is_the_interior_minus_the_scrollbar_gutter() {
