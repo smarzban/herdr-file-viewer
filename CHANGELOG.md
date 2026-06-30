@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Tree horizontal scroll is now keyboard-reachable (AC-18).** The tree's horizontal scroll
+  offset — for reading long or deeply-nested rows that overflow the tree column — was
+  mouse-only (drag the horizontal scrollbar or a horizontal wheel/swipe); there was no key
+  for it. New `H` (Shift+`h`) and `L` (Shift+`l`) intents scroll the tree left/right by the same
+  step the mouse wheel uses, clamped to the measured max (mirroring the content pane's `←`/`→`
+  h-scroll). Inert unless the tree is focused, so the keys never fight the content pane's own
+  horizontal scroll. The lowercase `h`/`l` stay Collapse/Expand — no collision. (SMA-347)
 - **Discoverability: a `? help` hint on the content pane's bottom border.** A new user no
   longer has to guess that `?` opens the help overlay — a right-aligned `? help` segment now
   rides the content block's bottom border, visible on the default screen without opening any
@@ -18,6 +25,25 @@ All notable changes to this project are documented here. The format is based on
   matched nothing) shows `No files`. The copy flows through the normal content path. (SMA-345)
 
 ### Changed
+- **Non-color cues alongside color-only signalling (SMA-346).** Several key UI states were
+  conveyed by color alone, so a colorblind user or a non-default terminal theme could lose the
+  signal entirely. Each now carries a non-color cue too:
+  - **Dirty directory** — the tree's `▾ dir` row for a directory containing a git change now shows
+    a leading `●` glyph (files already had `M`/`A`/`D`/`?` letters; directories were color-only
+    LightRed). The `tree_rows_max_width` calc flows from the same `tree_row` the tree draws, so the
+    added glyph column stays aligned with the h-scroll clamp / hit-test.
+  - **Active help tab** — the active section in the help overlay now carries a leading `▶ ` marker
+    alongside the existing REVERSED+BOLD indicator (the marker is counted in `help_tab_rects` so the
+    click hit-test still tracks the drawn tab).
+  - **Current worktree** — the picker's current-worktree row now carries a trailing `(current)`
+    text label alongside the existing cyan `●` glyph.
+  - **Current search match** — `CURRENT_HIGHLIGHT` is now `REVERSED|BOLD` (theme-relative: it
+    inverts whatever the terminal palette is) instead of hardcoded `Black`-on-`Yellow`, so the
+    active match is distinguishable with color stripped; the non-current matches keep their
+    black-on-cyan `HIGHLIGHT`.
+  - **Update banner / bottom prompt** — these status bars now use `REVERSED` (theme-relative)
+    instead of hardcoded `Black`-on-`Cyan` / `Black`-on-`Gray`, so they read on any palette.
+  All labels still flow through `sanitize_label` (AC-27).
 - **Renderer fallback notices no longer leak raw OS errors.** When an external renderer
   (glow/delta/bat) is missing, times out, or otherwise fails, the viewer's fallback notice now
   reports a short, actionable message — naming the missing binary and pointing to

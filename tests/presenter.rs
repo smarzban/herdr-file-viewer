@@ -213,6 +213,110 @@ fn shows_status_markers_for_each_state() {
 }
 
 #[test]
+fn dirty_directory_carries_a_non_color_glyph_marker() {
+    // SMA-346: a directory containing any change (dir_dirty) shows a `●` glyph beside it, so the
+    // "dirty directory" state is distinguishable with color stripped — previously it was color-only
+    // (LightRed) and lost to a colorblind user or a non-default theme. Files keep their M/A/D/?
+    // letters; clean directories and clean files show a blank, so the column stays aligned.
+    let mut state = sample_state();
+    state.notices = vec![];
+    // A dirty directory (dir_dirty = true) at the root, plus a clean directory for contrast.
+    state.nodes = vec![
+        Node {
+            path: PathBuf::from("/r/changed"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: true,
+        },
+        Node {
+            path: PathBuf::from("/r/clean"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: false,
+        },
+    ];
+    state.selected = 1; // the clean dir, so the dirty dir row isn't REVERSED
+    let out = render(&state, 100, 24);
+    // The dirty directory row carries `●`; the clean directory row carries a blank.
+    let dirty_line = out
+        .lines()
+        .find(|l| l.contains("▾ changed") || l.contains("▸ changed"))
+        .expect("the dirty directory row is drawn");
+    assert!(
+        dirty_line.contains('●'),
+        "SMA-346: the dirty directory shows a `●` glyph (non-color cue)\n{dirty_line}"
+    );
+    let clean_line = out
+        .lines()
+        .find(|l| l.contains("▾ clean") || l.contains("▸ clean"))
+        .expect("the clean directory row is drawn");
+    assert!(
+        !clean_line.contains('●'),
+        "a clean directory shows no `●` glyph (only dirty dirs do)\n{clean_line}"
+    );
+}
+
+#[test]
+fn dirty_directory_glyph_snapshot() {
+    // SMA-346: snapshot the tree with a dirty directory so the `●` glyph is locked into the
+    // recorded layout — a regression that drops the glyph (back to color-only) is caught here.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.nodes = vec![
+        Node {
+            path: PathBuf::from("/r/changed"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: true,
+        },
+        node(
+            "/r/changed/a.rs",
+            NodeKind::File,
+            1,
+            false,
+            Some(Status::Modified),
+        ),
+        node(
+            "/r/changed/b.rs",
+            NodeKind::File,
+            1,
+            false,
+            Some(Status::Added),
+        ),
+        Node {
+            path: PathBuf::from("/r/clean"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: false,
+            status: None,
+            dir_dirty: false,
+        },
+        node(
+            "/r/gone.txt",
+            NodeKind::File,
+            0,
+            false,
+            Some(Status::Deleted),
+        ),
+        node(
+            "/r/scratch.log",
+            NodeKind::File,
+            0,
+            false,
+            Some(Status::Untracked),
+        ),
+    ];
+    state.selected = 5; // scratch.log, so the dirty dir row isn't REVERSED
+    insta::assert_snapshot!("presenter_dirty_dir_glyph", render(&state, 60, 14));
+}
+
+#[test]
 fn nests_deeper_nodes_with_more_indentation() {
     // AC-3 (display): a depth-2 file is indented further than a depth-0 file.
     let out = render(&sample_state(), 100, 24);
@@ -2451,10 +2555,12 @@ fn search_state() -> ViewState {
 #[test]
 fn search_highlight_colors_match_cells_with_highlight_style() {
     // AC-9: every non-current match is highlighted with HIGHLIGHT (black on cyan).
-    // AC-11: the current match is highlighted with CURRENT_HIGHLIGHT (black on yellow), distinct from the non-current ones.
+    // AC-11/SMA-346: the current match is highlighted with CURRENT_HIGHLIGHT (REVERSED+BOLD, a
+    // theme-relative style distinguishable with color stripped), distinct from the non-current ones.
     use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
     use herdr_file_viewer::presenter::geometry;
     use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
 
     let st = search_state();
     let (w, h) = (100u16, 24u16);
@@ -2505,26 +2611,24 @@ fn search_highlight_colors_match_cells_with_highlight_style() {
         "AC-9: the non-current match 'main' must have the HIGHLIGHT foreground (black), got {main_fg:?}"
     );
 
-    // AC-11: "}" (match 1, current) must carry CURRENT_HIGHLIGHT — visually distinct from HIGHLIGHT.
+    // AC-11/SMA-346: "}" (match 1, current) must carry CURRENT_HIGHLIGHT — REVERSED+BOLD (a
+    // theme-relative style, not a hardcoded color), so it is distinguishable with color stripped.
     let (cx2, cy2) = find_in_content("}").expect("'}' must appear in the content area");
-    let cur_bg = buf.cell((cx2, cy2)).unwrap().bg;
-    assert_eq!(
-        cur_bg,
-        CURRENT_HIGHLIGHT.bg.unwrap(),
-        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT background (yellow), got {cur_bg:?}"
+    let cur_modifier = buf.cell((cx2, cy2)).unwrap().modifier;
+    assert!(
+        cur_modifier.contains(Modifier::REVERSED),
+        "AC-11/SMA-346: the current match '}}' must be REVERSED (theme-relative), got modifier {cur_modifier:?}"
     );
-    let cur_fg = buf.cell((cx2, cy2)).unwrap().fg;
-    assert_eq!(
-        cur_fg,
-        CURRENT_HIGHLIGHT.fg.unwrap(),
-        "AC-11: the current match '}}' must have the CURRENT_HIGHLIGHT foreground (black), got {cur_fg:?}"
+    assert!(
+        cur_modifier.contains(Modifier::BOLD),
+        "AC-11/SMA-346: the current match '}}' must be BOLD (weight cue), got modifier {cur_modifier:?}"
     );
 
-    // AC-11 distinctness: the two highlight backgrounds are different.
+    // AC-11 distinctness: the two highlight styles differ — HIGHLIGHT is color-only (cyan bg),
+    // CURRENT_HIGHLIGHT is theme-relative (REVERSED+BOLD). They must not be equal.
     assert_ne!(
-        HIGHLIGHT.bg.unwrap(),
-        CURRENT_HIGHLIGHT.bg.unwrap(),
-        "AC-11: HIGHLIGHT and CURRENT_HIGHLIGHT backgrounds must differ"
+        HIGHLIGHT, CURRENT_HIGHLIGHT,
+        "AC-11: HIGHLIGHT and CURRENT_HIGHLIGHT must differ"
     );
 }
 
@@ -2845,13 +2949,25 @@ fn help_tab_rects_agree_with_drawn_tab_positions() {
             labels[*idx]
         );
         assert_eq!(rect.y, dy, "the tab rect row must match the drawn row");
-        assert_eq!(
-            rect.x, dx,
-            "the tab rect start col must match the drawn col"
-        );
+        // SMA-346: the active tab carries a leading `▶ ` marker, so its rect start col is the
+        // marker's col (the label follows 2 cells later). Inactive tabs have no marker, so the
+        // rect start col equals the label's drawn col.
+        if *idx == 1 {
+            assert_eq!(
+                dx - rect.x,
+                2,
+                "the active tab's rect starts at the `▶ ` marker (2 cells before the label)"
+            );
+        } else {
+            assert_eq!(
+                rect.x, dx,
+                "the inactive tab rect start col matches the drawn col (no marker)"
+            );
+        }
     }
 
-    // The ACTIVE tab (index 1 = About) is REVERSED; its first cell must be inside its rect.
+    // The ACTIVE tab (index 1 = About) is REVERSED; its first cell (the `▶ ` marker, SMA-346)
+    // must be inside its rect and REVERSED — the rect tracks the drawn tab including the marker.
     let (about_idx, about_rect) = g
         .help_tabs
         .iter()

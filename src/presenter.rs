@@ -55,9 +55,10 @@ pub struct ViewState {
     /// on the first frame and whenever every node fits.
     pub tree_scroll: u16,
     /// The tree's horizontal scroll offset, in columns — so a deeply-nested or long file name can
-    /// be read sideways when it overflows the tree column. Driven by the horizontal wheel and by
-    /// dragging the tree's horizontal scrollbar (the `←`/`→` keys are expand/collapse in the tree).
-    /// The Presenter clamps it to the widest row at draw, so it can never over-scroll.
+    /// be read sideways when it overflows the tree column. Driven by the `H`/`L` keys, the
+    /// horizontal wheel, and by dragging the tree's horizontal scrollbar (the `←`/`→` keys are
+    /// expand/collapse in the tree). The Presenter clamps it to the widest row at draw, so it can
+    /// never over-scroll.
     pub tree_hscroll: u16,
     /// The content's total RENDERED row count — wrapped rows under `wrap`, raw lines otherwise (the
     /// controller's wrapped-aware count). The content vertical scrollbar sizes/positions against
@@ -200,14 +201,23 @@ pub struct HelpView {
     pub center: bool,
 }
 
-/// The single-character git-status marker shown beside a tree row (AC-7).
-fn status_marker(status: Option<Status>) -> char {
-    match status {
-        Some(Status::Modified) => 'M',
-        Some(Status::Added) => 'A',
-        Some(Status::Deleted) => 'D',
-        Some(Status::Untracked) => '?',
-        None => ' ',
+/// The single-character git-status marker shown beside a tree row (AC-7, SMA-346).
+///
+/// Files carry their git status letter (`M`/`A`/`D`/`?`); a directory containing any change carries
+/// `●` so the "dirty directory" state is distinguishable with color stripped — previously it was
+/// color-only (LightRed) and lost to a colorblind user or a non-default theme. A clean directory
+/// and a clean file both show a blank, so the column stays aligned across clean and dirty rows.
+fn status_marker(node: &Node) -> char {
+    match node.kind {
+        NodeKind::Dir if node.dir_dirty => '●',
+        NodeKind::File => match node.status {
+            Some(Status::Modified) => 'M',
+            Some(Status::Added) => 'A',
+            Some(Status::Deleted) => 'D',
+            Some(Status::Untracked) => '?',
+            None => ' ',
+        },
+        _ => ' ',
     }
 }
 
@@ -312,7 +322,7 @@ fn tree_row(node: &Node, selected: bool) -> Line<'static> {
     };
     let text = format!(
         "{} {}{}{}",
-        status_marker(node.status),
+        status_marker(node),
         "  ".repeat(node.depth),
         glyph,
         sanitize_label(&node_name(node)),
@@ -506,7 +516,8 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // Reserve an in-pane gutter for whichever scrollbars are needed, then render the rows into the
     // (possibly shrunk) text rect. The vertical offset scrolls minimally from last frame's offset
     // (#45) so selecting a row already in view doesn't jump the viewport; the horizontal offset
-    // lets long / deeply-nested rows be read sideways (no h-scroll keys — ←/→ are expand/collapse).
+    // lets long / deeply-nested rows be read sideways (`H`/`L` scroll the tree; ←/→ are
+    // expand/collapse in the tree).
     // `geometry` recomputes the SAME layout + offset, so hit-testing agrees with what is drawn.
     let max_width = tree_rows_max_width(&state.nodes);
     let (text, vbar, hbar) = tree_bars(inner, state.nodes.len(), max_width);
@@ -650,14 +661,15 @@ fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
     (parts[0], Some(parts[1]))
 }
 
-/// Draw the one-row "update available" status line. Reversed-ish (dark-on-cyan) so it reads as
-/// a status bar; sanitized (defense-in-depth, AC-27) and clipped to its row by ratatui.
+/// Draw the one-row "update available" status line. Reversed (theme-relative, SMA-346) so it reads
+/// as a status bar on any terminal palette — previously `Black`-on-`Cyan`, which ignored the theme
+/// and could be invisible on a cyan-heavy palette. Sanitized (defense-in-depth, AC-27) and clipped
+/// to its row by ratatui.
 fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
     let line = Line::styled(
         sanitize_label(banner),
         Style::new()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(Paragraph::new(line), area);
@@ -678,11 +690,13 @@ fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Opt
     (body, banner, prompt)
 }
 
-/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Sanitized (AC-27), clipped to its row.
+/// Draw the one-row bottom prompt (`Go to line: 42` / later search). Reversed (theme-relative,
+/// SMA-346) so it reads as a prompt bar on any palette — previously `Black`-on-`Gray`, which
+/// ignored the terminal theme. Sanitized (AC-27), clipped to its row.
 fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     let line = Line::styled(
         sanitize_label(prompt),
-        Style::new().fg(Color::Black).bg(Color::Gray),
+        Style::new().add_modifier(Modifier::REVERSED),
     );
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -1179,12 +1193,15 @@ fn agent_badge_color(status: &str) -> Color {
     }
 }
 
-/// Render one picker row as `<current-marker> <path> [branch]|(detached) <agent-badge>`:
+/// Render one picker row as `<current-marker> <path> [branch]|(detached) <(current)> <agent-badge>`:
 ///
 /// - a leading **current marker** (`●` in cyan) when the row is the worktree the viewer is rooted
 ///   at, else a blank — visually distinct from the selection cursor, which stays `REVERSED` on the
 ///   highlighted row (AC-18). A row can be current without being selected and vice versa.
 /// - the path + branch (or `(detached)` when HEAD is detached, AC-2), both sanitized (AC-27).
+/// - a trailing **`(current)` text label** (SMA-346) on the current row, so the "current worktree"
+///   state is distinguishable with color stripped — previously the `●` was color-only (cyan) and a
+///   colorblind user or a non-default theme could miss it. The label rides after the path/branch.
 /// - a trailing **agent badge** (`● <status>`, colored by status) when the worktree's workspace
 ///   hosts a real agent, else nothing (AC-19). The status is sanitized too (defense-in-depth).
 ///
@@ -1207,13 +1224,20 @@ fn picker_row(row: &PickerRowView, selected: bool) -> Line<'static> {
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     // Leading current marker (AC-18): a cyan ● when current, two spaces otherwise so the path
-    // column stays aligned across current and non-current rows.
+    // column stays aligned across current and non-current rows. The ● is a glyph cue; the
+    // trailing `(current)` label (below) is the color-stripped cue (SMA-346).
     if row.is_current {
         spans.push(Span::styled("● ", base.fg(Color::Cyan)));
     } else {
         spans.push(Span::styled("  ", base));
     }
     spans.push(Span::styled(format!("{path}{suffix}"), base));
+    // Trailing `(current)` text label (SMA-346): a non-color cue on the current row so the
+    // "current worktree" state survives a colorblind palette or a non-default theme. Rendered in
+    // the row's base style (so it picks up the REVERSED cursor highlight when selected).
+    if row.is_current {
+        spans.push(Span::styled(" (current)", base));
+    }
     // Trailing agent badge (AC-19): colored by status, sanitized (AC-27).
     if let Some(status) = &row.agent {
         let status = sanitize_label(status);
@@ -1250,6 +1274,12 @@ const HELP_WANT_INNER_W: u16 = 72;
 const HELP_WANT_INNER_H: u16 = 20;
 /// The separator between section tabs in the help overlay's top border.
 const HELP_TAB_SEP: &str = "  ";
+/// The leading marker prepended to the ACTIVE help tab so the active section is distinguishable
+/// with color stripped (SMA-346) — previously it was REVERSED+BOLD only, which a colorblind user
+/// or a non-default theme could lose. Inactive tabs carry no marker, so the active one stands out
+/// by glyph alone. Drawn in the SAME `Color::Reset` style as the tab label, and counted in
+/// [`help_tab_rects`] so the hit-test rect tracks the drawn width.
+const HELP_ACTIVE_MARKER: &str = "▶ ";
 
 /// The columns [`bar_layout`] reserves for a vertical scrollbar when the body overflows: a 1-cell
 /// gap before the bar + the 1-cell bar itself (see `bar_layout`'s `saturating_sub(2)`).
@@ -1567,7 +1597,7 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
     // wide, separated by `HELP_TAB_SEP`. We walk those widths to place each tab's cell rect, so a
     // click maps to the tab actually drawn (the whole point of the shared helper). Rects fully past
     // the popup's right border are dropped (clipped off-screen, not clickable).
-    let tabs = help_tab_rects(popup, &help.labels);
+    let tabs = help_tab_rects(popup, &help.labels, help.active);
 
     // The body fills the whole interior (tabs + footer ride the border, not inner rows). Reserve a
     // 1-cell vertical scrollbar gutter (with a 1-cell gap) only when the body overflows — there is
@@ -1638,22 +1668,28 @@ fn help_overlay_layout(area: Rect, help: &HelpView) -> HelpLayout {
 /// interior border column (`popup.x + 1`) with the `"{HELP_TITLE}: "` prefix, then each label —
 /// `sanitize_label(label)` wide — separated by [`HELP_TAB_SEP`]. A tab whose cells fall entirely
 /// past the popup's right border is dropped (ratatui clips it off-screen, so it isn't clickable).
-fn help_tab_rects(popup: Rect, labels: &[String]) -> Vec<(usize, Rect)> {
+fn help_tab_rects(popup: Rect, labels: &[String], active: usize) -> Vec<(usize, Rect)> {
     // The title row is the popup's top border; left-aligned titles start one cell in from the corner.
     let row = popup.y;
     let mut x = popup.x.saturating_add(1).saturating_add(prefix_width());
     // The rightmost interior column (exclusive of the right border corner): popup.x + width - 1.
     let right_edge = popup.x.saturating_add(popup.width.saturating_sub(1));
+    let active_marker_w = HELP_ACTIVE_MARKER.chars().count() as u16;
     let mut out = Vec::with_capacity(labels.len());
     for (i, label) in labels.iter().enumerate() {
         if i > 0 {
             x = x.saturating_add(HELP_TAB_SEP.chars().count() as u16);
         }
-        let w = sanitize_label(label).chars().count() as u16;
+        // The active tab is drawn with a leading `▶ ` marker (SMA-346); include it in the tab's
+        // hit-test rect (a click on the glyph still switches the right section) and advance past
+        // it before placing the label rect.
+        let marker_w = if i == active { active_marker_w } else { 0 };
+        let label_w = sanitize_label(label).chars().count() as u16;
+        let total_w = marker_w.saturating_add(label_w);
         // Keep only a tab that begins before the right border — its visible cells are clickable.
-        if w > 0 && x < right_edge {
-            // Clip the tab's width to what fits before the right border.
-            let visible_w = w.min(right_edge.saturating_sub(x));
+        if total_w > 0 && x < right_edge {
+            // Clip the tab's width to what fits before the right border (covers marker + label).
+            let visible_w = total_w.min(right_edge.saturating_sub(x));
             out.push((
                 i,
                 Rect {
@@ -1664,7 +1700,7 @@ fn help_tab_rects(popup: Rect, labels: &[String]) -> Vec<(usize, Rect)> {
                 },
             ));
         }
-        x = x.saturating_add(w);
+        x = x.saturating_add(total_w);
     }
     out
 }
@@ -1702,10 +1738,12 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
         }
         let mut style = Style::new().fg(Color::Reset);
         if i == help.active {
-            // The active tab is REVERSED — the visible active-section indicator (AC-5).
+            // The active tab is REVERSED — the visible active-section indicator (AC-5) — AND carries
+            // a leading `▶ ` marker (SMA-346) so it stays distinguishable with color stripped.
             style = style
                 .add_modifier(Modifier::REVERSED)
                 .add_modifier(Modifier::BOLD);
+            tab_spans.push(Span::styled(HELP_ACTIVE_MARKER, style));
         }
         tab_spans.push(Span::styled(sanitize_label(label), style));
     }

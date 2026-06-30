@@ -64,10 +64,11 @@ right into the tree. It opens beside whatever you're doing and never touches you
   changelog entries, rendered as markdown) and About (version, repo, license, and update status).
   Keyboard and mouse; `Esc` or `q` closes it. A `? help` hint rides the content pane's bottom
   border so the overlay is discoverable without already knowing the key.
-- **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), **colored** so changes read at
-  a glance (changed files and folders containing changes are red, new files green); a
-  changed-files-only filter; and a baseline you can switch between the merge-base of your
-  branch and `HEAD`.
+- **Git woven in** — per-file status markers (`M`/`A`/`D`/`?`), and a `●` on a directory that
+  contains any change; **colored** so changes read at a glance (changed files and dirty folders
+  are red, new files green), with the glyph as a non-color cue so it survives a colorblind palette
+  or a non-default theme. A changed-files-only filter; and a baseline you can switch between the
+  merge-base of your branch and `HEAD`.
 - **The right view per file** — a changed file shows its **diff**; a markdown file renders;
   anything else is shown as syntax-highlighted content with line numbers. Cycle the view
   (`v`) to override — a changed file can also show a **full-file diff**: the whole file with
@@ -77,7 +78,9 @@ right into the tree. It opens beside whatever you're doing and never touches you
   full-screen; the layout reflows when the pane is resized. The tree scrolls to keep the
   selection in view (and sideways, for long names), and a scrollbar appears on the tree or
   content pane whenever there is more to see than fits — drag it with the mouse to scroll.
-- **Keyboard-first** — every function has a key; no mouse required.
+- **Keyboard-first** — every function has a key; no mouse required. The tree's horizontal
+  scroll (for long / deeply-nested rows) is reachable with `H` / `L`, the same way the content
+  pane scrolls with `←` / `→` when focused.
 
 ## Quick start
 
@@ -117,6 +120,8 @@ you only add the keybinding. The [keys](#keys) are below; deeper detail lives in
 | `↑` / `k`, `↓` / `j` | Move the tree cursor — or **scroll the content pane** vertically when it is focused |
 | `→` / `l` | Expand the selected directory — or **scroll the content pane right** when it is focused |
 | `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
+| `H` (Shift+`h`) | Scroll the **tree** pane left (long / deeply-nested rows) — inert unless the tree is focused |
+| `L` (Shift+`l`) | Scroll the **tree** pane right — inert unless the tree is focused |
 | `Enter` | Activate the selection — expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `.` | Toggle hidden (dot-prefixed) files and folders |
@@ -152,7 +157,8 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`, `?`).
+never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`,
+`?`, `H`/`L`).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path — handy for pasting into a prompt, a command, or an agent. The copy uses the
@@ -181,7 +187,8 @@ mouse events to the pane because the viewer requests capture.)
 
 **Horizontal mouse scroll is terminal-dependent** — it works only where your terminal emits
 horizontal-scroll events (`ScrollLeft` / `ScrollRight`); many terminals send nothing for a
-sideways trackpad swipe. The `←` / `→` keys always scroll the content sideways regardless.
+sideways trackpad swipe. The `←` / `→` keys always scroll the content sideways, and `H` / `L`
+always scroll the tree sideways, regardless of terminal.
 
 ### Opening in an editor
 

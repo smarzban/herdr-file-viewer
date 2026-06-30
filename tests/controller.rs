@@ -1306,6 +1306,88 @@ fn dragging_the_tree_horizontal_scrollbar_scrolls_the_tree() {
 }
 
 #[test]
+fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
+    // AC-18: the tree's horizontal scroll was reachable only by mouse (drag/wheel); the `H`/`L`
+    // keys (Shift+h / Shift+l) now move `tree_hscroll` by the same step the wheel uses, clamped
+    // to the measured max — mirroring the content pane's `←`/`→`. Inert when the content is
+    // focused (so the keys don't fight the content's own h-scroll).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    // Tree is focused by default.
+    assert_eq!(ctrl.focus(), Focus::Tree, "tree is focused by default");
+    // Geometry: tree inner width 38, content width 138 → max h-scroll = 100.
+    let mut g = wide_geometry();
+    g.tree_content_width = 138;
+    ctrl.set_pane_geometry(g);
+    assert_eq!(ctrl.view_state().tree_hscroll, 0, "starts at the left edge");
+
+    // L (TreeScrollRight) advances by HSCROLL_STEP (8), clamped to max (100).
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(fx.redraw, "TreeScrollRight redraws");
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        8,
+        "one L press moves the tree right by HSCROLL_STEP"
+    );
+
+    // H (TreeScrollLeft) retreats by HSCROLL_STEP, clamped at 0.
+    let fx = ctrl.handle(Intent::TreeScrollLeft);
+    assert!(fx.redraw, "TreeScrollLeft redraws");
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        0,
+        "one H press moves the tree left by HSCROLL_STEP"
+    );
+
+    // H at 0 is a saturating no-op-ish clamp: it stays at 0 (still redraws — the clamp path
+    // returns Effects::redraw like scroll_content_h does).
+    ctrl.handle(Intent::TreeScrollLeft);
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        0,
+        "TreeScrollLeft at 0 clamps (stays 0)"
+    );
+
+    // Clamping at the right edge: many L presses cannot overshoot the measured max (100).
+    for _ in 0..20 {
+        ctrl.handle(Intent::TreeScrollRight);
+    }
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        100,
+        "TreeScrollRight clamps to the measured max (no overshoot)"
+    );
+
+    // When the content pane is focused, H/L are INERT — they must not move the tree (so they
+    // don't collide with the content pane's own `←`/`→` h-scroll, which lives on the same keys
+    // via Expand/Collapse when content-focused).
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
+    let before = ctrl.view_state().tree_hscroll;
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(
+        !fx.redraw,
+        "TreeScrollRight is inert when content is focused"
+    );
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        before,
+        "tree hscroll unchanged when content is focused"
+    );
+    let fx = ctrl.handle(Intent::TreeScrollLeft);
+    assert!(
+        !fx.redraw,
+        "TreeScrollLeft is inert when content is focused"
+    );
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        before,
+        "tree hscroll unchanged when content is focused"
+    );
+}
+
+#[test]
 fn dragging_the_tree_vertical_scrollbar_scrubs_the_selection() {
     // The tree's vertical scrollbar is now draggable (it lives inside the pane, off the divider):
     // pressing the bottom selects the last file, dragging to the top selects the first — the tree
@@ -7201,17 +7283,23 @@ fn esc_clears_committed_search_before_unzoom_when_zoomed() {
     assert!(fx3.quit, "third Esc: quits");
 }
 
-// ── #5: color swap — CURRENT_HIGHLIGHT is now yellow, HIGHLIGHT is cyan ───────
+// ── #5: color swap — CURRENT_HIGHLIGHT is theme-relative (REVERSED+BOLD), HIGHLIGHT is cyan ──
 
 #[test]
-fn current_highlight_is_yellow_and_highlight_is_cyan() {
-    // Explicit assertion so the intent of the swap is clear and regression-caught.
+fn current_highlight_is_theme_relative_and_distinct_from_highlight() {
+    // SMA-346: CURRENT_HIGHLIGHT (the active match) is now `REVERSED|BOLD` — a theme-relative
+    // style that inverts whatever the terminal palette is, so the active match is distinguishable
+    // with color stripped (colorblind users, non-default themes). HIGHLIGHT (other matches) stays
+    // black-on-cyan. The two styles must remain distinct.
     use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
-    use ratatui::style::Color;
-    assert_eq!(
-        CURRENT_HIGHLIGHT.bg,
-        Some(Color::Yellow),
-        "CURRENT_HIGHLIGHT (active match) must be yellow background"
+    use ratatui::style::{Color, Modifier};
+    assert!(
+        CURRENT_HIGHLIGHT.add_modifier.contains(Modifier::REVERSED),
+        "CURRENT_HIGHLIGHT (active match) must be REVERSED (theme-relative, SMA-346)"
+    );
+    assert!(
+        CURRENT_HIGHLIGHT.add_modifier.contains(Modifier::BOLD),
+        "CURRENT_HIGHLIGHT (active match) must be BOLD (a weight cue on top of REVERSED)"
     );
     assert_eq!(
         HIGHLIGHT.bg,
@@ -7219,7 +7307,7 @@ fn current_highlight_is_yellow_and_highlight_is_cyan() {
         "HIGHLIGHT (other matches) must be cyan background"
     );
     assert_ne!(
-        CURRENT_HIGHLIGHT.bg, HIGHLIGHT.bg,
+        CURRENT_HIGHLIGHT, HIGHLIGHT,
         "the two highlight styles must remain distinct"
     );
 }

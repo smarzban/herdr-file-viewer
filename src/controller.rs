@@ -1107,6 +1107,8 @@ impl Controller {
             Intent::OpenSearch => self.open_search(),
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
+            Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
+            Intent::TreeScrollRight => self.scroll_tree_h_focus(HSCROLL_STEP as i32),
             Intent::ShowHelp => self.open_help(),
             Intent::Close => self.close_or_unzoom(),
         }
@@ -1549,7 +1551,7 @@ impl Controller {
     }
 
     /// Horizontal wheel / trackpad swipe scrolls sideways: the content pane (like the `←`/`→`
-    /// keys, for unwrapped long lines) or the tree (which has no h-scroll keys). Each clamps to
+    /// keys, for unwrapped long lines) or the tree (like the `H`/`L` keys). Each clamps to
     /// `[0, widest − viewport]`, so it is inert when nothing overflows.
     fn hscroll_at(&mut self, col: u16, row: u16, delta: i32) -> Effects {
         match self.hit_test(col, row) {
@@ -1570,6 +1572,17 @@ impl Controller {
         let next = (self.tree_hscroll as i32 + delta).clamp(0, max as i32);
         self.tree_hscroll = next as u16;
         Effects::redraw()
+    }
+
+    /// The keyboard path for tree horizontal scroll (AC-18): `H`/`L` move `tree_hscroll` by the
+    /// same step the mouse wheel uses, clamped to the measured max — mirroring how the content
+    /// pane's `←`/`→` scroll `content_hscroll`. Inert unless the tree is focused, so the keys
+    /// never fight the content pane's own horizontal scroll when the content is focused.
+    fn scroll_tree_h_focus(&mut self, delta: i32) -> Effects {
+        if self.focus != Focus::Tree {
+            return Effects::noop();
+        }
+        self.scroll_tree_h(delta)
     }
 
     /// The fraction `[0,1]` of a press/drag along a scrollbar track of `len` cells starting at
