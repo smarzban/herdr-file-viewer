@@ -492,22 +492,24 @@ impl Controller {
                 while let Ok(newer) = job_rx.try_recv() {
                     job = newer;
                 }
-                // The diff is read here, off the input thread, so a large/slow diff never
-                // blocks input (AC-23). Other modes don't need git. The full-file diff view
-                // asks git for whole-file context; the compact diff uses git's default.
-                let raw_diff =
-                    if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
-                        let full = job.mode == ViewMode::FullDiff;
-                        job.rel
-                            .as_deref()
-                            .map(|rel| git.diff(rel, job.baseline, full))
-                    } else {
-                        None
-                    };
-                // Contain a renderer panic so the worker survives — otherwise the thread would
-                // die and rendering would stop for the rest of the session. The unwind is caught
-                // here and a placeholder is surfaced in place of the failed render.
+                // Contain a panic anywhere in the per-job work — the diff read AND the render —
+                // so the worker thread always survives to send a result. The diff is read here,
+                // off the input thread, so a large/slow diff never blocks input (AC-23); other
+                // modes don't need git, the full-file diff view asks git for whole-file context,
+                // the compact diff uses git's default. The diff read MUST sit inside this guard:
+                // if `git.diff` panicked the worker would die without sending, no result would
+                // ever reach `poll`, and `content_rendering` would never clear — stranding the
+                // pane on the `Rendering…` placeholder for the rest of the session.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let raw_diff =
+                        if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
+                            let full = job.mode == ViewMode::FullDiff;
+                            job.rel
+                                .as_deref()
+                                .map(|rel| git.diff(rel, job.baseline, full))
+                        } else {
+                            None
+                        };
                     content.render(&job.path, job.mode, raw_diff.as_deref())
                 }))
                 .unwrap_or_else(|_| RenderResult {
