@@ -619,6 +619,10 @@ mod tests {
         d
     }
 
+    // Creating a symlink reliably without elevated privilege is a unix assumption (Windows
+    // symlink creation needs Developer Mode or admin rights, not guaranteed on a CI runner);
+    // the escape-via-symlink guard these exercise is platform-agnostic path canonicalization.
+    #[cfg(unix)]
     #[test]
     fn refuses_a_symlink_whose_target_escapes_the_root() {
         use std::os::unix::fs::symlink;
@@ -635,6 +639,7 @@ mod tests {
         fs::remove_file(&outside).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn follows_a_symlink_that_stays_within_the_root() {
         use std::os::unix::fs::symlink;

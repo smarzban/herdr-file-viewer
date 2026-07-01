@@ -1,7 +1,8 @@
 //! The release workflow's contract, asserted as text (mirrors tests/manifest.rs): it triggers on
-//! version tags, builds the three published targets, guards the tag against the crate version, and
-//! publishes a SHA256SUMS. These are the invariants scripts/fetch-or-build.sh relies on; GitHub
-//! Actions itself is exercised by cutting a real tag (a manual verification step).
+//! version tags, builds the four published targets (incl. x86_64-pc-windows-msvc, preview —
+//! T-10), guards the tag against the crate version, and publishes a SHA256SUMS. These are the
+//! invariants scripts/fetch-or-build.sh and fetch-or-build.ps1 rely on; GitHub Actions itself is
+//! exercised by cutting a real tag (a manual verification step).
 
 use std::fs;
 use std::path::PathBuf;
@@ -19,15 +20,34 @@ fn triggers_on_version_tags() {
 }
 
 #[test]
-fn builds_the_three_published_targets() {
+fn builds_the_four_published_targets() {
     let w = workflow();
     for triple in [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
         "x86_64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
     ] {
         assert!(w.contains(triple), "release must build {triple}");
     }
+}
+
+#[test]
+fn publishes_the_windows_exe_asset() {
+    // AC-18: the Windows target publishes a herdr-file-viewer-x86_64-pc-windows-msvc.exe asset.
+    assert!(
+        workflow().contains("herdr-file-viewer-$triple.exe"),
+        "release must stage the Windows asset with its .exe suffix"
+    );
+}
+
+#[test]
+fn does_not_declare_an_aarch64_windows_target() {
+    // AC-N4: v1 targets x86_64-pc-windows-msvc only — no Windows-on-ARM in the matrix.
+    assert!(
+        !workflow().contains("aarch64-pc-windows"),
+        "release must not declare an aarch64 Windows target"
+    );
 }
 
 #[test]

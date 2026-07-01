@@ -39,14 +39,37 @@ pub fn next_cache(now_unix: u64, latest: Option<Version>) -> Cache {
 }
 
 /// The plugin's cache directory: `$XDG_CACHE_HOME/herdr-file-viewer`, else
-/// `$HOME/.cache/herdr-file-viewer`. `None` when neither is set (then we check without
-/// persisting — a rare headless case).
+/// `$HOME/.cache/herdr-file-viewer` (unix) / `%LOCALAPPDATA%\herdr-file-viewer` (Windows).
+/// `None` when no base directory is available (then we check without persisting — a rare
+/// headless case).
 pub fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
+    cache_dir_from(|var| std::env::var_os(var))
+}
+
+/// [`cache_dir`]'s logic, factored out so it is testable from a stubbed environment (no real
+/// `XDG_CACHE_HOME`/`HOME`/`LOCALAPPDATA` mutation needed). `get_env` mirrors
+/// `std::env::var_os`'s signature.
+fn cache_dir_from(get_env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let base = cache_base_dir(get_env)?;
+    Some(base.join("herdr-file-viewer"))
+}
+
+/// The per-user cache base directory, before the `herdr-file-viewer` subdirectory is joined.
+/// unix: `$XDG_CACHE_HOME`, else `$HOME/.cache` (today's behaviour, unchanged — AC-3). Windows:
+/// `%LOCALAPPDATA%`. `None` when nothing resolves (AC-7).
+#[cfg(not(windows))]
+fn cache_base_dir(get_env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    get_env("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("herdr-file-viewer"))
+        .or_else(|| get_env("HOME").map(|h| PathBuf::from(h).join(".cache")))
+}
+
+#[cfg(windows)]
+fn cache_base_dir(get_env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    get_env("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 /// Read and parse the cache; `None` (→ "check now") on any absence/error.
@@ -76,7 +99,80 @@ pub fn store(dir: &Path, cache: &Cache) {
 mod tests {
     use super::*;
     use crate::update::version::Version;
+    use std::ffi::OsString;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // ---- cache_base_dir: platform cache-dir seam (AC-7, T-3) --------------------
+
+    /// A stub environment as a simple lookup, so the resolver is exercised without touching
+    /// the real process environment.
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |var| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| OsString::from(*v))
+        }
+    }
+
+    /// unix: `XDG_CACHE_HOME` wins when set and non-empty (today's behaviour, unchanged).
+    #[cfg(not(windows))]
+    #[test]
+    fn cache_base_dir_unix_prefers_xdg_cache_home() {
+        let got = cache_base_dir(env(&[
+            ("XDG_CACHE_HOME", "/xdg/cache"),
+            ("HOME", "/home/user"),
+        ]));
+        assert_eq!(got, Some(PathBuf::from("/xdg/cache")));
+    }
+
+    /// unix: falls back to `$HOME/.cache` when `XDG_CACHE_HOME` is unset or empty.
+    #[cfg(not(windows))]
+    #[test]
+    fn cache_base_dir_unix_falls_back_to_home_dot_cache() {
+        let got = cache_base_dir(env(&[("HOME", "/home/user")]));
+        assert_eq!(got, Some(PathBuf::from("/home/user/.cache")));
+
+        let got_empty_xdg = cache_base_dir(env(&[("XDG_CACHE_HOME", ""), ("HOME", "/home/user")]));
+        assert_eq!(got_empty_xdg, Some(PathBuf::from("/home/user/.cache")));
+    }
+
+    /// unix: `None` when neither `XDG_CACHE_HOME` nor `HOME` is set (headless case).
+    #[cfg(not(windows))]
+    #[test]
+    fn cache_base_dir_unix_none_when_nothing_set() {
+        assert_eq!(cache_base_dir(env(&[])), None);
+    }
+
+    /// Windows: resolves to `%LOCALAPPDATA%` when `HOME`/`XDG_CACHE_HOME` are unset (AC-7).
+    #[cfg(windows)]
+    #[test]
+    fn cache_base_dir_windows_uses_local_app_data() {
+        let got = cache_base_dir(env(&[("LOCALAPPDATA", r"C:\Users\user\AppData\Local")]));
+        assert_eq!(got, Some(PathBuf::from(r"C:\Users\user\AppData\Local")));
+    }
+
+    /// Windows: `None` when `%LOCALAPPDATA%` is absent or empty — no base available.
+    #[cfg(windows)]
+    #[test]
+    fn cache_base_dir_windows_none_when_local_app_data_unset() {
+        assert_eq!(cache_base_dir(env(&[])), None);
+        assert_eq!(cache_base_dir(env(&[("LOCALAPPDATA", "")])), None);
+    }
+
+    /// `cache_dir_from` joins the `herdr-file-viewer` subdirectory onto the resolved base, on
+    /// every platform.
+    #[test]
+    fn cache_dir_from_joins_the_plugin_subdir() {
+        #[cfg(not(windows))]
+        let got = cache_dir_from(env(&[("HOME", "/home/user")]));
+        #[cfg(windows)]
+        let got = cache_dir_from(env(&[("LOCALAPPDATA", r"C:\Users\user\AppData\Local")]));
+        assert!(
+            got.unwrap().ends_with("herdr-file-viewer"),
+            "joins the plugin subdir onto the resolved base"
+        );
+    }
 
     #[test]
     fn should_check_respects_the_24h_window() {

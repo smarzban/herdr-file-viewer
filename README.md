@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)
 ![herdr 0.7+](https://img.shields.io/badge/herdr-0.7%2B-8a2be2)
-![platforms: linux • macOS](https://img.shields.io/badge/platforms-linux%20%E2%80%A2%20macOS-informational)
+![platforms: linux • macOS • Windows (preview)](https://img.shields.io/badge/platforms-linux%20%E2%80%A2%20macOS%20%E2%80%A2%20Windows%20(preview)-informational)
 
 **Browse your repo without leaving your terminal session — a git-aware, read-only file viewer
 that lives in a herdr pane.** A keyboard-driven TUI with a directory tree
@@ -112,6 +112,32 @@ viewer and its open actions ship **inside** the plugin and register automaticall
 you only add the keybinding. The [keys](#keys) are below; deeper detail lives in the docs:
 [install & updating](docs/install.md), [external renderers](docs/renderers.md), and
 [summoning & keybindings](docs/usage.md).
+
+## Windows (preview)
+
+Native Windows (`x86_64-pc-windows-msvc`) is supported as a **preview**, mirroring herdr's own
+posture there: the crate builds, the test suite runs (advisory) on `windows-latest` CI, and
+install works the same way as Linux/macOS — `herdr plugin install` downloads a SHA-256-verified
+prebuilt binary (via `scripts/fetch-or-build.ps1`) or falls back to `cargo build --release`, no
+extra tooling required beyond the in-box Windows PowerShell 5.1. The open/toggle actions work via
+PowerShell launcher scripts.
+
+- **On Windows, bind the `-windows` action ids.** herdr requires every action id to be unique, so
+  the Windows launchers register as **`open-file-viewer-windows`** and
+  **`open-file-viewer-tab-windows`** (the unqualified `open-file-viewer` / `open-file-viewer-tab`
+  ids are the Linux/macOS variants). Point your herdr keybinding at the `-windows` id:
+  `command = "herdr plugin action invoke open-file-viewer-windows --plugin herdr-file-viewer"`.
+- **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
+  update channel, so you need to be on it before installing this plugin on Windows.
+- **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
+  project's CI gate (the `windows-latest` job is advisory, not required), so a Windows-specific
+  regression can land between releases. Full feature parity with Linux/macOS is the goal, not a
+  promise — please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) if you
+  hit a Windows-specific problem.
+- **WSL works today, with zero extra setup.** If you'd rather not wait on native-Windows preview
+  maturity, the existing Linux (`x86_64-unknown-linux-musl`) binary already runs unmodified
+  inside WSL — install herdr and this plugin from within your WSL distro exactly as you would on
+  native Linux.
 
 ## Keys
 
