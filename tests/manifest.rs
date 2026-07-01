@@ -124,8 +124,11 @@ fn build_step_is_platform_gated_unix_and_windows() {
 
 #[test]
 fn open_file_viewer_action_is_platform_gated_unix_and_windows() {
-    // AC-14, AC-16: the open-file-viewer action has a unix (bash .sh) and a Windows
-    // (PowerShell .ps1) variant, each gated to its platform.
+    // AC-14, AC-16: the open-file-viewer action has a unix (bash .sh) variant and a Windows
+    // (PowerShell .ps1) variant, each gated to its platform. The Windows variant carries a
+    // DISTINCT id (`open-file-viewer-windows`) because herdr rejects a duplicate action id at
+    // load time regardless of platform (verified live against herdr 0.7.1) — a same-id pair
+    // would fail to load on EVERY platform.
     let m = manifest();
     assert!(
         m.contains("id = \"open-file-viewer\"\nplatforms = [\"linux\", \"macos\"]")
@@ -133,9 +136,9 @@ fn open_file_viewer_action_is_platform_gated_unix_and_windows() {
         "open-file-viewer's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
     );
     assert!(
-        m.contains("id = \"open-file-viewer\"\nplatforms = [\"windows\"]")
+        m.contains("id = \"open-file-viewer-windows\"\nplatforms = [\"windows\"]")
             && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer.ps1\"]"),
-        "open-file-viewer's Windows variant must be gated to [\"windows\"] and run the .ps1 launcher: {m}"
+        "open-file-viewer's Windows variant must use the distinct id open-file-viewer-windows, gated to [\"windows\"], running the .ps1 launcher: {m}"
     );
 }
 
@@ -148,9 +151,33 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
         "open-file-viewer-tab's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
     );
     assert!(
-        m.contains("id = \"open-file-viewer-tab\"\nplatforms = [\"windows\"]")
+        m.contains("id = \"open-file-viewer-tab-windows\"\nplatforms = [\"windows\"]")
             && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer-tab.ps1\"]"),
-        "open-file-viewer-tab's Windows variant must be gated to [\"windows\"] and run the .ps1 launcher: {m}"
+        "open-file-viewer-tab's Windows variant must use the distinct id open-file-viewer-tab-windows, gated to [\"windows\"], running the .ps1 launcher: {m}"
+    );
+}
+
+#[test]
+fn action_ids_are_unique() {
+    // herdr rejects a manifest with two [[actions]] sharing an id (`duplicate_plugin_action_id`)
+    // at LOAD time — before any platform filtering — so a same-id-per-platform pair would break
+    // `herdr plugin install` on EVERY platform, not just Windows. Guard that every declared
+    // action id is unique. (Verified live against herdr 0.7.1.)
+    let m = manifest();
+    let mut ids: Vec<&str> = m
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("id = \""))
+        .filter_map(|s| s.strip_suffix('"'))
+        // the [[panes]] entry also has an `id`; only action/pane ids share the key space we care
+        // about here — dedupe checks all declared `id = "..."` values, which must each be unique.
+        .collect();
+    let n = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        n,
+        ids.len(),
+        "every declared id in the manifest must be unique (herdr rejects duplicates at load)"
     );
 }
 

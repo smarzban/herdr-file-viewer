@@ -119,9 +119,14 @@ Native Windows (`x86_64-pc-windows-msvc`) is supported as a **preview**, mirrori
 posture there: the crate builds, the test suite runs (advisory) on `windows-latest` CI, and
 install works the same way as Linux/macOS — `herdr plugin install` downloads a SHA-256-verified
 prebuilt binary (via `scripts/fetch-or-build.ps1`) or falls back to `cargo build --release`, no
-extra tooling required beyond the in-box Windows PowerShell 5.1. The same `open-file-viewer` /
-`open-file-viewer-tab` keybindings work via PowerShell launcher scripts.
+extra tooling required beyond the in-box Windows PowerShell 5.1. The open/toggle actions work via
+PowerShell launcher scripts.
 
+- **On Windows, bind the `-windows` action ids.** herdr requires every action id to be unique, so
+  the Windows launchers register as **`open-file-viewer-windows`** and
+  **`open-file-viewer-tab-windows`** (the unqualified `open-file-viewer` / `open-file-viewer-tab`
+  ids are the Linux/macOS variants). Point your herdr keybinding at the `-windows` id:
+  `command = "herdr plugin action invoke open-file-viewer-windows --plugin herdr-file-viewer"`.
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
 - **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
