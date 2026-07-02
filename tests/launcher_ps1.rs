@@ -60,3 +60,50 @@ fn fetch_or_build_ps1_parses() {
     // Windows install.
     assert_parses("fetch-or-build.ps1");
 }
+
+/// Parse an inline PowerShell string with `[ScriptBlock]::Create`, asserting success without
+/// executing it.
+fn assert_ps_parses(label: &str, script: &str) {
+    let quoted = script.replace('\'', "''");
+    let cmd = format!("$null = [ScriptBlock]::Create('{quoted}')");
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &cmd])
+        .output()
+        .expect("run powershell.exe to parse the inline command");
+    assert!(
+        output.status.success(),
+        "{label} failed to parse: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn manifest_windows_action_commands_parse() {
+    // The Windows [[actions]] run an inline `-Command` (not a `-File`) that re-derives the
+    // launcher's absolute path from the `\\?\` server cwd. That PowerShell lives in the manifest
+    // TOML, so the .ps1 parse-checks above don't cover it — a syntax error there would first
+    // surface when the tester presses the key on real Windows. Extract each such payload (the
+    // line carrying the de-verbatim marker, unwrapped from its TOML literal) and parse it here.
+    let manifest = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("herdr-plugin.toml"),
+    )
+    .expect("read manifest");
+
+    let payloads: Vec<&str> = manifest
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("[IO.Directory]::GetCurrentDirectory()"))
+        .map(|l| l.trim_end_matches(',').trim_matches('\'').trim())
+        .collect();
+
+    assert_eq!(
+        payloads.len(),
+        2,
+        "expected exactly the two Windows action -Command payloads, found {}: {payloads:?}",
+        payloads.len()
+    );
+    for p in payloads {
+        assert_ps_parses("manifest Windows action -Command", p);
+    }
+}

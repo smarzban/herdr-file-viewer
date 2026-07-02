@@ -21,10 +21,15 @@
 $ErrorActionPreference = 'Continue'
 
 $HerdrBin = if ($env:HERDR_BIN_PATH) { $env:HERDR_BIN_PATH } else { 'herdr' }
-$ViewerBin = Join-Path $PSScriptRoot '..\target\release\herdr-file-viewer.exe'
+
+# See open-file-viewer.ps1: a NORMAL absolute plugin root (strip any `\\?\` prefix) so herdr resolves
+# the pane's relative command against a normalizable `--cwd`, not the `\\?\` server cwd.
+$PluginRoot = Split-Path -Parent $PSScriptRoot
+if ($PluginRoot.StartsWith('\\?\')) { $PluginRoot = $PluginRoot.Substring(4) }
+$ViewerBin = Join-Path $PluginRoot 'target\release\herdr-file-viewer.exe'
 
 function Open-Tab {
-    & $HerdrBin plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement tab --focus
+    & $HerdrBin plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer-windows --cwd $PluginRoot --placement tab --focus
     exit $LASTEXITCODE
 }
 

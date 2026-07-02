@@ -11,8 +11,17 @@
 #    duplicate action id at load time regardless of platform (verified against herdr 0.7.1),
 #    so the Windows launchers use the `-windows`-suffixed ids `open-file-viewer-windows` /
 #    `open-file-viewer-tab-windows`. On Windows, bind THOSE action ids.
-#  - [[panes]] is platform-agnostic (no shell; the binary is spawned directly — herdr appends
-#    `.exe` on Windows). No aarch64 Windows target is declared (v1 = x86_64-pc-windows-msvc).
+#  - Windows path handling (verified against real hardware, herdr 0.7.1-preview, GH #58): herdr
+#    does NOT append `.exe`, and it resolves a relative command against the process cwd — which on
+#    Windows is a `\\?\` extended-length (verbatim) path. Verbatim paths reach the OS with NO
+#    normalization, so a relative command (or one containing `/` or `.`) fails to resolve
+#    (ERROR_PATH_NOT_FOUND / os error 3). Two consequences:
+#     * [[panes]] has a distinct Windows entry (`file-viewer-windows`) naming the `.exe` explicitly;
+#       the Windows launcher opens it with `--cwd <plugin-root>` (a normal absolute path) so herdr
+#       resolves the relative command against a normalizable base instead of the `\\?\` server cwd.
+#     * the Windows [[actions]] re-derive the launcher script's absolute path from the cwd (stripping
+#       any `\\?\` prefix) rather than passing a relative `-File` path herdr would spawn under `\\?\`.
+#    No aarch64 Windows target is declared (v1 = x86_64-pc-windows-msvc).
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
@@ -36,12 +45,22 @@ command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "s
 
 # The viewer pane. herdr performs the split placement on launch (AC-17); the [[actions]]
 # below summon it — declaring placement = "split" is what opens it beside the current pane.
-# Platform-agnostic: no shell is involved in opening the pane itself (AC-15).
+# No shell is involved in opening the pane itself (AC-15).
 [[panes]]
 id = "file-viewer"
 title = "Files"
 placement = "split"
 command = ["./target/release/herdr-file-viewer"]
+
+# Windows pane: a distinct id (herdr rejects duplicates) naming the `.exe` explicitly, since herdr
+# does NOT append it. The Windows launcher opens THIS entrypoint with `--cwd <plugin-root>` so the
+# relative command resolves against a normal path, not the `\\?\` server cwd (see header). Unused on
+# unix — panes are spawned on demand, so an extra entry the unix launchers never open costs nothing.
+[[panes]]
+id = "file-viewer-windows"
+title = "Files"
+placement = "split"
+command = ["./target/release/herdr-file-viewer.exe"]
 
 # The action that summons the viewer (bound to a keybinding in herdr config). This is
 # the only way the viewer is opened — there is no [[events]] hook (AC-N4). herdr actions
@@ -58,7 +77,12 @@ id = "open-file-viewer-windows"
 platforms = ["windows"]
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
-command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-file-viewer.ps1"]
+# Re-derive the launcher's ABSOLUTE path from the (possibly `\\?\`-prefixed) process cwd, rather than
+# a relative `-File` herdr would fail to resolve under a verbatim cwd. `.Substring(4)` drops `\\?\`.
+command = [
+  "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+  '''$d=[IO.Directory]::GetCurrentDirectory(); if ($d.StartsWith('\\?\')) { $d = $d.Substring(4) }; & (Join-Path (Join-Path $d 'scripts') 'open-file-viewer.ps1')''',
+]
 
 # The same viewer, opened in its own tab instead of a split. Idempotent across tabs: switches
 # to an existing viewer tab rather than duplicating it, and toggles off when already on it.
@@ -75,4 +99,8 @@ id = "open-file-viewer-tab-windows"
 platforms = ["windows"]
 title = "Open file viewer (tab)"
 description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
-command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-file-viewer-tab.ps1"]
+# See open-file-viewer-windows: re-derive the launcher's absolute path from the `\\?\` cwd.
+command = [
+  "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+  '''$d=[IO.Directory]::GetCurrentDirectory(); if ($d.StartsWith('\\?\')) { $d = $d.Substring(4) }; & (Join-Path (Join-Path $d 'scripts') 'open-file-viewer-tab.ps1')''',
+]

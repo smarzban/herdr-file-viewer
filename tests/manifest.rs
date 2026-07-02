@@ -46,6 +46,23 @@ fn declares_split_pane_launching_the_release_binary() {
 }
 
 #[test]
+fn declares_a_windows_pane_naming_the_exe_explicitly() {
+    // herdr does NOT append `.exe` (verified on real Windows, GH #58), so the Windows pane entry
+    // names it. It carries a distinct id (`file-viewer-windows`) since herdr rejects duplicates;
+    // the Windows launcher opens THIS entrypoint (with a clean `--cwd`), leaving the unix pane
+    // untouched.
+    let m = manifest();
+    assert!(
+        m.contains(r#"id = "file-viewer-windows""#),
+        "manifest must declare a distinct Windows pane id file-viewer-windows: {m}"
+    );
+    assert!(
+        m.contains(r#"command = ["./target/release/herdr-file-viewer.exe"]"#),
+        "the Windows pane command must name the .exe explicitly (herdr does not append it): {m}"
+    );
+}
+
+#[test]
 fn declares_at_least_one_action() {
     assert!(
         manifest().contains("[[actions]]"),
@@ -136,9 +153,14 @@ fn open_file_viewer_action_is_platform_gated_unix_and_windows() {
         "open-file-viewer's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
     );
     assert!(
-        m.contains("id = \"open-file-viewer-windows\"\nplatforms = [\"windows\"]")
-            && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer.ps1\"]"),
-        "open-file-viewer's Windows variant must use the distinct id open-file-viewer-windows, gated to [\"windows\"], running the .ps1 launcher: {m}"
+        m.contains("id = \"open-file-viewer-windows\"\nplatforms = [\"windows\"]"),
+        "open-file-viewer's Windows variant must use the distinct id open-file-viewer-windows, gated to [\"windows\"]: {m}"
+    );
+    // The Windows action runs the launcher via `-Command`, re-deriving its ABSOLUTE path from the
+    // (possibly `\\?\`-prefixed) cwd — a relative `-File` fails under herdr's verbatim server cwd.
+    assert!(
+        m.contains("[IO.Directory]::GetCurrentDirectory()") && m.contains("'open-file-viewer.ps1'"),
+        "open-file-viewer's Windows variant must re-derive its absolute path from the cwd and run the .ps1 launcher: {m}"
     );
 }
 
@@ -151,9 +173,13 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
         "open-file-viewer-tab's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
     );
     assert!(
-        m.contains("id = \"open-file-viewer-tab-windows\"\nplatforms = [\"windows\"]")
-            && m.contains("command = [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"scripts/open-file-viewer-tab.ps1\"]"),
-        "open-file-viewer-tab's Windows variant must use the distinct id open-file-viewer-tab-windows, gated to [\"windows\"], running the .ps1 launcher: {m}"
+        m.contains("id = \"open-file-viewer-tab-windows\"\nplatforms = [\"windows\"]"),
+        "open-file-viewer-tab's Windows variant must use the distinct id open-file-viewer-tab-windows, gated to [\"windows\"]: {m}"
+    );
+    assert!(
+        m.contains("[IO.Directory]::GetCurrentDirectory()")
+            && m.contains("'open-file-viewer-tab.ps1'"),
+        "open-file-viewer-tab's Windows variant must re-derive its absolute path from the cwd and run the .ps1 launcher: {m}"
     );
 }
 
