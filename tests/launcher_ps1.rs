@@ -93,7 +93,7 @@ fn manifest_windows_action_commands_parse() {
     let payloads: Vec<&str> = manifest
         .lines()
         .map(str::trim)
-        .filter(|l| l.contains("[IO.Directory]::GetCurrentDirectory()"))
+        .filter(|l| l.contains("ConvertFrom-Json"))
         .map(|l| l.trim_end_matches(',').trim_matches('\'').trim())
         .collect();
 

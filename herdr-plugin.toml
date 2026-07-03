@@ -11,16 +11,15 @@
 #    duplicate action id at load time regardless of platform (verified against herdr 0.7.1),
 #    so the Windows launchers use the `-windows`-suffixed ids `open-file-viewer-windows` /
 #    `open-file-viewer-tab-windows`. On Windows, bind THOSE action ids.
-#  - Windows path handling (verified against real hardware, herdr 0.7.1-preview, GH #58): herdr
-#    does NOT append `.exe`, and it resolves a relative command against the process cwd — which on
-#    Windows is a `\\?\` extended-length (verbatim) path. Verbatim paths reach the OS with NO
-#    normalization, so a relative command (or one containing `/` or `.`) fails to resolve
-#    (ERROR_PATH_NOT_FOUND / os error 3). Two consequences:
-#     * [[panes]] has a distinct Windows entry (`file-viewer-windows`) naming the `.exe` explicitly;
-#       the Windows launcher opens it with `--cwd <plugin-root>` (a normal absolute path) so herdr
-#       resolves the relative command against a normalizable base instead of the `\\?\` server cwd.
-#     * the Windows [[actions]] re-derive the launcher script's absolute path from the cwd (stripping
-#       any `\\?\` prefix) rather than passing a relative `-File` path herdr would spawn under `\\?\`.
+#  - Windows launch (verified on real hardware, herdr 0.7.1-preview, GH #58): herdr can NOT spawn the
+#    manifest's RELATIVE pane command on Windows — it passes the relative program to CreateProcessW,
+#    which resolves it against herdr's OWN directory (not any `--cwd` we set), failing with
+#    ERROR_PATH_NOT_FOUND (os error 3). herdr also reports the plugin root as a `\\?\` verbatim path
+#    and does NOT append `.exe`. So on Windows the launcher scripts spawn the viewer BY ABSOLUTE PATH
+#    (`pane split` / `tab create` + `pane run`), and the Windows [[actions]] locate the launcher
+#    script by asking herdr for its own plugin root (`plugin list`, stripping the `\\?\` prefix)
+#    rather than relying on the process cwd. There is deliberately NO Windows [[panes]] entry — the
+#    manifest pane's relative command is unspawnable there.
 #    No aarch64 Windows target is declared (v1 = x86_64-pc-windows-msvc).
 
 id = "herdr-file-viewer"
@@ -52,15 +51,8 @@ title = "Files"
 placement = "split"
 command = ["./target/release/herdr-file-viewer"]
 
-# Windows pane: a distinct id (herdr rejects duplicates) naming the `.exe` explicitly, since herdr
-# does NOT append it. The Windows launcher opens THIS entrypoint with `--cwd <plugin-root>` so the
-# relative command resolves against a normal path, not the `\\?\` server cwd (see header). Unused on
-# unix — panes are spawned on demand, so an extra entry the unix launchers never open costs nothing.
-[[panes]]
-id = "file-viewer-windows"
-title = "Files"
-placement = "split"
-command = ["./target/release/herdr-file-viewer.exe"]
+# (No Windows [[panes]] entry: herdr can't spawn the relative command on Windows, so the Windows
+# launchers spawn the viewer by absolute path via `pane split`/`tab create` + `pane run` — see header.)
 
 # The action that summons the viewer (bound to a keybinding in herdr config). This is
 # the only way the viewer is opened — there is no [[events]] hook (AC-N4). herdr actions
@@ -77,11 +69,11 @@ id = "open-file-viewer-windows"
 platforms = ["windows"]
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
-# Re-derive the launcher's ABSOLUTE path from the (possibly `\\?\`-prefixed) process cwd, rather than
-# a relative `-File` herdr would fail to resolve under a verbatim cwd. `.Substring(4)` drops `\\?\`.
+# Locate the launcher by asking herdr for its own plugin root (the action's cwd is unreliable on
+# Windows), stripping the `\\?\` verbatim prefix herdr reports, then run the .ps1 by absolute path.
 command = [
   "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-  '''$d=[IO.Directory]::GetCurrentDirectory(); if ($d.StartsWith('\\?\')) { $d = $d.Substring(4) }; & (Join-Path (Join-Path $d 'scripts') 'open-file-viewer.ps1')''',
+  '''$b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer.ps1')''',
 ]
 
 # The same viewer, opened in its own tab instead of a split. Idempotent across tabs: switches
@@ -99,8 +91,8 @@ id = "open-file-viewer-tab-windows"
 platforms = ["windows"]
 title = "Open file viewer (tab)"
 description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
-# See open-file-viewer-windows: re-derive the launcher's absolute path from the `\\?\` cwd.
+# See open-file-viewer-windows: locate the launcher via herdr's own plugin root, not the cwd.
 command = [
   "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-  '''$d=[IO.Directory]::GetCurrentDirectory(); if ($d.StartsWith('\\?\')) { $d = $d.Substring(4) }; & (Join-Path (Join-Path $d 'scripts') 'open-file-viewer-tab.ps1')''',
+  '''$b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
 ]

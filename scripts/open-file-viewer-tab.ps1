@@ -1,6 +1,6 @@
 # open-file-viewer-tab.ps1 -- Windows sibling of scripts/open-file-viewer-tab.sh.
 #
-# Idempotent launcher for the file viewer in its own TAB -- used by the `open-file-viewer-tab`
+# Idempotent launcher for the file viewer in its own TAB -- used by the `open-file-viewer-tab-windows`
 # action and a herdr keybinding (e.g. `prefix+shift+f`). "Open-or-switch, toggle on repeat",
 # scoped across tabs:
 #   - no Files pane anywhere                  -> open the viewer in a new tab (focused)
@@ -10,27 +10,50 @@
 #   - the focused pane IS the Files pane      -> close it ("toggle off"; herdr auto-closes the
 #                                               now-empty tab -- verified)
 #
-# Sibling of scripts/open-file-viewer.ps1 (the split-pane variant). The OPEN/SWITCHTAB/FOCUS/
-# CLOSE decision is computed in-process by the viewer binary
-# (`herdr-file-viewer.exe --launch-decision-tab`, fed the `pane list` JSON on stdin), so it is
-# unit-tested (src/launch.rs) and the pane/tab ids it returns are validated flag-safe
-# (option-injection guard). Any failure degrades to OPEN (open a fresh viewer tab). herdr has no
-# focus-by-id, so an in-tab focus is a `zoom <id> --on/--off` cycle; a cross-tab switch is
-# `tab focus <tab_id>`.
+# Sibling of scripts/open-file-viewer.ps1 (the split-pane variant) -- see its header for WHY the
+# Windows launchers spawn the viewer by ABSOLUTE path (`tab create` + `pane run`) instead of
+# `plugin pane open --entrypoint`: herdr can't spawn the manifest's relative pane command on Windows
+# (CreateProcessW resolves a relative program against herdr's own dir), and stores the plugin root
+# as a `\\?\` verbatim path. The OPEN/SWITCHTAB/FOCUS/CLOSE decision is computed in-process by the
+# viewer binary (`--launch-decision-tab`, fed `pane list` JSON on stdin) and is unit-tested
+# (src/launch.rs). Any failure degrades to OPEN (a fresh viewer tab).
 
 $ErrorActionPreference = 'Continue'
 
 $HerdrBin = if ($env:HERDR_BIN_PATH) { $env:HERDR_BIN_PATH } else { 'herdr' }
 
-# See open-file-viewer.ps1: a NORMAL absolute plugin root (strip any `\\?\` prefix) so herdr resolves
-# the pane's relative command against a normalizable `--cwd`, not the `\\?\` server cwd.
-$PluginRoot = Split-Path -Parent $PSScriptRoot
-if ($PluginRoot.StartsWith('\\?\')) { $PluginRoot = $PluginRoot.Substring(4) }
+function Strip-Verbatim([string]$p) {
+    if ($p -and $p.StartsWith('\\?\')) { return $p.Substring(4) }
+    return $p
+}
+$PluginRoot = Strip-Verbatim (Split-Path -Parent $PSScriptRoot)
 $ViewerBin = Join-Path $PluginRoot 'target\release\herdr-file-viewer.exe'
 
+# Root the tree at the focused pane's cwd (the user's work pane). `pane list` prints JSON by default.
+function Get-UserCwd {
+    try {
+        $focused = (& $HerdrBin pane list | ConvertFrom-Json).result.panes |
+            Where-Object { $_.focused } | Select-Object -First 1
+        if ($focused -and $focused.cwd) { return Strip-Verbatim $focused.cwd }
+    } catch {}
+    return $PluginRoot
+}
+
+function Get-PaneId([string]$json) {
+    return ([regex]'"pane_id":"([^"]+)"').Match($json).Groups[1].Value
+}
+
 function Open-Tab {
-    & $HerdrBin plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer-windows --cwd $PluginRoot --placement tab --focus
-    exit $LASTEXITCODE
+    $cwd = Get-UserCwd
+    # `tab create` makes a new tab with a shell pane (its `root_pane`); run the viewer into it by
+    # absolute path and label the pane "Files" so a later launch-decision recognises it.
+    $out = (& $HerdrBin tab create --cwd $cwd --label Files --focus | Out-String)
+    $np = Get-PaneId $out
+    if ($np) {
+        & $HerdrBin pane run $np "$ViewerBin"
+        & $HerdrBin pane rename $np Files *> $null
+    }
+    exit 0
 }
 
 $Decision = 'OPEN'

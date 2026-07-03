@@ -46,19 +46,20 @@ fn declares_split_pane_launching_the_release_binary() {
 }
 
 #[test]
-fn declares_a_windows_pane_naming_the_exe_explicitly() {
-    // herdr does NOT append `.exe` (verified on real Windows, GH #58), so the Windows pane entry
-    // names it. It carries a distinct id (`file-viewer-windows`) since herdr rejects duplicates;
-    // the Windows launcher opens THIS entrypoint (with a clean `--cwd`), leaving the unix pane
-    // untouched.
+fn declares_no_windows_pane_entry() {
+    // On Windows herdr cannot spawn the manifest's relative pane command (CreateProcessW resolves a
+    // relative program against herdr's own dir, not any `--cwd`), so there is deliberately NO Windows
+    // [[panes]] entry — the Windows launchers spawn the viewer by absolute path via
+    // `pane split`/`tab create` + `pane run` (verified on real hardware, GH #58). Guard that we
+    // didn't leave a dead `.exe` pane entry behind.
     let m = manifest();
     assert!(
-        m.contains(r#"id = "file-viewer-windows""#),
-        "manifest must declare a distinct Windows pane id file-viewer-windows: {m}"
+        !m.contains(r#"id = "file-viewer-windows""#),
+        "there must be no Windows pane entry (absolute-spawn launcher, not a manifest pane): {m}"
     );
     assert!(
-        m.contains(r#"command = ["./target/release/herdr-file-viewer.exe"]"#),
-        "the Windows pane command must name the .exe explicitly (herdr does not append it): {m}"
+        !m.contains("herdr-file-viewer.exe\"]"),
+        "no [[panes]] command should name the .exe (the launcher spawns it by absolute path): {m}"
     );
 }
 
@@ -156,11 +157,11 @@ fn open_file_viewer_action_is_platform_gated_unix_and_windows() {
         m.contains("id = \"open-file-viewer-windows\"\nplatforms = [\"windows\"]"),
         "open-file-viewer's Windows variant must use the distinct id open-file-viewer-windows, gated to [\"windows\"]: {m}"
     );
-    // The Windows action runs the launcher via `-Command`, re-deriving its ABSOLUTE path from the
-    // (possibly `\\?\`-prefixed) cwd — a relative `-File` fails under herdr's verbatim server cwd.
+    // The Windows action runs the launcher via `-Command`, locating it by asking herdr for its own
+    // plugin root (`plugin list`), since the action's cwd is unreliable under herdr's `\\?\` server cwd.
     assert!(
-        m.contains("[IO.Directory]::GetCurrentDirectory()") && m.contains("'open-file-viewer.ps1'"),
-        "open-file-viewer's Windows variant must re-derive its absolute path from the cwd and run the .ps1 launcher: {m}"
+        m.contains("plugin list --json") && m.contains("'open-file-viewer.ps1'"),
+        "open-file-viewer's Windows variant must locate the .ps1 via herdr's plugin root: {m}"
     );
 }
 
@@ -177,9 +178,8 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
         "open-file-viewer-tab's Windows variant must use the distinct id open-file-viewer-tab-windows, gated to [\"windows\"]: {m}"
     );
     assert!(
-        m.contains("[IO.Directory]::GetCurrentDirectory()")
-            && m.contains("'open-file-viewer-tab.ps1'"),
-        "open-file-viewer-tab's Windows variant must re-derive its absolute path from the cwd and run the .ps1 launcher: {m}"
+        m.contains("plugin list --json") && m.contains("'open-file-viewer-tab.ps1'"),
+        "open-file-viewer-tab's Windows variant must locate the .ps1 via herdr's plugin root: {m}"
     );
 }
 

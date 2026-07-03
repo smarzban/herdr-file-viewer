@@ -23,16 +23,17 @@ All notable changes to this project are documented here. The format is based on
   Windows-on-ARM, no code-signing, no Windows renderer-install in this release.)
 
 ### Fixed
-- **Windows launch path under herdr's `\\?\` server cwd (real-hardware findings, GH #58).** On
-  Windows, herdr runs plugin commands against an extended-length (`\\?\`) verbatim working
-  directory, which the OS does not normalize — so a relative pane/action command (or one with
-  `/` or `.`) failed to resolve (`ERROR_PATH_NOT_FOUND`). The Windows launchers now open the pane
-  with an explicit clean `--cwd <plugin-root>` (herdr resolves the relative command against that
-  normalizable base), the manifest gains a distinct Windows pane entry (`file-viewer-windows`)
-  that names the `.exe` explicitly (herdr does not append it), and the Windows actions re-derive
-  the launcher script's absolute path from the cwd (stripping any `\\?\` prefix) instead of
-  passing a relative `-File`. A `windows-latest` test now parses the manifest's inline PowerShell
-  so a syntax error can't reach a real install.
+- **Windows launch, verified end-to-end on real hardware (GH #58).** herdr on Windows can't spawn
+  the manifest's *relative* pane command: it passes the relative program to `CreateProcessW`, which
+  resolves it against herdr's own directory (not any `--cwd`), failing with `ERROR_PATH_NOT_FOUND`
+  (os error 3); herdr also reports the plugin root as a `\\?\` verbatim path and does not append
+  `.exe`. So on Windows the launcher scripts now spawn the viewer **by absolute path** — `pane split`
+  (or `tab create`) + `pane run "<abs .exe>"`, rooted at the user's focused-pane directory and
+  labelled `Files` so the open/focus/close toggle still works — and the Windows actions locate the
+  launcher script by asking herdr for its own plugin root (`plugin list`, stripping `\\?\`) instead
+  of relying on the process cwd. A `windows-latest` test parses the manifest's inline PowerShell and
+  the launcher scripts so a syntax error can't reach a real install. (Renderers `glow`/`bat`/`delta`
+  remain optional runtime installs; without them the viewer shows plain text, unchanged.)
 
 ## [1.7.0] - 2026-06-30
 
