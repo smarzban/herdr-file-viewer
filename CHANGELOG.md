@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Copy a line reference — `L` line-select mode.** With the content pane focused (or zoomed),
+  `L` enters line-select mode: a marker appears on the top visible source line. `j`/`k` (or
+  `↑`/`↓`) move the marker and hold `Shift` (`J`/`K`, or Shift+`↑`/`↓`) to extend a selection;
+  `Enter` — or a double-click — copies the repo-relative reference (`src/app.rs:42` for one line,
+  `src/app.rs:42-58` for a range) to the clipboard over OSC 52, the same path as `y`/`Y`; `Esc`
+  exits. A mouse click places the marker, Shift-click extends, and a double-click copies. Entering
+  from a rendered-markdown or diff view first switches that file to the line-numbered source view,
+  since line numbers only map there. `L` stays focus-gated: with the tree focused it still does the
+  tree's horizontal scroll (unchanged).
+
 ## [1.7.0] - 2026-06-30
 
 ### Added
