@@ -4,44 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-07-05
 
 ### Added
-- **Native Windows support (preview).** The viewer now builds and runs on
-  `x86_64-pc-windows-msvc`, declared as a supported herdr platform alongside Linux and macOS.
-  Windows-specific platform seams: correct git path decoding for non-ASCII filenames, a
-  `NUL`-device git hardening target, an `%LOCALAPPDATA%`-based update-check cache, quote-aware
-  `$EDITOR` parsing (so a `"C:\Program Files\...\Code.exe"`-style path works), a `notepad.exe`
-  default editor, and `.exe`-suffix resolution for the configured herdr binary. Install parity
-  via a new `scripts/fetch-or-build.ps1` (PowerShell 5.1) mirroring the existing prebuilt-binary
-  + SHA-256-verified install with a `cargo build` fallback — no Rust toolchain required for a
-  normal install — plus PowerShell launcher scripts
-  (`scripts/open-file-viewer.ps1`/`-tab.ps1`) reproducing the bash launch-or-focus-or-close
-  toggle. `release.yml` publishes an `x86_64-pc-windows-msvc` binary; `ci.yml` runs the test
-  suite on `windows-latest` as an advisory (non-blocking) job while the platform is preview.
-  Windows support requires herdr's **preview channel**; see the README's Windows section. (No
-  Windows-on-ARM, no code-signing, no Windows renderer-install in this release.)
-
-### Fixed
-- **Windows launch, verified end-to-end on real hardware (GH #58).** herdr on Windows can't spawn
-  the manifest's *relative* pane command: it passes the relative program to `CreateProcessW`, which
-  resolves it against herdr's own directory (not any `--cwd`), failing with `ERROR_PATH_NOT_FOUND`
-  (os error 3); herdr also reports the plugin root as a `\\?\` verbatim path and does not append
-  `.exe`. So on Windows the launcher scripts now spawn the viewer **by absolute path** — `pane split`
-  (or `tab create`) + `pane run "<abs .exe>"`, rooted at the user's focused-pane directory and
-  labelled `Files` so the open/focus/close toggle still works — and the Windows actions locate the
-  launcher script by asking herdr for its own plugin root (`plugin list`, stripping `\\?\`) instead
-  of relying on the process cwd. A `windows-latest` test parses the manifest's inline PowerShell and
-  the launcher scripts so a syntax error can't reach a real install. (Renderers `glow`/`bat`/`delta`
-  remain optional runtime installs; without them the viewer shows plain text, unchanged.)
-- **Windows launcher: spawn the viewer via the PowerShell call operator (GH #58).** herdr's
-  `pane run` types the command into the pane's shell (PowerShell on Windows); a bare path split on a
-  space in the install path (e.g. `C:\Users\First Last\...`), so the viewer never launched for any
-  user whose plugin path contains a space. The launchers now run it as `& "<abs .exe>"` — call
-  operator + quoted path — confirmed live on real Windows from a spaced install path, with a
-  cross-platform test guarding the spawn form on the required CI matrix. `fetch-or-build.ps1` also
-  forces TLS 1.2 so the prebuilt fast path isn't needlessly dropped to a source build on older or
-  policy-locked Windows hosts.
+- **Native Windows support (preview).** The viewer now builds and runs on `x86_64-pc-windows-msvc`,
+  alongside Linux and macOS. Install via herdr's preview channel and summon it with
+  `herdr plugin action invoke open-file-viewer-windows`; see the README's Windows section.
+  Preview is best-effort: no Windows-on-ARM and no code-signing yet.
 
 ## [1.7.0] - 2026-06-30
 
