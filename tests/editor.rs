@@ -76,6 +76,63 @@ fn open_splits_a_configured_editor_with_flags() {
 }
 
 #[test]
+fn open_keeps_a_double_quoted_program_path_with_spaces_as_one_argv0() {
+    // AC-8: a Windows-style `$EDITOR` value quotes a program path containing spaces (e.g.
+    // "C:\Program Files\...\Code.exe" --wait); the quote-aware tokenizer must keep that whole
+    // quoted path as argv[0], not split it on the embedded spaces.
+    let dir = TempDir::new();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "content").unwrap();
+
+    let launcher = EditorLauncher::new(r#""C:\Program Files\Code\Code.exe" --wait"#);
+    let mut sp = FakeSpawner::default();
+    launcher.open(&file, &mut sp).unwrap();
+
+    assert_eq!(
+        sp.spawned,
+        vec![vec![
+            OsString::from(r"C:\Program Files\Code\Code.exe"),
+            OsString::from("--wait"),
+            file.clone().into_os_string(),
+        ]],
+    );
+}
+
+#[test]
+fn open_with_a_bare_unquoted_editor_launches_it_with_just_the_file() {
+    let dir = TempDir::new();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "content").unwrap();
+
+    let launcher = EditorLauncher::new("vi");
+    let mut sp = FakeSpawner::default();
+    launcher.open(&file, &mut sp).unwrap();
+
+    assert_eq!(
+        sp.spawned,
+        vec![vec![OsString::from("vi"), file.clone().into_os_string()]]
+    );
+}
+
+#[test]
+fn open_with_an_empty_editor_still_attempts_a_launch_loudly() {
+    // An empty/whitespace-only `$EDITOR` must not silently exec the file as the program: the
+    // raw (empty) value is still passed through so the launch fails loudly.
+    let dir = TempDir::new();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "content").unwrap();
+
+    let launcher = EditorLauncher::new("");
+    let mut sp = FakeSpawner::default();
+    launcher.open(&file, &mut sp).unwrap();
+
+    assert_eq!(
+        sp.spawned,
+        vec![vec![OsString::from(""), file.clone().into_os_string()]]
+    );
+}
+
+#[test]
 fn launch_failure_is_an_error_not_a_panic_and_leaves_the_file_intact() {
     // A failed launch surfaces as `SpawnError::NotLaunched` (the controller turns it into a
     // non-fatal "could not open editor" notice), never a panic — and the file is untouched

@@ -13,6 +13,10 @@
 //! onto the revealed child, the child's content fills the empty pane — which can only happen
 //! if expand actually revealed it. Content markers are single tokens, so the syntax renderer
 //! (bat, when present) cannot split them and the assertion holds whether or not it is installed.
+//!
+//! Unix-only: see `tests/cli_smoke.rs` for why this `expectrl`-pty e2e suite is not ported to
+//! Windows's `conpty` backend in this feature.
+#![cfg(unix)]
 
 mod common;
 

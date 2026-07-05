@@ -105,7 +105,17 @@ pub fn init_repo_with_commit(dir: &Path) {
 
 /// Canonicalize a path for symlink-stable comparisons (e.g. /tmp on macOS).
 pub fn canon(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // On Windows, `fs::canonicalize` returns an extended-length `\\?\` *verbatim* path, whose
+    // `Prefix` (VerbatimDisk) does NOT compare equal to the ordinary `Disk` prefix on the
+    // non-canonicalized paths the tree builds from a raw root — so `node.path.starts_with(canon)`
+    // (and `== canon`) would spuriously fail. Strip the `\\?\` prefix so canon'd paths line up with
+    // the tree's. No-op on unix and on already-non-verbatim paths.
+    #[cfg(windows)]
+    if let Some(rest) = c.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        return PathBuf::from(rest);
+    }
+    c
 }
 
 /// A `Command` that runs the built viewer binary with its cwd set to `dir`. The e2e tests

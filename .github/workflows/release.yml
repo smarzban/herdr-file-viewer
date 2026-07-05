@@ -20,6 +20,10 @@ jobs:
             triple: x86_64-apple-darwin
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-musl
+          # Windows support is preview; v1 targets x86_64-pc-windows-msvc only (no aarch64 —
+          # AC-N4).
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -57,8 +61,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          asset="herdr-file-viewer-${{ matrix.triple }}"
-          cp "target/${{ matrix.triple }}/release/herdr-file-viewer" "dist/$asset"
+          triple="${{ matrix.triple }}"
+          # Windows binaries (and their published asset) carry the .exe suffix; every other
+          # target is extension-less. This is the only per-OS tweak in the whole release flow —
+          # everything below (SHA256SUMS, artifact upload, the publish job's glob) is reused
+          # as-is (AC-18).
+          if [[ "$triple" == *windows* ]]; then
+            src="target/$triple/release/herdr-file-viewer.exe"
+            asset="herdr-file-viewer-$triple.exe"
+          else
+            src="target/$triple/release/herdr-file-viewer"
+            asset="herdr-file-viewer-$triple"
+          fi
+          cp "$src" "dist/$asset"
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$asset" > "$asset.sha256"

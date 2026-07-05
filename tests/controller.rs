@@ -2071,6 +2071,10 @@ fn copy_abs_path_copies_the_absolute_path() {
     );
 }
 
+// Unix-only: Windows forbids control bytes (ESC/BEL/newline) in filenames, so the hostile file
+// this test needs cannot be created there (`fs::write` fails). The `sanitize_control` defense the
+// copy path applies is platform-agnostic and unit-tested directly; this end-to-end check is unix.
+#[cfg(unix)]
 #[test]
 fn copy_path_strips_control_bytes_from_a_hostile_filename() {
     // A filename is attacker-controllable in a browsed repo and may legally contain control bytes —
@@ -2210,7 +2214,10 @@ fn switch_worktree_preselects_agent_active() {
     // The agent runs in workspace "ws-agent", which the overlay maps to the LINKED worktree —
     // so the pre-select must be the linked row, not the current (main) one. Tier-2 (a unique
     // agent worktree) fires with no own-workspace hint.
-    let linked_path = linked.path().to_str().unwrap();
+    // Forward-slash the path: a raw Windows `\` is an invalid JSON string escape (so the overlay
+    // JSON would fail to parse and the agent match silently vanish), and git emits forward-slash
+    // worktree paths anyway. No-op on unix.
+    let linked_path = linked.path().to_str().unwrap().replace('\\', "/");
     let worktree_json = format!(
         r#"{{"id": 1, "result": {{"worktrees": [{{"path": "{}", "open_workspace_id": "ws-agent"}}]}}}}"#,
         linked_path
@@ -2270,7 +2277,8 @@ fn picker_populates_per_row_agent_statuses_from_the_overlay() {
     let (mut ctrl, _, _) = controller(repo.path(), true, StubGit::default(), false);
 
     // The linked worktree's workspace hosts a REAL agent (`agent` present) reporting `working`.
-    let linked_path = linked.path().to_str().unwrap();
+    // Forward-slash the path (valid JSON on Windows; matches git's forward-slash paths). No-op on unix.
+    let linked_path = linked.path().to_str().unwrap().replace('\\', "/");
     let worktree_json = format!(
         r#"{{"id": 1, "result": {{"worktrees": [{{"path": "{linked_path}", "open_workspace_id": "ws-agent"}}]}}}}"#
     );
@@ -2816,7 +2824,8 @@ impl RecordingHerdr {
     /// Canned valid JSON for the overlay: a worktree list pointing at `linked_path` in
     /// workspace "ws-spy", and an agent in that workspace (Tier-2 pre-select fires).
     fn new(calls: Arc<Mutex<Vec<Vec<String>>>>, linked_path: &std::path::Path) -> Self {
-        let path_str = linked_path.to_str().unwrap_or("");
+        // Forward-slash for valid JSON on Windows (a raw `\` is an invalid JSON escape). No-op on unix.
+        let path_str = linked_path.to_str().unwrap_or("").replace('\\', "/");
         Self {
             calls,
             worktree_json: format!(
@@ -3951,7 +3960,10 @@ fn enter_with_match_closes_finder_and_reveals_file_and_redraws() {
         .strip_prefix(ctrl.root())
         .unwrap()
         .to_string_lossy()
-        .into_owned();
+        // Tree node paths are OS-native (`\` on Windows); the finder's index candidates are
+        // forward-slash (git-style, from `index::build`). Compare on the shared forward-slash
+        // form. No-op on unix.
+        .replace('\\', "/");
     assert_eq!(
         selected_rel, selected_path,
         "tree cursor points to the confirmed file (AC-11)"
@@ -4923,7 +4935,10 @@ fn finder_works_fully_in_a_non_git_directory() {
         .strip_prefix(ctrl.root())
         .unwrap()
         .to_string_lossy()
-        .into_owned();
+        // Tree node paths are OS-native (`\` on Windows); the finder's index candidates are
+        // forward-slash (git-style, from `index::build`). Compare on the shared forward-slash
+        // form. No-op on unix.
+        .replace('\\', "/");
     assert_eq!(
         selected_rel, *matched_path,
         "the tree cursor points to the jumped-to file in a non-git root (AC-19)"
