@@ -84,6 +84,14 @@ impl Controller {
     ///
     /// Read-only: touches only in-memory modal / view-override / scroll state.
     pub fn enter_line_select_at_top(&mut self) {
+        // Reset double-click state (mirrors open_finder/open_help): a tree click made just before
+        // entry must not pair with the FIRST content click inside the mode as a double-click —
+        // `is_double_click` only compares the row, not the column/pane, so a stale prior-context
+        // click could otherwise fire `copy_line_reference` (copy + close) before the marker is
+        // ever placed. Cleared here, at the top of entry, so BOTH the synchronous path below and
+        // the deferred (T-6 auto-switch) path are covered — the clear happens when entry begins,
+        // not when the (possibly-deferred) modal actually opens.
+        self.last_click = None;
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
             // Source-mapped AND the displayed content is the latest render → the line→row mapping is

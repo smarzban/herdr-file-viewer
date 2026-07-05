@@ -6,15 +6,16 @@
 mod common;
 
 use common::{RecordingClipboard, TempDir, resolved};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_file_viewer::controller::{
     Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
     RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
-use herdr_file_viewer::presenter::Focus;
+use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::view_policy::ViewMode;
+use ratatui::layout::Rect;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -627,5 +628,247 @@ fn clipboard_error_shows_failure_notice_no_panic() {
     assert!(
         !ctrl.line_select_active(),
         "the mode closes even on a copy failure (the notice conveys the outcome)"
+    );
+}
+
+// ── T-8: mouse — click sets marker, shift-click extends, double-click copies ──────
+
+/// A left mouse event (button `Up` unless overridden by the kind) with no modifier at `(col, row)`.
+fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// The same event with the Shift modifier set (a real mouse modifier, unlike the uppercase-char
+/// keyboard convention).
+fn shift_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::SHIFT,
+    }
+}
+
+/// Geometry whose content interior starts at screen row 1 (`content_inner.y == 1`), so a click on
+/// screen row `r` maps to content row `r - 1` — and, with `content_scroll == 0`, source line `r`.
+fn content_geometry() -> PaneGeometry {
+    PaneGeometry {
+        content_inner: Some(Rect {
+            x: 41,
+            y: 1,
+            width: 58,
+            height: 20,
+        }),
+        divider_x: Some(40),
+        ..PaneGeometry::default()
+    }
+}
+
+/// Enter line-select at the top of the file (line 1) with the content geometry wired up, so a
+/// click on the content pane hit-tests as `Content` and maps 1:1 to a source line.
+fn enter_line_select_top(ctrl: &mut Controller) {
+    await_marker(ctrl, "line0");
+    ctrl.set_content_viewport(80, 20); // full 20-line body fits → content_scroll stays 0
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker collapsed on the top line"
+    );
+}
+
+#[test]
+fn click_sets_marker_to_clicked_source_line() {
+    // AC-8: a plain left-click (release) in the content pane moves the marker to the clicked
+    // source line, collapsed. Screen row 3, content top row 1, scroll 0 → source line 3.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    assert!(fx.redraw, "a click that moves the marker redraws");
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((3, 3)),
+        "AC-8: a click places the marker on the clicked source line (3)"
+    );
+}
+
+#[test]
+fn shift_click_extends_selection() {
+    // AC-12: a Shift+left-click extends from the held anchor rather than collapsing. Anchor placed
+    // at line 4 by a plain click, then a Shift-click on the row for line 7 → selection (4, 7).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    // Plain click at row 4 → anchor + marker at line 4.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((4, 4)),
+        "precondition: anchor placed at line 4"
+    );
+
+    // Shift-click at row 7 → marker to 7, anchor 4 held → (4, 7).
+    ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 7));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((4, 7)),
+        "AC-12: shift-click extends from the anchor (4) to the clicked line (7)"
+    );
+
+    // A second shift-click ABOVE the anchor proves the anchor is still held at 4.
+    ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 2));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((2, 4)),
+        "AC-12: the anchor (4) stays put; extending above it yields (2, 4)"
+    );
+}
+
+#[test]
+fn double_click_copies_reference() {
+    // AC-9: two left-clicks on the same content row within the double-click window copy the
+    // `path:line` reference for that row and close the mode — the same confirm as Enter.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    // First click moves the marker to line 3; the second (same row, within the window) is the
+    // double-click that copies and closes.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    assert!(
+        fx.redraw,
+        "the copy redraws to show the confirmation notice"
+    );
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:3"),
+        "AC-9: double-click copies the reference for the clicked line"
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "AC-9: the double-click closes the mode (like Enter)"
+    );
+}
+
+#[test]
+fn click_outside_content_is_inert() {
+    // A click outside the content region is inert for the mode (it does not move the marker) and
+    // does not leak to the columns. Row 3, column 5 is the tree column, not the content pane.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 3));
+    assert!(!fx.redraw, "a click outside the content pane is inert");
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "the marker is unchanged by an out-of-content click"
+    );
+    assert!(
+        ctrl.line_select_active(),
+        "the mode stays open on an out-of-content click"
+    );
+}
+
+#[test]
+fn press_and_drag_do_not_move_the_marker() {
+    // Only a completed left-click (Up) acts; a press (Down) or drag must be inert so the mode keeps
+    // the mouse and no divider/scrollbar drag starts underneath.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 6));
+    assert!(!fx.redraw, "a press is inert in line-select mode");
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 6));
+    assert!(!fx.redraw, "a drag is inert in line-select mode");
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "neither a press nor a drag moves the marker"
+    );
+}
+
+#[test]
+fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
+    // BUG regression: entering line-select mode did not clear `self.last_click`, so a tree-row
+    // click made just before entry could pair with the FIRST content click at the same screen row
+    // as a double-click — `is_double_click` only compares the row (not the column/pane) — firing
+    // `copy_line_reference` (copy + close) before the marker was ever placed by a real content
+    // click. Every other modal already guards this (`open_finder`/`open_help` clear `last_click`
+    // on open); line-select's entry point must too.
+    let dir = TempDir::new();
+    for name in ["aa.txt", "bb.txt", "code.rs"] {
+        std::fs::write(dir.path().join(name), "placeholder\n").unwrap();
+    }
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+    ctrl.set_content_viewport(80, 20); // full 20-line body fits → content_scroll stays 0
+
+    // Geometry with a tree interior AND a content interior that share screen row 3: tree row 3
+    // (tree_inner.y == 1) maps to node index 2 — the 3rd of 3 files, "code.rs" — and content row 3
+    // (content_inner.y == 1, content_scroll 0) maps to source line 3.
+    let mut geometry = content_geometry();
+    geometry.tree_inner = Some(Rect {
+        x: 1,
+        y: 1,
+        width: 38,
+        height: 20,
+    });
+    ctrl.set_pane_geometry(geometry);
+
+    // A tree-row click at screen row 3 selects "code.rs" (idx 2) and sets
+    // `last_click = (_, 3, now)` — the stale prior-context click.
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
+    assert_eq!(
+        ctrl.tree().cursor(),
+        2,
+        "precondition: the tree click selected the 3rd node (code.rs)"
+    );
+    await_marker(&mut ctrl, "line0"); // let the re-render triggered by the tree click land
+
+    // Line-select is entered next (as `L` does on content focus), synchronously — the selection
+    // is a source-mapped file and its render is fully applied.
+    ctrl.enter_line_select_at_top();
+    assert!(
+        ctrl.line_select_active(),
+        "precondition: the mode opened synchronously"
+    );
+
+    // The FIRST content click, at the SAME screen row (3) the stale tree click used, must place
+    // the marker on line 3 — not pair with the stale tree click as a double-click.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    assert!(
+        fx.redraw,
+        "the first content click places the marker and redraws"
+    );
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((3, 3)),
+        "the first content click must place the marker — not fire a stale cross-context double-click"
+    );
+    assert!(
+        ctrl.line_select_active(),
+        "the mode must stay open — a stale pairing must not copy+close it before any real content click"
+    );
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "nothing should have been copied by a stale-click misfire"
     );
 }

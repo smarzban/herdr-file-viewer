@@ -12,19 +12,69 @@ impl Controller {
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Modal gate, exhaustive over `Modal` (so a new overlay variant forces a mouse-routing
         // decision here, mirroring the keyboard gate in `handle`):
-        // - Picker / Prompt / LineSelect are keyboard-only — swallow the mouse entirely. Without
-        //   this a click/wheel would reach the tree/content beneath and change the selection under
-        //   the modal, so a later confirm would act on the WRONG file (or strand an override on a
-        //   dir). (Line-select's own mouse behaviour, if any, lands with its handler in a later task.)
+        // - Picker / Prompt are keyboard-only — swallow the mouse entirely. Without this a
+        //   click/wheel would reach the tree/content beneath and change the selection under the
+        //   modal, so a later confirm would act on the WRONG file (or strand an override on a dir).
+        // - LineSelect owns the mouse over the content pane: route to its own handler (BEFORE the
+        //   column handler) so a click places/extends the marker and never leaks to the columns or
+        //   starts a divider/scrollbar drag while the mode is active (AC-8/AC-9/AC-12).
         // - Help / Finder ARE mouse-interactive (wheel scrolls, click selects/switches): route to
         //   their own handler, which consumes every event and never leaks to the columns (AC-21).
         // - None: no modal → the two-column mouse handler below.
         match self.modal {
-            Modal::Picker(_) | Modal::Prompt(_) | Modal::LineSelect(_) => Effects::noop(),
+            Modal::Picker(_) | Modal::Prompt(_) => Effects::noop(),
+            Modal::LineSelect(_) => self.handle_line_select_mouse(ev),
             Modal::Help(_) => self.handle_help_mouse(ev),
             Modal::Finder(_) => self.handle_finder_mouse(ev),
             Modal::None => self.handle_column_mouse(ev),
         }
+    }
+
+    /// Mouse handling while line-select mode owns the pointer (copy-line-reference). The mode is
+    /// keyboard-first, but a click is a natural way to place the marker: a left **release** in the
+    /// content pane moves the marker to the clicked source line (AC-8), a Shift-click extends the
+    /// selection from the held anchor (AC-12), and a double-click copies the reference and closes
+    /// the mode (AC-9) — mirroring the keyboard move / Shift-move / Enter. Every other event kind
+    /// (press / drag / wheel) is inert, so a click can't start a divider or scrollbar drag while
+    /// the mode holds the mouse. A click outside the content region is inert too and clears any
+    /// pending double-click, so a stray click can't pair a later one across regions.
+    fn handle_line_select_mouse(&mut self, ev: MouseEvent) -> Effects {
+        // Act only on a completed left-click (consistent with `handle_click`); swallow the rest so
+        // the mode keeps the mouse and no divider/scrollbar drag starts underneath.
+        if ev.kind != MouseEventKind::Up(MouseButton::Left) {
+            return Effects::noop();
+        }
+        let (col, row) = (ev.column, ev.row);
+        if self.hit_test(col, row) != MouseRegion::Content {
+            self.last_click = None; // outside content → inert, and break any pending double-click
+            return Effects::noop();
+        }
+        // Map the clicked screen row to a 1-based source line. The content area's top row is the
+        // content rect's `y`; the source→display mapping is 1:1 in SyntaxContent (the mode's only
+        // view). Clamp into `[1, line_count]`. `hit_test == Content` guarantees `content_inner` is
+        // `Some` and `row >= content_inner.y`, so the subtraction never underflows.
+        let content_top = self.geom.content_inner.map_or(row, |c| c.y);
+        let last = self.content.lines.len().max(1);
+        let line = (self.content_scroll as usize + row.saturating_sub(content_top) as usize + 1)
+            .clamp(1, last);
+
+        // Reuse the exact click-detection the columns use: same-row within the window is a
+        // double-click, and every non-content click above cleared `last_click`.
+        let now = Instant::now();
+        let double = is_double_click(self.last_click, (col, row), now);
+        self.last_click = Some((col, row, now));
+
+        if double {
+            return self.copy_line_reference(); // AC-9: copy + close, same as Enter
+        }
+        if let Some(state) = self.modal.line_select_mut() {
+            if ev.modifiers.contains(KeyModifiers::SHIFT) {
+                state.extend_to(line, last); // AC-12: shift-click extends from the anchor
+            } else {
+                state.move_to(line, last); // AC-8: plain click places the marker
+            }
+        }
+        Effects::redraw()
     }
 
     /// Handle a mouse event over the two columns, with no modal open (the [`handle_mouse`] gate
