@@ -361,3 +361,132 @@ fn marker_scrolls_into_view_when_moved_past_viewport() {
         "marker clamps at the last line"
     );
 }
+
+// ── T-6: auto-switch-to-source on enter (AC-15) ──────────────────────────────────
+
+#[test]
+fn enter_from_markdown_switches_to_source_then_activates() {
+    // AC-15: entering line-select on a file in a *transformed* view (here RenderedMarkdown, a
+    // markdown file's default) must NOT open the modal immediately — it switches the file to the
+    // source-mapped content view and defers the entry until that render lands, then drops the
+    // marker on the top visible source line (line 1 after the scroll reset).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("notes.md"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+    ctrl.set_content_viewport(80, 10);
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::RenderedMarkdown),
+        "precondition: a markdown file defaults to a transformed view"
+    );
+
+    ctrl.enter_line_select_at_top();
+    // Deferred: not active yet, but a SyntaxContent override was set and the entry is queued.
+    assert!(
+        !ctrl.line_select_active(),
+        "AC-15: deferred — line-select is not active until the source render lands"
+    );
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "AC-15: the override switched the file to the source-mapped content view"
+    );
+    assert!(
+        ctrl.line_select_pending(),
+        "AC-15: the entry is queued against the switch render"
+    );
+
+    // Pump poll() until the switch render lands and line-select opens.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ctrl.line_select_pending() {
+        ctrl.poll();
+        assert!(
+            Instant::now() < deadline,
+            "the deferred line-select never activated"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "still in the source-mapped view after the render landed"
+    );
+    assert!(
+        ctrl.line_select_active(),
+        "AC-15: line-select is active once the source render lands"
+    );
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "AC-15: marker on the top visible source line (line 1 after the scroll reset)"
+    );
+}
+
+#[test]
+fn superseding_render_clears_pending() {
+    // AC-15: after a deferred entry, a NEWER render dispatch (here view-cycle) supersedes it — the
+    // queued entry is cleared and the stale render must NOT spuriously open line-select.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("notes.md"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+    ctrl.set_content_viewport(80, 10);
+
+    ctrl.enter_line_select_at_top();
+    assert!(
+        ctrl.line_select_pending(),
+        "precondition: the entry is queued"
+    );
+
+    // A newer render dispatch supersedes it (mirrors pending_goto's supersede via dispatch_render).
+    ctrl.handle(Intent::CycleView);
+    assert!(
+        !ctrl.line_select_pending(),
+        "AC-15: a newer render dispatch clears the pending line-select entry"
+    );
+
+    // Let the cycle render (and any stale one) drain; line-select must stay closed.
+    await_marker(&mut ctrl, "line0");
+    for _ in 0..5 {
+        ctrl.poll();
+    }
+    assert!(
+        !ctrl.line_select_active(),
+        "AC-15: the superseded entry did not open line-select on the stale render"
+    );
+    assert!(!ctrl.line_select_pending(), "AC-15: pending stays cleared");
+}
+
+#[test]
+fn enter_from_source_is_synchronous() {
+    // AC-15 fast path: entering when the file is already source-mapped (SyntaxContent) AND its render
+    // is up to date opens the modal immediately, with nothing queued.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0"); // a .rs file defaults to SyntaxContent; render landed
+    ctrl.set_content_viewport(80, 10);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "precondition: already in the source-mapped view"
+    );
+    ctrl.scroll_to_line(5); // line 5 at the top of the viewport
+
+    ctrl.enter_line_select_at_top();
+    assert!(
+        !ctrl.line_select_pending(),
+        "AC-15: the synchronous fast path queues nothing"
+    );
+    assert!(
+        ctrl.line_select_active(),
+        "AC-15: line-select opens immediately on an up-to-date source view"
+    );
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 5)),
+        "marker on the top visible source line (5)"
+    );
+}

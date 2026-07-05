@@ -70,21 +70,55 @@ impl LineSelectState {
 }
 
 impl Controller {
-    /// Enter line-select mode with the marker on the top *visible* source line — the source-view
-    /// case (AC-1). The top visible line is `content_scroll + 1` (1-based), clamped into
-    /// `[1, line_count]` so an empty/short file still yields a valid line 1. The selection starts
-    /// collapsed (anchor == marker); the user moves/extends it from here (T-5). The
-    /// transformed/auto-switch view case is T-6. Read-only: touches only in-memory modal state.
+    /// Enter line-select mode with the marker on the top *visible* source line (AC-1, AC-15).
+    ///
+    /// - **Source view, up to date** (`SyntaxContent` AND `applied_seq == latest_seq`): the
+    ///   line→row mapping is valid now, so open the modal synchronously on `content_scroll + 1`
+    ///   (1-based), clamped into `[1, line_count]` so an empty/short file still yields a valid line 1.
+    ///   The selection starts collapsed (anchor == marker); the user moves/extends it from here (T-5).
+    /// - **Transformed view, or a source render still in flight**: a source line has no display row in
+    ///   a transformed view (RenderedMarkdown / Diff / FullDiff), and a still-in-flight source render
+    ///   holds stale content — either way the marker can't be placed now. If the view is transformed,
+    ///   switch this file to the source-mapped content view (`SyntaxContent` override + re-render);
+    ///   then queue the entry against the dispatched render's seq. [`poll`](Controller::poll) opens the
+    ///   modal at the top visible source line once that render lands (the same seq-guard `pending_goto`
+    ///   uses). This faithfully mirrors the proven go-to-line auto-switch machinery.
+    ///
+    /// Read-only: touches only in-memory modal / view-override / scroll state.
     pub fn enter_line_select_at_top(&mut self) {
-        let last = self.content.lines.len().max(1);
-        let top = (self.content_scroll as usize + 1).clamp(1, last);
-        self.modal = Modal::LineSelect(LineSelectState::new(top));
+        let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
+        if source_mapped && self.applied_seq == self.latest_seq {
+            // Source-mapped AND the displayed content is the latest render → the line→row mapping is
+            // valid now, so open synchronously (the T-3 path, unchanged).
+            let last = self.content.lines.len().max(1);
+            let top = (self.content_scroll as usize + 1).clamp(1, last);
+            self.modal = Modal::LineSelect(LineSelectState::new(top));
+        } else if let Some(path) = self
+            .tree
+            .selected()
+            .filter(|node| node.kind == NodeKind::File)
+            .map(|node| node.path.clone())
+        {
+            // Either a transformed view (no 1:1 source→display row) or a source render still in flight
+            // (the override reports SyntaxContent before its render lands). Switch the view only when we
+            // must (a transformed view), then queue the entry against the dispatched render's seq;
+            // `poll` opens the modal once the matching source-mapped render lands (AC-15). `dispatch_render`
+            // bumps `latest_seq`, so read it AFTER the (re)dispatch — mirrors `pending_goto`.
+            if !source_mapped {
+                self.overrides.insert(path, ViewMode::SyntaxContent);
+                self.dispatch_render();
+            }
+            self.pending_line_select = Some(self.latest_seq);
+        }
     }
 
     /// Leave line-select mode without copying (AC-4): close the modal, touching no clipboard and
-    /// leaving the content scroll unchanged. Mirrors the finder/prompt cancel path.
+    /// leaving the content scroll unchanged. Mirrors the finder/prompt cancel path. Also drops any
+    /// still-queued deferred entry (AC-15), so a superseded/abandoned auto-switch can't reopen the
+    /// modal when its render lands.
     pub fn exit_line_select(&mut self) {
         self.modal = Modal::None;
+        self.pending_line_select = None;
     }
 
     /// Whether line-select mode is currently active. Exposed for the Presenter (T-9) and tests.

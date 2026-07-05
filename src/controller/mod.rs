@@ -450,6 +450,15 @@ pub struct Controller {
     /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
     /// jump is pending; superseded (cleared) by any newer render dispatch.
     pending_goto: Option<(u64, usize)>,
+    /// A queued line-select entry awaiting its source re-render: the render seq to wait for. Set when
+    /// `L` enters line-select in a **transformed** view (RenderedMarkdown / Diff / FullDiff) or while a
+    /// source render is still in flight — the file is switched to the source-mapped content view and the
+    /// marker can't be placed until that render lands, so it is queued against the dispatched render's
+    /// seq and applied by [`poll`] (AC-15). Unlike [`pending_goto`](Self::pending_goto) there is no
+    /// user-specified target line: the marker always lands on the **top visible source line** of the
+    /// freshly-switched view (line 1 after the render resets the scroll). `None` when no entry is
+    /// pending; superseded (cleared) by any newer render dispatch — exactly like `pending_goto`.
+    pending_line_select: Option<u64>,
     /// The seq of the render result currently held in [`content`](Self::content), bumped by [`poll`]
     /// each time it applies a result. Equal to `latest_seq` exactly when the latest dispatched render
     /// has landed; lagging while one is in flight. Lets a synchronous go-to-line jump tell "content is
@@ -550,6 +559,7 @@ impl Controller {
             status_rx: None,
             modal: Modal::None,
             pending_goto: None,
+            pending_line_select: None,
             applied_seq: 0,
             search: None,
             herdr: None,
@@ -1588,6 +1598,14 @@ impl Controller {
         self.pending_goto.map(|(_, line)| line)
     }
 
+    /// Whether a deferred line-select entry is queued against an in-flight source render (AC-15):
+    /// set when `L` enters on a transformed / still-rendering view (the marker waits for the
+    /// source-mapped re-render), cleared by `poll` once that render lands and the marker is placed,
+    /// or superseded by any newer render dispatch. Exposed for tests.
+    pub fn line_select_pending(&self) -> bool {
+        self.pending_line_select.is_some()
+    }
+
     /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
     /// (AC-2) and the Presenter's bottom prompt line. Mirrors `finder_query()`.
     pub fn prompt_query(&self) -> &str {
@@ -1665,6 +1683,11 @@ impl Controller {
         // navigated away before an auto-switch render landed). The auto-switch path sets its own
         // `pending_goto` AFTER calling this, so its jump survives; only stale ones are cleared.
         self.pending_goto = None;
+        // Same for a queued line-select entry (AC-15): a newer render supersedes an OLDER auto-switch
+        // entry. The auto-switch path re-sets `pending_line_select` AFTER calling this (capturing the
+        // fresh `latest_seq`), so its own entry survives; a re-root clears it too, since `re_root` ends
+        // in `dispatch_render` — the same mechanism that clears `pending_goto`.
+        self.pending_line_select = None;
         // AC-20: any displayed-content change (file-select, view-cycle, baseline-toggle, refresh,
         // go-to-line auto-switch, re-root, etc.) clears a committed search and its highlighting.
         // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets
@@ -1754,6 +1777,18 @@ impl Controller {
                 {
                     self.scroll_to_line(line);
                     self.pending_goto = None;
+                }
+                // A queued line-select entry (auto-switch from a transformed view, AC-15) opens once
+                // ITS render lands — the same seq-guard `pending_goto` uses. The source-mapped content
+                // is now applied and the scroll was reset to the top by `dispatch_render`, so the marker
+                // lands on the top visible source line (`content_scroll + 1`), clamped to a valid line.
+                if let Some(pseq) = self.pending_line_select
+                    && pseq == seq
+                {
+                    let last = self.content.lines.len().max(1);
+                    let top = (self.content_scroll as usize + 1).clamp(1, last);
+                    self.modal = Modal::LineSelect(LineSelectState::new(top));
+                    self.pending_line_select = None;
                 }
                 // A render that was in flight when a search was opened/committed lands here and
                 // swaps self.content; matches computed against the OLD content are now stale.

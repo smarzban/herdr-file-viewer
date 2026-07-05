@@ -1364,10 +1364,13 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
     // When the content pane is focused, H never moves the tree (so it doesn't collide with the
     // content pane's own `←`/`→` h-scroll, which lives on the same keys via Expand/Collapse when
     // content-focused). `L` no longer h-scrolls the tree on content focus either, but — per
-    // ADR-0010 (copy-line-reference, T-4) — it is not simply inert: it now enters line-select
-    // instead, since the content pane already has a rendered (placeholder) line at this point
-    // (`dispatch_render`'s "Rendering…" text). The genuinely-inert (no content yet) case is
-    // covered by `l_on_empty_content_is_inert`.
+    // ADR-0010 (copy-line-reference, T-4) — it is not simply inert: it enters line-select instead,
+    // since the content pane already has a rendered (placeholder) line at this point
+    // (`dispatch_render`'s "Rendering…" text). This test never awaits the render, so the source
+    // render is still in flight (`applied_seq != latest_seq`); per T-6 (AC-15) the entry is then
+    // DEFERRED — queued against the in-flight render rather than opened on stale placeholder content
+    // — so `line_select_pending()` is set and the modal opens later, in `poll`. The genuinely-inert
+    // (no content yet) case is covered by `l_on_empty_content_is_inert`.
     ctrl.handle(Intent::ToggleFocus);
     assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
     let before = ctrl.view_state().tree_hscroll;
@@ -1377,15 +1380,16 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
         "TreeScrollRight on content focus now enters line-select (ADR-0010), which redraws"
     );
     assert!(
-        ctrl.line_select_active(),
-        "TreeScrollRight on content focus enters line-select rather than h-scrolling the tree"
+        ctrl.line_select_pending(),
+        "TreeScrollRight on content focus enters line-select (deferred against the in-flight source \
+         render) rather than h-scrolling the tree"
     );
     assert_eq!(
         ctrl.view_state().tree_hscroll,
         before,
         "tree hscroll itself is untouched by the line-select entry"
     );
-    ctrl.exit_line_select(); // back to a clean, no-modal controller for the next assertion
+    ctrl.exit_line_select(); // drop the queued entry → clean, no-modal controller for the next assertion
     let fx = ctrl.handle(Intent::TreeScrollLeft);
     assert!(
         !fx.redraw,
