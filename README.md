@@ -172,8 +172,10 @@ on your clipboard, your terminal likely needs OSC 52 / clipboard-write enabled (
 **line-select mode**: a marker lands on the top visible line, `j`/`k` (or `↑`/`↓`) move it, and
 holding `Shift` (`J`/`K`, or Shift+`↑`/`↓`) extends the selection over a range. `Enter` — or a
 double-click — copies a repo-relative reference to the clipboard: `src/app.rs:42` for a single
-line, `src/app.rs:42-58` for a range. A mouse **click** places the marker, **Shift-click**
-extends, and a **double-click** copies; `Esc` leaves the mode. The copy uses the same **OSC 52**
+line, `src/app.rs:42-58` for a range. A mouse **click** places the marker and a **double-click**
+copies; `Esc` leaves the mode. (Mouse shift-click extend isn't supported — most terminals reserve
+`Shift`+mouse for their own selection — so use keyboard `Shift`+`j`/`k` to extend from the mouse.)
+The copy uses the same **OSC 52**
 path as `y`/`Y`, so the reference is ready to paste straight into an agent chat or an issue to
 point at exact lines. Because line numbers only map onto the source, entering line-select from a
 rendered-markdown or diff view first switches that file to the line-numbered content view. With

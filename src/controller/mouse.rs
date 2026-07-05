@@ -16,7 +16,7 @@ impl Controller {
         //   click/wheel would reach the tree/content beneath and change the selection under the
         //   modal, so a later confirm would act on the WRONG file (or strand an override on a dir).
         // - LineSelect owns the mouse over the content pane: route to its own handler (BEFORE the
-        //   column handler) so a click places/extends the marker and never leaks to the columns or
+        //   column handler) so a click places the marker and never leaks to the columns or
         //   starts a divider/scrollbar drag while the mode is active (AC-8/AC-9/AC-12).
         // - Help / Finder ARE mouse-interactive (wheel scrolls, click selects/switches): route to
         //   their own handler, which consumes every event and never leaks to the columns (AC-21).
@@ -32,12 +32,14 @@ impl Controller {
 
     /// Mouse handling while line-select mode owns the pointer (copy-line-reference). The mode is
     /// keyboard-first, but a click is a natural way to place the marker: a left **release** in the
-    /// content pane moves the marker to the clicked source line (AC-8), a Shift-click extends the
-    /// selection from the held anchor (AC-12), and a double-click copies the reference and closes
-    /// the mode (AC-9) — mirroring the keyboard move / Shift-move / Enter. Every other event kind
-    /// (press / drag / wheel) is inert, so a click can't start a divider or scrollbar drag while
-    /// the mode holds the mouse. A click outside the content region is inert too and clears any
-    /// pending double-click, so a stray click can't pair a later one across regions.
+    /// content pane ALWAYS moves the marker to the clicked source line (AC-8), regardless of the
+    /// Shift modifier — herdr and most terminals reserve Shift+mouse for native text selection, so
+    /// a shift-click extend can never be relied on to reach the plugin (keyboard `Shift`+`j`/`k`
+    /// is the supported way to extend). A double-click copies the reference and closes the mode
+    /// (AC-9) — mirroring the keyboard move / Enter. Every other event kind (press / drag / wheel)
+    /// is inert, so a click can't start a divider or scrollbar drag while the mode holds the
+    /// mouse. A click outside the content region is inert too and clears any pending double-click,
+    /// so a stray click can't pair a later one across regions.
     fn handle_line_select_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Act only on a completed left-click (consistent with `handle_click`); swallow the rest so
         // the mode keeps the mouse and no divider/scrollbar drag starts underneath.
@@ -68,11 +70,13 @@ impl Controller {
             return self.copy_line_reference(); // AC-9: copy + close, same as Enter
         }
         if let Some(state) = self.modal.line_select_mut() {
-            if ev.modifiers.contains(KeyModifiers::SHIFT) {
-                state.extend_to(line, last); // AC-12: shift-click extends from the anchor
-            } else {
-                state.move_to(line, last); // AC-8: plain click places the marker
-            }
+            // A single click ALWAYS places the marker (collapsing the anchor to the clicked
+            // line), regardless of the Shift modifier: herdr and most terminals reserve
+            // Shift+mouse for their own native text selection, so a shift-click never reliably
+            // reaches the plugin. If one does get through anyway, it harmlessly places the
+            // marker rather than claiming an extend we can't guarantee. Keyboard `Shift`+`j`/`k`
+            // (and Shift+arrows) is the supported way to extend a multi-line selection.
+            state.move_to(line, last); // AC-8: click places the marker
         }
         Effects::redraw()
     }

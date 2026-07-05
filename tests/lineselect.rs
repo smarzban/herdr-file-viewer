@@ -631,7 +631,8 @@ fn clipboard_error_shows_failure_notice_no_panic() {
     );
 }
 
-// ── T-8: mouse — click sets marker, shift-click extends, double-click copies ──────
+// ── T-8: mouse — click sets marker (shift-click is treated as a plain click), double-click
+// copies ──────────────────────────────────────────────────────────────────────────────────
 
 /// A left mouse event (button `Up` unless overridden by the kind) with no modifier at `(col, row)`.
 fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
@@ -702,36 +703,34 @@ fn click_sets_marker_to_clicked_source_line() {
 }
 
 #[test]
-fn shift_click_extends_selection() {
-    // AC-12: a Shift+left-click extends from the held anchor rather than collapsing. Anchor placed
-    // at line 4 by a plain click, then a Shift-click on the row for line 7 → selection (4, 7).
+fn shift_click_places_marker_like_a_plain_click() {
+    // Amended T-8: herdr and most terminals reserve Shift+mouse for their own native text
+    // selection, so a shift-click can never reliably reach the plugin — mouse shift-click
+    // extend is removed. A Shift+left-click now behaves exactly like a plain click: it places
+    // the marker on the clicked source line, collapsed (anchor collapses to the clicked line,
+    // NOT extended from a prior anchor). Keyboard `Shift`+`j`/`k` (and Shift+arrows) remains the
+    // supported way to extend a multi-line selection — that path is unchanged.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    // Plain click at row 4 → anchor + marker at line 4.
+    // Plain click at row 4 → marker at line 4 (this would be the "anchor" under the old
+    // extend behavior, but a subsequent shift-click no longer honors it).
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
     assert_eq!(
         ctrl.line_selection(),
         Some((4, 4)),
-        "precondition: anchor placed at line 4"
+        "precondition: marker placed at line 4"
     );
 
-    // Shift-click at row 7 → marker to 7, anchor 4 held → (4, 7).
-    ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 7));
+    // Shift-click at row 7 → marker moves to 7, collapsed — NOT (4, 7).
+    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 7));
+    assert!(fx.redraw, "a shift-click that moves the marker redraws");
     assert_eq!(
         ctrl.line_selection(),
-        Some((4, 7)),
-        "AC-12: shift-click extends from the anchor (4) to the clicked line (7)"
-    );
-
-    // A second shift-click ABOVE the anchor proves the anchor is still held at 4.
-    ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 2));
-    assert_eq!(
-        ctrl.line_selection(),
-        Some((2, 4)),
-        "AC-12: the anchor (4) stays put; extending above it yields (2, 4)"
+        Some((7, 7)),
+        "shift-click places the marker on the clicked line like a plain click, not extending"
     );
 }
 
