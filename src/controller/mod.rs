@@ -25,6 +25,7 @@ mod finder;
 mod git_apply;
 mod help;
 mod infile;
+mod lineselect;
 mod mouse;
 mod picker;
 
