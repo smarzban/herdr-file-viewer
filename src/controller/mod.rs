@@ -1125,7 +1125,27 @@ impl Controller {
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
             Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
-            Intent::TreeScrollRight => self.scroll_tree_h_focus(HSCROLL_STEP as i32),
+            // `L` is focus-gated (ADR-0010, copy-line-reference): on tree focus it is unchanged
+            // (AC-2, still `scroll_tree_h_focus`); on content focus it instead enters line-select
+            // at the top visible line (AC-1). The `is_empty()` inert branch below (AC-3) fires
+            // only once a render has *completed* with a zero-line body — a render still in
+            // flight shows the non-empty "Rendering…" placeholder, and no-file-selected/directory
+            // states show non-empty guidance text (`clear_content`), so `L` enters line-select in
+            // both of those. `TreeScrollLeft`/`H` is untouched — only `L` is overloaded. NOTE: the
+            // `Intent::TreeScrollRight` doc comment in `src/intent.rs` still reads "Inert unless
+            // the tree is focused" — that file is under a hard no-edit rule for this feature, so
+            // this comment is the up-to-date behavior note instead.
+            Intent::TreeScrollRight => match self.focus {
+                Focus::Tree => self.scroll_tree_h_focus(HSCROLL_STEP as i32), // AC-2: unchanged
+                Focus::Content => {
+                    if self.content.lines.is_empty() {
+                        Effects::noop() // AC-3: no rendered content → inert
+                    } else {
+                        self.enter_line_select_at_top(); // AC-1
+                        Effects::redraw()
+                    }
+                }
+            },
             Intent::ShowHelp => self.open_help(),
             Intent::Close => self.close_or_unzoom(),
         }

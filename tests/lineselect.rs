@@ -11,6 +11,8 @@ use herdr_file_viewer::controller::{
     RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
+use herdr_file_viewer::intent::Intent;
+use herdr_file_viewer::presenter::Focus;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
@@ -109,6 +111,34 @@ fn await_marker(ctrl: &mut Controller, marker: &str) {
     }
 }
 
+/// A content provider that always renders a genuinely empty body (zero lines, `Text::default()`)
+/// — used to reach the empty `content.lines` case (T-4/AC-3). Note `Text::raw("")` is NOT
+/// empty here: ratatui gives it exactly one (empty) `Line`, same as the non-empty
+/// "Rendering…" loading placeholder `dispatch_render` shows while a render is in flight — only
+/// a bare `Text::default()` has a truly empty `lines` vec.
+#[derive(Clone, Copy)]
+struct EmptyContent;
+impl ContentProvider for EmptyContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::default(),
+            notices: Vec::new(),
+        }
+    }
+}
+
+/// Spin `poll()` until the worker's empty render has landed — i.e. until `content.lines` is
+/// actually empty, past the non-empty "Rendering…" placeholder `dispatch_render` shows while
+/// the job is in flight.
+fn await_empty(ctrl: &mut Controller) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ctrl.content().lines.is_empty() {
+        ctrl.poll();
+        assert!(Instant::now() < deadline, "content never settled to empty");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 // ── tests ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -163,5 +193,55 @@ fn esc_exits_without_copy() {
     assert!(
         copied.lock().unwrap().is_empty(),
         "AC-4: exiting line-select copied nothing to the clipboard"
+    );
+}
+
+#[test]
+fn l_on_content_focus_enters_mode() {
+    // T-4/AC-1: with the content pane focused and a source-view file with ≥1 rendered line,
+    // `L` (`Intent::TreeScrollRight`) enters line-select (ADR-0010) instead of h-scrolling the
+    // tree (which is inert on content focus regardless).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: line-select is not active yet"
+    );
+
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(fx.redraw, "entering line-select redraws");
+    assert!(
+        ctrl.line_select_active(),
+        "AC-1: L on content focus with ≥1 rendered line enters line-select"
+    );
+}
+
+#[test]
+fn l_on_empty_content_is_inert() {
+    // T-4/AC-3: with the content pane focused but zero rendered lines (no file / an empty
+    // render), `L` (`Intent::TreeScrollRight`) is a plain no-op — it must not enter line-select
+    // on an empty pane.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("empty.rs"), "").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), EmptyContent);
+    await_empty(&mut ctrl);
+    assert!(
+        ctrl.content().lines.is_empty(),
+        "precondition: the content pane has no rendered lines"
+    );
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
+
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(!fx.redraw, "AC-3: L is inert when content has no lines");
+    assert!(
+        !ctrl.line_select_active(),
+        "AC-3: line-select does not activate on empty content"
     );
 }
