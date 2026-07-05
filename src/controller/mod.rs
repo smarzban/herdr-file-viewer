@@ -319,9 +319,8 @@ impl Modal {
             _ => None,
         }
     }
-    // Used by the line-select key handler in T-5; the state exists here from T-3 so the accessor
-    // pair mirrors picker/finder/prompt/help.
-    #[allow(dead_code)]
+    // Used by the line-select key handler (`handle_line_select_key`); the state exists here from
+    // T-3 so the accessor pair mirrors picker/finder/prompt/help.
     fn line_select_mut(&mut self) -> Option<&mut LineSelectState> {
         match self {
             Modal::LineSelect(s) => Some(s),

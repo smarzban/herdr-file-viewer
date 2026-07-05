@@ -33,7 +33,6 @@ pub(crate) struct LineSelectState {
     marker: usize,
 }
 
-#[allow(dead_code)]
 impl LineSelectState {
     /// Start a new selection collapsed onto a single `line`.
     pub(crate) fn new(line: usize) -> Self {
@@ -97,6 +96,86 @@ impl Controller {
     /// when line-select is inactive. Exposed for the Presenter (T-9) and tests.
     pub fn line_selection(&self) -> Option<(usize, usize)> {
         self.modal.line_select().map(|s| s.selection())
+    }
+
+    /// Route a key event while line-select mode is active. The run loop calls this instead of
+    /// the normal key→intent map while `line_select_active()` — so `j`/`k`/arrows move the
+    /// marker instead of firing viewer intents (mirrors the finder/prompt/help routing).
+    ///
+    /// `j`/`Down` move the marker down one line, `k`/`Up` up one — a plain (collapsing) move
+    /// (AC-5); with Shift they extend from the held anchor instead (AC-12). This codebase
+    /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
+    /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
+    /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies (wired in T-7 —
+    /// a documented no-op for now). Any other key is inert. Ctrl/Alt chords are rejected up
+    /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
+    /// arrows) and is allowed.
+    pub fn handle_line_select_key(&mut self, key: KeyEvent) -> Effects {
+        // Only Shift is a meaningful modifier here (extend / shifted arrows); reject Ctrl/Alt/…
+        // chords so a reserved combo never drives the marker.
+        if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
+            return Effects::noop();
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
+                return Effects::redraw();
+            }
+            KeyCode::Enter => {
+                // T-7 wires copy_line_reference here.
+                return Effects::noop();
+            }
+            _ => {}
+        }
+
+        let Some(marker) = self.modal.line_select().map(|s| s.marker) else {
+            return Effects::noop();
+        };
+        let last = self.content.lines.len();
+
+        // Classify the key into a marker target + whether it extends the selection. Shift+letter
+        // arrives as the uppercase char (`J`/`K`); Shift+arrow as the arrow + the SHIFT bit.
+        let (target, extend) = match key.code {
+            KeyCode::Char('j') => (marker + 1, false),
+            KeyCode::Char('k') => (marker.saturating_sub(1), false),
+            KeyCode::Char('J') => (marker + 1, true),
+            KeyCode::Char('K') => (marker.saturating_sub(1), true),
+            KeyCode::Down => (marker + 1, shift),
+            KeyCode::Up => (marker.saturating_sub(1), shift),
+            _ => return Effects::noop(),
+        };
+
+        if let Some(state) = self.modal.line_select_mut() {
+            if extend {
+                state.extend_to(target, last);
+            } else {
+                state.move_to(target, last);
+            }
+        }
+
+        // AC-7: keep the marker's source row within the viewport. The marker is 1-based, the
+        // scroll offset is 0-based display rows, so the marker row is `marker - 1` (a non-wrap
+        // 1:1 line→row mapping, as in T-3). If it fell above the top, pin the top to it; if it
+        // fell below the bottom, pin the bottom to it; then clamp to the last screenful.
+        if let Some(marker) = self.modal.line_select().map(|s| s.marker) {
+            let row = marker.saturating_sub(1);
+            let scroll = self.content_scroll as usize;
+            let height = self.content_height as usize;
+            let new_scroll = if row < scroll {
+                row
+            } else if height > 0 && row >= scroll + height {
+                marker.saturating_sub(height)
+            } else {
+                scroll
+            };
+            self.content_scroll =
+                (new_scroll.min(u16::MAX as usize) as u16).min(self.max_content_scroll());
+        }
+
+        Effects::redraw()
     }
 }
 

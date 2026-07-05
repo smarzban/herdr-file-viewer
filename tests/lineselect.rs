@@ -6,6 +6,7 @@
 mod common;
 
 use common::{RecordingClipboard, TempDir, resolved};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
     Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
     RenderResult, RootProviders,
@@ -19,6 +20,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// A key event with no modifier (the common case for `j`/`k`/arrows).
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
 
 // ── stubs ──────────────────────────────────────────────────────────────────────
 
@@ -243,5 +249,115 @@ fn l_on_empty_content_is_inert() {
     assert!(
         !ctrl.line_select_active(),
         "AC-3: line-select does not activate on empty content"
+    );
+}
+
+#[test]
+fn j_k_move_marker_one_line() {
+    // AC-5: `j`/`Down` moves the marker down one source line, `k`/`Up` moves it up one — each
+    // a plain (collapsing) move, so the selection stays a single line.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+
+    ctrl.set_content_viewport(80, 10);
+    ctrl.scroll_to_line(5); // line 5 at the top of the viewport
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 5)),
+        "precondition: marker at 5"
+    );
+
+    let fx = ctrl.handle_line_select_key(key(KeyCode::Char('j')));
+    assert!(fx.redraw, "a move redraws");
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((6, 6)),
+        "AC-5: j moves the marker down one line, collapsed"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('k')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('k')));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((4, 4)),
+        "AC-5: k moves the marker up one line, collapsed"
+    );
+}
+
+#[test]
+fn shift_j_extends_selection() {
+    // AC-12: Shift+`j` (reported as `Char('J')`) extends the selection from the held anchor
+    // instead of collapsing it — the anchor stays put while the marker moves.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+
+    ctrl.set_content_viewport(80, 10);
+    ctrl.scroll_to_line(5);
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 5)),
+        "precondition: marker at 5"
+    );
+
+    // Char('J') (Shift+j, uppercase) extends: anchor 5 held, marker → 6.
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 6)),
+        "AC-12: Shift+j extends the selection (anchor 5 held, marker 6)"
+    );
+
+    // Shift+Down (arrow + SHIFT modifier) extends the same way.
+    ctrl.handle_line_select_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 7)),
+        "AC-12: Shift+Down also extends (arrow + SHIFT)"
+    );
+}
+
+#[test]
+fn marker_scrolls_into_view_when_moved_past_viewport() {
+    // AC-7: after each move the content pane scrolls so the marker row stays within the
+    // viewport `[content_scroll+1, content_scroll+content_height]` (1-based marker vs 0-based
+    // scroll offset).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+
+    let height: usize = 5;
+    ctrl.set_content_viewport(80, height as u16); // small viewport, 20-line body
+    ctrl.scroll_to_line(1); // top
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker at 1"
+    );
+
+    // Drive the marker to the bottom of the file one line at a time; the marker must remain
+    // visible after every step (it starts pushing the scroll once it passes the viewport bottom).
+    for _ in 0..19 {
+        ctrl.handle_line_select_key(key(KeyCode::Char('j')));
+        let (_, marker) = ctrl.line_selection().unwrap();
+        let top = ctrl.content_scroll() as usize; // 0-based first visible row
+        assert!(
+            marker > top && marker <= top + height,
+            "AC-7: marker {marker} stayed within view [{}, {}]",
+            top + 1,
+            top + height
+        );
+    }
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((20, 20)),
+        "marker clamps at the last line"
     );
 }
