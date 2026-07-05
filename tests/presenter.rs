@@ -3,7 +3,8 @@
 
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, PickerRowView, PickerView, ViewState, draw,
+    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView, PickerView,
+    ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -85,6 +86,7 @@ fn sample_state() -> ViewState {
         content_title: Some("main.rs".to_string()),
         content_rendering: false,
         search: None,
+        line_select: None,
         help: None,
     }
 }
@@ -2675,6 +2677,116 @@ fn search_highlight_snapshot() {
     insta::assert_snapshot!(
         "presenter_search_highlight",
         render(&search_state(), 100, 24)
+    );
+}
+
+// ── LineSelectView overlay — AC-1 (marker visible on entry), AC-7 (marker stays visible) ─────
+
+/// A `ViewState` with a known six-line content and the copy-line-reference modal active over the
+/// given 1-based `marker`/`start`/`end`. Focus is Content so the pane is drawn full/side by side.
+/// Notices are cleared so the content sits at the top of the pane and the marked rows are easy to
+/// read in the snapshot.
+fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
+    use herdr_file_viewer::render::to_text;
+    let mut st = sample_state();
+    st.notices = vec![];
+    st.focus = Focus::Content;
+    st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
+    st.content_rows = 6;
+    st.line_select = Some(LineSelectView { marker, start, end });
+    st
+}
+
+#[test]
+fn line_select_marker_snapshot() {
+    // AC-1: a single-line selection (marker on line 3) draws the marker caret on exactly that row —
+    // the gutter caret ▶ sits on "line three" and nowhere else.
+    insta::assert_snapshot!(
+        "presenter_line_select_marker",
+        render(&line_select_state(3, 3, 3), 100, 24)
+    );
+}
+
+#[test]
+fn selection_range_highlight_snapshot() {
+    // AC-7: a multi-line selection (lines 2–4, marker on the end at line 4) draws the selection bar │
+    // on lines 2 and 3 and the marker caret ▶ on line 4 — the highlight spans exactly those rows.
+    insta::assert_snapshot!(
+        "presenter_line_select_range",
+        render(&line_select_state(4, 2, 4), 100, 24)
+    );
+}
+
+#[test]
+fn line_select_marker_and_selection_carry_theme_styles() {
+    // The marker row carries CURRENT_HIGHLIGHT (REVERSED+BOLD, theme-relative) and the other
+    // selection rows carry HIGHLIGHT (black on cyan) — reusing the search theme seam, not raw
+    // hardcoded colors. Rows outside the selection are untouched. (AC-1/AC-7, read-only styling.)
+    use herdr_file_viewer::highlight::{CURRENT_HIGHLIGHT, HIGHLIGHT};
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    let st = line_select_state(4, 2, 4); // marker line 4, selection lines 2–4
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let buf = render_buffer(&st, w, h);
+    let content_inner = geometry(area, &st)
+        .content_inner
+        .expect("content inner must be present");
+
+    // Locate a text needle within the content area and return its (x, y).
+    let find_in_content = |needle: &str| -> Option<(u16, u16)> {
+        for y in content_inner.y..(content_inner.y + content_inner.height) {
+            for x in content_inner.x..(content_inner.x + content_inner.width) {
+                let hit = needle.chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < content_inner.x + content_inner.width
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|c| c.symbol() == ch.to_string())
+                });
+                if hit {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    };
+
+    // Marker line (line 4 = "line four"): REVERSED+BOLD (CURRENT_HIGHLIGHT).
+    let (mx, my) = find_in_content("line four").expect("'line four' must appear");
+    let marker_mod = buf.cell((mx, my)).unwrap().modifier;
+    assert!(
+        marker_mod.contains(Modifier::REVERSED) && marker_mod.contains(Modifier::BOLD),
+        "AC-1: the marker row must carry CURRENT_HIGHLIGHT (REVERSED+BOLD), got {marker_mod:?}"
+    );
+    assert_eq!(
+        CURRENT_HIGHLIGHT.add_modifier,
+        marker_mod & CURRENT_HIGHLIGHT.add_modifier
+    );
+
+    // Selection row (line 2 = "line two", not the marker): HIGHLIGHT (black on cyan).
+    let (sx, sy) = find_in_content("line two").expect("'line two' must appear");
+    let sel_bg = buf.cell((sx, sy)).unwrap().bg;
+    assert_eq!(
+        sel_bg,
+        HIGHLIGHT.bg.unwrap(),
+        "AC-7: a selection row must carry the HIGHLIGHT background (cyan), got {sel_bg:?}"
+    );
+
+    // Outside the selection (line 6 = "line six"): no highlight background.
+    let (ox, oy) = find_in_content("line six").expect("'line six' must appear");
+    let out_bg = buf.cell((ox, oy)).unwrap().bg;
+    assert_ne!(
+        out_bg,
+        HIGHLIGHT.bg.unwrap(),
+        "a row outside the selection must not be highlighted"
     );
 }
 

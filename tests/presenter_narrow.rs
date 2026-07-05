@@ -50,6 +50,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         content_title: Some("main.rs".to_string()),
         content_rendering: false,
         search: None,
+        line_select: None,
         help: None,
     }
 }

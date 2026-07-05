@@ -37,7 +37,8 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, PaneGeometry, PickerRowView, PickerView, ViewState,
+    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView,
+    PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
@@ -987,6 +988,17 @@ impl Controller {
             search: self.search.as_ref().map(|s| ContentSearch {
                 matches: s.matches.clone(),
                 current: s.current,
+            }),
+            // Populate the line-select overlay from the active modal so the Presenter draws the
+            // marker + selection highlight (AC-1, AC-7). `None` when the modal is closed → the
+            // content path is byte-identical to the prior render (no other snapshot moves).
+            line_select: self.modal.line_select().map(|s| {
+                let (start, end) = s.selection();
+                LineSelectView {
+                    marker: s.marker(),
+                    start,
+                    end,
+                }
             }),
             help: self.help_view(),
         }

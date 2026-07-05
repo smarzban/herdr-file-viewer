@@ -53,6 +53,12 @@ impl LineSelectState {
         self.marker = Self::clamp(line, last);
     }
 
+    /// The marker (cursor) line — 1-based. Exposed for the Presenter's line-select overlay (T-9),
+    /// which draws the marker emphasis distinct from the rest of the selection range.
+    pub(crate) fn marker(&self) -> usize {
+        self.marker
+    }
+
     /// The current selection as an ascending `(start, end)` pair.
     pub(crate) fn selection(&self) -> (usize, usize) {
         if self.anchor <= self.marker {
