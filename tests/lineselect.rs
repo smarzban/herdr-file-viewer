@@ -8,7 +8,7 @@ mod common;
 use common::{RecordingClipboard, TempDir, resolved};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
+    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
     RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
@@ -63,6 +63,16 @@ impl ContentProvider for MultiLine {
     }
 }
 
+/// A Clipboard stub whose `copy` always fails, so a test can prove the copy adapter surfaces a
+/// failure notice (AC-11) without panicking when the clipboard is unavailable.
+#[derive(Default, Clone)]
+struct FailingClipboard;
+impl Clipboard for FailingClipboard {
+    fn copy(&mut self, _text: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other("clipboard unavailable"))
+    }
+}
+
 /// Build a non-git controller over `root` with the given content provider and a recording
 /// clipboard, returning the controller plus a handle to the clipboard's copy log so a test can
 /// assert what (if anything) was copied.
@@ -72,21 +82,31 @@ fn controller_with_clipboard(
 ) -> (Controller, Arc<Mutex<Vec<String>>>) {
     let clipboard = RecordingClipboard::default();
     let copied = clipboard.copied.clone();
+    let ctrl = controller_with(root, content, Box::new(clipboard));
+    (ctrl, copied)
+}
+
+/// Build a non-git controller over `root` with the given content provider and an explicit
+/// clipboard double (recording or failing).
+fn controller_with(
+    root: &Path,
+    content: impl ContentProvider + Clone + 'static,
+    clipboard: Box<dyn Clipboard>,
+) -> Controller {
     let components = Components {
         providers: Box::new(move |_resolved| RootProviders {
             git: Arc::new(StubGit),
             content: Box::new(content.clone()),
         }),
         editor: Box::new(NoopEditor),
-        clipboard: Box::new(clipboard),
+        clipboard,
         renderers: None,
     };
-    let ctrl = Controller::new(
+    Controller::new(
         resolved(root.to_path_buf(), false),
         Baseline::Head,
         components,
-    );
-    (ctrl, copied)
+    )
 }
 
 /// Flatten the content pane to a plain string and spin `poll()` until it contains `marker`.
@@ -488,5 +508,124 @@ fn enter_from_source_is_synchronous() {
         ctrl.line_selection(),
         Some((5, 5)),
         "marker on the top visible source line (5)"
+    );
+}
+
+// ── T-7: Enter copies the reference, sanitizes, notifies, and closes the mode ─────
+
+/// Enter line-select at line 5 on a source-view `.rs` file (synchronous fast path).
+fn enter_at_line_five(ctrl: &mut Controller) {
+    await_marker(ctrl, "line0");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.scroll_to_line(5); // line 5 at the top of the viewport
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 5)),
+        "precondition: marker collapsed at line 5"
+    );
+}
+
+#[test]
+fn enter_copies_single_reference() {
+    // AC-9/AC-10: Enter on a single-line selection copies `path:line` and confirms it in a notice;
+    // AC-4-style close: the mode is a completed action so Enter also closes it.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_at_line_five(&mut ctrl);
+
+    let fx = ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "copying redraws to show the confirmation notice");
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("a.rs:5"),
+        "AC-9: Enter copies the single-line reference"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied a.rs:5"),
+        "AC-10: the copy is confirmed: {:?}",
+        ctrl.notices()
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "Enter closes the mode after copying"
+    );
+}
+
+#[test]
+fn range_copies_start_end() {
+    // AC-9: Enter on an extended selection copies `path:start-end`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_at_line_five(&mut ctrl);
+
+    // Extend the selection from 5 down to 8 (Shift+j, reported as `Char('J')`).
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 8)),
+        "precondition: selection 5-8"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("a.rs:5-8"),
+        "AC-9: Enter copies the range reference"
+    );
+}
+
+#[test]
+fn control_bytes_in_path_are_sanitized() {
+    // AC-16: the path segment is untrusted — a crafted file name can carry an ESC byte. The whole
+    // reference is sanitized before it reaches the clipboard OR the notice, so no raw control byte
+    // is copied.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a\x1bb.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_at_line_five(&mut ctrl);
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    let log = copied.lock().unwrap();
+    let got = log.last().map(String::as_str).unwrap();
+    assert_eq!(
+        got, "ab.rs:5",
+        "AC-16: the ESC byte in the file name is neutralized before copy"
+    );
+    assert!(
+        !got.chars().any(char::is_control),
+        "AC-16: no control byte reaches the clipboard: {got:?}"
+    );
+    assert!(
+        ctrl.notices()
+            .iter()
+            .all(|n| !n.chars().any(char::is_control)),
+        "AC-16: no control byte reaches the notice either: {:?}",
+        ctrl.notices()
+    );
+}
+
+#[test]
+fn clipboard_error_shows_failure_notice_no_panic() {
+    // AC-11: a clipboard write that fails surfaces a failure notice instead of panicking/exiting.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let mut ctrl = controller_with(dir.path(), MultiLine, Box::new(FailingClipboard));
+    enter_at_line_five(&mut ctrl);
+
+    let fx = ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert!(fx.redraw, "the failure notice redraws");
+    assert!(
+        ctrl.notices().iter().any(|n| n.contains("Could not copy")),
+        "AC-11: a clipboard failure is surfaced as a notice: {:?}",
+        ctrl.notices()
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "the mode closes even on a copy failure (the notice conveys the outcome)"
     );
 }

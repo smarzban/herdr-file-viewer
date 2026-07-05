@@ -8,8 +8,6 @@ use super::*;
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
 /// order first so a selection dragged either direction reads the same. Pure formatting only —
 /// no sanitization of `rel_path` (the Copy adapter, T-7, handles that before this is called).
-// #[allow(dead_code)] removed in T-7 when the copy adapter calls this.
-#[allow(dead_code)]
 pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) -> String {
     let (lo, hi) = if start <= end {
         (start, end)
@@ -112,6 +110,54 @@ impl Controller {
         }
     }
 
+    /// Copy the current line reference for the selected file to the clipboard and close the mode
+    /// (the `Enter` / double-click confirm, T-7). Mirrors [`copy_path`](Controller::copy_path):
+    /// build the `path:line` / `path:start-end` reference, run it through
+    /// [`sanitize_control`](crate::text_layout::sanitize_control) **before** it reaches the
+    /// clipboard *or* the notice (AC-16 — a crafted file name may carry ESC/newline), then surface
+    /// the outcome as a transient notice ("Copied …" on `Ok` / a failure message on `Err`,
+    /// AC-10/AC-11).
+    ///
+    /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
+    /// guidance screen is non-empty), so if there is no active selection or the selected node is
+    /// not a file, copy nothing and return [`Effects::noop`] rather than fabricate a reference.
+    /// Read-only (AC-17): touches only the clipboard and in-memory notice / modal state.
+    ///
+    /// The mode closes on **both** `Ok` and `Err` (via [`exit_line_select`](Self::exit_line_select))
+    /// so `Enter` is a completed action that returns to normal navigation — consistent with the
+    /// finder/picker/prompt confirm paths; the notice conveys the outcome.
+    pub fn copy_line_reference(&mut self) -> Effects {
+        // Both an active selection AND a selected file node are required; otherwise there is no
+        // reference to copy — do not fabricate one.
+        let Some((start, end)) = self.line_selection() else {
+            return Effects::noop();
+        };
+        let Some(rel_path) = self
+            .tree
+            .selected()
+            .filter(|node| node.kind == NodeKind::File)
+            .map(|node| {
+                self.rel(&node.path)
+                    .unwrap_or_else(|| node.path.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        else {
+            return Effects::noop();
+        };
+
+        let raw = format_line_reference(&rel_path, start, end);
+        // Sanitize the WHOLE reference before it reaches the clipboard OR the notice (AC-16) — the
+        // path segment is untrusted, exactly as in `copy_path`.
+        let text = crate::text_layout::sanitize_control(&raw);
+        self.action_notice = Some(match self.clipboard.copy(&text) {
+            Ok(()) => format!("Copied {text}"),
+            Err(e) => format!("Could not copy line reference: {e}"),
+        });
+        self.exit_line_select();
+        Effects::redraw()
+    }
+
     /// Leave line-select mode without copying (AC-4): close the modal, touching no clipboard and
     /// leaving the content scroll unchanged. Mirrors the finder/prompt cancel path. Also drops any
     /// still-queued deferred entry (AC-15), so a superseded/abandoned auto-switch can't reopen the
@@ -141,8 +187,9 @@ impl Controller {
     /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
-    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies (wired in T-7 —
-    /// a documented no-op for now). Any other key is inert. Ctrl/Alt chords are rejected up
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the reference and
+    /// closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9). Any other key
+    /// is inert. Ctrl/Alt chords are rejected up
     /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
     /// arrows) and is allowed.
     pub fn handle_line_select_key(&mut self, key: KeyEvent) -> Effects {
@@ -159,8 +206,7 @@ impl Controller {
                 return Effects::redraw();
             }
             KeyCode::Enter => {
-                // T-7 wires copy_line_reference here.
-                return Effects::noop();
+                return self.copy_line_reference(); // AC-9: copy the reference, then close the mode
             }
             _ => {}
         }
