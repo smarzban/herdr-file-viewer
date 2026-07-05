@@ -50,7 +50,9 @@ function Open-Tab {
     $out = (& $HerdrBin tab create --cwd $cwd --label Files --focus | Out-String)
     $np = Get-PaneId $out
     if ($np) {
-        & $HerdrBin pane run $np "$ViewerBin"
+        # Call operator + quoted absolute path so a spaced install path still launches — see
+        # open-file-viewer.ps1's Open-Pane for the full why. (GH #58 — confirmed live on Windows.)
+        & $HerdrBin pane run $np "& \`"$ViewerBin\`""
         & $HerdrBin pane rename $np Files *> $null
     }
     exit 0

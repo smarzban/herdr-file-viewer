@@ -34,6 +34,14 @@ All notable changes to this project are documented here. The format is based on
   of relying on the process cwd. A `windows-latest` test parses the manifest's inline PowerShell and
   the launcher scripts so a syntax error can't reach a real install. (Renderers `glow`/`bat`/`delta`
   remain optional runtime installs; without them the viewer shows plain text, unchanged.)
+- **Windows launcher: spawn the viewer via the PowerShell call operator (GH #58).** herdr's
+  `pane run` types the command into the pane's shell (PowerShell on Windows); a bare path split on a
+  space in the install path (e.g. `C:\Users\First Last\...`), so the viewer never launched for any
+  user whose plugin path contains a space. The launchers now run it as `& "<abs .exe>"` — call
+  operator + quoted path — confirmed live on real Windows from a spaced install path, with a
+  cross-platform test guarding the spawn form on the required CI matrix. `fetch-or-build.ps1` also
+  forces TLS 1.2 so the prebuilt fast path isn't needlessly dropped to a source build on older or
+  policy-locked Windows hosts.
 
 ## [1.7.0] - 2026-06-30
 

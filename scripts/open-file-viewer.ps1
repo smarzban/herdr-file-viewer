@@ -56,7 +56,12 @@ function Open-Pane {
     $out = (& $HerdrBin pane split --direction right --cwd $cwd --focus | Out-String)
     $np = Get-PaneId $out
     if ($np) {
-        & $HerdrBin pane run $np "$ViewerBin"
+        # Run the viewer by ABSOLUTE path via the PowerShell CALL OPERATOR. herdr types <command>
+        # into the pane's shell (PowerShell on Windows); a bare or plain-quoted path splits on a
+        # space in the install path (e.g. C:\Users\First Last\...) and the viewer never starts.
+        # `& "<path>"` executes it; the `\"` escaping survives Windows PowerShell 5.1's native-arg
+        # quote-stripping so herdr receives the quotes intact. (GH #58 — confirmed live on Windows.)
+        & $HerdrBin pane run $np "& \`"$ViewerBin\`""
         # Label it so a later invocation's launch-decision recognises it (best-effort).
         & $HerdrBin pane rename $np Files *> $null
     }

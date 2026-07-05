@@ -77,6 +77,15 @@ function Get-FvSha256Hex {
 function Invoke-FvDownload {
     param([string]$Url, [string]$Dest)
     try {
+        # Force TLS 1.2 -- Windows PowerShell 5.1 inherits the .NET Framework default, which on
+        # older / policy-locked hosts can negotiate TLS 1.0 and be rejected by GitHub's release
+        # CDN, needlessly dropping the prebuilt fast path to a source build (which then needs a
+        # Rust toolchain). curl/wget on the unix side negotiate 1.2 unconditionally, so this only
+        # closes a .ps1-vs-.sh gap.
+        try {
+            [Net.ServicePointManager]::SecurityProtocol =
+                [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        } catch {}
         Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
         return $true
     } catch {
