@@ -12,14 +12,15 @@ impl Controller {
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Modal gate, exhaustive over `Modal` (so a new overlay variant forces a mouse-routing
         // decision here, mirroring the keyboard gate in `handle`):
-        // - Picker / Prompt are keyboard-only — swallow the mouse entirely. Without this a
-        //   click/wheel would reach the tree/content beneath and change the selection under the
-        //   modal, so a later confirm would act on the WRONG file (or strand an override on a dir).
+        // - Picker / Prompt / LineSelect are keyboard-only — swallow the mouse entirely. Without
+        //   this a click/wheel would reach the tree/content beneath and change the selection under
+        //   the modal, so a later confirm would act on the WRONG file (or strand an override on a
+        //   dir). (Line-select's own mouse behaviour, if any, lands with its handler in a later task.)
         // - Help / Finder ARE mouse-interactive (wheel scrolls, click selects/switches): route to
         //   their own handler, which consumes every event and never leaks to the columns (AC-21).
         // - None: no modal → the two-column mouse handler below.
         match self.modal {
-            Modal::Picker(_) | Modal::Prompt(_) => Effects::noop(),
+            Modal::Picker(_) | Modal::Prompt(_) | Modal::LineSelect(_) => Effects::noop(),
             Modal::Help(_) => self.handle_help_mouse(ev),
             Modal::Finder(_) => self.handle_finder_mouse(ev),
             Modal::None => self.handle_column_mouse(ev),

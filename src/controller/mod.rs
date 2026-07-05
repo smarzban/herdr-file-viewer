@@ -45,6 +45,7 @@ use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use lineselect::LineSelectState;
 use ratatui::layout::Position;
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
@@ -249,12 +250,16 @@ type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 ///   raw keys to `handle_prompt_key` and the mouse is inert, so the selection can't change beneath it.
 /// - `Help` — the help overlay (AC-1, AC-6), opened by `?`; dismissed by Esc/`q`. While open,
 ///   `handle()`/`handle_mouse()` return early (AC-N4).
+/// - `LineSelect` — the copy-line-reference selection (a content-pane marker, not a popup). While
+///   active `handle()` returns early — the run loop routes keys to its own handler (like the
+///   prompt/finder) — and a re-root / exit resets it to `Modal::None` (no clipboard touch here).
 enum Modal {
     None,
     Picker(PickerState),
     Finder(FinderState),
     Prompt(PromptState),
     Help(HelpState),
+    LineSelect(LineSelectState),
 }
 
 impl Modal {
@@ -305,6 +310,21 @@ impl Modal {
     fn help_mut(&mut self) -> Option<&mut HelpState> {
         match self {
             Modal::Help(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn line_select(&self) -> Option<&LineSelectState> {
+        match self {
+            Modal::LineSelect(s) => Some(s),
+            _ => None,
+        }
+    }
+    // Used by the line-select key handler in T-5; the state exists here from T-3 so the accessor
+    // pair mirrors picker/finder/prompt/help.
+    #[allow(dead_code)]
+    fn line_select_mut(&mut self) -> Option<&mut LineSelectState> {
+        match self {
+            Modal::LineSelect(s) => Some(s),
             _ => None,
         }
     }
@@ -1069,6 +1089,12 @@ impl Controller {
         // The help overlay is modal: while it is open, all other intents are inert. The run loop
         // routes keys to handle_help_key instead; this guard mirrors finder/prompt.
         if self.modal.help().is_some() {
+            return Effects::noop();
+        }
+        // Line-select is modal too: while it is active the run loop (T-5) routes raw keys to a
+        // dedicated handler, so any non-routed intent reaching `handle` is inert — mirrors the
+        // finder/prompt/help guards above.
+        if self.modal.line_select().is_some() {
             return Effects::noop();
         }
         match intent {

@@ -1,6 +1,8 @@
 //! Line-reference formatting for the copy-line-reference feature — turns a selected line or
 //! line range on a file into the `path:line` / `path:start-end` string the Copy adapter (T-7)
-//! puts on the clipboard.
+//! puts on the clipboard, plus the line-select modal state and its enter/exit on the Controller.
+
+use super::*;
 
 /// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
@@ -25,8 +27,6 @@ pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) ->
 /// `marker` is the current cursor line. Both are 1-based source-line indices. A plain move
 /// collapses the selection (anchor follows marker); an extend move holds the anchor so the
 /// selection grows/shrinks toward the new marker.
-// #[allow(dead_code)] removed in T-3 when Modal::LineSelect constructs this.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LineSelectState {
     anchor: usize,
@@ -67,6 +67,36 @@ impl LineSelectState {
 
     fn clamp(line: usize, last: usize) -> usize {
         line.max(1).min(last.max(1))
+    }
+}
+
+impl Controller {
+    /// Enter line-select mode with the marker on the top *visible* source line — the source-view
+    /// case (AC-1). The top visible line is `content_scroll + 1` (1-based), clamped into
+    /// `[1, line_count]` so an empty/short file still yields a valid line 1. The selection starts
+    /// collapsed (anchor == marker); the user moves/extends it from here (T-5). The
+    /// transformed/auto-switch view case is T-6. Read-only: touches only in-memory modal state.
+    pub fn enter_line_select_at_top(&mut self) {
+        let last = self.content.lines.len().max(1);
+        let top = (self.content_scroll as usize + 1).clamp(1, last);
+        self.modal = Modal::LineSelect(LineSelectState::new(top));
+    }
+
+    /// Leave line-select mode without copying (AC-4): close the modal, touching no clipboard and
+    /// leaving the content scroll unchanged. Mirrors the finder/prompt cancel path.
+    pub fn exit_line_select(&mut self) {
+        self.modal = Modal::None;
+    }
+
+    /// Whether line-select mode is currently active. Exposed for the Presenter (T-9) and tests.
+    pub fn line_select_active(&self) -> bool {
+        self.modal.line_select().is_some()
+    }
+
+    /// The current line-select selection as an ascending 1-based `(start, end)` pair, or `None`
+    /// when line-select is inactive. Exposed for the Presenter (T-9) and tests.
+    pub fn line_selection(&self) -> Option<(usize, usize)> {
+        self.modal.line_select().map(|s| s.selection())
     }
 }
 
