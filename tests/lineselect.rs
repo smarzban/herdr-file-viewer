@@ -64,6 +64,25 @@ impl ContentProvider for MultiLine {
     }
 }
 
+/// A content provider whose first two source lines are wider than the 80-column viewport, so with
+/// the `w` wrap override on they each occupy several DISPLAY rows — exercising the wrap fix where
+/// line-select must map between wrapped display rows and 1-based source lines (not assume 1:1).
+/// At width 80: source line 1 = 170 `a`s → 3 rows (display rows 0-2); line 2 = 90 `b`s → 2 rows
+/// (rows 3-4); lines 3..10 (`line2`..`line9`) are short → 1 row each (rows 5,6,…). So the wrapped
+/// offset of source line 2 is 3, of line 3 is 5 — both differ from the buggy `scroll + 1` mapping.
+#[derive(Clone, Copy)]
+struct WrapBody;
+impl ContentProvider for WrapBody {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let mut lines = vec!["a".repeat(170), "b".repeat(90)];
+        lines.extend((2..10).map(|i| format!("line{i}")));
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+        }
+    }
+}
+
 /// A Clipboard stub whose `copy` always fails, so a test can prove the copy adapter surfaces a
 /// failure notice (AC-11) without panicking when the clipboard is unavailable.
 #[derive(Default, Clone)]
@@ -869,5 +888,105 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
     assert!(
         copied.lock().unwrap().is_empty(),
         "nothing should have been copied by a stale-click misfire"
+    );
+}
+
+// ── wrap fix (copy-line-reference): line-select must map wrapped display rows ↔ source lines ──
+// Regression guard for the round-1 gate finding: line-select assumed a 1:1 source-line→display-row
+// mapping, but the `w` (ToggleWrap / wrap_override) toggle wraps EVERY mode including SyntaxContent,
+// so entry, mouse click, and keep-marker-visible math each conflated a wrapped display-row offset
+// with a source-line index — placing/copying the WRONG line (the feature's core output).
+
+#[test]
+fn entry_maps_wrapped_scroll_offset_to_source_line() {
+    // With wrap ON, scrolling so source line 2 sits at the top puts `content_scroll` at display
+    // row 3 (source line 1 wraps to 3 rows). Entry must land the marker on source line 2 — NOT on
+    // `content_scroll + 1` == 4, the pre-fix behavior.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), WrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    ctrl.scroll_to_line(2); // wrap-aware → content_scroll == 3 (line 1 occupies rows 0-2)
+    assert_eq!(
+        ctrl.content_scroll(),
+        3,
+        "precondition: top display row is 3"
+    );
+
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((2, 2)),
+        "entry maps wrapped scroll offset 3 back to source line 2, not the buggy scroll+1 (=4)"
+    );
+}
+
+#[test]
+fn mouse_click_maps_wrapped_row_to_source_line() {
+    // With wrap ON and scroll at the top, a click on screen row 4 (content top row 1 → display row
+    // 3) must select source line 2 — display row 3 is the first wrapped row of line 2 — NOT the
+    // pre-fix `scroll + (row - top) + 1` == 4.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), WrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker on line 1"
+    );
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    assert!(fx.redraw, "a click that moves the marker redraws");
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((2, 2)),
+        "click on wrapped display row 3 maps to source line 2, not the buggy row+1 (=4)"
+    );
+}
+
+#[test]
+fn marker_stays_visible_under_wrap_when_moved_past_viewport() {
+    // AC-7 under wrap: as the marker moves down, the content must scroll so the marker's WRAPPED
+    // display row stays within the viewport — computed with the same wrapped mapping, not `marker-1`.
+    // WrapBody at width 80 lays out source lines 1..=10 at these 0-based display-row offsets (line 1
+    // spans rows 0-2, line 2 rows 3-4, then one row each):
+    let row_of = [0usize, 3, 5, 6, 7, 8, 9, 10, 11, 12]; // index = source line - 1
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), WrapBody);
+    await_marker(&mut ctrl, "aaa");
+    let height = 4usize;
+    ctrl.set_content_viewport(80, height as u16);
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    ctrl.enter_line_select_at_top();
+
+    // Walk the marker to the last source line; after each step its wrapped display row must stay
+    // within the visible window [content_scroll, content_scroll + height). Pre-fix the scroll math
+    // used `marker - 1` as the row and would leave the marker off-screen under wrap.
+    for _ in 0..9 {
+        ctrl.handle_line_select_key(key(KeyCode::Char('j')));
+        let (_, marker) = ctrl.line_selection().unwrap();
+        let row = row_of[marker - 1];
+        let scroll = ctrl.content_scroll() as usize;
+        assert!(
+            row >= scroll && row < scroll + height,
+            "marker source line {marker} (display row {row}) must stay within [{scroll}, {})",
+            scroll + height
+        );
+    }
+    assert_eq!(
+        ctrl.content_scroll(),
+        9,
+        "at the last line (display row 12) the bottom pins to the marker: 12 + 1 - 4 = 9"
     );
 }

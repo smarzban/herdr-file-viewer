@@ -101,9 +101,13 @@ impl Controller {
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
             // Source-mapped AND the displayed content is the latest render → the line→row mapping is
-            // valid now, so open synchronously (the T-3 path, unchanged).
+            // valid now, so open synchronously. The top visible source line is mapped from the scroll
+            // offset through `line_at_content_row`, so it is correct even when the `w` wrap override is
+            // on (under wrap `content_scroll` is a wrapped display-row offset, NOT a source-line index).
             let last = self.content.lines.len().max(1);
-            let top = (self.content_scroll as usize + 1).clamp(1, last);
+            let top = self
+                .line_at_content_row(self.content_scroll as usize)
+                .clamp(1, last);
             self.modal = Modal::LineSelect(LineSelectState::new(top));
         } else if let Some(path) = self
             .tree
@@ -250,18 +254,20 @@ impl Controller {
             }
         }
 
-        // AC-7: keep the marker's source row within the viewport. The marker is 1-based, the
-        // scroll offset is 0-based display rows, so the marker row is `marker - 1` (a non-wrap
-        // 1:1 line→row mapping, as in T-3). If it fell above the top, pin the top to it; if it
-        // fell below the bottom, pin the bottom to it; then clamp to the last screenful.
+        // AC-7: keep the marker's source row within the viewport. The marker is a 1-based source
+        // line; `content_row_of_line` maps it to its 0-based display-row offset — `marker - 1` when
+        // unwrapped, or the cumulative wrapped-row count when the `w` override wraps the view (the
+        // same mapping `scroll_to_line` uses, so the two agree). If it fell above the top, pin the
+        // top to it; if it fell below the bottom, pin the bottom row to it; then clamp to the last
+        // screenful.
         if let Some(marker) = self.modal.line_select().map(|s| s.marker) {
-            let row = marker.saturating_sub(1);
+            let row = self.content_row_of_line(marker);
             let scroll = self.content_scroll as usize;
             let height = self.content_height as usize;
             let new_scroll = if row < scroll {
                 row
             } else if height > 0 && row >= scroll + height {
-                marker.saturating_sub(height)
+                row + 1 - height
             } else {
                 scroll
             };

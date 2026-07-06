@@ -1245,6 +1245,42 @@ impl Controller {
             .sum::<usize>()
     }
 
+    /// The 0-based display-row offset at which 1-based source `line` begins. Without wrap a source
+    /// line maps 1:1 to a row (`line - 1`); with the `w` override wrapping every mode, earlier long
+    /// lines occupy several rows, so the offset is the cumulative wrapped-row count of the lines
+    /// BEFORE it — the same mapping [`scroll_to_line`](Self::scroll_to_line) uses, so line-select's
+    /// keep-marker-visible math agrees with the actual layout under wrap (the copy-line-reference
+    /// wrap fix). Shared by the line-select handlers in the `lineselect`/`mouse` submodules.
+    fn content_row_of_line(&self, line: usize) -> usize {
+        if self.effective_wrap() {
+            self.wrapped_rows_before(line.saturating_sub(1))
+        } else {
+            line.saturating_sub(1)
+        }
+    }
+
+    /// The inverse of [`content_row_of_line`]: the 1-based source line displayed at 0-based
+    /// display-row offset `row`. Without wrap that is simply `row + 1`; with wrap on, a source line
+    /// spans multiple rows, so walk the cumulative wrapped-row counts until `row` falls inside a
+    /// line. Used to place the line-select marker at the top visible source line on entry and to map
+    /// a mouse click's screen row back to a source line, so both are correct under the `w` wrap
+    /// override (the copy-line-reference wrap fix). Returns at least 1; the last source line for a
+    /// `row` past the end. `content.lines` empty ⇒ 1 (callers guard the empty case separately).
+    fn line_at_content_row(&self, row: usize) -> usize {
+        if !self.effective_wrap() {
+            return row + 1;
+        }
+        let w = self.content_width as usize;
+        let mut acc = 0usize;
+        for (i, line) in self.content.lines.iter().enumerate() {
+            acc += crate::text_layout::line_wrapped_rows(line, w);
+            if row < acc {
+                return i + 1;
+            }
+        }
+        self.content.lines.len().max(1)
+    }
+
     /// Extract the plain-text content of every displayed line (ANSI spans joined, no styling).
     /// Used by the incremental search to feed `search::find_matches`; search always
     /// operates on the DISPLAYED content, not the source file, so it works identically across
@@ -1793,13 +1829,21 @@ impl Controller {
                 // A queued line-select entry (auto-switch from a transformed view, AC-15) opens once
                 // ITS render lands — the same seq-guard `pending_goto` uses. The source-mapped content
                 // is now applied and the scroll was reset to the top by `dispatch_render`, so the marker
-                // lands on the top visible source line (`content_scroll + 1`), clamped to a valid line.
+                // lands on the top visible source line, mapped through `line_at_content_row` so it is
+                // correct even if the `w` wrap override is on. A render that landed EMPTY (a zero-line
+                // body) opens nothing: the marker would otherwise fabricate a `path:1` reference to a
+                // line that does not exist — the same guard the synchronous `L` entry has (its
+                // `content.lines.is_empty()` inert branch). The pending entry is cleared either way.
                 if let Some(pseq) = self.pending_line_select
                     && pseq == seq
                 {
-                    let last = self.content.lines.len().max(1);
-                    let top = (self.content_scroll as usize + 1).clamp(1, last);
-                    self.modal = Modal::LineSelect(LineSelectState::new(top));
+                    if !self.content.lines.is_empty() {
+                        let last = self.content.lines.len();
+                        let top = self
+                            .line_at_content_row(self.content_scroll as usize)
+                            .clamp(1, last);
+                        self.modal = Modal::LineSelect(LineSelectState::new(top));
+                    }
                     self.pending_line_select = None;
                 }
                 // A render that was in flight when a search was opened/committed lands here and

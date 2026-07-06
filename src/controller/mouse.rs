@@ -52,13 +52,15 @@ impl Controller {
             return Effects::noop();
         }
         // Map the clicked screen row to a 1-based source line. The content area's top row is the
-        // content rect's `y`; the source→display mapping is 1:1 in SyntaxContent (the mode's only
-        // view). Clamp into `[1, line_count]`. `hit_test == Content` guarantees `content_inner` is
-        // `Some` and `row >= content_inner.y`, so the subtraction never underflows.
+        // content rect's `y`, so the clicked line's display-row offset is `content_scroll + (row -
+        // content_top)`; `line_at_content_row` maps that offset back to a source line, correctly even
+        // when the `w` wrap override is on (a source line then spans several display rows, so the
+        // mapping is NOT 1:1). Clamp into `[1, line_count]`. `hit_test == Content` guarantees
+        // `content_inner` is `Some` and `row >= content_inner.y`, so the subtraction never underflows.
         let content_top = self.geom.content_inner.map_or(row, |c| c.y);
         let last = self.content.lines.len().max(1);
-        let line = (self.content_scroll as usize + row.saturating_sub(content_top) as usize + 1)
-            .clamp(1, last);
+        let display_row = self.content_scroll as usize + row.saturating_sub(content_top) as usize;
+        let line = self.line_at_content_row(display_row).clamp(1, last);
 
         // Reuse the exact click-detection the columns use: same-row within the window is a
         // double-click, and every non-content click above cleared `last_click`.
