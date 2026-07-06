@@ -475,6 +475,13 @@ pub struct Controller {
     /// search + its highlighting (AC-20). The incremental-typing path (`refresh_search`) does NOT
     /// call `dispatch_render`, so live typing is never wiped by that clear.
     search: Option<SearchState>,
+    /// The OS opener seam used by the `O` / `R` hand-offs (open-with-default-app / reveal-in-file-
+    /// manager). Injected post-construction via [`set_opener`](Self::set_opener) (like
+    /// [`herdr`](Self::herdr)) so the controller stays hermetic in tests. `None` until then.
+    // Wired here (T-4) but only *read* by the `O`/`R` handlers, which land in a later task —
+    // until then the field is write-only, so silence the dead-code lint rather than gate CI.
+    #[allow(dead_code)]
+    opener: Option<Box<dyn crate::opener::Opener>>,
 }
 
 impl Controller {
@@ -567,6 +574,7 @@ impl Controller {
             our_workspace_id: None,
             base_branch,
             current_branch,
+            opener: None,
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -868,6 +876,13 @@ impl Controller {
     pub fn set_host(&mut self, herdr: Box<dyn HerdrCli>, workspace_id: Option<String>) {
         self.herdr = Some(herdr);
         self.our_workspace_id = workspace_id;
+    }
+
+    /// Inject the OS opener seam used by the `O` / `R` hand-offs (open-with-default-app /
+    /// reveal-in-file-manager). Injected post-construction (like `set_host`) so the controller
+    /// stays hermetic in tests — a test injects a fake; production injects the live opener (AC-13).
+    pub fn set_opener(&mut self, opener: Box<dyn crate::opener::Opener>) {
+        self.opener = Some(opener);
     }
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content

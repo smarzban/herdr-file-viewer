@@ -15,6 +15,7 @@ use herdr_file_viewer::controller::{
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::herdr::HerdrCli;
 use herdr_file_viewer::intent::Intent;
+use herdr_file_viewer::opener::{Opener, OpenerOutcome};
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::render::Renderers;
 use herdr_file_viewer::view_policy::ViewMode;
@@ -8725,4 +8726,47 @@ fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
         about.contains("Up to date") && !about.contains("Update available"),
         "AC-N5: with the cached status None, About shows 'Up to date' — no probe ran: {about:.120}"
     );
+}
+
+/// A test double for the OS [`Opener`] seam: records every path it is asked to open/reveal and
+/// returns a configurable [`OpenerOutcome`] (defaulting to `Launched`), so the controller can be
+/// injected with a fake instead of ever spawning a real `xdg-open`/`open`/`explorer` (AC-13).
+#[derive(Default)]
+struct FakeOpener {
+    opened: Vec<PathBuf>,
+    revealed: Vec<PathBuf>,
+    /// The outcome each call returns; `None` ⇒ `OpenerOutcome::Launched`.
+    outcome: Option<OpenerOutcome>,
+}
+
+impl FakeOpener {
+    fn result(&self) -> OpenerOutcome {
+        match &self.outcome {
+            Some(OpenerOutcome::Launched) | None => OpenerOutcome::Launched,
+            Some(OpenerOutcome::NotLaunched(s)) => OpenerOutcome::NotLaunched(s.clone()),
+            Some(OpenerOutcome::NonZeroExit(s)) => OpenerOutcome::NonZeroExit(s.clone()),
+        }
+    }
+}
+
+impl Opener for FakeOpener {
+    fn open(&mut self, path: &Path) -> OpenerOutcome {
+        self.opened.push(path.to_path_buf());
+        self.result()
+    }
+    fn reveal(&mut self, path: &Path) -> OpenerOutcome {
+        self.revealed.push(path.to_path_buf());
+        self.result()
+    }
+}
+
+#[test]
+fn set_opener_injects_a_reachable_opener() {
+    // T-4 wires `set_opener` as a post-construction seam (mirroring `set_host`). The `O`/`R`
+    // handlers are still stubs in this task, so we can't yet assert an invocation — a fuller
+    // behavior test (that pressing `O`/`R` calls through to the injected opener) lands in the
+    // next task. Here we only prove the seam exists, accepts a fake, and doesn't panic.
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_opener(Box::new(FakeOpener::default()));
 }

@@ -30,7 +30,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +95,13 @@ pub fn run() -> io::Result<()> {
         Box::new(crate::herdr::LiveHerdr::from_env()),
         ctx.workspace_id.clone(),
     );
+    // Inject the live OS opener for the `O` / `R` hand-offs (AC-13). Non-blocking: unlike the
+    // editor hand-off it does NOT suspend the TUI; the opener runs with stdio redirected to null
+    // so it cannot draw onto our screen.
+    controller.set_opener(Box::new(crate::opener::CommandOpener::new(
+        current_os_kind(),
+        Box::new(OpenerSpawner),
+    )));
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
@@ -463,6 +470,43 @@ impl Spawner for ProcessSpawner {
             // so the controller says "editor exited with …", not "could not open editor".
             Err(SpawnError::NonZeroExit(format!("{status}")))
         }
+    }
+}
+
+/// Spawns the OS opener with stdio redirected to null so a chatty opener (e.g. `xdg-open`
+/// printing a warning) cannot draw onto the live TUI screen. Blocking on the opener command
+/// itself is fine — `open`/`xdg-open`/`explorer` dispatch to the GUI app and return promptly;
+/// crucially the TUI is NOT suspended (unlike the editor hand-off).
+struct OpenerSpawner;
+impl Spawner for OpenerSpawner {
+    fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
+        let (prog, args) = argv
+            .split_first()
+            .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
+        let status = Command::new(prog)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(SpawnError::NotLaunched)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(SpawnError::NonZeroExit(format!("{status}")))
+        }
+    }
+}
+
+/// Map the compile-time build target to the [`OsKind`](crate::opener::OsKind) whose opener
+/// convention to build for. `xdg-open` is the freedesktop default on non-mac/non-windows unixes.
+fn current_os_kind() -> crate::opener::OsKind {
+    if cfg!(target_os = "macos") {
+        crate::opener::OsKind::Mac
+    } else if cfg!(target_os = "windows") {
+        crate::opener::OsKind::Windows
+    } else {
+        crate::opener::OsKind::Linux
     }
 }
 
