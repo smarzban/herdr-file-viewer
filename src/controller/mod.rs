@@ -478,9 +478,6 @@ pub struct Controller {
     /// The OS opener seam used by the `O` / `R` hand-offs (open-with-default-app / reveal-in-file-
     /// manager). Injected post-construction via [`set_opener`](Self::set_opener) (like
     /// [`herdr`](Self::herdr)) so the controller stays hermetic in tests. `None` until then.
-    // Wired here (T-4) but only *read* by the `O`/`R` handlers, which land in a later task —
-    // until then the field is write-only, so silence the dead-code lint rather than gate CI.
-    #[allow(dead_code)]
     opener: Option<Box<dyn crate::opener::Opener>>,
 }
 
@@ -1455,14 +1452,55 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Open the selected entry with the OS default app (`O`). Stub — real hand-off wired in T-5.
+    /// Open the selected entry with the OS default app (`O`).
     fn open_with_app(&mut self) -> Effects {
-        Effects::noop()
+        self.hand_off_to_opener(false)
     }
 
-    /// Reveal the selected entry in the OS file manager (`R`). Stub — real hand-off wired in T-5.
+    /// Reveal the selected entry in the OS file manager (`R`).
     fn reveal_in_file_manager(&mut self) -> Effects {
-        Effects::noop()
+        self.hand_off_to_opener(true)
+    }
+
+    /// Hand the selected entry off to the OS opener (open-with-default-app or reveal-in-file-
+    /// manager). Read-only: resolves the tree selection (file OR directory, focus-independent) and
+    /// launches an external process via the injected opener — never reads or writes the file
+    /// (AC-1/2/3/4/12). Non-blocking: a successful hand-off does NOT take over the terminal (no
+    /// `clear`), unlike the editor path (AC-6). A missing selection or absent opener is an inert
+    /// no-op (AC-5).
+    fn hand_off_to_opener(&mut self, reveal: bool) -> Effects {
+        // Resolve the selection FIRST and clone its path, so the immutable tree borrow is released
+        // before we take a mutable borrow of self.opener (borrow-checker).
+        let Some(path) = self.tree.selected().map(|n| n.path.clone()) else {
+            return Effects::noop(); // AC-5: nothing selected
+        };
+        let Some(opener) = self.opener.as_mut() else {
+            return Effects::noop(); // no opener injected (defensive; production always injects one)
+        };
+        let outcome = if reveal {
+            opener.reveal(&path)
+        } else {
+            opener.open(&path)
+        };
+        match outcome {
+            crate::opener::OpenerOutcome::Launched => Effects::redraw(), // AC-6: no `clear`
+            crate::opener::OpenerOutcome::NotLaunched(reason) => {
+                self.action_notice = Some(if reveal {
+                    format!("Could not reveal in file manager: {reason}")
+                } else {
+                    format!("Could not open with default app: {reason}")
+                });
+                Effects::redraw()
+            }
+            crate::opener::OpenerOutcome::NonZeroExit(detail) => {
+                self.action_notice = Some(if reveal {
+                    format!("File manager exited with {detail}")
+                } else {
+                    format!("Opener exited with {detail}")
+                });
+                Effects::redraw()
+            }
+        }
     }
 
     fn open_in_editor(&mut self) -> Effects {

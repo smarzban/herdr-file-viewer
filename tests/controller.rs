@@ -21,9 +21,11 @@ use herdr_file_viewer::render::Renderers;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8728,45 +8730,271 @@ fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
     );
 }
 
-/// A test double for the OS [`Opener`] seam: records every path it is asked to open/reveal and
-/// returns a configurable [`OpenerOutcome`] (defaulting to `Launched`), so the controller can be
-/// injected with a fake instead of ever spawning a real `xdg-open`/`open`/`explorer` (AC-13).
-#[derive(Default)]
-struct FakeOpener {
+/// The paths a [`FakeOpener`] was asked to open/reveal, recorded into a shared handle the test
+/// still holds after the fake is boxed into the controller via `set_opener` — so a test can
+/// assert what the `O`/`R` handlers pushed through the seam.
+#[derive(Clone, Default)]
+struct OpenerLog {
     opened: Vec<PathBuf>,
     revealed: Vec<PathBuf>,
-    /// The outcome each call returns; `None` ⇒ `OpenerOutcome::Launched`.
-    outcome: Option<OpenerOutcome>,
+}
+
+/// Which [`OpenerOutcome`] the fake returns for every open/reveal call.
+#[derive(Clone, Copy)]
+enum OutcomeKind {
+    Launched,
+    NotLaunched,
+    NonZeroExit,
+}
+
+/// A test double for the OS [`Opener`] seam: records every path it is asked to open/reveal into a
+/// shared [`OpenerLog`] and returns a preconfigured [`OpenerOutcome`], so the controller is never
+/// wired to a real `xdg-open`/`open`/`explorer` (AC-13 hermeticity).
+struct FakeOpener {
+    log: Rc<RefCell<OpenerLog>>,
+    outcome_kind: OutcomeKind,
 }
 
 impl FakeOpener {
-    fn result(&self) -> OpenerOutcome {
-        match &self.outcome {
-            Some(OpenerOutcome::Launched) | None => OpenerOutcome::Launched,
-            Some(OpenerOutcome::NotLaunched(s)) => OpenerOutcome::NotLaunched(s.clone()),
-            Some(OpenerOutcome::NonZeroExit(s)) => OpenerOutcome::NonZeroExit(s.clone()),
+    /// Build a fake plus a shared handle onto its log that the test keeps to assert against.
+    fn new(outcome_kind: OutcomeKind) -> (Self, Rc<RefCell<OpenerLog>>) {
+        let log = Rc::new(RefCell::new(OpenerLog::default()));
+        (
+            Self {
+                log: Rc::clone(&log),
+                outcome_kind,
+            },
+            log,
+        )
+    }
+
+    fn outcome(&self) -> OpenerOutcome {
+        match self.outcome_kind {
+            OutcomeKind::Launched => OpenerOutcome::Launched,
+            OutcomeKind::NotLaunched => OpenerOutcome::NotLaunched("opener not on PATH".into()),
+            OutcomeKind::NonZeroExit => OpenerOutcome::NonZeroExit("exit status: 1".into()),
         }
     }
 }
 
 impl Opener for FakeOpener {
     fn open(&mut self, path: &Path) -> OpenerOutcome {
-        self.opened.push(path.to_path_buf());
-        self.result()
+        self.log.borrow_mut().opened.push(path.to_path_buf());
+        self.outcome()
     }
     fn reveal(&mut self, path: &Path) -> OpenerOutcome {
-        self.revealed.push(path.to_path_buf());
-        self.result()
+        self.log.borrow_mut().revealed.push(path.to_path_buf());
+        self.outcome()
     }
 }
 
 #[test]
 fn set_opener_injects_a_reachable_opener() {
-    // T-4 wires `set_opener` as a post-construction seam (mirroring `set_host`). The `O`/`R`
-    // handlers are still stubs in this task, so we can't yet assert an invocation — a fuller
-    // behavior test (that pressing `O`/`R` calls through to the injected opener) lands in the
-    // next task. Here we only prove the seam exists, accepts a fake, and doesn't panic.
+    // `set_opener` is a post-construction seam (mirroring `set_host`). Here we only prove the
+    // seam exists, accepts a fake, and doesn't panic; the behavioral tests below assert the
+    // `O`/`R` handlers actually call through to the injected opener.
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
-    ctrl.set_opener(Box::new(FakeOpener::default()));
+    let (opener, _log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+}
+
+#[test]
+fn open_with_app_invokes_opener_open_on_selected_file() {
+    // AC-1: with the cursor on a file, `O` resolves the selection and calls the opener's `open`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let file = dir.path().join("a.rs");
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::OpenWithApp);
+    assert_eq!(log.borrow().opened, vec![file], "AC-1: the file was opened");
+    assert!(log.borrow().revealed.is_empty(), "reveal was not called");
+    assert!(
+        ctrl.action_notice().is_none(),
+        "a successful open sets no notice"
+    );
+}
+
+#[test]
+fn reveal_invokes_opener_reveal_on_selected_file() {
+    // AC-2: with the cursor on a file, `R` resolves the selection and calls the opener's `reveal`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let file = dir.path().join("a.rs");
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::RevealInFileManager);
+    assert_eq!(
+        log.borrow().revealed,
+        vec![file],
+        "AC-2: the file was revealed"
+    );
+    assert!(log.borrow().opened.is_empty(), "open was not called");
+}
+
+#[test]
+fn open_and_reveal_accept_a_directory_target() {
+    // AC-3: the hand-off targets the selection whether it is a file OR a directory — unlike the
+    // editor path, which is file-only. A single directory is the sole (and thus selected) node.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let sub = dir.path().join("sub");
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path,
+        sub,
+        "precondition: the directory is selected"
+    );
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::OpenWithApp);
+    ctrl.handle(Intent::RevealInFileManager);
+    assert_eq!(
+        log.borrow().opened,
+        vec![sub.clone()],
+        "AC-3: O accepts the directory"
+    );
+    assert_eq!(
+        log.borrow().revealed,
+        vec![sub],
+        "AC-3: R accepts the directory"
+    );
+}
+
+#[test]
+fn hand_off_target_is_focus_independent() {
+    // AC-4: the hand-off resolves the tree selection regardless of which pane is focused — with
+    // focus on the content pane, `O` still opens the selected file.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let file = dir.path().join("a.rs");
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Content,
+        "focus moved to the content pane"
+    );
+    ctrl.handle(Intent::OpenWithApp);
+    assert_eq!(
+        log.borrow().opened,
+        vec![file],
+        "AC-4: the selection is opened even with the content pane focused"
+    );
+}
+
+#[test]
+fn open_with_no_selection_is_inert() {
+    // AC-5: with an empty tree (no selection), both `O` and `R` do nothing — no opener call,
+    // no notice, no panic.
+    let dir = TempDir::new(); // empty directory → no visible nodes → no selection
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    assert!(
+        ctrl.tree().selected().is_none(),
+        "precondition: nothing is selected in an empty tree"
+    );
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::OpenWithApp);
+    ctrl.handle(Intent::RevealInFileManager);
+    assert!(
+        log.borrow().opened.is_empty() && log.borrow().revealed.is_empty(),
+        "AC-5: no opener call when nothing is selected"
+    );
+    assert!(
+        ctrl.action_notice().is_none(),
+        "AC-5: an inert hand-off sets no notice"
+    );
+}
+
+#[test]
+fn successful_hand_off_does_not_take_over_the_terminal() {
+    // AC-6: a successful OS hand-off is non-blocking — it does NOT suspend/clear the terminal,
+    // unlike the editor takeover path (which sets `clear: true`, asserted elsewhere). So the
+    // returned Effects redraw but never set `clear`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let (opener, _log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    let fx = ctrl.handle(Intent::OpenWithApp);
+    assert!(
+        !fx.clear,
+        "AC-6: a successful hand-off does not take over the terminal (no clear)"
+    );
+    assert!(fx.redraw, "the frame still repaints (notice/none refresh)");
+}
+
+#[test]
+fn open_launch_failure_sets_a_non_fatal_notice() {
+    // AC-7: if the opener could not be launched (e.g. missing `xdg-open`), a non-fatal notice is
+    // shown — no panic, session continues.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let (opener, _log) = FakeOpener::new(OutcomeKind::NotLaunched);
+    ctrl.set_opener(Box::new(opener));
+
+    let fx = ctrl.handle(Intent::OpenWithApp);
+    let notice = ctrl
+        .action_notice()
+        .expect("AC-7: a launch failure sets a notice");
+    assert!(
+        notice.contains("Could not open"),
+        "AC-7: launch-failure wording (got {notice:?})"
+    );
+    assert!(!fx.quit, "AC-7: a launch failure does not end the session");
+}
+
+#[test]
+fn reveal_launch_failure_sets_a_non_fatal_notice() {
+    // AC-7 (reveal branch): if the opener could not be launched, RevealInFileManager shows the
+    // reveal-specific non-fatal notice — no panic, session continues. Guards against an
+    // open/reveal wording swap.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let (opener, _log) = FakeOpener::new(OutcomeKind::NotLaunched);
+    ctrl.set_opener(Box::new(opener));
+
+    let fx = ctrl.handle(Intent::RevealInFileManager);
+    let notice = ctrl
+        .action_notice()
+        .expect("AC-7: a reveal launch failure sets a notice");
+    assert!(
+        notice.contains("Could not reveal in file manager"),
+        "AC-7: reveal launch-failure wording (got {notice:?})"
+    );
+    assert!(
+        !fx.quit,
+        "AC-7: a reveal launch failure does not end the session"
+    );
+}
+
+#[test]
+fn open_non_zero_exit_sets_a_non_fatal_notice() {
+    // AC-8: if the opener ran but exited non-zero, a non-fatal notice is shown — no panic.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let (opener, _log) = FakeOpener::new(OutcomeKind::NonZeroExit);
+    ctrl.set_opener(Box::new(opener));
+
+    let fx = ctrl.handle(Intent::OpenWithApp);
+    assert!(
+        ctrl.action_notice().is_some(),
+        "AC-8: a non-zero opener exit sets a notice"
+    );
+    assert!(!fx.quit, "AC-8: a non-zero exit does not end the session");
 }
