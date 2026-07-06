@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-06
+
 ### Added
 - **Copy a line reference — `L` line-select mode.** With the content pane focused (or zoomed),
   `L` enters line-select mode: a marker appears on the top visible source line. `j`/`k` (or
