@@ -19,6 +19,7 @@ pub mod infile;
 pub mod input;
 pub mod intent;
 pub mod launch;
+pub mod opener;
 pub mod picker;
 pub mod presenter;
 pub mod proc;
