@@ -2146,6 +2146,11 @@ fn y_and_capital_y_copy_path_unchanged() {
     );
 }
 
+// Unix-only: this end-to-end check needs a file whose *name* carries control bytes (ESC/BEL/newline),
+// which Windows forbids — `fs::write` fails there before the copy path is even reached. The
+// `sanitize_control` defense itself is platform-agnostic and directly unit-tested in `text_layout.rs`,
+// so Windows keeps full coverage of the sanitizer; only this filesystem-level repro is gated.
+#[cfg(unix)]
 #[test]
 fn copy_path_strips_control_bytes_from_a_hostile_filename() {
     // A filename is attacker-controllable in a browsed repo and may legally contain control bytes —
