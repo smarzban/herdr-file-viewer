@@ -36,6 +36,8 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Char('N') => Some(Intent::PrevMatch),
         KeyCode::Char('H') => Some(Intent::TreeScrollLeft),
         KeyCode::Char('L') => Some(Intent::TreeScrollRight),
+        KeyCode::Char('O') => Some(Intent::OpenWithApp),
+        KeyCode::Char('R') => Some(Intent::RevealInFileManager),
         KeyCode::Char('y') => Some(Intent::CopyRepoPath),
         KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
         KeyCode::Char('W') => Some(Intent::SwitchWorktree),
@@ -85,6 +87,8 @@ mod tests {
         (KeyCode::Char('N'), Intent::PrevMatch),
         (KeyCode::Char('H'), Intent::TreeScrollLeft),
         (KeyCode::Char('L'), Intent::TreeScrollRight),
+        (KeyCode::Char('O'), Intent::OpenWithApp),
+        (KeyCode::Char('R'), Intent::RevealInFileManager),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
@@ -329,5 +333,40 @@ mod tests {
         // Lowercase h/l stay Collapse/Expand (no collision).
         assert_eq!(map_key(k(KeyCode::Char('h'))), Some(Intent::Collapse));
         assert_eq!(map_key(k(KeyCode::Char('l'))), Some(Intent::Expand));
+    }
+
+    #[test]
+    fn shift_o_r_map_to_open_and_reveal_and_lowercase_o_is_unbound() {
+        // `O` (Shift+o) opens the selected entry with the OS default app; `R` (Shift+r) reveals
+        // it in the OS file manager. Lowercase `o` stays unbound (`r` is Refresh — untouched).
+        // A Ctrl chord on either capital key must fire nothing.
+        assert_eq!(map_key(k(KeyCode::Char('O'))), Some(Intent::OpenWithApp));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT)),
+            Some(Intent::OpenWithApp),
+            "O with SHIFT bit set still maps to OpenWithApp"
+        );
+        assert_eq!(
+            map_key(k(KeyCode::Char('R'))),
+            Some(Intent::RevealInFileManager)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)),
+            Some(Intent::RevealInFileManager),
+            "R with SHIFT bit set still maps to RevealInFileManager"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-O must not fire an intent"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-R must not fire an intent"
+        );
+        // Lowercase `o` stays unbound; `r` stays Refresh (no collision).
+        assert_eq!(map_key(k(KeyCode::Char('o'))), None);
+        assert_eq!(map_key(k(KeyCode::Char('r'))), Some(Intent::Refresh));
     }
 }

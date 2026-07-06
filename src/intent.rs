@@ -33,6 +33,13 @@ pub enum Intent {
     CycleView,
     /// Hand the selected file off to an external editor (AC-19).
     OpenInEditor,
+    /// Open the selected entry with the OS default application (`O`). Read-only external
+    /// hand-off — launches another process, never modifies the file (AC-1, AC-N1). Non-blocking
+    /// (does not suspend the TUI).
+    OpenWithApp,
+    /// Reveal the selected entry in the OS file manager (`R`). Read-only external hand-off
+    /// (AC-2, AC-N1). Non-blocking.
+    RevealInFileManager,
     /// Copy the selected node's **repo-relative** path to the clipboard (e.g. `src/app.rs`).
     /// Read-only — it copies a path string, never reads or writes the file's contents (AC-N3).
     CopyRepoPath,
@@ -108,7 +115,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 30] = [
+    pub const ALL: [Intent; 32] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -120,6 +127,8 @@ impl Intent {
         Intent::ToggleBaseline,
         Intent::CycleView,
         Intent::OpenInEditor,
+        Intent::OpenWithApp,
+        Intent::RevealInFileManager,
         Intent::CopyRepoPath,
         Intent::CopyAbsPath,
         Intent::ToggleFocus,
@@ -166,6 +175,8 @@ mod tests {
                 | Intent::ToggleBaseline
                 | Intent::CycleView
                 | Intent::OpenInEditor
+                | Intent::OpenWithApp
+                | Intent::RevealInFileManager
                 | Intent::CopyRepoPath
                 | Intent::CopyAbsPath
                 | Intent::ToggleFocus
@@ -252,11 +263,23 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_30() {
+    fn all_length_is_32() {
         assert_eq!(
             Intent::ALL.len(),
-            30,
-            "Intent::ALL must have exactly 30 variants after adding TreeScrollLeft/Right"
+            32,
+            "Intent::ALL must have exactly 32 variants after adding OpenWithApp/RevealInFileManager"
+        );
+    }
+
+    #[test]
+    fn reveal_open_intents_are_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::OpenWithApp),
+            "Intent::ALL must contain OpenWithApp"
+        );
+        assert!(
+            Intent::ALL.contains(&Intent::RevealInFileManager),
+            "Intent::ALL must contain RevealInFileManager"
         );
     }
 

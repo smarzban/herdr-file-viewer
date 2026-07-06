@@ -1130,6 +1130,8 @@ impl Controller {
             Intent::ToggleBaseline => self.toggle_baseline(),
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
+            Intent::OpenWithApp => self.open_with_app(),
+            Intent::RevealInFileManager => self.reveal_in_file_manager(),
             Intent::CopyRepoPath => self.copy_path(PathKind::Repo),
             Intent::CopyAbsPath => self.copy_path(PathKind::Absolute),
             Intent::ToggleFocus => self.toggle_focus(),
@@ -1436,6 +1438,16 @@ impl Controller {
         self.overrides.insert(node.path.clone(), next);
         self.dispatch_render();
         Effects::redraw()
+    }
+
+    /// Open the selected entry with the OS default app (`O`). Stub — real hand-off wired in T-5.
+    fn open_with_app(&mut self) -> Effects {
+        Effects::noop()
+    }
+
+    /// Reveal the selected entry in the OS file manager (`R`). Stub — real hand-off wired in T-5.
+    fn reveal_in_file_manager(&mut self) -> Effects {
+        Effects::noop()
     }
 
     fn open_in_editor(&mut self) -> Effects {
