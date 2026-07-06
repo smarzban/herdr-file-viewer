@@ -599,6 +599,11 @@ fn range_copies_start_end() {
     );
 }
 
+// Unix-only: this repro needs a file whose *name* carries an ESC byte, which Windows forbids —
+// `fs::write` fails there before the copy path runs. The `sanitize_control` defense is
+// platform-agnostic and directly unit-tested in `text_layout.rs` (runs on every platform), so
+// Windows keeps full sanitizer coverage; only the filesystem-level repro is gated.
+#[cfg(unix)]
 #[test]
 fn control_bytes_in_path_are_sanitized() {
     // AC-16: the path segment is untrusted — a crafted file name can carry an ESC byte. The whole
