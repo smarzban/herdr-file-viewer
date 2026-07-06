@@ -11,6 +11,10 @@
 //! a single-token file-content marker. So it passes identically whether or not glow/delta/bat are
 //! installed. The anchors are single tokens written into previously-blank cells, so ratatui's
 //! differential redraw cannot split them — making every `expect` robust and non-flaky.
+//!
+//! Unix-only: see `tests/cli_smoke.rs` for why this `expectrl`-pty e2e suite is not ported to
+//! Windows's `conpty` backend in this feature.
+#![cfg(unix)]
 
 mod common;
 

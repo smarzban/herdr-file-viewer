@@ -15,7 +15,16 @@ All notable changes to this project are documented here. The format is based on
   exits. A mouse click places the marker and a double-click copies. Entering
   from a rendered-markdown or diff view first switches that file to the line-numbered source view,
   since line numbers only map there. `L` stays focus-gated: with the tree focused it still does the
-  tree's horizontal scroll (unchanged).
+  tree's horizontal scroll (unchanged). Correct under the `w` wrap toggle — the marker, mouse click,
+  and copied reference map through the wrapped layout, so they land on the right source line.
+
+## [1.8.0] - 2026-07-05
+
+### Added
+- **Native Windows support (preview).** The viewer now builds and runs on `x86_64-pc-windows-msvc`,
+  alongside Linux and macOS. Install via herdr's preview channel and summon it with
+  `herdr plugin action invoke open-file-viewer-windows`; see the README's Windows section.
+  Preview is best-effort: no Windows-on-ARM and no code-signing yet.
 
 ## [1.7.0] - 2026-06-30
 

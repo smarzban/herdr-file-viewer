@@ -3,44 +3,96 @@
 # A git-aware, read-only file viewer that herdr opens in a split pane beside the
 # user's current work. The viewer appears ONLY in response to an explicit action
 # (its keybinding) — there are no event hooks and no automatic invocation (AC-N4).
+#
+# Windows support is preview (see README's Windows section). Cross-platform packaging:
+#  - [[build]] has a unix (/bin/sh) and a Windows (PowerShell) entry, each gated by the
+#    item-level `platforms` key; herdr runs exactly the host-matching one at install time.
+#  - [[actions]] are gated the same way, but each carries a UNIQUE id — herdr rejects a
+#    duplicate action id at load time regardless of platform (verified against herdr 0.7.1),
+#    so the Windows launchers use the `-windows`-suffixed ids `open-file-viewer-windows` /
+#    `open-file-viewer-tab-windows`. On Windows, bind THOSE action ids.
+#  - Windows launch (verified on real hardware, herdr 0.7.1-preview, GH #58): herdr can NOT spawn the
+#    manifest's RELATIVE pane command on Windows — it passes the relative program to CreateProcessW,
+#    which resolves it against herdr's OWN directory (not any `--cwd` we set), failing with
+#    ERROR_PATH_NOT_FOUND (os error 3). herdr also reports the plugin root as a `\\?\` verbatim path
+#    and does NOT append `.exe`. So on Windows the launcher scripts spawn the viewer BY ABSOLUTE PATH
+#    (`pane split` / `tab create` + `pane run`), and the Windows [[actions]] locate the launcher
+#    script by asking herdr for its own plugin root (`plugin list`, stripping the `\\?\` prefix)
+#    rather than relying on the process cwd. There is deliberately NO Windows [[panes]] entry — the
+#    manifest pane's relative command is unspawnable there.
+#    No aarch64 Windows target is declared (v1 = x86_64-pc-windows-msvc).
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
-version = "1.7.0"
+version = "1.8.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
 min_herdr_version = "0.7.0"
-platforms = ["linux", "macos"]
+platforms = ["linux", "macos", "windows"]
 
-# Build step herdr runs at install time. Fast path: scripts/fetch-or-build.sh downloads the
-# prebuilt binary matching this source's version + platform and verifies its SHA-256. On ANY miss
-# (no matching release, download/checksum failure, unsupported platform) it falls back to building
-# from source with cargo — so installing never gets harder than before, and no Rust toolchain is
-# needed when a matching prebuilt release exists.
+# Build step herdr runs at install time. Fast path: the platform's fetch-or-build script
+# downloads the prebuilt binary matching this source's version + platform and verifies its
+# SHA-256. On ANY miss (no matching release, download/checksum failure, unsupported platform) it
+# falls back to building from source with cargo — so installing never gets harder than before,
+# and no Rust toolchain is needed when a matching prebuilt release exists.
 [[build]]
+platforms = ["linux", "macos"]
 command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
 
 # The viewer pane. herdr performs the split placement on launch (AC-17); the [[actions]]
 # below summon it — declaring placement = "split" is what opens it beside the current pane.
+# No shell is involved in opening the pane itself (AC-15).
 [[panes]]
 id = "file-viewer"
 title = "Files"
 placement = "split"
 command = ["./target/release/herdr-file-viewer"]
 
+# (No Windows [[panes]] entry: herdr can't spawn the relative command on Windows, so the Windows
+# launchers spawn the viewer by absolute path via `pane split`/`tab create` + `pane run` — see header.)
+
 # The action that summons the viewer (bound to a keybinding in herdr config). This is
 # the only way the viewer is opened — there is no [[events]] hook (AC-N4). herdr actions
 # run a `command`; the launcher script opens the [[panes]] entry below as a split.
 [[actions]]
 id = "open-file-viewer"
+platforms = ["linux", "macos"]
 title = "Open file viewer"
 description = "Open the git-aware file viewer in a split pane beside the current work."
 command = ["bash", "scripts/open-file-viewer.sh"]
+
+[[actions]]
+id = "open-file-viewer-windows"
+platforms = ["windows"]
+title = "Open file viewer"
+description = "Open the git-aware file viewer in a split pane beside the current work."
+# Locate the launcher by asking herdr for its own plugin root (the action's cwd is unreliable on
+# Windows), stripping the `\\?\` verbatim prefix herdr reports, then run the .ps1 by absolute path.
+command = [
+  "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+  '''$b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer.ps1')''',
+]
 
 # The same viewer, opened in its own tab instead of a split. Idempotent across tabs: switches
 # to an existing viewer tab rather than duplicating it, and toggles off when already on it.
 # Bind a key to it (e.g. `prefix+shift+f`) in ~/.config/herdr/config.toml.
 [[actions]]
 id = "open-file-viewer-tab"
+platforms = ["linux", "macos"]
 title = "Open file viewer (tab)"
 description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
 command = ["bash", "scripts/open-file-viewer-tab.sh"]
+
+[[actions]]
+id = "open-file-viewer-tab-windows"
+platforms = ["windows"]
+title = "Open file viewer (tab)"
+description = "Open the git-aware file viewer in its own tab (switch to it if already open)."
+# See open-file-viewer-windows: locate the launcher via herdr's own plugin root, not the cwd.
+command = [
+  "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+  '''$b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
+]
