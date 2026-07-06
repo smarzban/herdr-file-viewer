@@ -8,6 +8,7 @@
 //! always carried as a single, un-shell-split argv element to keep spaces and metacharacters
 //! literal (AC-9).
 
+use crate::editor::{SpawnError, Spawner};
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -61,9 +62,191 @@ pub fn opener_argv(os: OsKind, action: OpenAction, path: &Path) -> Vec<OsString>
     }
 }
 
+/// The result of an OS hand-off attempt through the [`Opener`] seam. Mirrors the editor's
+/// [`SpawnError`] split so the controller can word its notice accurately:
+/// [`OpenerOutcome::NotLaunched`] means nothing ran (e.g. `xdg-open` missing) — "could not
+/// open"; [`OpenerOutcome::NonZeroExit`] means the opener ran and returned a failing status.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenerOutcome {
+    /// The opener was spawned successfully (non-blocking success — the TUI keeps running).
+    Launched,
+    /// The opener process could not be started at all; the carried string is a human-readable
+    /// reason (from the underlying `io::Error`).
+    NotLaunched(String),
+    /// The opener launched but exited non-zero; the carried string is a human-readable detail.
+    NonZeroExit(String),
+}
+
+/// The read-only OS hand-off seam: open a path with its default app, or reveal it in the
+/// file manager. Unlike the editor hand-off, these are **non-blocking** — they do not suspend
+/// or take over the TUI's terminal (AC-1, AC-2, AC-7, AC-8). Never mutates the file (AC-N1).
+pub trait Opener {
+    /// Open `path` with the OS default application (non-blocking). (AC-1)
+    fn open(&mut self, path: &Path) -> OpenerOutcome;
+    /// Reveal `path` in the OS file manager (non-blocking). (AC-2)
+    fn reveal(&mut self, path: &Path) -> OpenerOutcome;
+}
+
+/// The concrete [`Opener`]: builds the per-OS argv via [`opener_argv`] and hands it to the
+/// injected [`Spawner`] (the same low-level seam the editor launcher reuses), so tests stay
+/// hermetic — no real process is ever spawned here.
+pub struct CommandOpener {
+    os: OsKind,
+    spawner: Box<dyn Spawner>,
+}
+
+impl CommandOpener {
+    /// Create an opener for the given target OS, spawning through `spawner`.
+    pub fn new(os: OsKind, spawner: Box<dyn Spawner>) -> Self {
+        Self { os, spawner }
+    }
+
+    /// Build the argv for `action`/`path`, spawn it, and map the spawn result onto an
+    /// [`OpenerOutcome`]. The only external effect goes through the injected [`Spawner`].
+    fn run(&mut self, action: OpenAction, path: &Path) -> OpenerOutcome {
+        let argv = opener_argv(self.os, action, path);
+        match self.spawner.spawn(&argv) {
+            Ok(()) => OpenerOutcome::Launched,
+            Err(SpawnError::NotLaunched(e)) => OpenerOutcome::NotLaunched(e.to_string()),
+            Err(SpawnError::NonZeroExit(d)) => OpenerOutcome::NonZeroExit(d),
+        }
+    }
+}
+
+impl Opener for CommandOpener {
+    fn open(&mut self, path: &Path) -> OpenerOutcome {
+        self.run(OpenAction::Open, path)
+    }
+
+    fn reveal(&mut self, path: &Path) -> OpenerOutcome {
+        self.run(OpenAction::Reveal, path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::{SpawnError, Spawner};
+    use std::cell::RefCell;
+    use std::io;
+    use std::rc::Rc;
+
+    /// Which result the recorder returns for each `spawn` call.
+    #[derive(Clone, Copy)]
+    enum SpawnResult {
+        Ok,
+        NotLaunched,
+        NonZeroExit,
+    }
+
+    /// A test double for [`Spawner`] that records every argv it is handed (into a shared
+    /// `Vec` the test still holds after boxing) and returns a preconfigured result — the only
+    /// spawn path, so no real process is ever launched (AC-13 hermeticity).
+    struct RecordingSpawner {
+        calls: Rc<RefCell<Vec<Vec<OsString>>>>,
+        result: SpawnResult,
+    }
+
+    impl RecordingSpawner {
+        fn new(result: SpawnResult) -> (Self, Rc<RefCell<Vec<Vec<OsString>>>>) {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    calls: Rc::clone(&calls),
+                    result,
+                },
+                calls,
+            )
+        }
+    }
+
+    impl Spawner for RecordingSpawner {
+        fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
+            self.calls.borrow_mut().push(argv.to_vec());
+            match self.result {
+                SpawnResult::Ok => Ok(()),
+                SpawnResult::NotLaunched => {
+                    Err(SpawnError::NotLaunched(io::Error::other("missing")))
+                }
+                SpawnResult::NonZeroExit => Err(SpawnError::NonZeroExit("code 1".into())),
+            }
+        }
+    }
+
+    #[test]
+    fn command_opener_open_spawns_open_argv() {
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder));
+        let outcome = opener.open(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1, "exactly one spawn call");
+        assert_eq!(
+            calls[0],
+            opener_argv(OsKind::Linux, OpenAction::Open, Path::new("/a/b.txt"))
+        );
+        assert_eq!(
+            calls[0],
+            vec![OsString::from("xdg-open"), OsString::from("/a/b.txt")]
+        );
+    }
+
+    #[test]
+    fn command_opener_reveal_spawns_reveal_argv() {
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder));
+        let outcome = opener.reveal(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1, "exactly one spawn call");
+        assert_eq!(
+            calls[0],
+            opener_argv(OsKind::Linux, OpenAction::Reveal, Path::new("/a/b.txt"))
+        );
+        // Linux reveal opens the parent directory.
+        assert_eq!(
+            calls[0],
+            vec![OsString::from("xdg-open"), OsString::from("/a")]
+        );
+    }
+
+    #[test]
+    fn command_opener_maps_not_launched() {
+        let (recorder, _calls) = RecordingSpawner::new(SpawnResult::NotLaunched);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder));
+        match opener.open(Path::new("/a/b.txt")) {
+            OpenerOutcome::NotLaunched(msg) => assert!(
+                msg.contains("missing"),
+                "message should carry the io::Error detail, got {msg:?}"
+            ),
+            other => panic!("expected NotLaunched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn command_opener_maps_non_zero_exit() {
+        let (recorder, _calls) = RecordingSpawner::new(SpawnResult::NonZeroExit);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder));
+        assert_eq!(
+            opener.open(Path::new("/a/b.txt")),
+            OpenerOutcome::NonZeroExit("code 1".into())
+        );
+    }
+
+    #[test]
+    fn command_opener_uses_only_injected_spawner() {
+        // The injected recorder is the sole spawn path: it captures the call and no real
+        // process runs (AC-13 hermeticity).
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder));
+        let outcome = opener.open(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "the recorder captured the call; nothing else spawned"
+        );
+    }
 
     #[test]
     fn mac_open_argv() {
