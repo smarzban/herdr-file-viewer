@@ -51,6 +51,7 @@ is unit-testable with stubs.
 | `app` | The event loop (`run()`): assemble the live components, then `draw → poll input → route to the controller (or the active modal) → drain finished renders`, until the user closes the viewer. |
 | `update` | The bounded, read-only, fail-silent update check: at most once per 24h a hardened `git ls-remote --tags` (off the UI thread, in a private temp dir) compares the latest release to the running build and feeds the dismissable "update available" banner; opt out via `HERDR_FILE_VIEWER_NO_UPDATE_CHECK`. |
 | `editor` | Hand a file off to `$EDITOR` (launch only — never reads or writes the file). |
+| `opener` | Read-only OS hand-off for the `O` / `R` keys: a pure per-OS argv builder (open-with-default-app / reveal-in-file-manager) plus an `Opener` seam over the reused editor `Spawner`, spawned **non-blocking** (no terminal takeover, stdio nulled) so the TUI keeps running. |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
 
 ## Data flow

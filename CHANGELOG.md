@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Reveal in file manager / open with default app** — new `O` (open the selected file or directory
+  with the OS default application) and `R` (reveal the selected entry in the OS file manager) keyboard
+  shortcuts, each a read-only, non-blocking hand-off to the host OS (macOS `open`/`open -R`, Linux
+  `xdg-open`, Windows `explorer`). Requested in #68.
+
 ## [1.9.0] - 2026-07-06
 
 ### Added

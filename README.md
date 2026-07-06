@@ -156,6 +156,8 @@ PowerShell launcher scripts.
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` |
+| `O` (Shift+`o`) | **Open with default app** — hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |
+| `R` (Shift+`r`) | **Reveal in file manager** — open the OS file manager (Finder / Explorer / a Linux file manager) with the selected entry highlighted where supported, so you can drag it out (e.g. into Slack). Read-only hand-off |
 | `f` | **Go to file** — open a fuzzy finder over every file in the tree; type to filter, `↑` / `↓` move, `Enter` opens the selected file, `Esc` cancels (`←` / `→` scroll long paths) |
 | `:` | **Go to line** — open a prompt and jump the content pane to a source line by number (`Enter` jumps, `Esc` cancels; out-of-range clamps to the last line). Works in any view; in a rendered-markdown or diff view, confirming switches to the line-numbered content view and jumps there |
 | `/` | **Search in file** — open a prompt and highlight every match in the content pane as you type; `Enter` commits the search (highlights persist), `Esc` clears it and restores the scroll. Smartcase (a lowercase query is case-insensitive; a capital makes it case-sensitive). Works in any view |
@@ -185,7 +187,7 @@ content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
 never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`,
-`?`, `H`/`L`, and `J`/`K` in line-select mode).
+`O`, `R`, `?`, `H`/`L`, and `J`/`K` in line-select mode).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path — handy for pasting into a prompt, a command, or an agent. The copy uses the
