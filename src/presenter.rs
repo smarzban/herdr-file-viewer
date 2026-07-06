@@ -111,6 +111,11 @@ pub struct ViewState {
     /// match highlights on top of the rendered text (AC-9, AC-11). `None` ⇒ draw the content
     /// as-is (byte-identical to today — the `None` arm is just `state.content.clone()`).
     pub search: Option<ContentSearch>,
+    /// When `Some`, the copy-line-reference modal is active: the Presenter overlays a marker +
+    /// selection highlight on the content pane (AC-1, AC-7), mirroring the [`search`](Self::search)
+    /// overlay. `None` ⇒ draw the content as-is (byte-identical to today — the `None` arm leaves the
+    /// content path untouched, so no other snapshot moves).
+    pub line_select: Option<LineSelectView>,
     /// When `Some`, the in-app help overlay is drawn on top of everything else (AC-1, AC-5).
     /// `None` ⇒ no overlay. Drawn last in [`draw`] so it sits above the picker and finder.
     pub help: Option<HelpView>,
@@ -158,6 +163,25 @@ pub struct ContentSearch {
     /// Index into `matches` of the current (most recently navigated) match — rendered with
     /// [`crate::highlight::CURRENT_HIGHLIGHT`] rather than the regular [`crate::highlight::HIGHLIGHT`].
     pub current: usize,
+}
+
+/// Line-select overlay for the content pane: the marker line + the selection range to emphasize
+/// while the copy-line-reference modal is active (AC-1, AC-7). Carried in [`ViewState`] so the
+/// Presenter overlays a per-LINE style (mirroring [`ContentSearch`]), never mutating the content
+/// text. Built by the Session Controller's `view_state()` from `self.modal.line_select()`.
+///
+/// All three fields are **1-based source-line indices**. The Presenter draws a marker caret +
+/// [`crate::highlight::CURRENT_HIGHLIGHT`] on the `marker` line and a selection bar +
+/// [`crate::highlight::HIGHLIGHT`] across `[start, end]`; lines scrolled off-screen are simply not
+/// drawn (the `Paragraph` scroll offset clips them — the state stays whole).
+pub struct LineSelectView {
+    /// The marker (cursor) line — where `Enter` will anchor the reference. Rendered with a distinct
+    /// caret + the stronger current-match emphasis so the user sees exactly which line is active.
+    pub marker: usize,
+    /// The ascending selection start (inclusive), 1-based.
+    pub start: usize,
+    /// The ascending selection end (inclusive), 1-based.
+    pub end: usize,
 }
 
 /// The finder overlay's draw model (an owned snapshot of the controller's finder state).
@@ -465,6 +489,60 @@ fn content_max_line_width(content: &Text<'static>) -> usize {
     content.lines.iter().map(|l| l.width()).max().unwrap_or(0)
 }
 
+/// The gutter glyph on the marker (cursor) line — a caret so the active line is visible even with
+/// color stripped (the row also carries [`crate::highlight::CURRENT_HIGHLIGHT`]).
+const LINE_SELECT_MARKER: char = '▶';
+/// The gutter glyph on the selection rows other than the marker — a bar so the extent of the
+/// selection is visible in text (the rows also carry [`crate::highlight::HIGHLIGHT`]).
+const LINE_SELECT_BAR: char = '│';
+
+/// Overlay the line-select marker + selection styling onto the content lines (read-only, AC-1/AC-7).
+///
+/// Mirrors [`crate::highlight::apply`]: for each source line (its 1-based index is `i + 1`), prepend
+/// a one-column gutter glyph and patch a per-LINE highlight style onto the row so the marker and the
+/// selection extent read both with color (the [`crate::highlight`] theme styles) and with color
+/// stripped (the caret/bar glyph). The marker line gets the caret + the stronger
+/// [`crate::highlight::CURRENT_HIGHLIGHT`]; the other selection rows get the bar +
+/// [`crate::highlight::HIGHLIGHT`]; every other row gets a blank gutter and no style so the columns
+/// stay aligned. The content text itself is never mutated — spans are cloned, only their style is
+/// patched, and lines scrolled off-screen are clipped by the `Paragraph` offset (clamp-to-visible).
+fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let src = i + 1; // 1-based source line
+            let is_marker = src == ls.marker;
+            let in_range = src >= ls.start && src <= ls.end;
+            let (glyph, style) = if is_marker {
+                (LINE_SELECT_MARKER, crate::highlight::CURRENT_HIGHLIGHT)
+            } else if in_range {
+                (LINE_SELECT_BAR, crate::highlight::HIGHLIGHT)
+            } else {
+                (' ', Style::new())
+            };
+            let mut spans = Vec::with_capacity(line.spans.len() + 1);
+            spans.push(Span::styled(glyph.to_string(), style));
+            for s in &line.spans {
+                let patched = if is_marker || in_range {
+                    s.style.patch(style)
+                } else {
+                    s.style
+                };
+                spans.push(Span {
+                    content: s.content.clone(),
+                    style: patched,
+                });
+            }
+            Line {
+                spans,
+                style: line.style,
+                alignment: line.alignment,
+            }
+        })
+        .collect()
+}
+
 /// Border style for a column — highlighted when it holds focus.
 fn border_style(focused: bool) -> Style {
     if focused {
@@ -600,18 +678,21 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     let max_width = content_max_line_width(&state.content);
     let (text, vbar, hbar) = content_bars(content_area, total_rows, max_width, state.wrap);
 
-    // Overlay highlight when a committed search is active. `highlight::apply` returns the same
-    // line count and never changes a line's text width — only re-segments spans and patches
-    // styles — so `content_rows` and `max_width` (computed above from `state.content`) stay
-    // valid. When `search` is `None`, cloning `state.content` is byte-identical to the prior
-    // path, so existing snapshots are unaffected (AC zero-churn invariant).
-    let content_text = match &state.search {
-        Some(cs) => ratatui::text::Text::from(crate::highlight::apply(
+    // Overlay the line-select marker/selection first (it is a modal — search cannot be committed
+    // while it is open), then a committed search, else the content as-is. Each overlay returns the
+    // same line count, so `content_rows` (computed above from `state.content`) stays valid. When
+    // both are `None`, cloning `state.content` is byte-identical to the prior path, so existing
+    // snapshots are unaffected (AC zero-churn invariant).
+    let content_text = if let Some(ls) = &state.line_select {
+        ratatui::text::Text::from(apply_line_select(&state.content.lines, ls))
+    } else if let Some(cs) = &state.search {
+        ratatui::text::Text::from(crate::highlight::apply(
             &state.content.lines,
             &cs.matches,
             cs.current,
-        )),
-        None => state.content.clone(),
+        ))
+    } else {
+        state.content.clone()
     };
     let mut content =
         Paragraph::new(content_text).scroll((state.content_scroll, state.content_hscroll));

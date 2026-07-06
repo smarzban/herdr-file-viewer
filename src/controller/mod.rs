@@ -25,6 +25,7 @@ mod finder;
 mod git_apply;
 mod help;
 mod infile;
+mod lineselect;
 mod mouse;
 mod picker;
 
@@ -36,7 +37,8 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, PaneGeometry, PickerRowView, PickerView, ViewState,
+    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView,
+    PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
@@ -44,6 +46,7 @@ use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use lineselect::LineSelectState;
 use ratatui::layout::Position;
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
@@ -248,12 +251,16 @@ type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 ///   raw keys to `handle_prompt_key` and the mouse is inert, so the selection can't change beneath it.
 /// - `Help` — the help overlay (AC-1, AC-6), opened by `?`; dismissed by Esc/`q`. While open,
 ///   `handle()`/`handle_mouse()` return early (AC-N4).
+/// - `LineSelect` — the copy-line-reference selection (a content-pane marker, not a popup). While
+///   active `handle()` returns early — the run loop routes keys to its own handler (like the
+///   prompt/finder) — and a re-root / exit resets it to `Modal::None` (no clipboard touch here).
 enum Modal {
     None,
     Picker(PickerState),
     Finder(FinderState),
     Prompt(PromptState),
     Help(HelpState),
+    LineSelect(LineSelectState),
 }
 
 impl Modal {
@@ -304,6 +311,20 @@ impl Modal {
     fn help_mut(&mut self) -> Option<&mut HelpState> {
         match self {
             Modal::Help(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn line_select(&self) -> Option<&LineSelectState> {
+        match self {
+            Modal::LineSelect(s) => Some(s),
+            _ => None,
+        }
+    }
+    // Used by the line-select key handler (`handle_line_select_key`); the state exists here from
+    // T-3 so the accessor pair mirrors picker/finder/prompt/help.
+    fn line_select_mut(&mut self) -> Option<&mut LineSelectState> {
+        match self {
+            Modal::LineSelect(s) => Some(s),
             _ => None,
         }
     }
@@ -430,6 +451,15 @@ pub struct Controller {
     /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
     /// jump is pending; superseded (cleared) by any newer render dispatch.
     pending_goto: Option<(u64, usize)>,
+    /// A queued line-select entry awaiting its source re-render: the render seq to wait for. Set when
+    /// `L` enters line-select in a **transformed** view (RenderedMarkdown / Diff / FullDiff) or while a
+    /// source render is still in flight — the file is switched to the source-mapped content view and the
+    /// marker can't be placed until that render lands, so it is queued against the dispatched render's
+    /// seq and applied by [`poll`] (AC-15). Unlike [`pending_goto`](Self::pending_goto) there is no
+    /// user-specified target line: the marker always lands on the **top visible source line** of the
+    /// freshly-switched view (line 1 after the render resets the scroll). `None` when no entry is
+    /// pending; superseded (cleared) by any newer render dispatch — exactly like `pending_goto`.
+    pending_line_select: Option<u64>,
     /// The seq of the render result currently held in [`content`](Self::content), bumped by [`poll`]
     /// each time it applies a result. Equal to `latest_seq` exactly when the latest dispatched render
     /// has landed; lagging while one is in flight. Lets a synchronous go-to-line jump tell "content is
@@ -530,6 +560,7 @@ impl Controller {
             status_rx: None,
             modal: Modal::None,
             pending_goto: None,
+            pending_line_select: None,
             applied_seq: 0,
             search: None,
             herdr: None,
@@ -958,6 +989,17 @@ impl Controller {
                 matches: s.matches.clone(),
                 current: s.current,
             }),
+            // Populate the line-select overlay from the active modal so the Presenter draws the
+            // marker + selection highlight (AC-1, AC-7). `None` when the modal is closed → the
+            // content path is byte-identical to the prior render (no other snapshot moves).
+            line_select: self.modal.line_select().map(|s| {
+                let (start, end) = s.selection();
+                LineSelectView {
+                    marker: s.marker(),
+                    start,
+                    end,
+                }
+            }),
             help: self.help_view(),
         }
     }
@@ -1070,6 +1112,12 @@ impl Controller {
         if self.modal.help().is_some() {
             return Effects::noop();
         }
+        // Line-select is modal too: while it is active the run loop (T-5) routes raw keys to a
+        // dedicated handler, so any non-routed intent reaching `handle` is inert — mirrors the
+        // finder/prompt/help guards above.
+        if self.modal.line_select().is_some() {
+            return Effects::noop();
+        }
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
@@ -1098,7 +1146,27 @@ impl Controller {
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
             Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
-            Intent::TreeScrollRight => self.scroll_tree_h_focus(HSCROLL_STEP as i32),
+            // `L` is focus-gated (ADR-0010, copy-line-reference): on tree focus it is unchanged
+            // (AC-2, still `scroll_tree_h_focus`); on content focus it instead enters line-select
+            // at the top visible line (AC-1). The `is_empty()` inert branch below (AC-3) fires
+            // only once a render has *completed* with a zero-line body — a render still in
+            // flight shows the non-empty "Rendering…" placeholder, and no-file-selected/directory
+            // states show non-empty guidance text (`clear_content`), so `L` enters line-select in
+            // both of those. `TreeScrollLeft`/`H` is untouched — only `L` is overloaded. NOTE: the
+            // `Intent::TreeScrollRight` doc comment in `src/intent.rs` still reads "Inert unless
+            // the tree is focused" — that file is under a hard no-edit rule for this feature, so
+            // this comment is the up-to-date behavior note instead.
+            Intent::TreeScrollRight => match self.focus {
+                Focus::Tree => self.scroll_tree_h_focus(HSCROLL_STEP as i32), // AC-2: unchanged
+                Focus::Content => {
+                    if self.content.lines.is_empty() {
+                        Effects::noop() // AC-3: no rendered content → inert
+                    } else {
+                        self.enter_line_select_at_top(); // AC-1
+                        Effects::redraw()
+                    }
+                }
+            },
             Intent::ShowHelp => self.open_help(),
             Intent::Close => self.close_or_unzoom(),
         }
@@ -1175,6 +1243,42 @@ impl Controller {
             .take(n)
             .map(|l| crate::text_layout::line_wrapped_rows(l, w))
             .sum::<usize>()
+    }
+
+    /// The 0-based display-row offset at which 1-based source `line` begins. Without wrap a source
+    /// line maps 1:1 to a row (`line - 1`); with the `w` override wrapping every mode, earlier long
+    /// lines occupy several rows, so the offset is the cumulative wrapped-row count of the lines
+    /// BEFORE it — the same mapping [`scroll_to_line`](Self::scroll_to_line) uses, so line-select's
+    /// keep-marker-visible math agrees with the actual layout under wrap (the copy-line-reference
+    /// wrap fix). Shared by the line-select handlers in the `lineselect`/`mouse` submodules.
+    fn content_row_of_line(&self, line: usize) -> usize {
+        if self.effective_wrap() {
+            self.wrapped_rows_before(line.saturating_sub(1))
+        } else {
+            line.saturating_sub(1)
+        }
+    }
+
+    /// The inverse of [`content_row_of_line`]: the 1-based source line displayed at 0-based
+    /// display-row offset `row`. Without wrap that is simply `row + 1`; with wrap on, a source line
+    /// spans multiple rows, so walk the cumulative wrapped-row counts until `row` falls inside a
+    /// line. Used to place the line-select marker at the top visible source line on entry and to map
+    /// a mouse click's screen row back to a source line, so both are correct under the `w` wrap
+    /// override (the copy-line-reference wrap fix). Returns at least 1; the last source line for a
+    /// `row` past the end. `content.lines` empty ⇒ 1 (callers guard the empty case separately).
+    fn line_at_content_row(&self, row: usize) -> usize {
+        if !self.effective_wrap() {
+            return row + 1;
+        }
+        let w = self.content_width as usize;
+        let mut acc = 0usize;
+        for (i, line) in self.content.lines.iter().enumerate() {
+            acc += crate::text_layout::line_wrapped_rows(line, w);
+            if row < acc {
+                return i + 1;
+            }
+        }
+        self.content.lines.len().max(1)
     }
 
     /// Extract the plain-text content of every displayed line (ANSI spans joined, no styling).
@@ -1542,6 +1646,14 @@ impl Controller {
         self.pending_goto.map(|(_, line)| line)
     }
 
+    /// Whether a deferred line-select entry is queued against an in-flight source render (AC-15):
+    /// set when `L` enters on a transformed / still-rendering view (the marker waits for the
+    /// source-mapped re-render), cleared by `poll` once that render lands and the marker is placed,
+    /// or superseded by any newer render dispatch. Exposed for tests.
+    pub fn line_select_pending(&self) -> bool {
+        self.pending_line_select.is_some()
+    }
+
     /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
     /// (AC-2) and the Presenter's bottom prompt line. Mirrors `finder_query()`.
     pub fn prompt_query(&self) -> &str {
@@ -1619,6 +1731,11 @@ impl Controller {
         // navigated away before an auto-switch render landed). The auto-switch path sets its own
         // `pending_goto` AFTER calling this, so its jump survives; only stale ones are cleared.
         self.pending_goto = None;
+        // Same for a queued line-select entry (AC-15): a newer render supersedes an OLDER auto-switch
+        // entry. The auto-switch path re-sets `pending_line_select` AFTER calling this (capturing the
+        // fresh `latest_seq`), so its own entry survives; a re-root clears it too, since `re_root` ends
+        // in `dispatch_render` — the same mechanism that clears `pending_goto`.
+        self.pending_line_select = None;
         // AC-20: any displayed-content change (file-select, view-cycle, baseline-toggle, refresh,
         // go-to-line auto-switch, re-root, etc.) clears a committed search and its highlighting.
         // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets
@@ -1708,6 +1825,26 @@ impl Controller {
                 {
                     self.scroll_to_line(line);
                     self.pending_goto = None;
+                }
+                // A queued line-select entry (auto-switch from a transformed view, AC-15) opens once
+                // ITS render lands — the same seq-guard `pending_goto` uses. The source-mapped content
+                // is now applied and the scroll was reset to the top by `dispatch_render`, so the marker
+                // lands on the top visible source line, mapped through `line_at_content_row` so it is
+                // correct even if the `w` wrap override is on. A render that landed EMPTY (a zero-line
+                // body) opens nothing: the marker would otherwise fabricate a `path:1` reference to a
+                // line that does not exist — the same guard the synchronous `L` entry has (its
+                // `content.lines.is_empty()` inert branch). The pending entry is cleared either way.
+                if let Some(pseq) = self.pending_line_select
+                    && pseq == seq
+                {
+                    if !self.content.lines.is_empty() {
+                        let last = self.content.lines.len();
+                        let top = self
+                            .line_at_content_row(self.content_scroll as usize)
+                            .clamp(1, last);
+                        self.modal = Modal::LineSelect(LineSelectState::new(top));
+                    }
+                    self.pending_line_select = None;
                 }
                 // A render that was in flight when a search was opened/committed lands here and
                 // swaps self.content; matches computed against the OLD content are now stale.

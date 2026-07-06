@@ -1309,8 +1309,10 @@ fn dragging_the_tree_horizontal_scrollbar_scrolls_the_tree() {
 fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
     // AC-18: the tree's horizontal scroll was reachable only by mouse (drag/wheel); the `H`/`L`
     // keys (Shift+h / Shift+l) now move `tree_hscroll` by the same step the wheel uses, clamped
-    // to the measured max — mirroring the content pane's `←`/`→`. Inert when the content is
-    // focused (so the keys don't fight the content's own h-scroll).
+    // to the measured max — mirroring the content pane's `←`/`→`. `H` is inert when the content
+    // is focused (so it doesn't fight the content's own h-scroll); `L` on content focus is
+    // focus-gated too but, per ADR-0010 (copy-line-reference), enters line-select instead of
+    // being a plain no-op — see the assertions below.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -1359,22 +1361,35 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
         "TreeScrollRight clamps to the measured max (no overshoot)"
     );
 
-    // When the content pane is focused, H/L are INERT — they must not move the tree (so they
-    // don't collide with the content pane's own `←`/`→` h-scroll, which lives on the same keys
-    // via Expand/Collapse when content-focused).
+    // When the content pane is focused, H never moves the tree (so it doesn't collide with the
+    // content pane's own `←`/`→` h-scroll, which lives on the same keys via Expand/Collapse when
+    // content-focused). `L` no longer h-scrolls the tree on content focus either, but — per
+    // ADR-0010 (copy-line-reference, T-4) — it is not simply inert: it enters line-select instead,
+    // since the content pane already has a rendered (placeholder) line at this point
+    // (`dispatch_render`'s "Rendering…" text). This test never awaits the render, so the source
+    // render is still in flight (`applied_seq != latest_seq`); per T-6 (AC-15) the entry is then
+    // DEFERRED — queued against the in-flight render rather than opened on stale placeholder content
+    // — so `line_select_pending()` is set and the modal opens later, in `poll`. The genuinely-inert
+    // (no content yet) case is covered by `l_on_empty_content_is_inert`.
     ctrl.handle(Intent::ToggleFocus);
     assert_eq!(ctrl.focus(), Focus::Content, "content is now focused");
     let before = ctrl.view_state().tree_hscroll;
     let fx = ctrl.handle(Intent::TreeScrollRight);
     assert!(
-        !fx.redraw,
-        "TreeScrollRight is inert when content is focused"
+        fx.redraw,
+        "TreeScrollRight on content focus now enters line-select (ADR-0010), which redraws"
+    );
+    assert!(
+        ctrl.line_select_pending(),
+        "TreeScrollRight on content focus enters line-select (deferred against the in-flight source \
+         render) rather than h-scrolling the tree"
     );
     assert_eq!(
         ctrl.view_state().tree_hscroll,
         before,
-        "tree hscroll unchanged when content is focused"
+        "tree hscroll itself is untouched by the line-select entry"
     );
+    ctrl.exit_line_select(); // drop the queued entry → clean, no-modal controller for the next assertion
     let fx = ctrl.handle(Intent::TreeScrollLeft);
     assert!(
         !fx.redraw,
@@ -1384,6 +1399,34 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
         ctrl.view_state().tree_hscroll,
         before,
         "tree hscroll unchanged when content is focused"
+    );
+}
+
+#[test]
+fn l_on_tree_focus_still_h_scrolls() {
+    // T-4/AC-2: the line-select entry seam (ADR-0010) only overloads `L` on content focus —
+    // on tree focus `TreeScrollRight` is byte-for-byte the pre-existing behavior, and never
+    // enters line-select. Mirrors the tree-focus half of
+    // `h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    assert_eq!(ctrl.focus(), Focus::Tree, "tree is focused by default");
+    let mut g = wide_geometry();
+    g.tree_content_width = 138; // tree width 38 → max h-scroll = 100
+    ctrl.set_pane_geometry(g);
+    assert_eq!(ctrl.view_state().tree_hscroll, 0, "starts at the left edge");
+
+    let fx = ctrl.handle(Intent::TreeScrollRight);
+    assert!(fx.redraw, "TreeScrollRight still redraws on tree focus");
+    assert_eq!(
+        ctrl.view_state().tree_hscroll,
+        8,
+        "tree h-scroll still advances by HSCROLL_STEP, unchanged"
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "AC-2: line-select is never entered when the tree is focused"
     );
 }
 
@@ -2075,6 +2118,34 @@ fn copy_abs_path_copies_the_absolute_path() {
 // this test needs cannot be created there (`fs::write` fails). The `sanitize_control` defense the
 // copy path applies is platform-agnostic and unit-tested directly; this end-to-end check is unix.
 #[cfg(unix)]
+#[test]
+fn y_and_capital_y_copy_path_unchanged() {
+    // NC-6: the line-select entry seam (T-4, ADR-0010) only overloads `L` (`TreeScrollRight`);
+    // it must not disturb the pre-existing `y`/`Y` path-copy keys. Mirrors
+    // `copy_repo_path_copies_the_repo_relative_path_and_confirms` and
+    // `copy_abs_path_copies_the_absolute_path` in one test.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), false);
+
+    let fx = ctrl.handle(Intent::CopyRepoPath);
+    assert!(fx.redraw, "y still redraws to show the confirmation notice");
+    assert_eq!(
+        copied.lock().unwrap().as_slice(),
+        ["a.rs"],
+        "y still copies the repo-relative path exactly as before"
+    );
+
+    ctrl.handle(Intent::CopyAbsPath);
+    let log = copied.lock().unwrap();
+    assert_eq!(log.len(), 2, "exactly two copies so far");
+    let want = dir.path().join("a.rs").to_string_lossy().into_owned();
+    assert_eq!(
+        log[1], want,
+        "Y still copies the absolute path exactly as before"
+    );
+}
+
 #[test]
 fn copy_path_strips_control_bytes_from_a_hostile_filename() {
     // A filename is attacker-controllable in a browsed repo and may legally contain control bytes —
