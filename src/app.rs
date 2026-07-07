@@ -96,6 +96,15 @@ pub fn run() -> io::Result<()> {
         ctx.workspace_id.clone(),
     );
 
+    // Snapshot the host console's pre-viewer state, then restore it verbatim on EVERY exit path
+    // (a normal return, a `?` error, or a panic unwinding through `run`) via this guard's `Drop`.
+    // On Windows the console mode is shared state owned by the console rather than the process, so
+    // any bit the TUI setup leaves changed survives into the parent shell and wedges herdr's
+    // `prefix+q` detach (#73); handing the console back exactly as we found it makes the viewer
+    // transparent. Declared before `try_init` so the snapshot precedes any mutation, and before
+    // `terminal` so it drops last — the restore runs after the terminal backend is torn down.
+    let _restore_guard = TerminalGuard::capture();
+
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
     // pane that requests capture, while reserving Shift+mouse for the terminal's own
@@ -106,18 +115,118 @@ pub fn run() -> io::Result<()> {
     let _ = execute!(io::stdout(), EnableFocusChange);
     // ratatui's panic hook restores the terminal but doesn't know we enabled mouse capture, so
     // chain a disable in front of it — otherwise a panic would leave the host terminal stuck in
-    // mouse-reporting mode.
+    // mouse-reporting mode. `_restore_guard` above still runs on the panic path (Drop unwinds), so
+    // raw mode / the alternate screen / the Windows console modes are restored too.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(io::stdout(), DisableMouseCapture);
         let _ = execute!(io::stdout(), DisableFocusChange);
         prev_hook(info);
     }));
-    let outcome = event_loop(&mut terminal, &mut controller);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
-    let _ = execute!(io::stdout(), DisableFocusChange);
-    ratatui::try_restore()?;
-    outcome
+    // The terminal is torn down by `_restore_guard`'s Drop, not here — so the restore is identical
+    // for a clean close, a `?` error, and a panic, and no early return can leave the host terminal
+    // wedged.
+    event_loop(&mut terminal, &mut controller)
+}
+
+/// Restores the host terminal to its pre-viewer state on drop — the single restore path for a
+/// normal return, a `?` error, or a panic unwinding through [`run`]. Every step is best-effort: a
+/// failing one never blocks the rest, since a half-restored terminal is worse than a fully-attempted
+/// one.
+///
+/// On Windows it also re-asserts the console modes captured before setup. crossterm's Windows
+/// mouse-capture path hard-overwrites the input console mode and restores it from a process-global
+/// cache captured mid-setup, so the modes it hands back are not guaranteed to equal what herdr had;
+/// a single leaked bit on the shared console outlives this process and wedges herdr's `prefix+q`
+/// detach (#73). Restoring the verbatim snapshot makes the viewer transparent to the console.
+struct TerminalGuard {
+    #[cfg(windows)]
+    input_mode: Option<u32>,
+    #[cfg(windows)]
+    output_mode: Option<u32>,
+}
+
+impl TerminalGuard {
+    /// Snapshot the console state BEFORE any TUI setup mutates it. Must be called ahead of
+    /// `ratatui::try_init`, which enables raw mode and enters the alternate screen.
+    fn capture() -> Self {
+        TerminalGuard {
+            #[cfg(windows)]
+            input_mode: win_console::get_mode(win_console::STD_INPUT_HANDLE),
+            #[cfg(windows)]
+            output_mode: win_console::get_mode(win_console::STD_OUTPUT_HANDLE),
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Reverse of setup: drop the private modes we enabled, leave raw mode, leave the alternate
+        // screen, flush. Mirrors `ratatui::try_restore` plus our mouse/focus disables, but wholly
+        // best-effort so no earlier failure aborts the sequence.
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableFocusChange);
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = io::stdout().flush();
+        // Re-assert the exact pre-viewer console modes so a crossterm leftover bit can't survive
+        // into the parent shell / herdr's detach (#73). No-op on a redirected (non-console) handle.
+        #[cfg(windows)]
+        {
+            if let Some(mode) = self.input_mode {
+                win_console::set_mode(win_console::STD_INPUT_HANDLE, mode);
+            }
+            if let Some(mode) = self.output_mode {
+                win_console::set_mode(win_console::STD_OUTPUT_HANDLE, mode);
+            }
+        }
+    }
+}
+
+/// Minimal, dependency-free FFI to the Win32 console-mode API (kernel32): read and write the
+/// process's standard input/output console modes. Gated to Windows; nothing else calls it. Three
+/// small, stable symbols are hand-declared rather than pulling in `windows-sys`, to honour the
+/// crate's minimal-deps house style.
+#[cfg(windows)]
+mod win_console {
+    use std::ffi::c_void;
+
+    /// `STD_INPUT_HANDLE` — the `(DWORD)-10` sentinel `GetStdHandle` maps to CONIN$.
+    pub const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    /// `STD_OUTPUT_HANDLE` — the `(DWORD)-11` sentinel `GetStdHandle` maps to CONOUT$.
+    pub const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+
+    unsafe extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut c_void, lpMode: *mut u32) -> i32;
+        fn SetConsoleMode(hConsoleHandle: *mut c_void, dwMode: u32) -> i32;
+    }
+
+    /// The current console mode for a std handle, or `None` when the handle is not a console (e.g.
+    /// redirected to a pipe/file) — then there is nothing to restore.
+    pub fn get_mode(std_handle: u32) -> Option<u32> {
+        // SAFETY: GetStdHandle returns a process-owned pseudo-handle we never close; GetConsoleMode
+        // only writes through the provided `&mut u32`. A non-console handle yields 0 → None.
+        unsafe {
+            let handle = GetStdHandle(std_handle);
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) != 0 {
+                Some(mode)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Best-effort restore of a std handle's console mode; a failure is ignored because this is
+    /// already the recovery path.
+    pub fn set_mode(std_handle: u32, mode: u32) {
+        // SAFETY: as `get_mode`; SetConsoleMode only reads `mode` and touches no Rust memory.
+        unsafe {
+            let handle = GetStdHandle(std_handle);
+            let _ = SetConsoleMode(handle, mode);
+        }
+    }
 }
 
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat

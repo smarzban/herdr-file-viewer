@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Windows: terminal no longer wedges after the viewer is used.** On Windows the console mode is
+  shared state owned by the console, not the process, and crossterm's mouse-capture restore could
+  hand the input console back with a bit still changed — which survived the viewer's exit and left
+  `prefix+q` detach with an unresponsive shell (the file viewer having been opened once was enough).
+  The viewer now snapshots both console modes before it starts and restores them verbatim on every
+  exit path — a clean close, an error, or a panic — via a `Drop` guard, so it leaves the console
+  exactly as it found it. No effect on Linux/macOS beyond making terminal restore unconditional on
+  early-exit paths. ([#73](https://github.com/smarzban/herdr-file-viewer/issues/73))
+
 ## [1.9.0] - 2026-07-06
 
 ### Added
