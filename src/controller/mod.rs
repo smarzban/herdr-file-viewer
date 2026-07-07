@@ -882,6 +882,21 @@ impl Controller {
         self.opener = Some(opener);
     }
 
+    /// Apply the startup hide-dotfiles default from config (AC-9). Called once by `app::run`
+    /// right after construction, before the first draw. Mirrors `toggle_hidden`'s two-field
+    /// update (the controller's own `hide_hidden` mirror plus the tree's filter) so the later
+    /// interactive `.` toggle reads a value already in sync with what it's hiding, rather than
+    /// re-applying (or silently undoing) the configured default on the very first press.
+    pub fn apply_hide_dotfiles(&mut self, hide: bool) {
+        self.hide_hidden = hide;
+        self.tree.set_hide_hidden(hide);
+        // Hiding dotfiles can shift which node the cursor lands on (e.g. a leading dotfile
+        // sorting first at cursor 0), so re-render the content pane for the (possibly) new
+        // selection — mirrors toggle_hidden's own post-filter re-render, and supersedes
+        // `Controller::new`'s single unfiltered render dispatched just before this runs.
+        self.dispatch_render();
+    }
+
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
     pub fn set_content_viewport(&mut self, width: u16, height: u16) {
