@@ -281,8 +281,54 @@ startup files), the viewer won't see it. To fix it:
    ```
 
 3. **Verify:** open any shell pane *inside* herdr and run `echo $EDITOR`. Once that prints your
-   editor (it was empty before), `e` will open it. (A future settings file will also let you set
-   the editor command directly — see [Roadmap](#roadmap).)
+   editor (it was empty before), `e` will open it. (Or set `editor` directly in the
+   [config file](#configuration), which overrides `$EDITOR` — no server env fiddling needed.)
+
+## Configuration
+
+An optional TOML config file lets you override the editor, the renderer/opener commands, and a
+couple of startup toggles. **Read-only input** — the viewer never writes this file; edit it in
+your own editor and relaunch to pick up changes (there is no in-app settings editor). You can see
+what's currently in effect any time in the `?` help overlay's **Settings** section.
+
+**File location:** when run under herdr, the config lives at
+`$HERDR_PLUGIN_CONFIG_DIR/config.toml` — herdr provides that directory (on Linux it resolves to
+`~/.config/herdr/plugins/config/herdr-file-viewer/config.toml`). Run standalone (outside herdr),
+it falls back to `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, defaulting to
+`~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. A missing file is the
+normal case — every key falls back to its default.
+
+**Precedence:** a config key always wins. Only two keys also have an environment-variable
+fallback tier below the config key and above the built-in default — `editor` (`$EDITOR`) and
+`update_check` (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env >
+default` chain. Every other key (`markdown`, `diff`, `syntax`, `open`, `reveal`,
+`hide_dotfiles`) has no applicable environment variable; for those it's `config > default` only.
+
+```toml
+# ~/.config/herdr-file-viewer/config.toml (or the herdr-provided path above)
+
+editor = "code --wait"      # command to open a file with `e` (overrides $EDITOR)
+
+markdown = "glow -s dark"   # override the markdown / diff / syntax renderer commands
+diff = "delta"              # (default: glow / delta / bat)
+syntax = "bat"
+
+open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-manager commands
+reveal = "nautilus"
+
+hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
+update_check = true         # false to disable the once-a-day update check
+```
+
+Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into
+arguments** the way a shell would for simple cases — whitespace splits, double-quotes group a
+path with spaces — but **no shell is invoked**.
+
+**Known limitation:** the full-file-diff view derives its line-numbered gutter from the `diff`
+command by appending delta's `--line-numbers` flag; if you point `diff` at a tool that rejects
+that flag (nonzero exit or spawn failure), the full-file-diff view falls all the way back to
+plain, unrendered diff text (with a notice), not just a missing gutter. Renderer timeouts and
+other limits aren't configurable.
 
 ## Documentation
 
@@ -296,7 +342,7 @@ startup files), the viewer won't see it. To fix it:
 
 A few things on the way:
 
-- **Settings & customization** — a config file for keymaps, the default split, themes, and your own renderer/editor commands.
+- **Keymaps, themes, and layout** — the [config file](#configuration) already covers the editor, renderer, and opener commands plus a couple of startup toggles; customizable keybindings, a theme, and the default split/layout are still on the way.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) — bug reports and feature requests are very welcome.
 

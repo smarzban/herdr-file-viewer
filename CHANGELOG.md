@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Config file — customize the editor, renderers, openers, and a couple of startup toggles.**
+  An optional read-only TOML config at `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (herdr-provided) or
+  `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml` (standalone fallback) now lets you override the
+  `e` editor command, the `markdown` / `diff` / `syntax` renderer commands, and the `O` open-with /
+  `R` reveal-in-file-manager commands, plus set `hide_dotfiles` and `update_check` defaults at
+  startup. A config key always overrides its environment variable, which overrides the built-in
+  default (`config > env > default`); a missing or malformed file safely falls back to defaults.
+  The viewer never writes the file — it's read-only input, picked up on relaunch. The `?` help
+  overlay gained a third **Settings** section showing the currently effective values and whether
+  the config loaded, was absent, or was malformed — display-only, not an in-app editor.
+
 ## [1.10.0] - 2026-07-07
 
 ### Added
