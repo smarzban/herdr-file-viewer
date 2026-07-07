@@ -9023,3 +9023,24 @@ fn open_non_zero_exit_sets_a_non_fatal_notice() {
     );
     assert!(!fx.quit, "AC-8: a non-zero exit does not end the session");
 }
+
+#[test]
+fn reveal_non_zero_exit_sets_a_non_fatal_notice() {
+    // AC-8, reveal branch: the controller words a non-zero exit differently for reveal
+    // ("File manager exited with …") vs open ("Opener exited with …"); exercise the reveal
+    // wording too so an open/reveal string swap can't slip through (mirrors the open test +
+    // reveal_launch_failure_sets_a_non_fatal_notice).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let (opener, _log) = FakeOpener::new(OutcomeKind::NonZeroExit);
+    ctrl.set_opener(Box::new(opener));
+
+    let fx = ctrl.handle(Intent::RevealInFileManager);
+    let notice = ctrl.action_notice().unwrap_or("");
+    assert!(
+        notice.contains("File manager exited with"),
+        "AC-8: reveal non-zero exit sets the reveal-specific notice, got: {notice:?}"
+    );
+    assert!(!fx.quit, "AC-8: a non-zero exit does not end the session");
+}
