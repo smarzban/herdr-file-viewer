@@ -8722,10 +8722,14 @@ fn controller_counting_git(root: &Path, is_git_repo: bool) -> (Controller, Recor
     (ctrl, calls)
 }
 
-// AC-N6 (via open_help): the HelpState the controller actually builds has EXACTLY two sections,
-// labelled "What's New" then "About" — no third section (scope guard vs. a deferred Settings/Keybindings
-// Keybindings/Settings). This complements the source-level guard in `src/help.rs` by asserting the
-// runtime object `open_help` constructs matches the contract.
+// AC-N6, no-config-display path: when `set_settings_display` has NOT been called (as here), the
+// HelpState `open_help` builds has EXACTLY two sections, labelled "What's New" then "About" — no
+// third section. This complements the enum-level guard in `src/help.rs`
+// (`help_section_set_is_exactly_whats_new_and_about`) by asserting the runtime object `open_help`
+// constructs matches the contract on this path. It does NOT mean the overlay can never show a third
+// tab: settings-config/SMA-49 legitimately supersedes AC-N6 by appending a Settings section when
+// display IS set — see `open_help_appends_settings_section_when_display_is_set`, below, for that
+// 3-section path (the one a real `app::run` launch actually takes).
 #[test]
 fn open_help_builds_exactly_two_sections_whats_new_and_about() {
     let dir = TempDir::new();
@@ -8745,6 +8749,55 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
         state.sections.len(),
         2,
         "AC-N6: exactly two sections — no third (deferred Settings/Keybindings) section"
+    );
+}
+
+// AC-18/AC-15 (T-9): once `set_settings_display` has injected a formatted Settings body,
+// `open_help` appends a THIRD "Settings" section (after What's New/About) whose body is
+// non-empty. A controller that never calls the setter (the test above) keeps the two-section
+// overlay unchanged — this is additive, opt-in wiring.
+#[test]
+fn open_help_appends_settings_section_when_display_is_set() {
+    use herdr_file_viewer::config::{EffectiveSettings, LoadOutcome};
+
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let eff = EffectiveSettings {
+        editor: None,
+        markdown: None,
+        diff: None,
+        syntax: None,
+        open: None,
+        reveal: None,
+        hide_dotfiles: false,
+        update_check: true,
+    };
+    ctrl.set_settings_display(&eff, &LoadOutcome::Absent);
+
+    ctrl.handle(Intent::ShowHelp);
+    let state = ctrl
+        .help_state()
+        .expect("help_state() must be Some after ShowHelp");
+
+    let labels = state.section_labels();
+    assert!(
+        labels.contains(&"Settings"),
+        "AC-18: section_labels() must contain 'Settings' once set_settings_display was called: {labels:?}"
+    );
+    assert_eq!(
+        labels,
+        vec!["What's New", "About", "Settings"],
+        "Settings must be appended LAST, after What's New and About"
+    );
+
+    let settings_idx = labels
+        .iter()
+        .position(|l| *l == "Settings")
+        .expect("Settings label present");
+    assert!(
+        !state.sections[settings_idx].body.lines.is_empty(),
+        "the Settings section body must be non-empty"
     );
 }
 

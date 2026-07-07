@@ -414,6 +414,11 @@ pub struct Controller {
     /// The newer version to advertise, if any (set from the cached value at startup and
     /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
     update_available: Option<Version>,
+    /// The pre-formatted Settings section body (AC-15, AC-18), or `None` before
+    /// [`set_settings_display`](Self::set_settings_display) is called. Injected post-construction
+    /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
+    /// test that never calls the setter gets the pre-T-9 two-section overlay unchanged.
+    settings_display: Option<String>,
     /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
     /// next launch while still behind.
     update_dismissed: bool,
@@ -559,6 +564,7 @@ impl Controller {
             last_click: None,
             drag: None,
             update_available: None,
+            settings_display: None,
             update_dismissed: false,
             update_rx: None,
             status_rx: None,
@@ -862,6 +868,18 @@ impl Controller {
     pub fn set_update(&mut self, state: UpdateState) {
         self.update_available = state.initial;
         self.update_rx = state.rx;
+    }
+
+    /// Install the formatted Settings section body (AC-15, AC-18), so [`open_help`](Self::open_help)
+    /// appends a third "Settings" section to the `?` overlay. Called once by `app::run` after
+    /// construction (mirrors [`set_update`](Self::set_update)); a test that never calls this keeps
+    /// the pre-existing two-section overlay.
+    pub fn set_settings_display(
+        &mut self,
+        eff: &crate::config::EffectiveSettings,
+        outcome: &crate::config::LoadOutcome,
+    ) {
+        self.settings_display = Some(crate::help::settings_text(eff, outcome));
     }
 
     /// Inject the host query channel + the viewer's own workspace id (mirrors [`set_update`]).

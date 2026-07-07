@@ -49,10 +49,10 @@ pub fn run() -> io::Result<()> {
 
     // Load + resolve the plugin's optional TOML config once, up front (AC-3..AC-5, AC-14, AC-16,
     // AC-17): `eff` is the fully-resolved config > env > default settings the rest of `run` wires
-    // in below. Kept alive (borrowed, never moved wholesale) so a later section (T-9) can still
-    // read `eff`/`_load_outcome` for the in-app Settings display. With no config file present,
+    // in below. Kept alive (borrowed, never moved wholesale) so the Settings section (T-9) below
+    // can read `eff`/`load_outcome` for the in-app Settings display. With no config file present,
     // `load_config_from_env` returns `Config::default()`, so default behavior is unchanged.
-    let (cfg, _load_outcome) = crate::config::load_config_from_env();
+    let (cfg, load_outcome) = crate::config::load_config_from_env();
     let eff = crate::config::resolve(&cfg, |k| std::env::var(k).ok());
 
     // The effective renderers (config overrides layered onto the built-in defaults, AC-7) — built
@@ -103,6 +103,9 @@ pub fn run() -> io::Result<()> {
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
+    // outcome plus every effective setting, so a user can see what's actually in effect.
+    controller.set_settings_display(&eff, &load_outcome);
     // Kick off the once-a-day update check (off the UI thread; disabled by
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
     // if any, appears on a later draw.
