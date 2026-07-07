@@ -44,9 +44,86 @@ pub fn parse_config(s: &str) -> (Config, LoadOutcome) {
     }
 }
 
+/// Resolve the plugin's config file path from the environment, via an **injected getter** so
+/// the resolution logic is testable without touching process env (mirrors the
+/// env-var-with-fallback idiom in `herdr::resolve_program` / `host::parse_context`).
+///
+/// Precedence: `HERDR_PLUGIN_CONFIG_DIR` (non-empty) wins outright; otherwise fall back to the
+/// XDG-style `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, or `$HOME/.config/herdr-file-viewer/config.toml`,
+/// or (no HOME) the relative `.config/herdr-file-viewer/config.toml` as a last resort. Empty-string
+/// env values are treated as absent, same as `host::parse_context` does for its context fields.
+pub fn config_path(get: impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
+    if let Some(dir) = get("HERDR_PLUGIN_CONFIG_DIR").filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(dir).join("config.toml");
+    }
+    let base = if let Some(xdg) = get("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
+        std::path::PathBuf::from(xdg)
+    } else if let Some(home) = get("HOME").filter(|s| !s.is_empty()) {
+        std::path::PathBuf::from(home).join(".config")
+    } else {
+        std::path::PathBuf::from(".config")
+    };
+    base.join("herdr-file-viewer").join("config.toml")
+}
+
+/// Thin convenience wrapper over [`config_path`] using real process env (untested by unit tests;
+/// `config_path` is the tested unit).
+pub fn config_path_from_env() -> std::path::PathBuf {
+    config_path(|k| std::env::var(k).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_dir_env_wins() {
+        let get = |k: &str| match k {
+            "HERDR_PLUGIN_CONFIG_DIR" => Some("/x/cfg".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from("/x/cfg/config.toml")
+        );
+    }
+
+    #[test]
+    fn xdg_config_home_fallback_when_config_dir_absent() {
+        let get = |k: &str| match k {
+            "XDG_CONFIG_HOME" => Some("/x/xdg".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from("/x/xdg/herdr-file-viewer/config.toml")
+        );
+    }
+
+    #[test]
+    fn home_fallback_when_config_dir_and_xdg_absent() {
+        let get = |k: &str| match k {
+            "HOME" => Some("/home/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from("/home/u/.config/herdr-file-viewer/config.toml")
+        );
+    }
+
+    #[test]
+    fn empty_config_dir_falls_through_to_xdg_fallback() {
+        let get = |k: &str| match k {
+            "HERDR_PLUGIN_CONFIG_DIR" => Some("".to_string()),
+            "HOME" => Some("/home/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from("/home/u/.config/herdr-file-viewer/config.toml")
+        );
+    }
 
     #[test]
     fn partial_input_loads_known_field_ignores_unknown() {
