@@ -1,16 +1,18 @@
 //! Opener — the read-only OS-opener argv builder (AC-9, AC-10).
 //!
-//! The pure core of the Opener component: given an [`OsKind`], an [`OpenAction`], and a
-//! path, it produces the exact argv to hand a file/dir off to the OS default app or file
-//! manager. It is pure — no process spawning, no I/O, no trait — and never mutates the file
-//! (AC-N1); a later task wires the spawn. The target OS is an explicit parameter (not
-//! `cfg!(target_os)`) so all three platforms are unit-testable on any host, and the path is
+//! The core of the Opener component: given an [`OsKind`], an [`OpenAction`], and a path,
+//! [`opener_argv`] produces the exact argv to hand a file/dir off to the OS default app or file
+//! manager, and the [`Opener`] seam ([`CommandOpener`]) spawns it through the injected editor
+//! [`Spawner`]. It never mutates the file (AC-N1). The target OS is an explicit parameter (not
+//! `cfg!(target_os)`) so all three platforms' argv are unit-testable on any host, and the path is
 //! always carried as a single, un-shell-split argv element to keep spaces and metacharacters
-//! literal (AC-9).
+//! literal (AC-9). The one non-pure input is reading `%SystemRoot%` on Windows to resolve
+//! Explorer's absolute path (a security fix, not a hijackable bare name — see
+//! [`windows_explorer_program`]).
 
 use crate::editor::{SpawnError, Spawner};
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The target operating system whose opener convention to build for. An explicit parameter
 /// (rather than compile-time `cfg!`) so every platform's argv is testable on any host.
@@ -33,7 +35,10 @@ pub enum OpenAction {
 /// The path is always placed as ONE argv element, never shell-split, so spaces and shell
 /// metacharacters stay literal (AC-9). `OsString`s are built directly so non-UTF-8 paths are
 /// preserved. On Linux, "reveal" opens the containing folder (there is no universal
-/// select-in-file-manager); a path with no parent (e.g. `/`) falls back to itself.
+/// select-in-file-manager); a path with no parent (e.g. `/`) falls back to itself. On Windows
+/// the Explorer program is resolved to its **absolute** `%SystemRoot%\explorer.exe` (not a
+/// hijackable bare name — see [`windows_explorer_program`]); this is the one non-pure input
+/// (reading `%SystemRoot%`), unset on unix so the mapping stays host-testable.
 pub fn opener_argv(os: OsKind, action: OpenAction, path: &Path) -> Vec<OsString> {
     match (os, action) {
         (OsKind::Mac, OpenAction::Open) => {
@@ -52,13 +57,39 @@ pub fn opener_argv(os: OsKind, action: OpenAction, path: &Path) -> Vec<OsString>
             vec![OsString::from("xdg-open"), target.as_os_str().to_owned()]
         }
         (OsKind::Windows, OpenAction::Open) => {
-            vec![OsString::from("explorer"), path.as_os_str().to_owned()]
+            vec![
+                windows_explorer_program(system_root().as_deref()),
+                path.as_os_str().to_owned(),
+            ]
         }
         (OsKind::Windows, OpenAction::Reveal) => {
             let mut s = OsString::from("/select,");
             s.push(path);
-            vec![OsString::from("explorer"), s]
+            vec![windows_explorer_program(system_root().as_deref()), s]
         }
+    }
+}
+
+/// The current process's `%SystemRoot%`, if set and non-empty. Only meaningful on Windows;
+/// unset on unix (so the Windows-arm tests resolve the bare-name fallback on a unix CI host).
+fn system_root() -> Option<PathBuf> {
+    std::env::var_os("SystemRoot")
+        .filter(|r| !r.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Resolve the Windows Explorer program to an **absolute** `%SystemRoot%\explorer.exe`.
+///
+/// A bare `explorer` program name is subject to Windows' executable search order, which can
+/// include the process working directory — here an *untrusted* browsed repo. An `explorer.exe`
+/// planted in the repo could then be spawned when the user presses `O`/`R`, executing repo code
+/// and breaking the read-only / no-repo-code boundary (constitution §1). Resolving via
+/// `%SystemRoot%` closes that hole, mirroring the editor's Notepad default. Falls back to the
+/// bare name only when `SystemRoot` is unset/empty (effectively never on real Windows).
+fn windows_explorer_program(system_root: Option<&Path>) -> OsString {
+    match system_root {
+        Some(root) if !root.as_os_str().is_empty() => root.join("explorer.exe").into_os_string(),
+        _ => OsString::from("explorer"),
     }
 }
 
@@ -302,25 +333,50 @@ mod tests {
 
     #[test]
     fn windows_open_argv() {
+        // argv[0] is the resolved Explorer program — bare `explorer` when `%SystemRoot%` is
+        // unset (a unix CI host), the absolute `explorer.exe` on real Windows. Compute the
+        // expected program the same way so the assertion is correct on either host.
+        let prog = windows_explorer_program(system_root().as_deref());
         let path = Path::new("/abs/dir/file.rs");
         assert_eq!(
             opener_argv(OsKind::Windows, OpenAction::Open, path),
-            vec![
-                OsString::from("explorer"),
-                OsString::from("/abs/dir/file.rs")
-            ]
+            vec![prog, OsString::from("/abs/dir/file.rs")]
         );
     }
 
     #[test]
     fn windows_reveal_argv_is_select_prefix() {
+        let prog = windows_explorer_program(system_root().as_deref());
         let path = Path::new("/abs/dir/file.rs");
         assert_eq!(
             opener_argv(OsKind::Windows, OpenAction::Reveal, path),
-            vec![
-                OsString::from("explorer"),
-                OsString::from("/select,/abs/dir/file.rs"),
-            ]
+            vec![prog, OsString::from("/select,/abs/dir/file.rs")]
+        );
+    }
+
+    #[test]
+    fn windows_explorer_program_absolute_from_system_root() {
+        // With `%SystemRoot%` set, Explorer resolves under that root (its `explorer.exe`) — not
+        // a hijackable bare name that Windows' search order could resolve from an untrusted repo
+        // dir. Built via `join`, so the assertion is host-correct (the real `\` separation only
+        // happens on Windows, where this actually runs); the point is that the root is applied,
+        // not the bare fallback.
+        let root = Path::new("C:\\Windows");
+        let prog = windows_explorer_program(Some(root));
+        assert_eq!(prog, root.join("explorer.exe").into_os_string());
+        assert_ne!(
+            prog,
+            OsString::from("explorer"),
+            "must not be the bare name"
+        );
+    }
+
+    #[test]
+    fn windows_explorer_program_falls_back_to_bare_when_unset_or_empty() {
+        assert_eq!(windows_explorer_program(None), OsString::from("explorer"));
+        assert_eq!(
+            windows_explorer_program(Some(Path::new(""))),
+            OsString::from("explorer")
         );
     }
 

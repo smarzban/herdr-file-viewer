@@ -8893,6 +8893,31 @@ fn hand_off_target_is_focus_independent() {
 }
 
 #[test]
+fn reveal_target_is_focus_independent() {
+    // AC-4 applies to BOTH keys: with the content pane focused, `R` still reveals the tree
+    // selection (guards against reveal accidentally depending on tree focus).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let file = dir.path().join("a.rs");
+    let (opener, log) = FakeOpener::new(OutcomeKind::Launched);
+    ctrl.set_opener(Box::new(opener));
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Content,
+        "focus moved to the content pane"
+    );
+    ctrl.handle(Intent::RevealInFileManager);
+    assert_eq!(
+        log.borrow().revealed,
+        vec![file],
+        "AC-4: the selection is revealed even with the content pane focused"
+    );
+}
+
+#[test]
 fn open_with_no_selection_is_inert() {
     // AC-5: with an empty tree (no selection), both `O` and `R` do nothing — no opener call,
     // no notice, no panic.

@@ -473,28 +473,29 @@ impl Spawner for ProcessSpawner {
     }
 }
 
-/// Spawns the OS opener with stdio redirected to null so a chatty opener (e.g. `xdg-open`
-/// printing a warning) cannot draw onto the live TUI screen. Blocking on the opener command
-/// itself is fine — `open`/`xdg-open`/`explorer` dispatch to the GUI app and return promptly;
-/// crucially the TUI is NOT suspended (unlike the editor hand-off).
+/// Spawns the OS opener **fire-and-forget**: the child is launched with stdio redirected to null
+/// (so a chatty opener like `xdg-open` printing a warning cannot draw onto the live TUI) and is
+/// NOT waited on — so pressing `O`/`R` returns to the event loop immediately and can never freeze
+/// the viewer even if an opener is slow or hangs (AC-6, non-blocking). `open`/`xdg-open`/`explorer`
+/// are short-lived launchers that dispatch to the GUI app and exit on their own. A launch failure
+/// (e.g. the opener binary is missing) is reported as `NotLaunched` (AC-7); a post-launch exit code
+/// is intentionally NOT observed (that is what fire-and-forget means), unlike the blocking editor
+/// hand-off's `ProcessSpawner`, which waits and can surface a `NonZeroExit`.
 struct OpenerSpawner;
 impl Spawner for OpenerSpawner {
     fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
         let (prog, args) = argv
             .split_first()
             .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
-        let status = Command::new(prog)
+        // `spawn` (not `status`): launch and return immediately, never blocking the event loop.
+        Command::new(prog)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .map_err(SpawnError::NotLaunched)?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(SpawnError::NonZeroExit(format!("{status}")))
-        }
+            .spawn()
+            .map(drop)
+            .map_err(SpawnError::NotLaunched)
     }
 }
 
