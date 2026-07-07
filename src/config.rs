@@ -168,6 +168,65 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     }
 }
 
+/// Settings Applier: the editor hand-off's platform-default layer (AC-6). `eff.editor` already
+/// encodes config > `$EDITOR` (T-5's [`resolve`]), so falling back to `platform_default` here
+/// yields the full **config > `$EDITOR` > platform-default** precedence chain. Pure: no
+/// `std::env`, no FS -- the caller (T-8) supplies `platform_default` from `resolve_editor(None)`.
+pub fn effective_editor(
+    eff: &EffectiveSettings,
+    platform_default: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    eff.editor.clone().or(platform_default)
+}
+
+/// Settings Applier: overlay `eff`'s optional renderer argv overrides onto `base` (the built-in
+/// defaults from `app::default_renderers()`), field by field (AC-7).
+///
+/// `full_diff` derives from the *effective* `diff` rather than being independently overridable:
+/// when `eff.diff` is set, the augmentation is whatever `base.full_diff` adds on top of
+/// `base.diff` (e.g. `--line-numbers`), appended to the overridden diff argv -- so a custom diff
+/// tool still gets a full-file variant. When `eff.diff` is unset, `full_diff` stays at its own
+/// base default, unchanged.
+///
+/// `timeout` is never configurable (NC-5: renderer guards are not exposed) and is always copied
+/// from `base`. Pure: no `std::env`, no FS, no globals.
+pub fn effective_renderers(
+    eff: &EffectiveSettings,
+    base: &crate::render::Renderers,
+) -> crate::render::Renderers {
+    let diff = eff.diff.clone().unwrap_or_else(|| base.diff.clone());
+    let full_diff = match &eff.diff {
+        Some(overridden_diff) => {
+            let augmentation = if base.full_diff.starts_with(base.diff.as_slice()) {
+                base.full_diff[base.diff.len()..].to_vec()
+            } else {
+                Vec::new()
+            };
+            let mut full = overridden_diff.clone();
+            full.extend(augmentation);
+            full
+        }
+        None => base.full_diff.clone(),
+    };
+    crate::render::Renderers {
+        markdown: eff
+            .markdown
+            .clone()
+            .unwrap_or_else(|| base.markdown.clone()),
+        diff,
+        full_diff,
+        syntax: eff.syntax.clone().unwrap_or_else(|| base.syntax.clone()),
+        timeout: base.timeout,
+    }
+}
+
+/// Settings Applier: whether to start the once-a-day update check (AC-10). A pure passthrough of
+/// the already-resolved `EffectiveSettings.update_check` (config > env > default, from T-5's
+/// [`resolve`]).
+pub fn should_start_update_check(eff: &EffectiveSettings) -> bool {
+    eff.update_check
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +542,94 @@ mod tests {
         };
         let effective = resolve(&config, get_env);
         assert_eq!(effective.editor, None);
+    }
+
+    // --- Settings Applier: effective_editor / effective_renderers / should_start_update_check
+    // (T-7, AC-6, AC-7, AC-10) ---
+
+    /// Mirrors `app::default_renderers()`'s shape (markdown/syntax/diff/full_diff argv), so the
+    /// override/derive logic can be tested without reaching into `app.rs` (T-7 stays confined to
+    /// `config.rs`).
+    fn test_base_renderers() -> crate::render::Renderers {
+        crate::render::Renderers {
+            markdown: vec!["glow".to_string(), "-".to_string()],
+            diff: vec!["delta".to_string()],
+            full_diff: vec!["delta".to_string(), "--line-numbers".to_string()],
+            syntax: vec!["bat".to_string(), "-".to_string()],
+            timeout: std::time::Duration::from_secs(2),
+        }
+    }
+
+    #[test]
+    fn effective_editor_config_wins_over_platform_default() {
+        let eff = EffectiveSettings {
+            editor: Some(std::ffi::OsString::from("nano")),
+            ..resolve(&Config::default(), |_| None)
+        };
+        assert_eq!(
+            effective_editor(&eff, Some(std::ffi::OsString::from("notepad"))),
+            Some(std::ffi::OsString::from("nano"))
+        );
+    }
+
+    #[test]
+    fn effective_editor_falls_back_to_platform_default_when_unset() {
+        let eff = resolve(&Config::default(), |_| None);
+        assert_eq!(eff.editor, None);
+        assert_eq!(
+            effective_editor(&eff, Some(std::ffi::OsString::from("notepad"))),
+            Some(std::ffi::OsString::from("notepad"))
+        );
+    }
+
+    #[test]
+    fn effective_renderers_markdown_override_leaves_others_at_base() {
+        let base = test_base_renderers();
+        let eff = EffectiveSettings {
+            markdown: Some(vec!["mdcat".to_string()]),
+            ..resolve(&Config::default(), |_| None)
+        };
+        let result = effective_renderers(&eff, &base);
+        assert_eq!(result.markdown, vec!["mdcat".to_string()]);
+        assert_eq!(result.syntax, base.syntax);
+        assert_eq!(result.diff, base.diff);
+        assert_eq!(result.timeout, base.timeout);
+    }
+
+    #[test]
+    fn effective_renderers_full_diff_derives_from_overridden_diff() {
+        let base = test_base_renderers();
+        let eff = EffectiveSettings {
+            diff: Some(vec!["mydiff".to_string(), "-u".to_string()]),
+            ..resolve(&Config::default(), |_| None)
+        };
+        let result = effective_renderers(&eff, &base);
+        assert_eq!(
+            result.full_diff,
+            vec![
+                "mydiff".to_string(),
+                "-u".to_string(),
+                "--line-numbers".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn effective_renderers_full_diff_stays_at_base_when_diff_not_overridden() {
+        let base = test_base_renderers();
+        let eff = resolve(&Config::default(), |_| None);
+        assert_eq!(eff.diff, None);
+        let result = effective_renderers(&eff, &base);
+        assert_eq!(result.full_diff, base.full_diff);
+        assert_eq!(result.diff, base.diff);
+    }
+
+    #[test]
+    fn should_start_update_check_reflects_eff_update_check() {
+        let mut eff = resolve(&Config::default(), |_| None);
+        eff.update_check = false;
+        assert!(!should_start_update_check(&eff));
+        eff.update_check = true;
+        assert!(should_start_update_check(&eff));
     }
 }
