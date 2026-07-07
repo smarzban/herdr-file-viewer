@@ -72,6 +72,37 @@ pub fn config_path_from_env() -> std::path::PathBuf {
     config_path(|k| std::env::var(k).ok())
 }
 
+/// File-loading layer over [`config_path`] (T-2) and [`parse_config`] (T-1), with the filesystem
+/// **injected** via `get`/`read` so it is hermetic and testable without touching the real
+/// filesystem. This is the sole trust boundary for config loading (AC-20): it only reads, never
+/// writes, creates, or modifies anything, and it never panics or propagates an error — every path
+/// returns a `(Config, LoadOutcome)`.
+///
+/// - A missing file (`NotFound`) is the normal no-config case (AC-13): `(default, Absent)`.
+/// - Any other read error (permission denied, etc.) degrades to `(default, Malformed(..))` rather
+///   than surfacing the error.
+/// - A present file is handed to [`parse_config`], so a present-but-malformed file yields
+///   `(default, Malformed(..))` there too.
+pub fn load_config(
+    get: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&std::path::Path) -> std::io::Result<String>,
+) -> (Config, LoadOutcome) {
+    let path = config_path(get);
+    match read(&path) {
+        Ok(contents) => parse_config(&contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (Config::default(), LoadOutcome::Absent)
+        }
+        Err(e) => (Config::default(), LoadOutcome::Malformed(e.to_string())),
+    }
+}
+
+/// Thin convenience wrapper over [`load_config`] using real process env and filesystem (untested
+/// by unit tests; `load_config` is the tested unit). Used by later tasks (T-8).
+pub fn load_config_from_env() -> (Config, LoadOutcome) {
+    load_config(|k| std::env::var(k).ok(), |p| std::fs::read_to_string(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +209,57 @@ mod tests {
         let (config, _outcome) = parse_config("hide_dotfiles = true\nupdate_check = false\n");
         assert_eq!(config.hide_dotfiles, Some(true));
         assert_eq!(config.update_check, Some(false));
+    }
+
+    #[test]
+    fn missing_file_yields_default_and_absent() {
+        let get = |_: &str| None;
+        let read = |_: &std::path::Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            ))
+        };
+        let (config, outcome) = load_config(get, read);
+        assert_eq!(config.editor, None);
+        assert_eq!(outcome, LoadOutcome::Absent);
+    }
+
+    #[test]
+    fn present_valid_file_loads() {
+        let get = |_: &str| None;
+        let read = |_: &std::path::Path| Ok("editor = \"vim\"\n".to_string());
+        let (config, outcome) = load_config(get, read);
+        assert_eq!(config.editor, Some("vim".to_string()));
+        assert_eq!(outcome, LoadOutcome::Loaded);
+    }
+
+    #[test]
+    fn present_malformed_file_yields_default_and_malformed() {
+        let get = |_: &str| None;
+        let read = |_: &std::path::Path| Ok("bad = = [".to_string());
+        let (config, outcome) = load_config(get, read);
+        assert_eq!(config.editor, None);
+        match outcome {
+            LoadOutcome::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_error_other_than_not_found_yields_default_and_malformed() {
+        let get = |_: &str| None;
+        let read = |_: &std::path::Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
+        };
+        let (config, outcome) = load_config(get, read);
+        assert_eq!(config.editor, None);
+        match outcome {
+            LoadOutcome::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 }
