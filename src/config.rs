@@ -103,6 +103,71 @@ pub fn load_config_from_env() -> (Config, LoadOutcome) {
     load_config(|k| std::env::var(k).ok(), |p| std::fs::read_to_string(p))
 }
 
+/// The fully-resolved, downstream-ready settings after applying the config > env > default
+/// precedence (AC-3, AC-4, AC-5). `None` on a renderer/opener field means "use the built-in
+/// default"; `None` on `editor` means no editor is configured at all (a platform default, if
+/// any, is applied later at wiring time — T-8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveSettings {
+    pub editor: Option<std::ffi::OsString>,
+    pub markdown: Option<Vec<String>>,
+    pub diff: Option<Vec<String>>,
+    pub syntax: Option<Vec<String>>,
+    pub open: Option<Vec<String>>,
+    pub reveal: Option<Vec<String>>,
+    pub hide_dotfiles: bool,
+    pub update_check: bool,
+}
+
+/// Pure resolver: `Config` + injected env getter -> `EffectiveSettings` (AC-3, AC-4, AC-5,
+/// AC-12, AC-16). Reads env ONLY via `get_env` (no `std::env`), touches no filesystem or global
+/// state, and never panics -- a total function (AC-21). Command-string fields are tokenized via
+/// [`crate::editor::tokenize_command`] into argv, never a shell string (AC-12).
+pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> EffectiveSettings {
+    let editor = config
+        .editor
+        .clone()
+        .map(std::ffi::OsString::from)
+        .or_else(|| {
+            get_env("EDITOR")
+                .filter(|s| !s.is_empty())
+                .map(std::ffi::OsString::from)
+        });
+
+    let markdown = config
+        .markdown
+        .as_deref()
+        .map(crate::editor::tokenize_command);
+    let diff = config.diff.as_deref().map(crate::editor::tokenize_command);
+    let syntax = config
+        .syntax
+        .as_deref()
+        .map(crate::editor::tokenize_command);
+    let open = config.open.as_deref().map(crate::editor::tokenize_command);
+    let reveal = config
+        .reveal
+        .as_deref()
+        .map(crate::editor::tokenize_command);
+
+    let hide_dotfiles = config.hide_dotfiles.unwrap_or(false);
+
+    let update_check = match config.update_check {
+        Some(b) => b,
+        None => get_env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK").is_none(),
+    };
+
+    EffectiveSettings {
+        editor,
+        markdown,
+        diff,
+        syntax,
+        open,
+        reveal,
+        hide_dotfiles,
+        update_check,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +338,150 @@ mod tests {
             crate::editor::tokenize_command("\"/a b/c\" -x"),
             vec!["/a b/c", "-x"]
         );
+    }
+
+    // --- resolve: AC-3 config wins over env and default ---
+
+    #[test]
+    fn resolve_config_editor_wins_over_env() {
+        let config = Config {
+            editor: Some("nano".to_string()),
+            ..Default::default()
+        };
+        let get_env = |k: &str| match k {
+            "EDITOR" => Some("vim".to_string()),
+            _ => None,
+        };
+        let effective = resolve(&config, get_env);
+        assert_eq!(effective.editor, Some(std::ffi::OsString::from("nano")));
+    }
+
+    #[test]
+    fn resolve_config_update_check_wins_over_env() {
+        let config = Config {
+            update_check: Some(true),
+            ..Default::default()
+        };
+        let get_env = |k: &str| match k {
+            "HERDR_FILE_VIEWER_NO_UPDATE_CHECK" => Some("1".to_string()),
+            _ => None,
+        };
+        let effective = resolve(&config, get_env);
+        assert!(effective.update_check);
+    }
+
+    #[test]
+    fn resolve_config_markdown_wins_over_default() {
+        let config = Config {
+            markdown: Some("mdcat --x".to_string()),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(
+            effective.markdown,
+            Some(vec!["mdcat".to_string(), "--x".to_string()])
+        );
+    }
+
+    // --- resolve: AC-4 env fallback over default, when config omits ---
+
+    #[test]
+    fn resolve_env_editor_fallback_when_config_absent() {
+        let config = Config::default();
+        let get_env = |k: &str| match k {
+            "EDITOR" => Some("vim".to_string()),
+            _ => None,
+        };
+        let effective = resolve(&config, get_env);
+        assert_eq!(effective.editor, Some(std::ffi::OsString::from("vim")));
+    }
+
+    #[test]
+    fn resolve_env_no_update_check_fallback_when_config_absent() {
+        let config = Config::default();
+        let get_env = |k: &str| match k {
+            "HERDR_FILE_VIEWER_NO_UPDATE_CHECK" => Some("1".to_string()),
+            _ => None,
+        };
+        let effective = resolve(&config, get_env);
+        assert!(!effective.update_check);
+    }
+
+    // --- resolve: AC-5 default when neither config nor env set ---
+
+    #[test]
+    fn resolve_defaults_when_config_and_env_absent() {
+        let config = Config::default();
+        let effective = resolve(&config, |_| None);
+        assert_eq!(effective.editor, None);
+        assert!(effective.update_check);
+        assert!(!effective.hide_dotfiles);
+        assert_eq!(effective.markdown, None);
+        assert_eq!(effective.diff, None);
+        assert_eq!(effective.syntax, None);
+        assert_eq!(effective.open, None);
+        assert_eq!(effective.reveal, None);
+    }
+
+    // --- resolve: AC-16 partial config -- unset fields fall to their own default ---
+
+    #[test]
+    fn resolve_partial_config_only_sets_specified_field() {
+        let config = Config {
+            editor: Some("code".to_string()),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(effective.editor, Some(std::ffi::OsString::from("code")));
+        assert!(effective.update_check);
+        assert!(!effective.hide_dotfiles);
+        assert_eq!(effective.markdown, None);
+        assert_eq!(effective.diff, None);
+        assert_eq!(effective.syntax, None);
+        assert_eq!(effective.open, None);
+        assert_eq!(effective.reveal, None);
+    }
+
+    // --- resolve: AC-12 tokenized argv, no shell ---
+
+    #[test]
+    fn resolve_open_tokenizes_to_distinct_argv() {
+        let config = Config {
+            open: Some("myopen --flag a".to_string()),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(
+            effective.open,
+            Some(vec![
+                "myopen".to_string(),
+                "--flag".to_string(),
+                "a".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn resolve_reveal_tokenizes_quoted_path() {
+        let config = Config {
+            reveal: Some("\"/a b/c\" -R".to_string()),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(
+            effective.reveal,
+            Some(vec!["/a b/c".to_string(), "-R".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolve_empty_string_editor_env_treated_as_absent() {
+        let config = Config::default();
+        let get_env = |k: &str| match k {
+            "EDITOR" => Some("".to_string()),
+            _ => None,
+        };
+        let effective = resolve(&config, get_env);
+        assert_eq!(effective.editor, None);
     }
 }
