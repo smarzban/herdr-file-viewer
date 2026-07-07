@@ -262,4 +262,16 @@ mod tests {
             other => panic!("expected Malformed, got {other:?}"),
         }
     }
+
+    #[test]
+    fn tokenize_command_is_reachable_via_crate_path_and_quote_aware() {
+        assert_eq!(
+            crate::editor::tokenize_command("code --wait"),
+            vec!["code", "--wait"]
+        );
+        assert_eq!(
+            crate::editor::tokenize_command("\"/a b/c\" -x"),
+            vec!["/a b/c", "-x"]
+        );
+    }
 }
