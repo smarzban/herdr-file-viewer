@@ -127,6 +127,13 @@ PowerShell launcher scripts.
   **`open-file-viewer-tab-windows`** (the unqualified `open-file-viewer` / `open-file-viewer-tab`
   ids are the Linux/macOS variants). Point your herdr keybinding at the `-windows` id:
   `command = "herdr plugin action invoke open-file-viewer-windows --plugin herdr-file-viewer"`.
+- **A `prefix+f` keybinding needs herdr v0.7.2 or newer.** herdr runs custom-command
+  (`[[keys.command]]`) keybindings through the platform shell; before v0.7.2 that was `/bin/sh` —
+  absent on Windows — so the binding silently did nothing there. herdr **v0.7.2** runs them through
+  `cmd.exe /d /c`, so the `prefix+f` binding above fires normally. On older herdr, summon the viewer
+  by invoking the action **directly** (`herdr plugin action invoke open-file-viewer-windows
+  --plugin herdr-file-viewer` from a shell, or via herdr's action menu) rather than through a
+  keybinding.
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
 - **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
