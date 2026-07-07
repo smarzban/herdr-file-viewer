@@ -474,13 +474,19 @@ impl Spawner for ProcessSpawner {
 }
 
 /// Spawns the OS opener **fire-and-forget**: the child is launched with stdio redirected to null
-/// (so a chatty opener like `xdg-open` printing a warning cannot draw onto the live TUI) and is
-/// NOT waited on — so pressing `O`/`R` returns to the event loop immediately and can never freeze
-/// the viewer even if an opener is slow or hangs (AC-6, non-blocking). `open`/`xdg-open`/`explorer`
+/// (so a chatty opener like `xdg-open` printing a warning cannot draw onto the live TUI) and the
+/// **event loop is never blocked** — pressing `O`/`R` returns immediately and cannot freeze the
+/// viewer even if an opener is slow or hangs (AC-6, non-blocking). `open`/`xdg-open`/`explorer`
 /// are short-lived launchers that dispatch to the GUI app and exit on their own. A launch failure
 /// (e.g. the opener binary is missing) is reported as `NotLaunched` (AC-7); a post-launch exit code
 /// is intentionally NOT observed (that is what fire-and-forget means), unlike the blocking editor
 /// hand-off's `ProcessSpawner`, which waits and can surface a `NonZeroExit`.
+///
+/// The launched child is **reaped on a throwaway thread** (`std::thread` — the same off-thread
+/// idiom the renderer uses) rather than by dropping its handle: on unix, dropping a `Child`
+/// without waiting leaves the exited launcher as a **zombie** until the viewer itself exits, so a
+/// long session with many `O`/`R` presses would accumulate defunct processes (constitution §5,
+/// good plugin citizen). `wait()` runs off the input thread, so this stays non-blocking.
 struct OpenerSpawner;
 impl Spawner for OpenerSpawner {
     fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
@@ -488,14 +494,23 @@ impl Spawner for OpenerSpawner {
             .split_first()
             .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
         // `spawn` (not `status`): launch and return immediately, never blocking the event loop.
-        Command::new(prog)
+        let mut child = Command::new(prog)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map(drop)
-            .map_err(SpawnError::NotLaunched)
+            .map_err(SpawnError::NotLaunched)?;
+        // Reap the short-lived launcher off the input thread so it doesn't linger as a zombie.
+        // The thread ends as soon as the child exits (~immediately); its status is discarded
+        // (fire-and-forget). A failed reaper thread-spawn is non-fatal — worst case is the same
+        // zombie we accept today, never a blocked or crashed viewer.
+        let _ = std::thread::Builder::new()
+            .name("opener-reaper".into())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+        Ok(())
     }
 }
 
