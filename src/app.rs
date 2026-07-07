@@ -30,7 +30,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +95,13 @@ pub fn run() -> io::Result<()> {
         Box::new(crate::herdr::LiveHerdr::from_env()),
         ctx.workspace_id.clone(),
     );
+    // Inject the live OS opener for the `O` / `R` hand-offs (AC-13). Non-blocking: unlike the
+    // editor hand-off it does NOT suspend the TUI; the opener runs with stdio redirected to null
+    // so it cannot draw onto our screen.
+    controller.set_opener(Box::new(crate::opener::CommandOpener::new(
+        current_os_kind(),
+        Box::new(OpenerSpawner),
+    )));
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
@@ -463,6 +470,59 @@ impl Spawner for ProcessSpawner {
             // so the controller says "editor exited with …", not "could not open editor".
             Err(SpawnError::NonZeroExit(format!("{status}")))
         }
+    }
+}
+
+/// Spawns the OS opener **fire-and-forget**: the child is launched with stdio redirected to null
+/// (so a chatty opener like `xdg-open` printing a warning cannot draw onto the live TUI) and the
+/// **event loop is never blocked** — pressing `O`/`R` returns immediately and cannot freeze the
+/// viewer even if an opener is slow or hangs (AC-6, non-blocking). `open`/`xdg-open`/`explorer`
+/// are short-lived launchers that dispatch to the GUI app and exit on their own. A launch failure
+/// (e.g. the opener binary is missing) is reported as `NotLaunched` (AC-7); a post-launch exit code
+/// is intentionally NOT observed (that is what fire-and-forget means), unlike the blocking editor
+/// hand-off's `ProcessSpawner`, which waits and can surface a `NonZeroExit`.
+///
+/// The launched child is **reaped on a throwaway thread** (`std::thread` — the same off-thread
+/// idiom the renderer uses) rather than by dropping its handle: on unix, dropping a `Child`
+/// without waiting leaves the exited launcher as a **zombie** until the viewer itself exits, so a
+/// long session with many `O`/`R` presses would accumulate defunct processes (constitution §5,
+/// good plugin citizen). `wait()` runs off the input thread, so this stays non-blocking.
+struct OpenerSpawner;
+impl Spawner for OpenerSpawner {
+    fn spawn(&mut self, argv: &[OsString]) -> Result<(), SpawnError> {
+        let (prog, args) = argv
+            .split_first()
+            .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
+        // `spawn` (not `status`): launch and return immediately, never blocking the event loop.
+        let mut child = Command::new(prog)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(SpawnError::NotLaunched)?;
+        // Reap the short-lived launcher off the input thread so it doesn't linger as a zombie.
+        // The thread ends as soon as the child exits (~immediately); its status is discarded
+        // (fire-and-forget). A failed reaper thread-spawn is non-fatal — worst case is the same
+        // zombie we accept today, never a blocked or crashed viewer.
+        let _ = std::thread::Builder::new()
+            .name("opener-reaper".into())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+        Ok(())
+    }
+}
+
+/// Map the compile-time build target to the [`OsKind`](crate::opener::OsKind) whose opener
+/// convention to build for. `xdg-open` is the freedesktop default on non-mac/non-windows unixes.
+fn current_os_kind() -> crate::opener::OsKind {
+    if cfg!(target_os = "macos") {
+        crate::opener::OsKind::Mac
+    } else if cfg!(target_os = "windows") {
+        crate::opener::OsKind::Windows
+    } else {
+        crate::opener::OsKind::Linux
     }
 }
 

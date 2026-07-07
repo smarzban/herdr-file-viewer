@@ -22,6 +22,31 @@ fn readme_documents_line_select_key() {
 }
 
 #[test]
+fn readme_documents_reveal_open_keys() {
+    assert!(
+        README.contains("`O`"),
+        "README.md must document the `O` open-with-default-app key"
+    );
+    assert!(
+        README.contains("`R`"),
+        "README.md must document the `R` reveal-in-file-manager key"
+    );
+    let lower = README.to_lowercase();
+    assert!(
+        lower.contains("open with default app"),
+        "README.md `## Keys` must describe the `O` key as 'open with default app'"
+    );
+    assert!(
+        lower.contains("reveal"),
+        "README.md must describe the `R` key as 'reveal'"
+    );
+    assert!(
+        lower.contains("file manager"),
+        "README.md must describe the `R` key as revealing in the OS 'file manager'"
+    );
+}
+
+#[test]
 fn changelog_documents_line_reference_release() {
     // The feature shipped in `[1.9.0]`; that section is its permanent CHANGELOG home. Slice from
     // its heading to the next release heading so the check stays anchored to this release's block.
