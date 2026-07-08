@@ -561,7 +561,8 @@ fn enter_from_source_is_synchronous() {
     );
 }
 
-// ── T-7: Enter copies the selected lines' CONTENT, sanitizes, notifies, and closes the mode ─────
+// ── T-7: the two confirms — Enter copies the `path:line` REFERENCE (the v1.9.0 contract),
+// y/Y copy the selected lines' CONTENT; both sanitize, notify, and close the mode ────────────────
 
 /// Enter line-select at line 5 on a source-view `.rs` file (synchronous fast path).
 fn enter_at_line_five(ctrl: &mut Controller) {
@@ -577,10 +578,10 @@ fn enter_at_line_five(ctrl: &mut Controller) {
 }
 
 #[test]
-fn enter_copies_single_line_content() {
-    // AC-9/AC-10: Enter on a single-line selection copies that line's CONTENT and confirms the
-    // line number in a notice; AC-4-style close: the mode is a completed action so Enter closes it.
-    // MultiLine renders "line0".."line19", so source line 5 is the text "line4".
+fn enter_copies_single_line_reference() {
+    // AC-9/AC-10: Enter on a single-line selection copies the repo-relative `path:line`
+    // REFERENCE — the shipped v1.9.0 contract, unchanged by the copy-content addition — and
+    // confirms it in a notice; AC-4-style close: the mode is a completed action so Enter closes it.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -590,12 +591,12 @@ fn enter_copies_single_line_content() {
     assert!(fx.redraw, "copying redraws to show the confirmation notice");
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
-        Some("line4"),
-        "AC-9: Enter copies the selected line's content (source line 5 == \"line4\")"
+        Some("a.rs:5"),
+        "AC-9: Enter copies the `path:line` reference (v1.9.0 contract)"
     );
     assert!(
-        ctrl.notices().iter().any(|n| n == "Copied line 5"),
-        "AC-10: the copy is confirmed by line number: {:?}",
+        ctrl.notices().iter().any(|n| n == "Copied a.rs:5"),
+        "AC-10: the copy is confirmed with the reference itself: {:?}",
         ctrl.notices()
     );
     assert!(
@@ -605,9 +606,8 @@ fn enter_copies_single_line_content() {
 }
 
 #[test]
-fn range_copies_lines_joined_by_newline() {
-    // AC-9: Enter on an extended selection copies every selected line's content, joined with '\n'.
-    // Selection 5-8 over MultiLine → "line4".."line7".
+fn enter_copies_range_reference() {
+    // AC-9: Enter on an extended selection copies the `path:start-end` range reference.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -626,8 +626,35 @@ fn range_copies_lines_joined_by_newline() {
     ctrl.handle_line_select_key(key(KeyCode::Enter));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
+        Some("a.rs:5-8"),
+        "AC-9: Enter copies the `path:start-end` range reference"
+    );
+}
+
+#[test]
+fn range_copies_lines_joined_by_newline() {
+    // `y` on an extended selection copies every selected line's content, joined with '\n'.
+    // Selection 5-8 over MultiLine → "line4".."line7".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_at_line_five(&mut ctrl);
+
+    // Extend the selection from 5 down to 8 (Shift+j, reported as `Char('J')`).
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 8)),
+        "precondition: selection 5-8"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
         Some("line4\nline5\nline6\nline7"),
-        "AC-9: Enter copies the range's content joined by newlines"
+        "y copies the range's content joined by newlines"
     );
     assert!(
         ctrl.notices().iter().any(|n| n == "Copied lines 5-8"),
@@ -653,12 +680,12 @@ fn copy_strips_line_number_gutter_keeps_indentation() {
         "precondition: marker on line 1"
     );
 
-    // Extend over all three lines (1 → 3) and copy.
+    // Extend over all three lines (1 → 3) and copy the content with `y`.
     ctrl.handle_line_select_key(key(KeyCode::Char('J')));
     ctrl.handle_line_select_key(key(KeyCode::Char('J')));
     assert_eq!(ctrl.line_selection(), Some((1, 3)), "precondition: 1-3");
 
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("fn main() {\n    let x = 5;\n}"),
@@ -667,9 +694,10 @@ fn copy_strips_line_number_gutter_keeps_indentation() {
 }
 
 #[test]
-fn y_copies_content_like_enter() {
-    // The familiar copy keys `y`/`Y` confirm exactly like Enter (line-select routes every key
-    // through `handle_line_select_key`, so these are wired to the copy path explicitly).
+fn y_copies_single_line_content() {
+    // The familiar copy keys `y`/`Y` copy the selection's CONTENT — the counterpart to Enter's
+    // reference (line-select routes every key through `handle_line_select_key`, so these are
+    // wired to the content-copy path explicitly). One selection, two products.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -680,7 +708,12 @@ fn y_copies_content_like_enter() {
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("line4"),
-        "y copies the selected line's content, just like Enter"
+        "y copies the selected line's content (source line 5 == \"line4\")"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied line 5"),
+        "the content copy is confirmed by line number: {:?}",
+        ctrl.notices()
     );
     assert!(
         !ctrl.line_select_active(),
@@ -705,7 +738,7 @@ fn control_bytes_in_content_are_sanitized_tabs_kept() {
         "precondition: marker on the single line"
     );
 
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     let log = copied.lock().unwrap();
     let got = log.last().map(String::as_str).unwrap();
     assert_eq!(
@@ -838,7 +871,7 @@ fn shift_mouse_is_left_for_the_terminal() {
 
 #[test]
 fn drag_selects_characters_across_lines_and_copies() {
-    // Press → drag → release selects a character-granular span; Enter copies exactly that span
+    // Press → drag → release selects a character-granular span; `y` copies exactly that span
     // (the tail of the first line + the head of the last, joined by '\n'). MultiLine renders
     // "line0".."line19" with no gutter, so char carets map straight to columns.
     let dir = TempDir::new();
@@ -857,11 +890,11 @@ fn drag_selects_characters_across_lines_and_copies() {
         "release finalizes the selection but keeps the mode open for Enter/y"
     );
 
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("line0\nlin"),
-        "Enter copies the character span: all of line 1 + the first 3 chars of line 2"
+        "y copies the character span: all of line 1 + the first 3 chars of line 2"
     );
     assert!(
         ctrl.notices().iter().any(|n| n == "Copied selection"),
@@ -870,7 +903,28 @@ fn drag_selects_characters_across_lines_and_copies() {
     );
     assert!(
         !ctrl.line_select_active(),
-        "Enter closes the mode after copying"
+        "y closes the mode after copying"
+    );
+}
+
+#[test]
+fn enter_after_drag_copies_reference_of_spanned_lines() {
+    // Enter after a mouse drag copies the REFERENCE for the lines the drag spans — the same
+    // selection can produce either product: `y` the dragged characters, Enter the `path:lines`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 2));
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:1-2"),
+        "Enter copies the range reference for the dragged lines"
     );
 }
 
@@ -899,10 +953,10 @@ fn drag_populates_char_selection_in_the_view() {
 }
 
 #[test]
-fn click_without_drag_collapses_and_enter_copies_the_line() {
-    // A press with no drag collapses the selection onto one character; Enter then falls back to
-    // copying the whole clicked line, so a plain click-then-Enter still yields a line. Row 3 →
-    // source line 3 == "line2".
+fn click_without_drag_collapses_and_y_copies_the_line() {
+    // A press with no drag collapses the selection onto one character; `y` then falls back to
+    // copying the whole clicked line, so a plain click-then-y still yields a line — and Enter
+    // yields that line's reference. Row 3 → source line 3 == "line2".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -910,11 +964,22 @@ fn click_without_drag_collapses_and_enter_copies_the_line() {
 
     ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("line2"),
         "a collapsed click copies the whole clicked line (source line 3 == \"line2\")"
+    );
+
+    // The same collapsed click, confirmed with Enter, yields the line's reference.
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:3"),
+        "Enter on the collapsed click copies the clicked line's reference"
     );
 }
 
@@ -1422,12 +1487,12 @@ fn held_ambient_press_does_not_leak_into_line_select() {
         "a leaked drag would have produced a character selection; there must be none"
     );
 
-    // Enter copies the whole top line (line granularity), not an unintended dragged span.
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    // `y` copies the whole top line (line granularity), not an unintended dragged span.
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("line0"),
-        "Enter copies the whole top line (line 1 == \"line0\"), not a dragged char span"
+        "y copies the whole top line (line 1 == \"line0\"), not a dragged char span"
     );
 }
 

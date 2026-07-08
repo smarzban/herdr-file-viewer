@@ -1,8 +1,27 @@
 //! The line-select modal: its in-progress selection state, the enter/exit transitions on the
-//! Controller, and the confirm path that copies the selected lines' CONTENT (the actual file
-//! text, not a `path:line` reference) to the clipboard.
+//! Controller, and the two confirm paths — `Enter` copies the selection's `path:line` /
+//! `path:start-end` REFERENCE (the v1.9.0 copy-line-reference contract, unchanged), while
+//! `y`/`Y` copy the selected lines' CONTENT (the actual file text). One selection, two
+//! products, one keystroke apart.
 
 use super::*;
+
+/// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
+/// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
+/// order first so a selection dragged either direction reads the same. Pure formatting only —
+/// no sanitization of `rel_path` (the Copy adapter, T-7, handles that before this is called).
+pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) -> String {
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    if lo == hi {
+        format!("{rel_path}:{lo}")
+    } else {
+        format!("{rel_path}:{lo}-{hi}")
+    }
+}
 
 /// Strip a leading line-number gutter (as the syntax renderer adds — `bat --style=numbers` prints
 /// a right-aligned number then a separator before each source line) from one rendered line's plain
@@ -372,8 +391,57 @@ impl Controller {
             .join("\n")
     }
 
-    /// Copy the selected content to the clipboard and close the mode (the `Enter` / `y` / `Y`
-    /// confirm). Whole lines for a keyboard (line-granular) selection via
+    /// Copy the current line reference for the selected file to the clipboard and close the mode
+    /// (the `Enter` confirm — the v1.9.0 copy-line-reference contract, unchanged by the
+    /// copy-content addition; `y`/`Y` copy the CONTENT instead, see
+    /// [`copy_line_content`](Self::copy_line_content)). Mirrors [`copy_path`](Controller::copy_path):
+    /// build the `path:line` / `path:start-end` reference, run it through
+    /// [`sanitize_control`](crate::text_layout::sanitize_control) **before** it reaches the
+    /// clipboard *or* the notice (AC-16 — a crafted file name may carry ESC/newline), then surface
+    /// the outcome as a transient notice ("Copied …" on `Ok` / a failure message on `Err`,
+    /// AC-10/AC-11). A character-granular (mouse) selection references the lines its span covers —
+    /// the drag's line range is exactly [`line_selection`](Self::line_selection).
+    ///
+    /// Guards the no-real-file case exactly as [`copy_line_content`](Self::copy_line_content)
+    /// does: no active selection or a non-file node ⇒ copy nothing, [`Effects::noop`] — never
+    /// fabricate a reference. Read-only (AC-17): touches only the clipboard and in-memory
+    /// notice / modal state. The mode closes on **both** `Ok` and `Err` (via
+    /// [`exit_line_select`](Self::exit_line_select)) so `Enter` is a completed action.
+    pub fn copy_line_reference(&mut self) -> Effects {
+        // Both an active selection AND a selected file node are required; otherwise there is no
+        // reference to copy — do not fabricate one.
+        let Some((start, end)) = self.line_selection() else {
+            return Effects::noop();
+        };
+        let Some(rel_path) = self
+            .tree
+            .selected()
+            .filter(|node| node.kind == NodeKind::File)
+            .map(|node| {
+                self.rel(&node.path)
+                    .unwrap_or_else(|| node.path.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        else {
+            return Effects::noop();
+        };
+
+        let raw = format_line_reference(&rel_path, start, end);
+        // Sanitize the WHOLE reference before it reaches the clipboard OR the notice (AC-16) — the
+        // path segment is untrusted, exactly as in `copy_path`.
+        let text = crate::text_layout::sanitize_control(&raw);
+        self.action_notice = Some(match self.clipboard.copy(&text) {
+            Ok(()) => format!("Copied {text}"),
+            Err(e) => format!("Could not copy line reference: {e}"),
+        });
+        self.exit_line_select();
+        Effects::redraw()
+    }
+
+    /// Copy the selected content to the clipboard and close the mode (the `y` / `Y`
+    /// confirm — `Enter` copies the REFERENCE instead, see
+    /// [`copy_line_reference`](Self::copy_line_reference)). Whole lines for a keyboard (line-granular) selection via
     /// [`selected_lines_text`](Self::selected_lines_text), or the exact character span for a mouse
     /// drag via [`char_selection_text`](Self::char_selection_text). Surfaces a concise outcome
     /// notice — the line range or "selection", NOT the content itself, which may be many lines
@@ -470,9 +538,10 @@ impl Controller {
     /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
-    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the selected
-    /// content and closes the mode; `y`/`Y` do the same (the familiar copy keys)
-    /// ([`copy_line_content`](Self::copy_line_content), AC-9). Any other key
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the `path:line`
+    /// REFERENCE and closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9 —
+    /// the shipped v1.9.0 behavior, unchanged); `y`/`Y` copy the selected CONTENT instead
+    /// ([`copy_line_content`](Self::copy_line_content)) — one selection, two products. Any other key
     /// is inert. Ctrl/Alt chords are rejected up
     /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
     /// arrows) and is allowed.
@@ -489,13 +558,17 @@ impl Controller {
                 self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
                 return Effects::redraw();
             }
-            // Enter / y / Y all confirm: copy the selection, then close the mode. `y`/`Y` reach here
-            // because line-select routes every key through this handler, so the normal copy-path
-            // bindings would otherwise be inert; wiring them matches the app's `y`/`Y`=copy idiom
-            // (and vim's yank). `Y` arrives as the uppercase char + SHIFT, which the modifier guard
-            // above permits — accepted so holding Shift never makes copy silently fail.
-            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                return self.copy_line_content(); // AC-9
+            // Two confirms, one selection: `Enter` copies the `path:line` REFERENCE (the shipped
+            // v1.9.0 contract — ready to paste into an agent chat or an issue), while `y`/`Y` copy
+            // the selected CONTENT (the actual text — vim's yank, and the app's `y`=copy idiom;
+            // they reach here because line-select routes every key through this handler). `Y`
+            // arrives as the uppercase char + SHIFT, which the modifier guard above permits —
+            // accepted so holding Shift never makes copy silently fail. Both close the mode.
+            KeyCode::Enter => {
+                return self.copy_line_reference(); // AC-9: the reference, as shipped
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                return self.copy_line_content(); // the content — the PR #78 addition
             }
             _ => {}
         }
@@ -553,6 +626,26 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_line_has_no_range_suffix() {
+        assert_eq!(
+            format_line_reference("src/editor.rs", 50, 50),
+            "src/editor.rs:50"
+        );
+    }
+
+    #[test]
+    fn range_normalizes_ascending() {
+        assert_eq!(
+            format_line_reference("src/editor.rs", 50, 58),
+            "src/editor.rs:50-58"
+        );
+        assert_eq!(
+            format_line_reference("src/editor.rs", 58, 50),
+            "src/editor.rs:50-58"
+        );
+    }
 
     #[test]
     fn strip_gutter_removes_number_and_space_keeps_code() {
