@@ -75,6 +75,7 @@ fn sample_state() -> ViewState {
         tree_hscroll: 0,
         content_rows: 3, // the fixture content is three lines
         wrap: false,
+        content_pad_left: false,
         split_pct: 40,
         zoomed: false,
         update_banner: None,
@@ -1176,6 +1177,47 @@ fn geometry_matches_the_wide_two_column_layout() {
         "a wide layout has a draggable divider"
     );
     assert_eq!((g.area_x, g.area_width), (0, 100));
+}
+
+#[test]
+fn content_pad_left_insets_the_transformed_views_one_column() {
+    // Rendered-markdown / diff views set `content_pad_left` so their border-hugging delegate output
+    // gains a one-column left gap. The gap must land in BOTH the drawn text and the hit-test
+    // geometry (else a content click maps one column off), so assert on `content_inner` — the single
+    // rect that drives both.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut flush = sample_state();
+    flush.content_pad_left = false;
+    let mut padded = sample_state();
+    padded.content_pad_left = true;
+
+    let x_flush = geometry(area, &flush).content_inner.unwrap().x;
+    let x_padded = geometry(area, &padded).content_inner.unwrap().x;
+    assert_eq!(
+        x_padded,
+        x_flush + 1,
+        "the left gap shifts the content interior exactly one column right"
+    );
+    // The gap only insets the left: the interior narrows by the same one column, and everything
+    // else (the tree column) is untouched.
+    let g_flush = geometry(area, &flush);
+    let g_padded = geometry(area, &padded);
+    assert_eq!(
+        g_padded.content_inner.unwrap().width + 1,
+        g_flush.content_inner.unwrap().width,
+        "the gap comes out of the content width, not the border"
+    );
+    assert_eq!(
+        g_padded.tree_inner, g_flush.tree_inner,
+        "the tree column is never padded"
+    );
 }
 
 #[test]

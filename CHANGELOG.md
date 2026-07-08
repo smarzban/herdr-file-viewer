@@ -33,6 +33,12 @@ All notable changes to this project are documented here. The format is based on
 - **In line-select mode, a mouse press now places the selection caret** (previously a click placed
   the line marker, and a double-click copied — copying is now always an explicit `Enter`/`y`).
 
+### Fixed
+- **Left gap in the rendered-markdown and diff views.** These views now sit one column in from the
+  content pane's left border instead of hugging it, matching the gap syntax-highlighted files
+  already get from their line-number gutter. Purely visual: the border, scrollbars, and mouse
+  hit-testing are unchanged.
+
 ## [1.10.0] - 2026-07-07
 
 ### Added
