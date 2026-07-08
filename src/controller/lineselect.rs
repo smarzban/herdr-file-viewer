@@ -1,24 +1,35 @@
-//! Line-reference formatting for the copy-line-reference feature — turns a selected line or
-//! line range on a file into the `path:line` / `path:start-end` string the Copy adapter (T-7)
-//! puts on the clipboard, plus the line-select modal state and its enter/exit on the Controller.
+//! The line-select modal: its in-progress selection state, the enter/exit transitions on the
+//! Controller, and the confirm path that copies the selected lines' CONTENT (the actual file
+//! text, not a `path:line` reference) to the clipboard.
 
 use super::*;
 
-/// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
-/// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
-/// order first so a selection dragged either direction reads the same. Pure formatting only —
-/// no sanitization of `rel_path` (the Copy adapter, T-7, handles that before this is called).
-pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) -> String {
-    let (lo, hi) = if start <= end {
-        (start, end)
-    } else {
-        (end, start)
+/// Strip a leading line-number gutter (as the syntax renderer adds — `bat --style=numbers` prints
+/// a right-aligned number then a separator before each source line) from one rendered line's plain
+/// text, given the 1-based source line number `n` that line displays.
+///
+/// Self-validating: it only strips when the digits immediately after the right-align padding EQUAL
+/// `n` **and** are followed by a real separator (a space, and/or a box-drawing `│`/`|` with its
+/// spaces). So a renderer that adds no gutter (the plain-text fallback, or the test stubs), or a
+/// code line that merely happens to start with some other digits, is returned unchanged — and the
+/// code's OWN leading indentation, which sits after the single separator, is preserved intact.
+fn strip_line_gutter(plain: &str, n: usize) -> &str {
+    let after_pad = plain.trim_start_matches(' ');
+    let Some(rest) = after_pad.strip_prefix(&n.to_string()) else {
+        return plain;
     };
-    if lo == hi {
-        format!("{rel_path}:{lo}")
-    } else {
-        format!("{rel_path}:{lo}-{hi}")
+    // The gutter number must be followed by a separator; otherwise this isn't a gutter.
+    let mut rest = rest;
+    let mut saw_sep = false;
+    if let Some(r) = rest.strip_prefix(' ') {
+        rest = r;
+        saw_sep = true;
     }
+    if let Some(r) = rest.strip_prefix('│').or_else(|| rest.strip_prefix('|')) {
+        rest = r.strip_prefix(' ').unwrap_or(r);
+        saw_sep = true;
+    }
+    if saw_sep { rest } else { plain }
 }
 
 /// In-progress line selection on the content pane: `anchor` is where the selection started,
@@ -93,7 +104,7 @@ impl Controller {
         // Reset double-click state (mirrors open_finder/open_help): a tree click made just before
         // entry must not pair with the FIRST content click inside the mode as a double-click —
         // `is_double_click` only compares the row, not the column/pane, so a stale prior-context
-        // click could otherwise fire `copy_line_reference` (copy + close) before the marker is
+        // click could otherwise fire `copy_line_content` (copy + close) before the marker is
         // ever placed. Cleared here, at the top of entry, so BOTH the synchronous path below and
         // the deferred (T-6 auto-switch) path are covered — the clear happens when entry begins,
         // not when the (possibly-deferred) modal actually opens.
@@ -128,49 +139,75 @@ impl Controller {
         }
     }
 
-    /// Copy the current line reference for the selected file to the clipboard and close the mode
-    /// (the `Enter` / double-click confirm, T-7). Mirrors [`copy_path`](Controller::copy_path):
-    /// build the `path:line` / `path:start-end` reference, run it through
-    /// [`sanitize_control`](crate::text_layout::sanitize_control) **before** it reaches the
-    /// clipboard *or* the notice (AC-16 — a crafted file name may carry ESC/newline), then surface
-    /// the outcome as a transient notice ("Copied …" on `Ok` / a failure message on `Err`,
-    /// AC-10/AC-11).
+    /// Join the plain text of the currently-selected 1-based source lines `[start, end]` with `\n`.
+    ///
+    /// Line-select forces the source-mapped content view (`SyntaxContent`), so each entry in
+    /// `content.lines` is exactly one source line — the selection therefore indexes straight into
+    /// it (`line - 1`). For each selected line we (1) join its spans' text, (2) drop any residual
+    /// control char **while keeping `\t`** so indentation survives, and (3) strip the syntax
+    /// renderer's line-number gutter via [`strip_line_gutter`] so the copy is the source text
+    /// alone — not `bat`'s `   1 …` decoration. The `\n` joins are added only *after* that
+    /// per-line work so line structure survives (a whole-string `sanitize_control` would eat the
+    /// newlines/tabs — hence the per-line approach). Bounds are clamped into `[1, line_count]`; an
+    /// empty body yields an empty string.
+    fn selected_lines_text(&self, start: usize, end: usize) -> String {
+        let total = self.content.lines.len();
+        if total == 0 {
+            return String::new();
+        }
+        let lo = start.max(1).min(total);
+        let hi = end.max(1).min(total);
+        (lo..=hi)
+            .map(|n| {
+                let plain: String = self.content.lines[n - 1]
+                    .spans
+                    .iter()
+                    .flat_map(|s| s.content.chars())
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect();
+                strip_line_gutter(&plain, n).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Copy the CONTENT of the selected lines to the clipboard and close the mode (the `Enter` /
+    /// `y` / `Y` / double-click confirm). Builds the joined line text via
+    /// [`selected_lines_text`](Self::selected_lines_text), copies it, then surfaces a concise
+    /// outcome notice naming the line range — NOT the content itself, which may be many lines
+    /// ("Copied line 5" / "Copied lines 5-8" on `Ok`, a failure message on `Err`, AC-10/AC-11).
     ///
     /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
     /// guidance screen is non-empty), so if there is no active selection or the selected node is
-    /// not a file, copy nothing and return [`Effects::noop`] rather than fabricate a reference.
+    /// not a file, copy nothing and return [`Effects::noop`] rather than copy the guidance text.
     /// Read-only (AC-17): touches only the clipboard and in-memory notice / modal state.
     ///
     /// The mode closes on **both** `Ok` and `Err` (via [`exit_line_select`](Self::exit_line_select))
-    /// so `Enter` is a completed action that returns to normal navigation — consistent with the
+    /// so the confirm is a completed action that returns to normal navigation — consistent with the
     /// finder/picker/prompt confirm paths; the notice conveys the outcome.
-    pub fn copy_line_reference(&mut self) -> Effects {
+    pub fn copy_line_content(&mut self) -> Effects {
         // Both an active selection AND a selected file node are required; otherwise there is no
-        // reference to copy — do not fabricate one.
+        // file content to copy — do not copy the non-file guidance screen (T-4).
         let Some((start, end)) = self.line_selection() else {
             return Effects::noop();
         };
-        let Some(rel_path) = self
+        let is_file = self
             .tree
             .selected()
-            .filter(|node| node.kind == NodeKind::File)
-            .map(|node| {
-                self.rel(&node.path)
-                    .unwrap_or_else(|| node.path.clone())
-                    .to_string_lossy()
-                    .into_owned()
-            })
-        else {
+            .is_some_and(|node| node.kind == NodeKind::File);
+        if !is_file {
             return Effects::noop();
-        };
+        }
 
-        let raw = format_line_reference(&rel_path, start, end);
-        // Sanitize the WHOLE reference before it reaches the clipboard OR the notice (AC-16) — the
-        // path segment is untrusted, exactly as in `copy_path`.
-        let text = crate::text_layout::sanitize_control(&raw);
+        let text = self.selected_lines_text(start, end);
+        let label = if start == end {
+            format!("line {start}")
+        } else {
+            format!("lines {start}-{end}")
+        };
         self.action_notice = Some(match self.clipboard.copy(&text) {
-            Ok(()) => format!("Copied {text}"),
-            Err(e) => format!("Could not copy line reference: {e}"),
+            Ok(()) => format!("Copied {label}"),
+            Err(e) => format!("Could not copy {label}: {e}"),
         });
         self.exit_line_select();
         Effects::redraw()
@@ -205,8 +242,9 @@ impl Controller {
     /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
-    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the reference and
-    /// closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9). Any other key
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the selected lines'
+    /// content and closes the mode; `y`/`Y` do the same (the familiar copy keys)
+    /// ([`copy_line_content`](Self::copy_line_content), AC-9). Any other key
     /// is inert. Ctrl/Alt chords are rejected up
     /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
     /// arrows) and is allowed.
@@ -223,8 +261,13 @@ impl Controller {
                 self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
                 return Effects::redraw();
             }
-            KeyCode::Enter => {
-                return self.copy_line_reference(); // AC-9: copy the reference, then close the mode
+            // Enter / y / Y all confirm: copy the selected lines' content, then close the mode.
+            // `y`/`Y` reach here because line-select routes every key through this handler, so the
+            // normal copy-path bindings would otherwise be inert; wiring them here matches the
+            // muscle memory of "y copies". `Y` arrives as the uppercase char + SHIFT, which the
+            // modifier guard above permits.
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                return self.copy_line_content(); // AC-9
             }
             _ => {}
         }
@@ -284,23 +327,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_line_has_no_range_suffix() {
-        assert_eq!(
-            format_line_reference("src/editor.rs", 50, 50),
-            "src/editor.rs:50"
-        );
+    fn strip_gutter_removes_number_and_space_keeps_code() {
+        // `bat --style=numbers`-style: right-aligned number + one space, then the source line.
+        assert_eq!(strip_line_gutter("   1 # Architecture", 1), "# Architecture");
+        assert_eq!(strip_line_gutter("  42 fn main() {", 42), "fn main() {");
     }
 
     #[test]
-    fn range_normalizes_ascending() {
-        assert_eq!(
-            format_line_reference("src/editor.rs", 50, 58),
-            "src/editor.rs:50-58"
-        );
-        assert_eq!(
-            format_line_reference("src/editor.rs", 58, 50),
-            "src/editor.rs:50-58"
-        );
+    fn strip_gutter_preserves_code_indentation() {
+        // Only the single separator space is consumed; the code's own leading indentation stays.
+        assert_eq!(strip_line_gutter("  2     let x = 5;", 2), "    let x = 5;");
+    }
+
+    #[test]
+    fn strip_gutter_handles_box_drawing_separator() {
+        // Some `bat` styles put a `│` between the number and the code.
+        assert_eq!(strip_line_gutter("  1 │ code", 1), "code");
+        assert_eq!(strip_line_gutter("  1 | code", 1), "code");
+    }
+
+    #[test]
+    fn strip_gutter_blank_line_becomes_empty() {
+        assert_eq!(strip_line_gutter("   2 ", 2), "");
+    }
+
+    #[test]
+    fn strip_gutter_leaves_ungutter_content_untouched() {
+        // No matching leading number (the test stubs render "line4" etc.) → unchanged.
+        assert_eq!(strip_line_gutter("line4", 5), "line4");
+        // Digits present but NOT equal to the line number → not a gutter, unchanged.
+        assert_eq!(strip_line_gutter("42 is the answer", 7), "42 is the answer");
+        // Leading digits equal to `n` but with no separator (code that just starts with them) →
+        // unchanged, so we never eat real content.
+        assert_eq!(strip_line_gutter("5000 loops", 5), "5000 loops");
     }
 
     #[test]

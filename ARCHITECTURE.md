@@ -43,7 +43,7 @@ is unit-testable with stubs.
 | `text_layout` | A pure text-wrapping helper: how many display rows a line occupies at a given width — shared by the content pane, the finder, and the help overlay. No I/O. |
 | `prompt` | A reusable single-line text-input buffer (push / backspace / clear) backing the finder query — and future keyboard prompts. |
 | `infile` | In-file-navigation modal state: which bottom prompt is open (go-to-line or in-file search), its `prompt` input buffer, the live `SearchState` (query, matches, current match), and the content-scroll snapshot for cancel-restore. |
-| `lineselect` | Line-select modal state (copy-line-reference): anchor + marker source-line indices, the focus-gated `L` entry that auto-switches to the source view, key/mouse handling, and formatting the `path:line` / `path:start-end` reference for the clipboard. Read-only. |
+| `lineselect` | Line-select modal state (copy-line-content): anchor + marker source-line indices, the focus-gated `L` entry that auto-switches to the source view, key/mouse handling, and extracting the selected lines' text (joined by newlines, residual control bytes stripped) for the clipboard. Read-only. |
 | `help` | Help overlay state: the embedded changelog source and About text, plus the section and vertical scroll position for the `?` overlay. Pure; no I/O — the changelog is compiled in at build time. |
 | `input` | Map crossterm key events → intents. |
 | `intent` | The closed set of user intents (one exhaustive enum). |

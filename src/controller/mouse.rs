@@ -69,7 +69,7 @@ impl Controller {
         self.last_click = Some((col, row, now));
 
         if double {
-            return self.copy_line_reference(); // AC-9: copy + close, same as Enter
+            return self.copy_line_content(); // AC-9: copy the lines' content + close, same as Enter
         }
         if let Some(state) = self.modal.line_select_mut() {
             // A single click ALWAYS places the marker (collapsing the anchor to the clicked

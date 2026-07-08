@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Line-select mode now copies the selected lines' content, not a `path:line` reference.** `Enter`,
+  `y`/`Y`, or a double-click copies the actual text of the selected line (or, for a range, every
+  line joined by newlines, indentation preserved) — so it pastes as real code rather than a
+  location string. The syntax view's line-number gutter (`bat --style=numbers`) is stripped from
+  the copy, and residual control bytes are removed before it reaches the clipboard (tabs kept).
+  The confirmation notice names the copied line range (e.g. "Copied lines 42-58"). Marker
+  movement, extend, mouse handling, and the source-view auto-switch are unchanged.
+
 ## [1.10.0] - 2026-07-07
 
 ### Added

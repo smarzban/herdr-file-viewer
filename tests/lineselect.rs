@@ -173,6 +173,36 @@ impl ContentProvider for EmptyContent {
     }
 }
 
+/// Content whose single source line carries a raw ESC control byte and a leading tab, so a copy
+/// test can prove `copy_line_content` strips the residual control byte while PRESERVING the tab
+/// (indentation). Real renders never leak an ESC into a span (the renderer cleans it first), but
+/// this stub bypasses that path, exercising the copy adapter's own defense-in-depth filter.
+#[derive(Clone, Copy)]
+struct ControlContent;
+impl ContentProvider for ControlContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw("\tcode\x1bhere"),
+            notices: Vec::new(),
+        }
+    }
+}
+
+/// Content that mimics `bat --style=numbers`: a right-aligned line-number gutter + a one-space
+/// separator, then the source line — with real indentation on line 2 — so a copy test proves the
+/// gutter is stripped while the code's own indentation survives.
+#[derive(Clone, Copy)]
+struct GutterContent;
+impl ContentProvider for GutterContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["  1 fn main() {", "  2     let x = 5;", "  3 }"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+        }
+    }
+}
+
 /// Spin `poll()` until the worker's empty render has landed — i.e. until `content.lines` is
 /// actually empty, past the non-empty "Rendering…" placeholder `dispatch_render` shows while
 /// the job is in flight.
@@ -531,7 +561,7 @@ fn enter_from_source_is_synchronous() {
     );
 }
 
-// ── T-7: Enter copies the reference, sanitizes, notifies, and closes the mode ─────
+// ── T-7: Enter copies the selected lines' CONTENT, sanitizes, notifies, and closes the mode ─────
 
 /// Enter line-select at line 5 on a source-view `.rs` file (synchronous fast path).
 fn enter_at_line_five(ctrl: &mut Controller) {
@@ -547,9 +577,10 @@ fn enter_at_line_five(ctrl: &mut Controller) {
 }
 
 #[test]
-fn enter_copies_single_reference() {
-    // AC-9/AC-10: Enter on a single-line selection copies `path:line` and confirms it in a notice;
-    // AC-4-style close: the mode is a completed action so Enter also closes it.
+fn enter_copies_single_line_content() {
+    // AC-9/AC-10: Enter on a single-line selection copies that line's CONTENT and confirms the
+    // line number in a notice; AC-4-style close: the mode is a completed action so Enter closes it.
+    // MultiLine renders "line0".."line19", so source line 5 is the text "line4".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -559,12 +590,12 @@ fn enter_copies_single_reference() {
     assert!(fx.redraw, "copying redraws to show the confirmation notice");
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
-        Some("a.rs:5"),
-        "AC-9: Enter copies the single-line reference"
+        Some("line4"),
+        "AC-9: Enter copies the selected line's content (source line 5 == \"line4\")"
     );
     assert!(
-        ctrl.notices().iter().any(|n| n == "Copied a.rs:5"),
-        "AC-10: the copy is confirmed: {:?}",
+        ctrl.notices().iter().any(|n| n == "Copied line 5"),
+        "AC-10: the copy is confirmed by line number: {:?}",
         ctrl.notices()
     );
     assert!(
@@ -574,8 +605,9 @@ fn enter_copies_single_reference() {
 }
 
 #[test]
-fn range_copies_start_end() {
-    // AC-9: Enter on an extended selection copies `path:start-end`.
+fn range_copies_lines_joined_by_newline() {
+    // AC-9: Enter on an extended selection copies every selected line's content, joined with '\n'.
+    // Selection 5-8 over MultiLine → "line4".."line7".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -594,36 +626,95 @@ fn range_copies_start_end() {
     ctrl.handle_line_select_key(key(KeyCode::Enter));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
-        Some("a.rs:5-8"),
-        "AC-9: Enter copies the range reference"
+        Some("line4\nline5\nline6\nline7"),
+        "AC-9: Enter copies the range's content joined by newlines"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied lines 5-8"),
+        "the notice names the copied line range: {:?}",
+        ctrl.notices()
     );
 }
 
-// Unix-only: this repro needs a file whose *name* carries an ESC byte, which Windows forbids —
-// `fs::write` fails there before the copy path runs. The `sanitize_control` defense is
-// platform-agnostic and directly unit-tested in `text_layout.rs` (runs on every platform), so
-// Windows keeps full sanitizer coverage; only the filesystem-level repro is gated.
-#[cfg(unix)]
 #[test]
-fn control_bytes_in_path_are_sanitized() {
-    // AC-16: the path segment is untrusted — a crafted file name can carry an ESC byte. The whole
-    // reference is sanitized before it reaches the clipboard OR the notice, so no raw control byte
-    // is copied.
+fn copy_strips_line_number_gutter_keeps_indentation() {
+    // The syntax view (`bat --style=numbers`) bakes a line-number gutter into the content. Copying
+    // must yield the source text alone — no `  1 ` prefix — while preserving code indentation.
     let dir = TempDir::new();
-    std::fs::write(dir.path().join("a\x1bb.rs"), "placeholder\n").unwrap();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), GutterContent);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.scroll_to_line(1);
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker on line 1"
+    );
+
+    // Extend over all three lines (1 → 3) and copy.
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(ctrl.line_selection(), Some((1, 3)), "precondition: 1-3");
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("fn main() {\n    let x = 5;\n}"),
+        "the line-number gutter is stripped; the code indentation is preserved"
+    );
+}
+
+#[test]
+fn y_copies_content_like_enter() {
+    // The familiar copy keys `y`/`Y` confirm exactly like Enter (line-select routes every key
+    // through `handle_line_select_key`, so these are wired to the copy path explicitly).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_at_line_five(&mut ctrl);
+
+    let fx = ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert!(fx.redraw, "y copies and redraws");
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line4"),
+        "y copies the selected line's content, just like Enter"
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "y closes the mode after copying"
+    );
+}
+
+#[test]
+fn control_bytes_in_content_are_sanitized_tabs_kept() {
+    // AC-16: content is untrusted too — a crafted line can carry an ESC byte. The copied text is
+    // filtered so no raw control byte reaches the clipboard, while a tab (indentation) survives.
+    // ControlContent renders the single line "\tcode\x1bhere" → copy must yield "\tcodehere".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), ControlContent);
+    await_marker(&mut ctrl, "code");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker on the single line"
+    );
 
     ctrl.handle_line_select_key(key(KeyCode::Enter));
     let log = copied.lock().unwrap();
     let got = log.last().map(String::as_str).unwrap();
     assert_eq!(
-        got, "ab.rs:5",
-        "AC-16: the ESC byte in the file name is neutralized before copy"
+        got, "\tcodehere",
+        "AC-16: the ESC byte is dropped from the content while the leading tab is preserved"
     );
     assert!(
-        !got.chars().any(char::is_control),
-        "AC-16: no control byte reaches the clipboard: {got:?}"
+        !got.chars().any(|c| c.is_control() && c != '\t'),
+        "AC-16: no control byte (other than tab) reaches the clipboard: {got:?}"
     );
     assert!(
         ctrl.notices()
@@ -759,9 +850,9 @@ fn shift_click_places_marker_like_a_plain_click() {
 }
 
 #[test]
-fn double_click_copies_reference() {
-    // AC-9: two left-clicks on the same content row within the double-click window copy the
-    // `path:line` reference for that row and close the mode — the same confirm as Enter.
+fn double_click_copies_content() {
+    // AC-9: two left-clicks on the same content row within the double-click window copy that
+    // row's CONTENT and close the mode — the same confirm as Enter. Source line 3 == "line2".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -777,8 +868,8 @@ fn double_click_copies_reference() {
     );
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
-        Some("code.rs:3"),
-        "AC-9: double-click copies the reference for the clicked line"
+        Some("line2"),
+        "AC-9: double-click copies the content of the clicked line (source line 3 == \"line2\")"
     );
     assert!(
         !ctrl.line_select_active(),
@@ -833,7 +924,7 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
     // BUG regression: entering line-select mode did not clear `self.last_click`, so a tree-row
     // click made just before entry could pair with the FIRST content click at the same screen row
     // as a double-click — `is_double_click` only compares the row (not the column/pane) — firing
-    // `copy_line_reference` (copy + close) before the marker was ever placed by a real content
+    // `copy_line_content` (copy + close) before the marker was ever placed by a real content
     // click. Every other modal already guards this (`open_finder`/`open_help` clear `last_click`
     // on open); line-select's entry point must too.
     let dir = TempDir::new();
