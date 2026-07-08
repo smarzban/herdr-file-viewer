@@ -60,6 +60,7 @@ impl ContentProvider for MultiLine {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -79,6 +80,7 @@ impl ContentProvider for WrapBody {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -169,6 +171,62 @@ impl ContentProvider for EmptyContent {
         RenderResult {
             content: Text::default(),
             notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// Content whose single source line carries a raw ESC control byte and a leading tab, so a copy
+/// test can prove `copy_line_content` strips the residual control byte while PRESERVING the tab
+/// (indentation). Real renders never leak an ESC into a span (the renderer cleans it first), but
+/// this stub bypasses that path, exercising the copy adapter's own defense-in-depth filter.
+#[derive(Clone, Copy)]
+struct ControlContent;
+impl ContentProvider for ControlContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw("\tcode\x1bhere"),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// Content that mimics `bat --style=numbers`: a right-aligned line-number gutter + a one-space
+/// separator, then the source line — with real indentation on line 2 — so a copy test proves the
+/// gutter is stripped while the code's own indentation survives. Carries the retained source, as
+/// the live `SyntaxContent` renderer always does (a line-number gutter exists ONLY behind that
+/// mode, which is exactly when source is retained — see `RenderResult::source`).
+#[derive(Clone, Copy)]
+struct GutterContent;
+impl ContentProvider for GutterContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["  1 fn main() {", "  2     let x = 5;", "  3 }"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "    let x = 5;".to_string(),
+                "}".to_string(),
+            ]),
+        }
+    }
+}
+
+/// A genuinely source-less view (rendered markdown / diff — no per-display-line source, no gutter)
+/// whose line 2 happens to start with "2 " — the input that fools the bare digit heuristic. With no
+/// source to anchor, `gutter_len_of` must return 0 (there is no gutter in such a view), so the copy
+/// keeps the leading "2 ". Guards the source-less half of the gutter-strip fix.
+#[derive(Clone, Copy)]
+struct PlainNoSource;
+impl ContentProvider for PlainNoSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["intro line", "2 spaces of intro", "tail line"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -531,7 +589,8 @@ fn enter_from_source_is_synchronous() {
     );
 }
 
-// ── T-7: Enter copies the reference, sanitizes, notifies, and closes the mode ─────
+// ── T-7: the two confirms — Enter copies the `path:line` REFERENCE (the v1.9.0 contract),
+// y/Y copy the selected lines' CONTENT; both sanitize, notify, and close the mode ────────────────
 
 /// Enter line-select at line 5 on a source-view `.rs` file (synchronous fast path).
 fn enter_at_line_five(ctrl: &mut Controller) {
@@ -547,9 +606,10 @@ fn enter_at_line_five(ctrl: &mut Controller) {
 }
 
 #[test]
-fn enter_copies_single_reference() {
-    // AC-9/AC-10: Enter on a single-line selection copies `path:line` and confirms it in a notice;
-    // AC-4-style close: the mode is a completed action so Enter also closes it.
+fn enter_copies_single_line_reference() {
+    // AC-9/AC-10: Enter on a single-line selection copies the repo-relative `path:line`
+    // REFERENCE — the shipped v1.9.0 contract, unchanged by the copy-content addition — and
+    // confirms it in a notice; AC-4-style close: the mode is a completed action so Enter closes it.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -560,11 +620,11 @@ fn enter_copies_single_reference() {
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("a.rs:5"),
-        "AC-9: Enter copies the single-line reference"
+        "AC-9: Enter copies the `path:line` reference (v1.9.0 contract)"
     );
     assert!(
         ctrl.notices().iter().any(|n| n == "Copied a.rs:5"),
-        "AC-10: the copy is confirmed: {:?}",
+        "AC-10: the copy is confirmed with the reference itself: {:?}",
         ctrl.notices()
     );
     assert!(
@@ -574,8 +634,8 @@ fn enter_copies_single_reference() {
 }
 
 #[test]
-fn range_copies_start_end() {
-    // AC-9: Enter on an extended selection copies `path:start-end`.
+fn enter_copies_range_reference() {
+    // AC-9: Enter on an extended selection copies the `path:start-end` range reference.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
@@ -595,35 +655,127 @@ fn range_copies_start_end() {
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("a.rs:5-8"),
-        "AC-9: Enter copies the range reference"
+        "AC-9: Enter copies the `path:start-end` range reference"
     );
 }
 
-// Unix-only: this repro needs a file whose *name* carries an ESC byte, which Windows forbids —
-// `fs::write` fails there before the copy path runs. The `sanitize_control` defense is
-// platform-agnostic and directly unit-tested in `text_layout.rs` (runs on every platform), so
-// Windows keeps full sanitizer coverage; only the filesystem-level repro is gated.
-#[cfg(unix)]
 #[test]
-fn control_bytes_in_path_are_sanitized() {
-    // AC-16: the path segment is untrusted — a crafted file name can carry an ESC byte. The whole
-    // reference is sanitized before it reaches the clipboard OR the notice, so no raw control byte
-    // is copied.
+fn range_copies_lines_joined_by_newline() {
+    // `y` on an extended selection copies every selected line's content, joined with '\n'.
+    // Selection 5-8 over MultiLine → "line4".."line7".
     let dir = TempDir::new();
-    std::fs::write(dir.path().join("a\x1bb.rs"), "placeholder\n").unwrap();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_at_line_five(&mut ctrl);
 
-    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    // Extend the selection from 5 down to 8 (Shift+j, reported as `Char('J')`).
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((5, 8)),
+        "precondition: selection 5-8"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line4\nline5\nline6\nline7"),
+        "y copies the range's content joined by newlines"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied lines 5-8"),
+        "the notice names the copied line range: {:?}",
+        ctrl.notices()
+    );
+}
+
+#[test]
+fn copy_strips_line_number_gutter_keeps_indentation() {
+    // The syntax view (`bat --style=numbers`) bakes a line-number gutter into the content. Copying
+    // must yield the source text alone — no `  1 ` prefix — while preserving code indentation.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), GutterContent);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.scroll_to_line(1);
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker on line 1"
+    );
+
+    // Extend over all three lines (1 → 3) and copy the content with `y`.
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    ctrl.handle_line_select_key(key(KeyCode::Char('J')));
+    assert_eq!(ctrl.line_selection(), Some((1, 3)), "precondition: 1-3");
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("fn main() {\n    let x = 5;\n}"),
+        "the line-number gutter is stripped; the code indentation is preserved"
+    );
+}
+
+#[test]
+fn y_copies_single_line_content() {
+    // The familiar copy keys `y`/`Y` copy the selection's CONTENT — the counterpart to Enter's
+    // reference (line-select routes every key through `handle_line_select_key`, so these are
+    // wired to the content-copy path explicitly). One selection, two products.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_at_line_five(&mut ctrl);
+
+    let fx = ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert!(fx.redraw, "y copies and redraws");
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line4"),
+        "y copies the selected line's content (source line 5 == \"line4\")"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied line 5"),
+        "the content copy is confirmed by line number: {:?}",
+        ctrl.notices()
+    );
+    assert!(
+        !ctrl.line_select_active(),
+        "y closes the mode after copying"
+    );
+}
+
+#[test]
+fn control_bytes_in_content_are_sanitized_tabs_kept() {
+    // AC-16: content is untrusted too — a crafted line can carry an ESC byte. The copied text is
+    // filtered so no raw control byte reaches the clipboard, while a tab (indentation) survives.
+    // ControlContent renders the single line "\tcode\x1bhere" → copy must yield "\tcodehere".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), ControlContent);
+    await_marker(&mut ctrl, "code");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "precondition: marker on the single line"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     let log = copied.lock().unwrap();
     let got = log.last().map(String::as_str).unwrap();
     assert_eq!(
-        got, "ab.rs:5",
-        "AC-16: the ESC byte in the file name is neutralized before copy"
+        got, "\tcodehere",
+        "AC-16: the ESC byte is dropped from the content while the leading tab is preserved"
     );
     assert!(
-        !got.chars().any(char::is_control),
-        "AC-16: no control byte reaches the clipboard: {got:?}"
+        !got.chars().any(|c| c.is_control() && c != '\t'),
+        "AC-16: no control byte (other than tab) reaches the clipboard: {got:?}"
     );
     assert!(
         ctrl.notices()
@@ -709,80 +861,153 @@ fn enter_line_select_top(ctrl: &mut Controller) {
 }
 
 #[test]
-fn click_sets_marker_to_clicked_source_line() {
-    // AC-8: a plain left-click (release) in the content pane moves the marker to the clicked
-    // source line, collapsed. Screen row 3, content top row 1, scroll 0 → source line 3.
+fn mouse_down_places_caret_on_clicked_line() {
+    // A left press in the content pane drops the selection caret on the clicked source line,
+    // collapsed. Screen row 3, content top row 1, scroll 0 → source line 3.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
-    assert!(fx.redraw, "a click that moves the marker redraws");
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    assert!(fx.redraw, "a press that places the caret redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((3, 3)),
-        "AC-8: a click places the marker on the clicked source line (3)"
+        "a press places the caret on the clicked source line (3), collapsed"
     );
 }
 
 #[test]
-fn shift_click_places_marker_like_a_plain_click() {
-    // Amended T-8: herdr and most terminals reserve Shift+mouse for their own native text
-    // selection, so a shift-click can never reliably reach the plugin — mouse shift-click
-    // extend is removed. A Shift+left-click now behaves exactly like a plain click: it places
-    // the marker on the clicked source line, collapsed (anchor collapses to the clicked line,
-    // NOT extended from a prior anchor). Keyboard `Shift`+`j`/`k` (and Shift+arrows) remains the
-    // supported way to extend a multi-line selection — that path is unchanged.
+fn shift_mouse_is_left_for_the_terminal() {
+    // We must NOT swallow Shift+mouse — herdr and most terminals reserve it for their own native
+    // text selection/copy. A Shift+press is therefore inert in the plugin: it neither starts a
+    // selection nor redraws, so the event passes through to the terminal untouched.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    // Plain click at row 4 → marker at line 4 (this would be the "anchor" under the old
-    // extend behavior, but a subsequent shift-click no longer honors it).
-    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Down(MouseButton::Left), 55, 7));
+    assert!(!fx.redraw, "a Shift+press is inert (left for the terminal)");
     assert_eq!(
         ctrl.line_selection(),
-        Some((4, 4)),
-        "precondition: marker placed at line 4"
-    );
-
-    // Shift-click at row 7 → marker moves to 7, collapsed — NOT (4, 7).
-    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 7));
-    assert!(fx.redraw, "a shift-click that moves the marker redraws");
-    assert_eq!(
-        ctrl.line_selection(),
-        Some((7, 7)),
-        "shift-click places the marker on the clicked line like a plain click, not extending"
+        Some((1, 1)),
+        "Shift+mouse must not move or start a selection in the plugin"
     );
 }
 
 #[test]
-fn double_click_copies_reference() {
-    // AC-9: two left-clicks on the same content row within the double-click window copy the
-    // `path:line` reference for that row and close the mode — the same confirm as Enter.
+fn drag_selects_characters_across_lines_and_copies() {
+    // Press → drag → release selects a character-granular span; `y` copies exactly that span
+    // (the tail of the first line + the head of the last, joined by '\n'). MultiLine renders
+    // "line0".."line19" with no gutter, so char carets map straight to columns.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    // First click moves the marker to line 3; the second (same row, within the window) is the
-    // double-click that copies and closes.
-    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    // Press at line 1, char 0 (col 42 = pane x 41 + 1 glyph col + 0).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    // Drag to line 2, char 3 (col 45 = 41 + 1 glyph + 3).
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 2));
+    assert!(fx.redraw, "finalizing the drag redraws");
     assert!(
-        fx.redraw,
-        "the copy redraws to show the confirmation notice"
+        ctrl.line_select_active(),
+        "release finalizes the selection but keeps the mode open for Enter/y"
     );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
-        Some("code.rs:3"),
-        "AC-9: double-click copies the reference for the clicked line"
+        Some("line0\nlin"),
+        "y copies the character span: all of line 1 + the first 3 chars of line 2"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms a character selection: {:?}",
+        ctrl.notices()
     );
     assert!(
         !ctrl.line_select_active(),
-        "AC-9: the double-click closes the mode (like Enter)"
+        "y closes the mode after copying"
+    );
+}
+
+#[test]
+fn enter_after_drag_copies_reference_of_spanned_lines() {
+    // Enter after a mouse drag copies the REFERENCE for the lines the drag spans — the same
+    // selection can produce either product: `y` the dragged characters, Enter the `path:lines`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 2));
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:1-2"),
+        "Enter copies the range reference for the dragged lines"
+    );
+}
+
+#[test]
+fn drag_populates_char_selection_in_the_view() {
+    // A mouse drag must feed the presenter a character selection (so the highlight is char-granular,
+    // not whole-line). After dragging line 1 char 0 → line 2 char 3, the view carries those carets.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+
+    let vs = ctrl.view_state();
+    let ls = vs.line_select.expect("line-select overlay is present");
+    let cs = ls
+        .char_sel
+        .expect("a mouse drag populates the character selection for the overlay");
+    assert_eq!(
+        (cs.start_line, cs.start_col, cs.end_line, cs.end_col),
+        (1, 0, 2, 3),
+        "the overlay carries the exact drag carets (ordered)"
+    );
+}
+
+#[test]
+fn click_without_drag_collapses_and_y_copies_the_line() {
+    // A press with no drag collapses the selection onto one character; `y` then falls back to
+    // copying the whole clicked line, so a plain click-then-y still yields a line — and Enter
+    // yields that line's reference. Row 3 → source line 3 == "line2".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line2"),
+        "a collapsed click copies the whole clicked line (source line 3 == \"line2\")"
+    );
+
+    // The same collapsed click, confirmed with Enter, yields the line's reference.
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:3"),
+        "Enter on the collapsed click copies the clicked line's reference"
     );
 }
 
@@ -809,33 +1034,38 @@ fn click_outside_content_is_inert() {
 }
 
 #[test]
-fn press_and_drag_do_not_move_the_marker() {
-    // Only a completed left-click (Up) acts; a press (Down) or drag must be inert so the mode keeps
-    // the mouse and no divider/scrollbar drag starts underneath.
+fn drag_within_one_line_selects_chars() {
+    // A press + drag on the same row selects a character range within that single line; Enter
+    // copies just those chars. Line 1 == "line0"; select chars [1, 4) → "ine".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
-    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 6));
-    assert!(!fx.redraw, "a press is inert in line-select mode");
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 6));
-    assert!(!fx.redraw, "a drag is inert in line-select mode");
+    // Press at line 1 char 1 (col 43 = pane x 41 + glyph + 1), drag to char 4 (col 46).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 43, 1));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 46, 1));
+    assert!(fx.redraw, "a selection drag redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((1, 1)),
-        "neither a press nor a drag moves the marker"
+        "the selection stays on line 1 (character-granular within the line)"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("ine"),
+        "y copies the selected characters [1, 4) of \"line0\""
     );
 }
 
 #[test]
-fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
-    // BUG regression: entering line-select mode did not clear `self.last_click`, so a tree-row
-    // click made just before entry could pair with the FIRST content click at the same screen row
-    // as a double-click — `is_double_click` only compares the row (not the column/pane) — firing
-    // `copy_line_reference` (copy + close) before the marker was ever placed by a real content
-    // click. Every other modal already guards this (`open_finder`/`open_help` clear `last_click`
-    // on open); line-select's entry point must too.
+fn content_press_after_tree_click_places_caret_without_copying() {
+    // Entering line-select right after a tree-row click, then a first content press at the same
+    // screen row, must place the caret on that source line and copy nothing — a press is a caret
+    // placement, never a copy (copying is Enter/y). Guards that a prior-context click can't cause a
+    // spurious copy on the first content interaction.
     let dir = TempDir::new();
     for name in ["aa.txt", "bb.txt", "code.rs"] {
         std::fs::write(dir.path().join(name), "placeholder\n").unwrap();
@@ -856,8 +1086,7 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
     });
     ctrl.set_pane_geometry(geometry);
 
-    // A tree-row click at screen row 3 selects "code.rs" (idx 2) and sets
-    // `last_click = (_, 3, now)` — the stale prior-context click.
+    // A tree-row click at screen row 3 selects "code.rs" (idx 2) — the prior-context click.
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
     assert_eq!(
         ctrl.tree().cursor(),
@@ -874,25 +1103,25 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
         "precondition: the mode opened synchronously"
     );
 
-    // The FIRST content click, at the SAME screen row (3) the stale tree click used, must place
-    // the marker on line 3 — not pair with the stale tree click as a double-click.
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    // The first content press, at the SAME screen row (3) the tree click used, places the caret on
+    // source line 3 — and copies nothing.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
     assert!(
         fx.redraw,
-        "the first content click places the marker and redraws"
+        "the first content press places the caret and redraws"
     );
     assert_eq!(
         ctrl.line_selection(),
         Some((3, 3)),
-        "the first content click must place the marker — not fire a stale cross-context double-click"
+        "the first content press places the caret on the clicked source line"
     );
     assert!(
         ctrl.line_select_active(),
-        "the mode must stay open — a stale pairing must not copy+close it before any real content click"
+        "the mode stays open — a press never copies or closes it"
     );
     assert!(
         copied.lock().unwrap().is_empty(),
-        "nothing should have been copied by a stale-click misfire"
+        "nothing is copied by a press"
     );
 }
 
@@ -930,8 +1159,8 @@ fn entry_maps_wrapped_scroll_offset_to_source_line() {
 }
 
 #[test]
-fn mouse_click_maps_wrapped_row_to_source_line() {
-    // With wrap ON and scroll at the top, a click on screen row 4 (content top row 1 → display row
+fn mouse_press_maps_wrapped_row_to_source_line() {
+    // With wrap ON and scroll at the top, a press on screen row 4 (content top row 1 → display row
     // 3) must select source line 2 — display row 3 is the first wrapped row of line 2 — NOT the
     // pre-fix `scroll + (row - top) + 1` == 4.
     let dir = TempDir::new();
@@ -949,12 +1178,12 @@ fn mouse_click_maps_wrapped_row_to_source_line() {
         "precondition: marker on line 1"
     );
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
-    assert!(fx.redraw, "a click that moves the marker redraws");
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 4));
+    assert!(fx.redraw, "a press that places the caret redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((2, 2)),
-        "click on wrapped display row 3 maps to source line 2, not the buggy row+1 (=4)"
+        "press on wrapped display row 3 maps to source line 2, not the buggy row+1 (=4)"
     );
 }
 
@@ -993,5 +1222,783 @@ fn marker_stays_visible_under_wrap_when_moved_past_viewport() {
         ctrl.content_scroll(),
         9,
         "at the last line (display row 12) the bottom pins to the marker: 12 + 1 - 4 = 9"
+    );
+}
+
+// ── ambient content-pane selection (mouse drag with NO modal open) ──────────────────────────
+// Click-drag selects text during normal navigation WITHOUT entering L mode; the release
+// auto-copies the span. Because no modal is open the content overlay prepends NO gutter glyph, so
+// a char caret at column C maps to screen column `pane.x + C` (41 + C) — one less than the L-mode
+// drag tests above, which add the glyph column (41 + 1 + C).
+
+/// Await the content render and wire up the content geometry WITHOUT entering line-select, so a
+/// mouse drag in the content pane exercises the ambient (`Modal::None`) path.
+fn setup_ambient(ctrl: &mut Controller) {
+    await_marker(ctrl, "line0");
+    ctrl.set_content_viewport(80, 20); // the full 20-line body fits → content_scroll stays 0
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: no modal is open (the ambient path)"
+    );
+}
+
+/// Drag line 1 char 0 → line 2 char 3 in the ambient path (cols 41/44 = pane x + charcol, no
+/// glyph), leaving a non-collapsed selection standing after the release.
+fn ambient_drag_line1_to_line2(ctrl: &mut Controller) {
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 44, 2));
+}
+
+#[test]
+fn ambient_drag_auto_copies_on_release() {
+    // A press → drag → release in the content pane with NO modal open selects a character span and
+    // copies it on release (auto-copy), leaving the highlight standing and never entering L mode.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 44, 2));
+
+    assert!(fx.redraw, "the release redraws");
+    assert!(
+        !ctrl.line_select_active(),
+        "an ambient selection never enters L mode"
+    );
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line0\nlin"),
+        "release auto-copies the span: all of line 1 + the first 3 chars of line 2"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms the copy: {:?}",
+        ctrl.notices()
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "the selection stays highlighted after the auto-copy (feedback)"
+    );
+}
+
+#[test]
+fn ambient_drag_populates_content_selection_overlay() {
+    // A mouse drag feeds the presenter a gutter-less character selection via view_state, distinct
+    // from the L-mode `line_select` overlay (which stays None — no modal is open).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+
+    let vs = ctrl.view_state();
+    assert!(
+        vs.line_select.is_none(),
+        "the L-mode overlay is not used for an ambient drag"
+    );
+    let cs = vs
+        .content_selection
+        .expect("the ambient selection overlay is populated");
+    assert_eq!(
+        (cs.start_line, cs.start_col, cs.end_line, cs.end_col),
+        (1, 0, 2, 3),
+        "the overlay carries the exact drag carets (ordered), gutter-less"
+    );
+    assert_eq!(cs.gutter, 0, "MultiLine has no bat gutter → gutter width 0");
+}
+
+#[test]
+fn ambient_plain_click_focuses_and_copies_nothing() {
+    // A press with no drag (Down then Up at the same cell) is a plain click: it focuses the content
+    // pane, leaves no standing selection, and copies nothing.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+
+    assert!(fx.redraw, "the click focuses the content pane (redraw)");
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Content,
+        "a content click focuses the content pane"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a plain click leaves no standing selection"
+    );
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "a plain click copies nothing"
+    );
+}
+
+#[test]
+fn ambient_press_outside_content_clears_selection() {
+    // Once a selection stands, a left press anywhere outside the content region drops it
+    // (click-away deselect). Column 5 is the tree/outside region (content starts at x 41).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+    assert!(fx.redraw, "clearing the selection redraws");
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a press outside the content region clears the standing selection"
+    );
+}
+
+#[test]
+fn ambient_esc_clears_selection_before_quitting() {
+    // Esc (Intent::Close) dismisses a standing ambient selection first, before it would unzoom or
+    // quit — the outermost layer of the Esc stack. It must redraw and NOT quit.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(fx.redraw, "dismissing the selection redraws");
+    assert!(
+        !fx.quit,
+        "the first Esc dismisses the selection, it does not quit"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "Esc clears the ambient selection"
+    );
+}
+
+#[test]
+fn ambient_selection_cleared_on_content_change() {
+    // Any displayed-content change drops a standing selection so a stale highlight never maps onto
+    // different text. Cycling the view re-renders through dispatch_render, which clears it.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    ctrl.handle(Intent::CycleView);
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a content change (view cycle → dispatch_render) clears the selection"
+    );
+}
+
+#[test]
+fn ambient_shift_drag_is_left_for_the_terminal() {
+    // Shift+mouse is reserved for the terminal's own native selection — it must not start an
+    // ambient selection nor redraw.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Down(MouseButton::Left), 45, 3));
+    assert!(!fx.redraw, "a Shift+press is inert (left for the terminal)");
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "Shift+mouse must not start an ambient selection"
+    );
+}
+
+#[test]
+fn entering_line_select_clears_an_ambient_selection() {
+    // The two selections never coexist: entering L mode drops any standing ambient selection so L
+    // starts with a fresh line marker, not the inherited mouse span.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    ctrl.enter_line_select_at_top();
+    assert!(ctrl.line_select_active(), "L mode is now active");
+    let vs = ctrl.view_state();
+    assert!(
+        vs.content_selection.is_none(),
+        "the ambient selection is cleared on entering L mode"
+    );
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "L mode starts with a fresh line-1 marker, not the ambient span"
+    );
+}
+
+#[test]
+fn ambient_drag_over_directory_guidance_copies_nothing() {
+    // The pane can show first-party guidance ("Directory — select a file to view") when a directory
+    // is selected. Dragging over it must copy nothing — the is_file guard, shared with the L-mode
+    // copy path. A temp dir whose only entry is a subdirectory selects that directory by default.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("inner.rs"), "x\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "Directory \u{2014}"); // the directory-selected guidance ("Directory —")
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+
+    // Drag across the guidance line (line 1) and release.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 1));
+
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "dragging over directory guidance copies nothing (is_file guard)"
+    );
+}
+
+#[test]
+fn held_ambient_press_does_not_leak_into_line_select() {
+    // A still-held ambient press must not bleed into L mode: entering L mode (the `L` key) mid-press
+    // resets the in-flight drag, so the next mouse-move is inert for L mode. Without the reset the
+    // held `Drag::ContentSelect` would extend the fresh L-mode selection from (top, col 0) to the
+    // cursor — a character selection the user never initiated with an L-mode press.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    // Press and HOLD in the content pane (ambient selection begins; drag == ContentSelect).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    // Enter L mode without releasing the button.
+    ctrl.enter_line_select_at_top();
+    assert!(
+        ctrl.line_select_active(),
+        "precondition: L mode is now active"
+    );
+
+    // A held-mouse move must be inert for L mode — no L-mode press ever happened.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 55, 4));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "the L-mode selection stays collapsed on the top line — the held ambient drag did not leak in"
+    );
+    let ls = ctrl
+        .view_state()
+        .line_select
+        .expect("L-mode overlay present");
+    assert!(
+        ls.char_sel.is_none(),
+        "a leaked drag would have produced a character selection; there must be none"
+    );
+
+    // `y` copies the whole top line (line granularity), not an unintended dragged span.
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line0"),
+        "y copies the whole top line (line 1 == \"line0\"), not a dragged char span"
+    );
+}
+
+#[test]
+fn ambient_drag_over_rendering_placeholder_copies_nothing() {
+    // While a render is in flight the pane shows the non-empty "Rendering…" placeholder with a FILE
+    // still selected — so the is_file guard does NOT block it. A press over the placeholder must not
+    // seed a selection (the `content_rendering` press-time guard), so a drag copies nothing.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    // Do NOT poll: the pane is still showing the "Rendering…" placeholder (content_rendering == true).
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        ctrl.view_state().content_rendering,
+        "precondition: a render is in flight (the placeholder is shown)"
+    );
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 1));
+
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "no selection is seeded over the render placeholder"
+    );
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "dragging over the \"Rendering…\" placeholder copies nothing"
+    );
+}
+
+// ── wrapped views: mouse selection is char-granular through the break-position map ──────────
+// Under wrap (prose by default, or the `w` override) a source line spans several display rows.
+// `char_at_content_col` maps a click through `text_layout::wrap_row_starts` — the SAME greedy
+// word-packing simulation the wrapped scroll math counts rows with (`wrapped_rows` is defined
+// from it, so they can never drift) — so the caret lands on the character actually under the
+// cursor, and a drag copies exactly the swept span. WrapBody at width 80: source line 1
+// ("a"×170, one word) char-breaks at [0, 80, 160] (display rows 0-2); line 2 ("b"×90) at
+// [0, 80] (rows 3-4). Screen row = display row + 1 (content top y=1), ambient column = 41 + col.
+
+/// Await WrapBody, wire the geometry, and turn the `w` wrap override on WITHOUT entering L mode.
+fn setup_ambient_wrapped(ctrl: &mut Controller) {
+    await_marker(ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    assert!(!ctrl.line_select_active(), "precondition: no modal open");
+}
+
+#[test]
+fn wrapped_ambient_drag_copies_the_exact_char_span() {
+    // Press on screen row 1 col 50 → display row 0 → line 1, row-start 0, caret 9. Drag to screen
+    // row 4 col 50 → display row 3 → line 2's FIRST wrapped row, caret 9. The copy is exactly the
+    // swept span: the tail of line 1 from char 9 + the head of line 2 up to char 9.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+
+    assert!(fx.redraw, "the release redraws");
+    let expected = format!("{}\n{}", "a".repeat(161), "b".repeat(9));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "the wrapped drag copies the exact char span (line 1 from char 9 + line 2 up to char 9)"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms the selection copy: {:?}",
+        ctrl.notices()
+    );
+}
+
+#[test]
+fn wrapped_drag_across_rows_of_one_line_selects_its_chars() {
+    // Screen rows 1 and 2 are both display rows OF SOURCE LINE 1 (an "a"×170 word char-broken at
+    // 80). Press row 1 col 45 → caret 4; drag row 2 col 60 → row-start 80 + col 19 = caret 99.
+    // The copy is chars [4, 99) of that single line — a word-or-two selection inside one wrapped
+    // paragraph, the exact gesture line-granularity couldn't do.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 45, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 60, 2));
+
+    let expected = "a".repeat(95);
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "chars [4, 99) of the wrapped line — mapped through its row starts [0, 80, 160]"
+    );
+}
+
+#[test]
+fn wrapped_word_break_maps_columns_to_the_right_word() {
+    // Word wrap (not just char wrap): a 50-char word + a 40-char word at width 80 breaks BEFORE
+    // the second word — row 1 starts at char 51 (index 50 is the separator space, which stays on
+    // row 0). A drag on row 1 cols 3..8 must therefore select chars [54, 59) == "bbbbb", proving
+    // the caret map uses real break positions, not a naive row*width offset.
+    #[derive(Clone, Copy)]
+    struct WordWrapBody;
+    impl ContentProvider for WordWrapBody {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: Text::raw(format!("{} {}", "a".repeat(50), "b".repeat(40))),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WordWrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+
+    // Screen row 2 = display row 1 = the second word's row (starts at char 51).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 44, 2)); // col 3 → caret 54
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 49, 2)); // col 8 → caret 59
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 49, 2));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("bbbbb"),
+        "row 1 begins at the second WORD (char 51) — the break-position map, not row×width"
+    );
+}
+
+#[test]
+fn wrapped_ambient_plain_click_copies_nothing() {
+    // A press + release with no drag under wrap is still a plain click: focus only, no selection,
+    // no copy.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 2));
+
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "a plain click under wrap copies nothing"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "no selection highlight is left standing by a plain click"
+    );
+}
+
+#[test]
+fn wrapped_l_mode_drag_selects_chars_and_both_confirms_work() {
+    // In L mode under wrap the same mapping applies (minus the 1-col ▶ glyph): a press places the
+    // char caret, a drag extends it; `y` copies the swept chars and Enter the range reference.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    ctrl.enter_line_select_at_top();
+
+    // Press screen row 1 col 50 → disp col 8 (pane x 41 + 1 glyph) → line 1 caret 8; drag to
+    // screen row 4 col 50 → line 2 (its first wrapped row) caret 8.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 2)),
+        "the drag spans source lines 1-2"
+    );
+
+    // y copies the swept char span …
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    let expected = format!("{}\n{}", "a".repeat(162), "b".repeat(8));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "y copies the char span under wrap (line 1 from char 8 + line 2 up to char 8)"
+    );
+
+    // … and Enter (on a fresh identical selection) the range reference.
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:1-2"),
+        "Enter copies the range reference for the wrapped drag"
+    );
+}
+
+// ── retained source: copies are byte-faithful and the gutter is source-anchored ─────────────
+// A source-mapped render retains the file's raw lines (`RenderResult::source`, 1:1 with the
+// displayed lines). Whole-line copies then return the SOURCE text verbatim (real tabs — the
+// renderer expands them to spaces on screen — and no gutter parsing at all), and the gutter
+// width is anchored by matching the displayed line against its source instead of guessed from
+// leading digits — killing the heuristic's one false positive (a gutter-less line that happens
+// to start with its own line number).
+
+/// Bat-style displayed lines (gutter + tab expanded to 4 spaces) with the REAL source retained,
+/// as the live renderer supplies for `SyntaxContent`.
+#[derive(Clone, Copy)]
+struct GutterWithSource;
+impl ContentProvider for GutterWithSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let displayed = ["   1 fn main() {", "   2     let x = 5;", "   3 }"];
+        RenderResult {
+            content: Text::raw(displayed.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "\tlet x = 5;".to_string(), // REAL tab in the file; bat shows 4 spaces
+                "}".to_string(),
+            ]),
+        }
+    }
+}
+
+/// A gutter-less view (plain-text fallback) whose line 3 happens to START with "3 " — the exact
+/// input that fools the digit heuristic — with the source retained to anchor the truth.
+#[derive(Clone, Copy)]
+struct PlainWithSource;
+impl ContentProvider for PlainWithSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["fn main() {", "    let x = 5;", "3 loops below"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "\tlet x = 5;".to_string(),
+                "3 loops below".to_string(),
+            ]),
+        }
+    }
+}
+
+#[test]
+fn line_copy_returns_source_verbatim_real_tabs_no_gutter() {
+    // Whole-line copies come from the retained source: the bat gutter never needs stripping and
+    // the file's REAL tab indentation survives (the display shows expanded spaces).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), GutterWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('J'))); // extend 1 → 2
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("fn main() {\n\tlet x = 5;"),
+        "the copy is the SOURCE text: no gutter, and the real tab survives (not 4 spaces)"
+    );
+}
+
+#[test]
+fn gutterless_line_starting_with_its_own_number_is_not_mis_stripped() {
+    // Line 3 of a gutter-less view reads "3 loops below" — the digit heuristic alone would strip
+    // the leading "3 " as a gutter. With the source retained the copy is anchored to the truth.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('j'))); // 1 → 2
+    ctrl.handle_line_select_key(key(KeyCode::Char('j'))); // 2 → 3
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("3 loops below"),
+        "a line that merely starts with its own number keeps its leading digits"
+    );
+}
+
+#[test]
+fn char_drag_gutter_is_source_anchored_not_guessed() {
+    // The same false-positive line, selected char-granularly with the mouse: the source-anchored
+    // gutter is 0 (the displayed line IS the source), so carets [0, 3) map to "3 l" — the digit
+    // heuristic would have mis-based every caret by the phantom 2-char "gutter".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.enter_line_select_at_top();
+
+    // L-mode geometry: content x=41 + 1 overlay glyph col. Row 3 → source line 3.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("3 l"),
+        "carets are based off the source-anchored gutter (0), not the heuristic's guess"
+    );
+}
+
+#[test]
+fn sourceless_view_ambient_copy_keeps_a_leading_number() {
+    // A source-less view (rendered markdown / diff) is reachable for a copy only via the AMBIENT
+    // drag — entering L mode auto-switches to source. Line 2 reads "2 spaces of intro"; there is no
+    // gutter, so `gutter_len_of` returns 0 with no source to anchor and the leading "2 " survives.
+    // The bare digit heuristic would have wrongly eaten it. Guards the source-less half of the fix.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainNoSource);
+    await_marker(&mut ctrl, "intro");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: the ambient path, no modal open"
+    );
+
+    // Drag across all of line 2 (screen row 2 with content_inner.y == 1, scroll 0): cols 41..58
+    // (pane x 41 + the 17 chars of "2 spaces of intro"), no L-mode glyph.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 58, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 58, 2));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("2 spaces of intro"),
+        "no source, no gutter: the leading \"2 \" is real text and survives the copy"
+    );
+}
+
+#[test]
+fn drag_past_the_viewport_edge_autoscrolls_the_content() {
+    // Dragging an ambient selection below the bottom (or above the top) of the content viewport
+    // nudges the scroll one line so the selection can extend past what is on screen; a drag inside
+    // the viewport leaves the scroll alone.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+    // A short viewport (height 5) over the 20-line body, so there is room to scroll (max 15).
+    let geom = PaneGeometry {
+        content_inner: Some(Rect {
+            x: 41,
+            y: 1,
+            width: 58,
+            height: 5,
+        }),
+        divider_x: Some(40),
+        ..PaneGeometry::default()
+    };
+    ctrl.set_content_viewport(80, 5);
+    ctrl.set_pane_geometry(geom);
+    assert_eq!(ctrl.content_scroll(), 0, "precondition: not scrolled");
+
+    // Press inside the pane to start the ambient drag (content_inner bottom edge is row y+h = 6).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    // Drag below the bottom edge → scroll down one line, twice.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 6));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a drag below the bottom scrolls down one"
+    );
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 6));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "another edge drag scrolls one more"
+    );
+    // Drag back inside the viewport → no scroll change.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 3));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "a drag inside the viewport leaves the scroll alone"
+    );
+    // Drag above the top edge (row < y = 1) → scroll up one line.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 0));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a drag above the top scrolls up one"
+    );
+}
+
+#[test]
+fn source_control_bytes_are_still_scrubbed() {
+    // The retained source is untrusted file bytes — the AC-16 control scrub applies to it exactly
+    // as to display extraction (tabs kept, ESC dropped).
+    #[derive(Clone, Copy)]
+    struct HostileSource;
+    impl ContentProvider for HostileSource {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: Text::raw("clean view"),
+                notices: Vec::new(),
+                source: Some(vec!["\tcode\x1b[2Jhere".to_string()]),
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), HostileSource);
+    await_marker(&mut ctrl, "clean");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    let log = copied.lock().unwrap();
+    let got = log.last().map(String::as_str).unwrap();
+    assert_eq!(
+        got, "\tcode[2Jhere",
+        "the ESC byte is dropped from the source-backed copy; the tab survives"
+    );
+    assert!(
+        !got.chars().any(|c| c.is_control() && c != '\t'),
+        "no control byte (other than tab) reaches the clipboard: {got:?}"
+    );
+}
+
+#[test]
+fn wrapped_break_dropped_space_does_not_shift_selection_to_the_line_above() {
+    // Regression (owner-caught live): ratatui DROPS the whitespace at a row break, so a line of
+    // two exact-width words renders in FEWER rows than ceil(chars/width) — the old char-wrap
+    // floor overcounted its rows, shifting the row→line mapping so a click on the next line
+    // selected the line ABOVE. Line 1 ("x"×40 + " " + "y"×40) renders as exactly 2 rows at
+    // width 40; the click on display row 2 (screen row 3) must therefore select line 2.
+    #[derive(Clone, Copy)]
+    struct DropBreakBody;
+    impl ContentProvider for DropBreakBody {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            let line1 = format!("{} {}", "x".repeat(40), "y".repeat(40));
+            RenderResult {
+                content: Text::raw(format!("{line1}\nsecond\nthird")),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), DropBreakBody);
+    await_marker(&mut ctrl, "second");
+    ctrl.set_content_viewport(40, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+
+    // Screen row 3 = display row 2 = the FIRST row after line 1's two wrapped rows → line 2.
+    // Drag chars [2, 6) of "second" and release: the copy must come from line 2, not line 1.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 43, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 47, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 47, 3));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("cond"),
+        "the click on display row 2 maps to line 2 (\"second\") — not the line above"
     );
 }

@@ -68,6 +68,7 @@ impl ContentProvider for FakeContent {
         RenderResult {
             content: Text::raw("fake-rendered-content"),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -648,6 +649,7 @@ impl ContentProvider for EchoDiffContent {
         RenderResult {
             content,
             notices: Vec::new(),
+            source: None,
         }
     }
 }

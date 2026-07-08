@@ -51,6 +51,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         content_rendering: false,
         search: None,
         line_select: None,
+        content_selection: None,
         help: None,
     }
 }

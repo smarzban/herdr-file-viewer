@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Ambient mouse text selection in the content pane.** Click-drag over the content pane during
+  normal navigation — no mode to enter — to select text character-by-character (press at the start,
+  drag to the end while the pane auto-scrolls past an edge, release). Releasing the drag copies the
+  selected text to the clipboard automatically ("Copied selection"), and the highlight stays for
+  feedback; `Esc`, a click elsewhere, or switching files clears it. Line-select mode (`L`) remains a
+  separate keyboard-driven mode. Works in **wrapped** views (prose/markdown by default, or the
+  `w` toggle) too — the click maps through the same wrapping the pane draws with. `Shift`+drag is
+  left untouched so the terminal's own native selection still works, and dragging over placeholder
+  text (a directory / empty pane) copies nothing.
+- **Mouse text selection in line-select mode.** Click-drag in the content pane to select text
+  character-by-character (press at the start, drag to the end — the pane auto-scrolls past an
+  edge — release), with the selected characters highlighted as you drag. `Shift`+mouse is left
+  untouched so the terminal's own native selection still works.
+- **Line-select mode copies content with `y`/`Y`.** One selection, two products: `Enter` keeps
+  copying the `path:line` / `path:start-end` **reference** (unchanged since 1.9.0), while the new
+  `y`/`Y` copy the selected **content** — for a keyboard selection, the line(s) joined by
+  newlines; for a mouse selection, the exact character span. Whole-line copies come from the
+  file's own retained text, byte-faithful (real tabs, no renderer decoration); the syntax view's
+  line-number gutter (`bat --style=numbers`) never reaches the copy, indentation is preserved,
+  and residual control bytes are removed before it reaches the clipboard (tabs kept). The confirmation
+  notice names what was copied (e.g. "Copied lines 42-58" / "Copied selection").
+
+### Changed
+- **In line-select mode, a mouse press now places the selection caret** (previously a click placed
+  the line marker, and a double-click copied — copying is now always an explicit `Enter`/`y`).
+
 ## [1.10.0] - 2026-07-07
 
 ### Added

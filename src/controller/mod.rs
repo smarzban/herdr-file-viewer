@@ -37,8 +37,8 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView,
-    PickerView, ViewState,
+    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry,
+    PickerRowView, PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
@@ -98,6 +98,13 @@ pub trait GitService: Send + Sync {
 pub struct RenderResult {
     pub content: Text<'static>,
     pub notices: Vec<String>,
+    /// The raw SOURCE lines behind a source-mapped (`SyntaxContent`) render — the file text the
+    /// renderer was fed, split into lines, 1:1 with `content.lines` — so the copy paths can
+    /// produce byte-faithful text (real tabs, no renderer decoration) and anchor the gutter
+    /// width exactly instead of heuristically. `None` for transformed views (markdown / diffs,
+    /// where no per-display-line source exists) and for providers that don't supply it; the
+    /// copy paths then fall back to display-text extraction.
+    pub source: Option<Vec<String>>,
 }
 
 /// Produce the content-pane text for `(file, mode)`. `Send` so a later task can run it on a
@@ -372,6 +379,11 @@ pub struct Controller {
     /// The content pane's current text and its notices (truncation/fallback).
     content: Text<'static>,
     content_notices: Vec<String>,
+    /// The raw source lines behind the displayed content when it is source-mapped
+    /// (`SyntaxContent`), 1:1 with `content.lines` — see [`RenderResult::source`]. Applied and
+    /// cleared in lockstep with `content` (`poll` / `clear_content`), so the copy paths can trust
+    /// that when it is `Some`, index `n-1` IS displayed line `n`'s source.
+    content_source: Option<Vec<String>>,
     /// The path of the file whose content is currently displayed in the pane — the title's
     /// source of truth, so the border label switches in lockstep with the body. `None`
     /// while no file's content has landed yet (launch, a re-root, or a directory/empty tree
@@ -411,6 +423,13 @@ pub struct Controller {
     /// What the held left button is dragging (divider resize or a scrollbar), so the release is
     /// treated as the end of the drag, not a click. `None` ⇒ no drag in progress.
     drag: Option<Drag>,
+    /// An ambient character selection dragged out in the content pane during normal navigation, held
+    /// OUTSIDE [`Modal`] so `Modal::None` stays in force and every keyboard binding keeps its normal
+    /// meaning — that is what makes it ambient, not a mode. Reuses the [`LineSelectState`] char
+    /// primitives (always char-mode; `char_at_content_col` maps wrapped views too). Mutually
+    /// exclusive with L line-select mode by construction: created only in `handle_column_mouse`,
+    /// which runs only for `Modal::None`. Auto-copied on release.
+    content_selection: Option<LineSelectState>,
     /// The newer version to advertise, if any (set from the cached value at startup and
     /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
     update_available: Option<Version>,
@@ -544,6 +563,7 @@ impl Controller {
             overrides: HashMap::new(),
             content: Text::raw(""),
             content_notices: Vec::new(),
+            content_source: None,
             content_path: None,
             content_rendering: false,
             action_notice: None,
@@ -558,6 +578,7 @@ impl Controller {
             geom: PaneGeometry::default(),
             last_click: None,
             drag: None,
+            content_selection: None,
             update_available: None,
             update_dismissed: false,
             update_rx: None,
@@ -619,6 +640,7 @@ impl Controller {
                 .unwrap_or_else(|_| RenderResult {
                     content: Text::raw("[content unavailable — renderer error]"),
                     notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
+                    source: None,
                 });
                 if result_tx.send((job.seq, result)).is_err() {
                     break; // controller gone
@@ -950,6 +972,9 @@ impl Controller {
         // mis-sizing the thumb / hiding the bar). Computed with the wrap we already have — no extra
         // tree walk.
         let content_rows = self.rendered_line_count_for(wrap);
+        // Gutter width for a character selection's highlight (0 when not applicable); computed once
+        // here so the line-select snapshot below stays a pure read.
+        let sel_gutter = self.selection_gutter_len();
         ViewState {
             nodes,
             selected,
@@ -1006,12 +1031,46 @@ impl Controller {
             // content path is byte-identical to the prior render (no other snapshot moves).
             line_select: self.modal.line_select().map(|s| {
                 let (start, end) = s.selection();
+                // A mouse drag carries character carets → the overlay highlights just those chars;
+                // a keyboard selection has none → the whole-line highlight.
+                let char_sel = if s.is_char_mode() {
+                    let ((sl, sc), (el, ec)) = s.char_span();
+                    Some(CharSelView {
+                        start_line: sl,
+                        start_col: sc,
+                        end_line: el,
+                        end_col: ec,
+                        gutter: sel_gutter,
+                    })
+                } else {
+                    None
+                };
                 LineSelectView {
                     marker: s.marker(),
                     start,
                     end,
+                    char_sel,
                 }
             }),
+            // Snapshot the ambient selection only when non-collapsed, so a bare click never paints a
+            // zero-width highlight (`draw_content` gives `line_select` precedence if both were set).
+            content_selection: self
+                .content_selection
+                .as_ref()
+                .filter(|s| {
+                    let (a, b) = s.char_span();
+                    a != b
+                })
+                .map(|s| {
+                    let ((sl, sc), (el, ec)) = s.char_span();
+                    CharSelView {
+                        start_line: sl,
+                        start_col: sc,
+                        end_line: el,
+                        end_col: ec,
+                        gutter: self.content_gutter_len(sl),
+                    }
+                }),
             help: self.help_view(),
         }
     }
@@ -1251,11 +1310,12 @@ impl Controller {
     /// computed by the SAME wrapping logic and therefore always agree (AC-3/AC-4).
     fn wrapped_rows_before(&self, n: usize) -> usize {
         let w = self.content_width as usize;
+        let overlay = self.content_overlay_glyph_cols();
         self.content
             .lines
             .iter()
             .take(n)
-            .map(|l| crate::text_layout::line_wrapped_rows(l, w))
+            .map(|l| crate::text_layout::line_wrapped_rows_prefixed(l, w, overlay))
             .sum::<usize>()
     }
 
@@ -1285,9 +1345,10 @@ impl Controller {
             return row + 1;
         }
         let w = self.content_width as usize;
+        let overlay = self.content_overlay_glyph_cols();
         let mut acc = 0usize;
         for (i, line) in self.content.lines.iter().enumerate() {
-            acc += crate::text_layout::line_wrapped_rows(line, w);
+            acc += crate::text_layout::line_wrapped_rows_prefixed(line, w, overlay);
             if row < acc {
                 return i + 1;
             }
@@ -1618,6 +1679,11 @@ impl Controller {
     /// then un-zoom if zoomed, then quit. So from a committed search the sequence is:
     /// Esc → clears the search; Esc again → un-zooms (if zoomed) or quits. (AC-20, owner UX.)
     fn close_or_unzoom(&mut self) -> Effects {
+        // Esc drops an ambient selection first — the outermost layer of the Esc stack, ahead of
+        // search / unzoom / quit. (A collapsed selection held mid-press is swallowed too; harmless.)
+        if self.content_selection.take().is_some() {
+            return Effects::redraw();
+        }
         // A committed search (prompt closed, highlights persisting) is dismissed first — Esc/q
         // "come out of the search" before they unzoom or close (layered like unzoom). (owner UX)
         if self.search.is_some() && !self.prompt_open() {
@@ -1807,6 +1873,10 @@ impl Controller {
         // `self.search` directly — it does NOT call `dispatch_render` — so live typing is NOT
         // wiped by this clear.
         self.search = None;
+        // Drop an ambient selection on any content change: its line/char coordinates only mean
+        // something against the body it was dragged over, so a stale highlight (and copy) must not
+        // carry onto new content. Scrolling keeps it — it doesn't dispatch, and the coords stay valid.
+        self.content_selection = None;
 
         let Some(node) = self.tree.selected() else {
             // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
@@ -1846,6 +1916,7 @@ impl Controller {
         {
             self.content = Text::raw("Rendering\u{2026}");
             self.content_notices.clear();
+            self.content_source = None; // the placeholder has no source; the landing render brings its own
             self.content_rendering = true;
         }
     }
@@ -1857,6 +1928,7 @@ impl Controller {
     fn clear_content(&mut self, reason: EmptyReason) {
         self.content = Text::raw(reason.label());
         self.content_notices.clear();
+        self.content_source = None; // guidance text has no source behind it
         // No file content is displayed for a directory/empty tree, and no render is in flight
         // (this path sends no `RenderJob`), so the title falls back to the selected node's name
         //.
@@ -1872,7 +1944,11 @@ impl Controller {
         while let Ok((seq, result)) = self.result_rx.try_recv() {
             if seq == self.latest_seq {
                 self.content = result.content;
+                // Covers the placeholder→land window: a selection dragged over "Rendering…" after
+                // dispatch_render's clear must not carry its stale coordinates onto the new body.
+                self.content_selection = None;
                 self.content_notices = result.notices;
+                self.content_source = result.source; // in lockstep with `content` (copy fidelity)
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
                 // the body has landed — now switch the title to match it. The latest
                 // dispatched render always corresponds to the current tree selection (every
@@ -2029,6 +2105,10 @@ enum Drag {
     TreeH,
     /// Dragging the finder overlay's vertical scrollbar (handled in `handle_finder_mouse`).
     FinderV,
+    /// Dragging out a character-granular text selection in the content pane — in L mode (handled
+    /// in `handle_line_select_mouse`, on the modal's state) or ambient (handled in
+    /// `handle_column_mouse`, on `content_selection`; the release auto-copies).
+    ContentSelect,
 }
 
 /// Whether a path names a markdown file (by extension, case-insensitive).

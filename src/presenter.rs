@@ -116,6 +116,10 @@ pub struct ViewState {
     /// overlay. `None` ⇒ draw the content as-is (byte-identical to today — the `None` arm leaves the
     /// content path untouched, so no other snapshot moves).
     pub line_select: Option<LineSelectView>,
+    /// When `Some`, an ambient character selection (a content-pane drag, no modal). Drawn as a
+    /// gutter-less highlight — no ▶/│ glyph, no content shift — so it reads as a plain text selection,
+    /// not a mode. `draw_content` gives [`line_select`](Self::line_select) precedence if both are set.
+    pub content_selection: Option<CharSelView>,
     /// When `Some`, the in-app help overlay is drawn on top of everything else (AC-1, AC-5).
     /// `None` ⇒ no overlay. Drawn last in [`draw`] so it sits above the picker and finder.
     pub help: Option<HelpView>,
@@ -182,6 +186,21 @@ pub struct LineSelectView {
     pub start: usize,
     /// The ascending selection end (inclusive), 1-based.
     pub end: usize,
+    /// The character-granular selection (a mouse drag), or `None` for a whole-line (keyboard)
+    /// selection. When `Some`, the overlay highlights only the selected characters on the boundary
+    /// lines (and the full code of any interior line) instead of the whole `[start, end]` rows.
+    pub char_sel: Option<CharSelView>,
+}
+
+/// A character-granular selection for the line-select overlay. `*_col` are char carets into the
+/// displayed line (gutter included), ordered ascending by `(line, col)`; `gutter` is the leading
+/// gutter width so continuation lines start their highlight at the code, not the line number.
+pub struct CharSelView {
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    pub gutter: usize,
 }
 
 /// The finder overlay's draw model (an owned snapshot of the controller's finder state).
@@ -523,16 +542,43 @@ fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'
             };
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
             spans.push(Span::styled(glyph.to_string(), style));
-            for s in &line.spans {
-                let patched = if is_marker || in_range {
-                    s.style.patch(style)
-                } else {
-                    s.style
-                };
-                spans.push(Span {
-                    content: s.content.clone(),
-                    style: patched,
-                });
+            match &ls.char_sel {
+                // Character selection: highlight only the selected chars on this row (the boundary
+                // lines get a partial range; interior lines get all of their code). The gutter is
+                // never highlighted — continuation lines start at `cs.gutter`.
+                Some(cs) if in_range => {
+                    let lo = if src == cs.start_line {
+                        cs.start_col.max(cs.gutter)
+                    } else {
+                        cs.gutter
+                    };
+                    let hi = if src == cs.end_line {
+                        cs.end_col
+                    } else {
+                        usize::MAX // to end of line for an interior row
+                    };
+                    spans.extend(patch_char_range(
+                        &line.spans,
+                        lo,
+                        hi,
+                        crate::highlight::HIGHLIGHT,
+                    ));
+                }
+                // Whole-line (keyboard) selection, or a row outside the selection: the original
+                // per-line style patch.
+                _ => {
+                    for s in &line.spans {
+                        let patched = if is_marker || in_range {
+                            s.style.patch(style)
+                        } else {
+                            s.style
+                        };
+                        spans.push(Span {
+                            content: s.content.clone(),
+                            style: patched,
+                        });
+                    }
+                }
             }
             Line {
                 spans,
@@ -541,6 +587,84 @@ fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'
             }
         })
         .collect()
+}
+
+/// Overlay an ambient character selection — the gutter-less counterpart of [`apply_line_select`]'s
+/// character branch: it re-styles the selected chars with [`crate::highlight::HIGHLIGHT`] but
+/// prepends NO ▶/│ glyph and no whole-row style, so the content does not shift. Boundary rows are
+/// partial (`start_col`..`end_col`, clamped past the gutter); interior rows run to end-of-line.
+/// Preserves the line count so `content_rows` stays valid.
+fn apply_char_selection(lines: &[Line<'static>], cs: &CharSelView) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let src = i + 1; // 1-based source line
+            if src < cs.start_line || src > cs.end_line {
+                return line.clone();
+            }
+            let lo = if src == cs.start_line {
+                cs.start_col.max(cs.gutter)
+            } else {
+                cs.gutter
+            };
+            let hi = if src == cs.end_line {
+                cs.end_col
+            } else {
+                usize::MAX // to end of line for an interior row
+            };
+            Line {
+                spans: patch_char_range(&line.spans, lo, hi, crate::highlight::HIGHLIGHT),
+                style: line.style,
+                alignment: line.alignment,
+            }
+        })
+        .collect()
+}
+
+/// Rebuild `spans` so the chars at 0-based char indices `[lo, hi)` carry `style` (patched onto
+/// their existing style) and every other char keeps its own. Splits spans at the range boundaries,
+/// grouping consecutive same-selectedness chars so the output stays compact. Char-indexed (not
+/// byte- or column-indexed) to match the caret coordinates the controller produces.
+fn patch_char_range(
+    spans: &[Span<'static>],
+    lo: usize,
+    hi: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut idx = 0usize;
+    for s in spans {
+        let mut buf = String::new();
+        let mut buf_selected: Option<bool> = None;
+        for ch in s.content.chars() {
+            let selected = idx >= lo && idx < hi;
+            match buf_selected {
+                Some(b) if b == selected => buf.push(ch),
+                Some(b) => {
+                    out.push(styled_run(&buf, s.style, b, style));
+                    buf.clear();
+                    buf.push(ch);
+                    buf_selected = Some(selected);
+                }
+                None => {
+                    buf.push(ch);
+                    buf_selected = Some(selected);
+                }
+            }
+            idx += 1;
+        }
+        if let Some(b) = buf_selected {
+            out.push(styled_run(&buf, s.style, b, style));
+        }
+    }
+    out
+}
+
+/// A span for one run of chars: the base style, patched with `style` when the run is `selected`.
+fn styled_run(text: &str, base: Style, selected: bool, style: Style) -> Span<'static> {
+    let s = if selected { base.patch(style) } else { base };
+    Span::styled(text.to_string(), s)
 }
 
 /// Border style for a column — highlighted when it holds focus.
@@ -679,12 +803,14 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     let (text, vbar, hbar) = content_bars(content_area, total_rows, max_width, state.wrap);
 
     // Overlay the line-select marker/selection first (it is a modal — search cannot be committed
-    // while it is open), then a committed search, else the content as-is. Each overlay returns the
-    // same line count, so `content_rows` (computed above from `state.content`) stays valid. When
-    // both are `None`, cloning `state.content` is byte-identical to the prior path, so existing
-    // snapshots are unaffected (AC zero-churn invariant).
+    // while it is open), then an ambient content-pane selection, then a committed search, else the
+    // content as-is. Each overlay returns the same line count, so `content_rows` (computed above
+    // from `state.content`) stays valid. When all are `None`, cloning `state.content` is
+    // byte-identical to the prior path, so existing snapshots are unaffected (AC zero-churn invariant).
     let content_text = if let Some(ls) = &state.line_select {
         ratatui::text::Text::from(apply_line_select(&state.content.lines, ls))
+    } else if let Some(cs) = &state.content_selection {
+        ratatui::text::Text::from(apply_char_selection(&state.content.lines, cs))
     } else if let Some(cs) = &state.search {
         ratatui::text::Text::from(crate::highlight::apply(
             &state.content.lines,
@@ -1881,6 +2007,54 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, help: &HelpView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Flatten a line's spans to plain text (drops styling) so a test can read the result of
+    /// `patch_char_range` back as a string.
+    fn plain(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The chars a `patch_char_range` result marked selected, in order (the run(s) that carry the
+    /// patched style), so a test can assert exactly which characters were highlighted.
+    fn selected_text(spans: &[Span<'static>], style: Style) -> String {
+        spans
+            .iter()
+            .filter(|s| s.style == Style::new().patch(style))
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn patch_char_range_highlights_only_the_range_across_spans() {
+        let hl = crate::highlight::HIGHLIGHT;
+        // Two spans "fn " + "main" → chars 0..7; highlight [3, 7) == "main".
+        let spans = vec![Span::raw("fn "), Span::raw("main")];
+        let out = patch_char_range(&spans, 3, 7, hl);
+        assert_eq!(
+            plain(&out),
+            "fn main",
+            "no characters are lost or reordered"
+        );
+        assert_eq!(
+            selected_text(&out, hl),
+            "main",
+            "exactly [3,7) is highlighted"
+        );
+    }
+
+    #[test]
+    fn patch_char_range_clamps_open_end_and_empty_range() {
+        let hl = crate::highlight::HIGHLIGHT;
+        let spans = vec![Span::raw("hello")];
+        // Open-ended (usize::MAX) highlights to end of line.
+        assert_eq!(
+            selected_text(&patch_char_range(&spans, 2, usize::MAX, hl), hl),
+            "llo"
+        );
+        // Empty range highlights nothing.
+        assert_eq!(selected_text(&patch_char_range(&spans, 3, 3, hl), hl), "");
+        assert_eq!(plain(&patch_char_range(&spans, 3, 3, hl)), "hello");
+    }
 
     #[test]
     fn help_body_text_width_is_the_interior_minus_the_scrollbar_gutter() {

@@ -154,8 +154,8 @@ PowerShell launcher scripts.
 | `→` / `l` | Expand the selected directory — or **scroll the content pane right** when it is focused |
 | `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
 | `H` (Shift+`h`) | Scroll the **tree** pane left (long / deeply-nested rows) — inert unless the tree is focused |
-| `L` (Shift+`l`) | Focus-gated: with the **tree** focused, scroll it right (long / deeply-nested rows); with the **content pane** focused (or zoomed), enter **line-select mode** to copy a `file:line` reference (see below) |
-| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends the selection, `Enter` (or double-click) copies the `path:line` / `path:start-end` reference, `Esc` exits |
+| `L` (Shift+`l`) | Focus-gated: with the **tree** focused, scroll it right (long / deeply-nested rows); with the **content pane** focused (or zoomed), enter **line-select mode** to select lines and copy either a `file:line` reference or the content itself (see below) |
+| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends a line selection; **click-drag** with the mouse selects **text** (character-granular); `Enter` copies the `path:line` / `path:start-end` **reference**, `y`/`Y` copies the selected **content**, `Esc` exits |
 | `Enter` | Activate the selection — expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `.` | Toggle hidden (dot-prefixed) files and folders |
@@ -203,19 +203,29 @@ clipboard with no extra tooling. A confirmation appears in the notices strip. If
 on your clipboard, your terminal likely needs OSC 52 / clipboard-write enabled (e.g. in tmux,
 `set -g set-clipboard on`).
 
-**Copy a line reference (`L`).** With the content pane focused (or zoomed), `L` enters
-**line-select mode**: a marker lands on the top visible line, `j`/`k` (or `↑`/`↓`) move it, and
-holding `Shift` (`J`/`K`, or Shift+`↑`/`↓`) extends the selection over a range. `Enter` — or a
-double-click — copies a repo-relative reference to the clipboard: `src/app.rs:42` for a single
-line, `src/app.rs:42-58` for a range. A mouse **click** places the marker and a **double-click**
-copies; `Esc` leaves the mode. (Mouse shift-click extend isn't supported — most terminals reserve
-`Shift`+mouse for their own selection — so use keyboard `Shift`+`j`/`k` to extend from the mouse.)
-The copy uses the same **OSC 52**
-path as `y`/`Y`, so the reference is ready to paste straight into an agent chat or an issue to
-point at exact lines. Because line numbers only map onto the source, entering line-select from a
-rendered-markdown or diff view first switches that file to the line-numbered content view. With
-the **tree** focused, `L` keeps its tree horizontal-scroll behavior instead — the mode is gated on
-which pane has focus.
+**Copy a line reference or line content (`L`).** With the content pane focused (or zoomed), `L`
+enters **line-select mode**: a marker lands on the top visible line, `j`/`k` (or `↑`/`↓`) move it,
+and holding `Shift` (`J`/`K`, or Shift+`↑`/`↓`) extends a whole-line selection. Or **click-drag
+with the mouse** to select **text** character-by-character — press where the selection starts,
+drag to where it ends (the pane scrolls if you drag past an edge), release; the selected
+characters are highlighted as you go. One selection, two products:
+
+- **`Enter` copies a repo-relative reference** — `src/app.rs:42` for a single line,
+  `src/app.rs:42-58` for a range (a mouse selection references the lines it spans) — ready to
+  paste into an agent chat or an issue to point at exact lines.
+- **`y` / `Y` copy the content itself** — for a line selection, the lines joined by newlines; for
+  a mouse text selection, exactly the characters you dragged over. The syntax view's line-number
+  gutter is stripped and indentation is preserved, so it pastes as real code.
+
+A confirmation notice names what was copied. Both copies use the same **OSC 52** path as the
+tree's `y`/`Y`. `Esc` leaves the mode.
+
+`Shift`+mouse is deliberately left alone so your terminal's own native selection/copy still works
+— most terminals reserve `Shift`+drag for exactly that. Selection works in wrapped views too (the
+`w` toggle): the click maps through the same wrapping the pane draws with, so the caret lands on
+the character under the cursor. Because selection only maps onto the source, entering line-select
+from a rendered-markdown or diff view first switches that file to the line-numbered content view. With the **tree** focused, `L` keeps its tree horizontal-scroll
+behavior instead — the mode is gated on which pane has focus.
 
 ### Mouse
 
@@ -230,6 +240,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Horizontal wheel / swipe** | Scroll the content — or the tree — sideways (terminal-dependent — see below) |
 | **Drag** a scrollbar | Scroll that pane — drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
 | **Drag** the divider | Resize the tree / content split |
+| **Drag** over the content text | **Select and copy text** — the selection highlights character-by-character as you drag (auto-scrolling past an edge) and is copied to the clipboard on release; no mode needed. Works in wrapped views (prose/markdown) too. `Esc`, a click elsewhere, or switching files clears the highlight |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the
 viewer owns ordinary clicks — herdr reserves `Shift`+mouse for exactly this. (herdr forwards
