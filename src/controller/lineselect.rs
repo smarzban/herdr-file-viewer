@@ -168,6 +168,14 @@ impl Controller {
         // the deferred (T-6 auto-switch) path are covered — the clear happens when entry begins,
         // not when the (possibly-deferred) modal actually opens.
         self.last_click = None;
+        // Entering L mode drops any ambient content-pane selection so the two overlays never
+        // coexist — L mode gets a fresh line marker rather than inheriting the mouse char span.
+        self.content_selection = None;
+        // Also drop any in-flight drag: a still-held ambient press left `drag = Some(ContentSelect)`,
+        // and both mouse paths key their drag arm off that variant — without this reset the next
+        // mouse-move would extend the freshly-opened L-mode selection from a press the user never
+        // made in L mode. Clearing it keeps the first L-mode drag inert until a genuine L-mode press.
+        self.drag = None;
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
             // Source-mapped AND the displayed content is the latest render → the line→row mapping is
@@ -237,11 +245,13 @@ impl Controller {
             .collect()
     }
 
-    /// Map a screen `(col, row)` to a `(source line, char caret)` for mouse selection. The row maps
-    /// to a source line exactly as [`handle_line_select_mouse`](Self::handle_line_select_mouse)
-    /// does; the column subtracts the pane origin and the one-column selection glyph the overlay
-    /// prepends, adds any horizontal scroll, then resolves to a char caret in the displayed line.
-    /// Clamped to `[1, line_count]` for the line and `[0, line_len]` for the caret.
+    /// Map a screen `(col, row)` to a `(source line, char caret)` for mouse selection — used by both
+    /// the L-mode drag and the ambient content-pane drag. The row maps to a source line exactly as
+    /// [`handle_line_select_mouse`](Self::handle_line_select_mouse) does; the column subtracts the
+    /// pane origin and whatever leading glyph columns the ACTIVE overlay prepends
+    /// ([`content_overlay_glyph_cols`](Self::content_overlay_glyph_cols) — 1 in L mode, 0 ambient),
+    /// adds any horizontal scroll, then resolves to a char caret in the displayed line. Clamped to
+    /// `[1, line_count]` for the line and `[0, line_len]` for the caret.
     ///
     /// The char caret is an index into the *displayed* line (gutter included); the copy path strips
     /// the gutter afterward. Column accounting assumes the unwrapped view (the common case for a
@@ -255,30 +265,83 @@ impl Controller {
         let x = self.geom.content_inner.map_or(0, |c| c.x);
         let display_row = self.content_scroll as usize + row.saturating_sub(top) as usize;
         let line = self.line_at_content_row(display_row).clamp(1, last);
-        // The overlay prepends a 1-col glyph, so real content begins one column right of the pane
-        // origin; add horizontal scroll, then drop that glyph column to index the displayed line.
+        // The active overlay may prepend leading glyph column(s), so real content begins that many
+        // columns right of the pane origin; add horizontal scroll, then drop those glyph columns to
+        // index the displayed line. L mode prepends a 1-col ▶/│ gutter glyph; the ambient overlay
+        // prepends none (see `content_overlay_glyph_cols`).
         let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
-        let disp_col = within.saturating_sub(1);
+        let disp_col = within.saturating_sub(self.content_overlay_glyph_cols());
         let caret = char_index_at_col(&self.filtered_display_line(line), disp_col);
         (line, caret)
     }
 
-    /// The number of leading chars the syntax renderer's line-number gutter occupies — constant
-    /// across the source-mapped view, so it's measured off the marker line. `0` when there is no
-    /// gutter (plain-text fallback / test stubs), no line-select, or empty content. The Presenter
-    /// uses it so a character selection's highlight never paints the gutter on continuation lines.
-    pub(crate) fn selection_gutter_len(&self) -> usize {
-        let Some(s) = self.modal.line_select() else {
-            return 0;
+    /// How many leading display columns the ACTIVE content overlay prepends before the real text, so
+    /// a mouse column can be mapped back to a character caret in [`char_at_content_col`]. L
+    /// line-select mode draws a 1-column gutter glyph (▶ marker / │ bar) ahead of every line, so its
+    /// caret math subtracts 1; the ambient selection overlay draws no glyph, so it subtracts 0. The
+    /// L-mode overlay is the only one that prepends a glyph, so this is exactly `line_select_active()`.
+    fn content_overlay_glyph_cols(&self) -> usize {
+        if self.line_select_active() { 1 } else { 0 }
+    }
+
+    /// Auto-copy an ambient content-pane selection to the clipboard on the drag's release, leaving
+    /// the highlight standing for feedback (unlike the L-mode confirm, which closes the mode). Reads
+    /// the char span from [`content_selection`](Controller::content_selection) and builds the text
+    /// with [`char_selection_text`](Self::char_selection_text) — the same per-line gutter strip +
+    /// control-byte scrub (tabs kept) the L-mode copy uses, so code copies clean. Guards the
+    /// no-real-file case like [`copy_line_content`](Self::copy_line_content): a directory / empty
+    /// tree shows first-party guidance ("Directory —" / "No files") with no file node selected, so
+    /// copy nothing then; a collapsed/empty span also copies nothing. (The other placeholder,
+    /// "Rendering…", is shown while a file IS selected, so the file-node guard does NOT catch it —
+    /// the press-time `content_rendering` check in `handle_column_mouse` prevents a selection ever
+    /// being seeded over it.) Read-only: touches only the clipboard and the transient action notice.
+    pub(super) fn copy_content_selection(&mut self) -> Effects {
+        let Some((lo, hi)) = self.content_selection.as_ref().map(|s| s.char_span()) else {
+            return Effects::redraw();
         };
+        let is_file = self
+            .tree
+            .selected()
+            .is_some_and(|node| node.kind == NodeKind::File);
+        if !is_file {
+            return Effects::redraw();
+        }
+        let text = self.char_selection_text(lo, hi);
+        if text.is_empty() {
+            return Effects::redraw();
+        }
+        self.action_notice = Some(match self.clipboard.copy(&text) {
+            Ok(()) => "Copied selection".to_string(),
+            Err(e) => format!("Could not copy selection: {e}"),
+        });
+        Effects::redraw()
+    }
+
+    /// The number of leading chars the syntax renderer's line-number gutter occupies on 1-based
+    /// source `line` — constant across the source-mapped view, so any line in it measures the same.
+    /// `0` when there is no gutter (plain-text fallback / test stubs) or empty content. Both content
+    /// overlays use it so a character selection's highlight never paints the gutter on continuation
+    /// lines: the L-mode overlay measures it off the marker line, the ambient overlay off its start
+    /// line. `line` is clamped into `[1, line_count]`.
+    pub(crate) fn content_gutter_len(&self, line: usize) -> usize {
         let total = self.content.lines.len();
         if total == 0 {
             return 0;
         }
-        let n = s.marker().clamp(1, total);
+        let n = line.clamp(1, total);
         let displayed = self.filtered_display_line(n);
         let code = strip_line_gutter(&displayed, n);
         displayed.chars().count() - code.chars().count()
+    }
+
+    /// The gutter width on the L-mode marker line — [`content_gutter_len`](Self::content_gutter_len)
+    /// measured off the active line-select marker. `0` when line-select is inactive or content is
+    /// empty. The Presenter uses it for the L-mode character-selection highlight.
+    pub(crate) fn selection_gutter_len(&self) -> usize {
+        let Some(s) = self.modal.line_select() else {
+            return 0;
+        };
+        self.content_gutter_len(s.marker())
     }
 
     /// The text of a character-granular selection from `(lo_line, lo_col)` to `(hi_line, hi_col)`

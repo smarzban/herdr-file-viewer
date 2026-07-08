@@ -3,8 +3,8 @@
 
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView, PickerView,
-    ViewState, draw,
+    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView,
+    PickerView, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -87,6 +87,7 @@ fn sample_state() -> ViewState {
         content_rendering: false,
         search: None,
         line_select: None,
+        content_selection: None,
         help: None,
     }
 }
@@ -2792,6 +2793,75 @@ fn line_select_marker_and_selection_carry_theme_styles() {
         out_bg,
         HIGHLIGHT.bg.unwrap(),
         "a row outside the selection must not be highlighted"
+    );
+}
+
+// ── content_selection overlay — ambient mouse drag-select (gutter-less char highlight) ───────
+
+#[test]
+fn ambient_selection_highlights_only_selected_chars_without_shifting_content() {
+    // The ambient (no-modal) selection overlay highlights ONLY the dragged characters and prepends
+    // NO gutter glyph — so, unlike the L-mode overlay, the content is not shifted right one column.
+    use herdr_file_viewer::highlight::HIGHLIGHT;
+    use herdr_file_viewer::presenter::geometry;
+    use herdr_file_viewer::render::to_text;
+    use ratatui::layout::Rect;
+
+    // Content "line one\n…"; select chars [5, 8) of line 1 → "one" (gutter 0, no bat gutter).
+    let mut st = sample_state();
+    st.notices = vec![];
+    st.focus = Focus::Content;
+    st.content = to_text("line one\nline two\nline three\n");
+    st.content_rows = 3;
+    st.content_selection = Some(CharSelView {
+        start_line: 1,
+        start_col: 5,
+        end_line: 1,
+        end_col: 8,
+        gutter: 0,
+    });
+
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let buf = render_buffer(&st, w, h);
+    let content_inner = geometry(area, &st)
+        .content_inner
+        .expect("content inner must be present");
+    let (first, top) = (content_inner.x, content_inner.y);
+
+    // No gutter glyph: the very first content cell is the real first char 'l' of "line one", not a
+    // ▶/│ glyph or a shifted char (the L-mode overlay would put a glyph here instead).
+    assert_eq!(
+        buf.cell((first, top)).unwrap().symbol(),
+        "l",
+        "the ambient overlay prepends no gutter glyph — content is not shifted right"
+    );
+
+    // The selected chars "one" (cols 5..8) carry the HIGHLIGHT background.
+    for dx in 5..8u16 {
+        let bg = buf.cell((first + dx, top)).unwrap().bg;
+        assert_eq!(
+            bg,
+            HIGHLIGHT.bg.unwrap(),
+            "selected char at col {dx} must carry the HIGHLIGHT background"
+        );
+    }
+    // The space just before the selection (col 4) is NOT highlighted.
+    assert_ne!(
+        buf.cell((first + 4, top)).unwrap().bg,
+        HIGHLIGHT.bg.unwrap(),
+        "an unselected char on the boundary line must not be highlighted"
+    );
+    // A line outside the selection (line 2) is entirely unselected.
+    assert_ne!(
+        buf.cell((first, top + 1)).unwrap().bg,
+        HIGHLIGHT.bg.unwrap(),
+        "a line outside the selection must not be highlighted"
     );
 }
 

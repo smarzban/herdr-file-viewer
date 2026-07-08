@@ -1128,3 +1128,332 @@ fn marker_stays_visible_under_wrap_when_moved_past_viewport() {
         "at the last line (display row 12) the bottom pins to the marker: 12 + 1 - 4 = 9"
     );
 }
+
+// ── ambient content-pane selection (mouse drag with NO modal open) ──────────────────────────
+// Click-drag selects text during normal navigation WITHOUT entering L mode; the release
+// auto-copies the span. Because no modal is open the content overlay prepends NO gutter glyph, so
+// a char caret at column C maps to screen column `pane.x + C` (41 + C) — one less than the L-mode
+// drag tests above, which add the glyph column (41 + 1 + C).
+
+/// Await the content render and wire up the content geometry WITHOUT entering line-select, so a
+/// mouse drag in the content pane exercises the ambient (`Modal::None`) path.
+fn setup_ambient(ctrl: &mut Controller) {
+    await_marker(ctrl, "line0");
+    ctrl.set_content_viewport(80, 20); // the full 20-line body fits → content_scroll stays 0
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: no modal is open (the ambient path)"
+    );
+}
+
+/// Drag line 1 char 0 → line 2 char 3 in the ambient path (cols 41/44 = pane x + charcol, no
+/// glyph), leaving a non-collapsed selection standing after the release.
+fn ambient_drag_line1_to_line2(ctrl: &mut Controller) {
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 44, 2));
+}
+
+#[test]
+fn ambient_drag_auto_copies_on_release() {
+    // A press → drag → release in the content pane with NO modal open selects a character span and
+    // copies it on release (auto-copy), leaving the highlight standing and never entering L mode.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 44, 2));
+
+    assert!(fx.redraw, "the release redraws");
+    assert!(
+        !ctrl.line_select_active(),
+        "an ambient selection never enters L mode"
+    );
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line0\nlin"),
+        "release auto-copies the span: all of line 1 + the first 3 chars of line 2"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms the copy: {:?}",
+        ctrl.notices()
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "the selection stays highlighted after the auto-copy (feedback)"
+    );
+}
+
+#[test]
+fn ambient_drag_populates_content_selection_overlay() {
+    // A mouse drag feeds the presenter a gutter-less character selection via view_state, distinct
+    // from the L-mode `line_select` overlay (which stays None — no modal is open).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 2));
+
+    let vs = ctrl.view_state();
+    assert!(
+        vs.line_select.is_none(),
+        "the L-mode overlay is not used for an ambient drag"
+    );
+    let cs = vs
+        .content_selection
+        .expect("the ambient selection overlay is populated");
+    assert_eq!(
+        (cs.start_line, cs.start_col, cs.end_line, cs.end_col),
+        (1, 0, 2, 3),
+        "the overlay carries the exact drag carets (ordered), gutter-less"
+    );
+    assert_eq!(cs.gutter, 0, "MultiLine has no bat gutter → gutter width 0");
+}
+
+#[test]
+fn ambient_plain_click_focuses_and_copies_nothing() {
+    // A press with no drag (Down then Up at the same cell) is a plain click: it focuses the content
+    // pane, leaves no standing selection, and copies nothing.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+
+    assert!(fx.redraw, "the click focuses the content pane (redraw)");
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Content,
+        "a content click focuses the content pane"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a plain click leaves no standing selection"
+    );
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "a plain click copies nothing"
+    );
+}
+
+#[test]
+fn ambient_press_outside_content_clears_selection() {
+    // Once a selection stands, a left press anywhere outside the content region drops it
+    // (click-away deselect). Column 5 is the tree/outside region (content starts at x 41).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+    assert!(fx.redraw, "clearing the selection redraws");
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a press outside the content region clears the standing selection"
+    );
+}
+
+#[test]
+fn ambient_esc_clears_selection_before_quitting() {
+    // Esc (Intent::Close) dismisses a standing ambient selection first, before it would unzoom or
+    // quit — the outermost layer of the Esc stack. It must redraw and NOT quit.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(fx.redraw, "dismissing the selection redraws");
+    assert!(
+        !fx.quit,
+        "the first Esc dismisses the selection, it does not quit"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "Esc clears the ambient selection"
+    );
+}
+
+#[test]
+fn ambient_selection_cleared_on_content_change() {
+    // Any displayed-content change drops a standing selection so a stale highlight never maps onto
+    // different text. Cycling the view re-renders through dispatch_render, which clears it.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    ctrl.handle(Intent::CycleView);
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "a content change (view cycle → dispatch_render) clears the selection"
+    );
+}
+
+#[test]
+fn ambient_shift_drag_is_left_for_the_terminal() {
+    // Shift+mouse is reserved for the terminal's own native selection — it must not start an
+    // ambient selection nor redraw.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Down(MouseButton::Left), 45, 3));
+    assert!(!fx.redraw, "a Shift+press is inert (left for the terminal)");
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "Shift+mouse must not start an ambient selection"
+    );
+}
+
+#[test]
+fn entering_line_select_clears_an_ambient_selection() {
+    // The two selections never coexist: entering L mode drops any standing ambient selection so L
+    // starts with a fresh line marker, not the inherited mouse span.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+    ambient_drag_line1_to_line2(&mut ctrl);
+    assert!(
+        ctrl.view_state().content_selection.is_some(),
+        "precondition: a selection stands"
+    );
+
+    ctrl.enter_line_select_at_top();
+    assert!(ctrl.line_select_active(), "L mode is now active");
+    let vs = ctrl.view_state();
+    assert!(
+        vs.content_selection.is_none(),
+        "the ambient selection is cleared on entering L mode"
+    );
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "L mode starts with a fresh line-1 marker, not the ambient span"
+    );
+}
+
+#[test]
+fn ambient_drag_over_directory_guidance_copies_nothing() {
+    // The pane can show first-party guidance ("Directory — select a file to view") when a directory
+    // is selected. Dragging over it must copy nothing — the is_file guard, shared with the L-mode
+    // copy path. A temp dir whose only entry is a subdirectory selects that directory by default.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("inner.rs"), "x\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "Directory \u{2014}"); // the directory-selected guidance ("Directory —")
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+
+    // Drag across the guidance line (line 1) and release.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 1));
+
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "dragging over directory guidance copies nothing (is_file guard)"
+    );
+}
+
+#[test]
+fn held_ambient_press_does_not_leak_into_line_select() {
+    // A still-held ambient press must not bleed into L mode: entering L mode (the `L` key) mid-press
+    // resets the in-flight drag, so the next mouse-move is inert for L mode. Without the reset the
+    // held `Drag::ContentSelect` would extend the fresh L-mode selection from (top, col 0) to the
+    // cursor — a character selection the user never initiated with an L-mode press.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    setup_ambient(&mut ctrl);
+
+    // Press and HOLD in the content pane (ambient selection begins; drag == ContentSelect).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    // Enter L mode without releasing the button.
+    ctrl.enter_line_select_at_top();
+    assert!(
+        ctrl.line_select_active(),
+        "precondition: L mode is now active"
+    );
+
+    // A held-mouse move must be inert for L mode — no L-mode press ever happened.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 55, 4));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 1)),
+        "the L-mode selection stays collapsed on the top line — the held ambient drag did not leak in"
+    );
+    let ls = ctrl
+        .view_state()
+        .line_select
+        .expect("L-mode overlay present");
+    assert!(
+        ls.char_sel.is_none(),
+        "a leaked drag would have produced a character selection; there must be none"
+    );
+
+    // Enter copies the whole top line (line granularity), not an unintended dragged span.
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line0"),
+        "Enter copies the whole top line (line 1 == \"line0\"), not a dragged char span"
+    );
+}
+
+#[test]
+fn ambient_drag_over_rendering_placeholder_copies_nothing() {
+    // While a render is in flight the pane shows the non-empty "Rendering…" placeholder with a FILE
+    // still selected — so the is_file guard does NOT block it. A press over the placeholder must not
+    // seed a selection (the `content_rendering` press-time guard), so a drag copies nothing.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    // Do NOT poll: the pane is still showing the "Rendering…" placeholder (content_rendering == true).
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        ctrl.view_state().content_rendering,
+        "precondition: a render is in flight (the placeholder is shown)"
+    );
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 1));
+
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "no selection is seeded over the render placeholder"
+    );
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "dragging over the \"Rendering…\" placeholder copies nothing"
+    );
+}

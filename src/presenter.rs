@@ -116,6 +116,12 @@ pub struct ViewState {
     /// overlay. `None` ⇒ draw the content as-is (byte-identical to today — the `None` arm leaves the
     /// content path untouched, so no other snapshot moves).
     pub line_select: Option<LineSelectView>,
+    /// When `Some`, an ambient character selection was dragged out in the content pane during normal
+    /// navigation (no modal open). The Presenter overlays a gutter-less character highlight — no
+    /// ▶/│ glyph and no content shift, so it reads as a plain text selection rather than a mode.
+    /// Mutually exclusive with [`line_select`](Self::line_select) by construction; `draw_content`
+    /// still gives `line_select` precedence. `None` ⇒ no ambient selection (content drawn as-is).
+    pub content_selection: Option<CharSelView>,
     /// When `Some`, the in-app help overlay is drawn on top of everything else (AC-1, AC-5).
     /// `None` ⇒ no overlay. Drawn last in [`draw`] so it sits above the picker and finder.
     pub help: Option<HelpView>,
@@ -585,6 +591,43 @@ fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'
         .collect()
 }
 
+/// Overlay an ambient character selection onto the content lines — the gutter-less counterpart of
+/// [`apply_line_select`]'s character branch. For each source line (1-based index `i + 1`) inside the
+/// selection, the selected characters are re-styled with [`crate::highlight::HIGHLIGHT`] via
+/// [`patch_char_range`]; every other line is cloned unchanged. Unlike [`apply_line_select`] it
+/// prepends NO gutter glyph and applies no whole-row style, so the content does not shift and reads
+/// as a plain text selection (there is no marker — an ambient selection has no cursor line). The
+/// boundary rows are partial (`start_col`/`end_col`, never left of the gutter); interior rows
+/// highlight from the gutter to end-of-line. The line count is preserved so `content_rows` stays
+/// valid, and the content text itself is never mutated — spans are cloned, only their style patched.
+fn apply_char_selection(lines: &[Line<'static>], cs: &CharSelView) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let src = i + 1; // 1-based source line
+            if src < cs.start_line || src > cs.end_line {
+                return line.clone();
+            }
+            let lo = if src == cs.start_line {
+                cs.start_col.max(cs.gutter)
+            } else {
+                cs.gutter
+            };
+            let hi = if src == cs.end_line {
+                cs.end_col
+            } else {
+                usize::MAX // to end of line for an interior row
+            };
+            Line {
+                spans: patch_char_range(&line.spans, lo, hi, crate::highlight::HIGHLIGHT),
+                style: line.style,
+                alignment: line.alignment,
+            }
+        })
+        .collect()
+}
+
 /// Rebuild `spans` so the chars at 0-based char indices `[lo, hi)` carry `style` (patched onto
 /// their existing style) and every other char keeps its own. Splits spans at the range boundaries,
 /// grouping consecutive same-selectedness chars so the output stays compact. Char-indexed (not
@@ -766,12 +809,14 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     let (text, vbar, hbar) = content_bars(content_area, total_rows, max_width, state.wrap);
 
     // Overlay the line-select marker/selection first (it is a modal — search cannot be committed
-    // while it is open), then a committed search, else the content as-is. Each overlay returns the
-    // same line count, so `content_rows` (computed above from `state.content`) stays valid. When
-    // both are `None`, cloning `state.content` is byte-identical to the prior path, so existing
-    // snapshots are unaffected (AC zero-churn invariant).
+    // while it is open), then an ambient content-pane selection, then a committed search, else the
+    // content as-is. Each overlay returns the same line count, so `content_rows` (computed above
+    // from `state.content`) stays valid. When all are `None`, cloning `state.content` is
+    // byte-identical to the prior path, so existing snapshots are unaffected (AC zero-churn invariant).
     let content_text = if let Some(ls) = &state.line_select {
         ratatui::text::Text::from(apply_line_select(&state.content.lines, ls))
+    } else if let Some(cs) = &state.content_selection {
+        ratatui::text::Text::from(apply_char_selection(&state.content.lines, cs))
     } else if let Some(cs) = &state.search {
         ratatui::text::Text::from(crate::highlight::apply(
             &state.content.lines,
