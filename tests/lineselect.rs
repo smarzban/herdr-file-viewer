@@ -868,7 +868,10 @@ fn drag_selects_characters_across_lines_and_copies() {
         "the notice confirms a character selection: {:?}",
         ctrl.notices()
     );
-    assert!(!ctrl.line_select_active(), "Enter closes the mode after copying");
+    assert!(
+        !ctrl.line_select_active(),
+        "Enter closes the mode after copying"
+    );
 }
 
 #[test]

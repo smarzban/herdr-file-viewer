@@ -429,7 +429,10 @@ impl Controller {
                 let text = self.char_selection_text(lo, hi);
                 if text.is_empty() {
                     let marker = self.line_selection().map_or(start, |(_, e)| e);
-                    (self.selected_lines_text(marker, marker), format!("line {marker}"))
+                    (
+                        self.selected_lines_text(marker, marker),
+                        format!("line {marker}"),
+                    )
                 } else {
                     (text, "selection".to_string())
                 }
@@ -568,7 +571,10 @@ mod tests {
     #[test]
     fn strip_gutter_removes_number_and_space_keeps_code() {
         // `bat --style=numbers`-style: right-aligned number + one space, then the source line.
-        assert_eq!(strip_line_gutter("   1 # Architecture", 1), "# Architecture");
+        assert_eq!(
+            strip_line_gutter("   1 # Architecture", 1),
+            "# Architecture"
+        );
         assert_eq!(strip_line_gutter("  42 fn main() {", 42), "fn main() {");
     }
 
@@ -632,7 +638,10 @@ mod tests {
         s.begin_char(1, 4, 10);
         assert!(s.is_char_mode(), "a mouse press is character-granular");
         s.move_to(3, 10);
-        assert!(!s.is_char_mode(), "a keyboard move reverts to line granularity");
+        assert!(
+            !s.is_char_mode(),
+            "a keyboard move reverts to line granularity"
+        );
     }
 
     #[test]

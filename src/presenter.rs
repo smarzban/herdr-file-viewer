@@ -2036,8 +2036,16 @@ mod tests {
         // Two spans "fn " + "main" → chars 0..7; highlight [3, 7) == "main".
         let spans = vec![Span::raw("fn "), Span::raw("main")];
         let out = patch_char_range(&spans, 3, 7, hl);
-        assert_eq!(plain(&out), "fn main", "no characters are lost or reordered");
-        assert_eq!(selected_text(&out, hl), "main", "exactly [3,7) is highlighted");
+        assert_eq!(
+            plain(&out),
+            "fn main",
+            "no characters are lost or reordered"
+        );
+        assert_eq!(
+            selected_text(&out, hl),
+            "main",
+            "exactly [3,7) is highlighted"
+        );
     }
 
     #[test]
@@ -2045,7 +2053,10 @@ mod tests {
         let hl = crate::highlight::HIGHLIGHT;
         let spans = vec![Span::raw("hello")];
         // Open-ended (usize::MAX) highlights to end of line.
-        assert_eq!(selected_text(&patch_char_range(&spans, 2, usize::MAX, hl), hl), "llo");
+        assert_eq!(
+            selected_text(&patch_char_range(&spans, 2, usize::MAX, hl), hl),
+            "llo"
+        );
         // Empty range highlights nothing.
         assert_eq!(selected_text(&patch_char_range(&spans, 3, 3, hl), hl), "");
         assert_eq!(plain(&patch_char_range(&spans, 3, 3, hl)), "hello");
