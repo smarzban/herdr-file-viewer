@@ -800,80 +800,118 @@ fn enter_line_select_top(ctrl: &mut Controller) {
 }
 
 #[test]
-fn click_sets_marker_to_clicked_source_line() {
-    // AC-8: a plain left-click (release) in the content pane moves the marker to the clicked
-    // source line, collapsed. Screen row 3, content top row 1, scroll 0 → source line 3.
+fn mouse_down_places_caret_on_clicked_line() {
+    // A left press in the content pane drops the selection caret on the clicked source line,
+    // collapsed. Screen row 3, content top row 1, scroll 0 → source line 3.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
-    assert!(fx.redraw, "a click that moves the marker redraws");
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    assert!(fx.redraw, "a press that places the caret redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((3, 3)),
-        "AC-8: a click places the marker on the clicked source line (3)"
+        "a press places the caret on the clicked source line (3), collapsed"
     );
 }
 
 #[test]
-fn shift_click_places_marker_like_a_plain_click() {
-    // Amended T-8: herdr and most terminals reserve Shift+mouse for their own native text
-    // selection, so a shift-click can never reliably reach the plugin — mouse shift-click
-    // extend is removed. A Shift+left-click now behaves exactly like a plain click: it places
-    // the marker on the clicked source line, collapsed (anchor collapses to the clicked line,
-    // NOT extended from a prior anchor). Keyboard `Shift`+`j`/`k` (and Shift+arrows) remains the
-    // supported way to extend a multi-line selection — that path is unchanged.
+fn shift_mouse_is_left_for_the_terminal() {
+    // We must NOT swallow Shift+mouse — herdr and most terminals reserve it for their own native
+    // text selection/copy. A Shift+press is therefore inert in the plugin: it neither starts a
+    // selection nor redraws, so the event passes through to the terminal untouched.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    // Plain click at row 4 → marker at line 4 (this would be the "anchor" under the old
-    // extend behavior, but a subsequent shift-click no longer honors it).
-    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Down(MouseButton::Left), 55, 7));
+    assert!(!fx.redraw, "a Shift+press is inert (left for the terminal)");
     assert_eq!(
         ctrl.line_selection(),
-        Some((4, 4)),
-        "precondition: marker placed at line 4"
-    );
-
-    // Shift-click at row 7 → marker moves to 7, collapsed — NOT (4, 7).
-    let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Up(MouseButton::Left), 55, 7));
-    assert!(fx.redraw, "a shift-click that moves the marker redraws");
-    assert_eq!(
-        ctrl.line_selection(),
-        Some((7, 7)),
-        "shift-click places the marker on the clicked line like a plain click, not extending"
+        Some((1, 1)),
+        "Shift+mouse must not move or start a selection in the plugin"
     );
 }
 
 #[test]
-fn double_click_copies_content() {
-    // AC-9: two left-clicks on the same content row within the double-click window copy that
-    // row's CONTENT and close the mode — the same confirm as Enter. Source line 3 == "line2".
+fn drag_selects_characters_across_lines_and_copies() {
+    // Press → drag → release selects a character-granular span; Enter copies exactly that span
+    // (the tail of the first line + the head of the last, joined by '\n'). MultiLine renders
+    // "line0".."line19" with no gutter, so char carets map straight to columns.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    // First click moves the marker to line 3; the second (same row, within the window) is the
-    // double-click that copies and closes.
-    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    // Press at line 1, char 0 (col 42 = pane x 41 + 1 glyph col + 0).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    // Drag to line 2, char 3 (col 45 = 41 + 1 glyph + 3).
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 2));
+    assert!(fx.redraw, "finalizing the drag redraws");
     assert!(
-        fx.redraw,
-        "the copy redraws to show the confirmation notice"
+        ctrl.line_select_active(),
+        "release finalizes the selection but keeps the mode open for Enter/y"
     );
+
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("line0\nlin"),
+        "Enter copies the character span: all of line 1 + the first 3 chars of line 2"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms a character selection: {:?}",
+        ctrl.notices()
+    );
+    assert!(!ctrl.line_select_active(), "Enter closes the mode after copying");
+}
+
+#[test]
+fn drag_populates_char_selection_in_the_view() {
+    // A mouse drag must feed the presenter a character selection (so the highlight is char-granular,
+    // not whole-line). After dragging line 1 char 0 → line 2 char 3, the view carries those carets.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
+
+    let vs = ctrl.view_state();
+    let ls = vs.line_select.expect("line-select overlay is present");
+    let cs = ls
+        .char_sel
+        .expect("a mouse drag populates the character selection for the overlay");
+    assert_eq!(
+        (cs.start_line, cs.start_col, cs.end_line, cs.end_col),
+        (1, 0, 2, 3),
+        "the overlay carries the exact drag carets (ordered)"
+    );
+}
+
+#[test]
+fn click_without_drag_collapses_and_enter_copies_the_line() {
+    // A press with no drag collapses the selection onto one character; Enter then falls back to
+    // copying the whole clicked line, so a plain click-then-Enter still yields a line. Row 3 →
+    // source line 3 == "line2".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
+    enter_line_select_top(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
     assert_eq!(
         copied.lock().unwrap().last().map(String::as_str),
         Some("line2"),
-        "AC-9: double-click copies the content of the clicked line (source line 3 == \"line2\")"
-    );
-    assert!(
-        !ctrl.line_select_active(),
-        "AC-9: the double-click closes the mode (like Enter)"
+        "a collapsed click copies the whole clicked line (source line 3 == \"line2\")"
     );
 }
 
@@ -900,33 +938,38 @@ fn click_outside_content_is_inert() {
 }
 
 #[test]
-fn press_and_drag_do_not_move_the_marker() {
-    // Only a completed left-click (Up) acts; a press (Down) or drag must be inert so the mode keeps
-    // the mouse and no divider/scrollbar drag starts underneath.
+fn drag_within_one_line_selects_chars() {
+    // A press + drag on the same row selects a character range within that single line; Enter
+    // copies just those chars. Line 1 == "line0"; select chars [1, 4) → "ine".
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
-    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
     enter_line_select_top(&mut ctrl);
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 6));
-    assert!(!fx.redraw, "a press is inert in line-select mode");
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 6));
-    assert!(!fx.redraw, "a drag is inert in line-select mode");
+    // Press at line 1 char 1 (col 43 = pane x 41 + glyph + 1), drag to char 4 (col 46).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 43, 1));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 46, 1));
+    assert!(fx.redraw, "a selection drag redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((1, 1)),
-        "neither a press nor a drag moves the marker"
+        "the selection stays on line 1 (character-granular within the line)"
+    );
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("ine"),
+        "y copies the selected characters [1, 4) of \"line0\""
     );
 }
 
 #[test]
-fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
-    // BUG regression: entering line-select mode did not clear `self.last_click`, so a tree-row
-    // click made just before entry could pair with the FIRST content click at the same screen row
-    // as a double-click — `is_double_click` only compares the row (not the column/pane) — firing
-    // `copy_line_content` (copy + close) before the marker was ever placed by a real content
-    // click. Every other modal already guards this (`open_finder`/`open_help` clear `last_click`
-    // on open); line-select's entry point must too.
+fn content_press_after_tree_click_places_caret_without_copying() {
+    // Entering line-select right after a tree-row click, then a first content press at the same
+    // screen row, must place the caret on that source line and copy nothing — a press is a caret
+    // placement, never a copy (copying is Enter/y). Guards that a prior-context click can't cause a
+    // spurious copy on the first content interaction.
     let dir = TempDir::new();
     for name in ["aa.txt", "bb.txt", "code.rs"] {
         std::fs::write(dir.path().join(name), "placeholder\n").unwrap();
@@ -947,8 +990,7 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
     });
     ctrl.set_pane_geometry(geometry);
 
-    // A tree-row click at screen row 3 selects "code.rs" (idx 2) and sets
-    // `last_click = (_, 3, now)` — the stale prior-context click.
+    // A tree-row click at screen row 3 selects "code.rs" (idx 2) — the prior-context click.
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 3));
     assert_eq!(
         ctrl.tree().cursor(),
@@ -965,25 +1007,25 @@ fn stale_tree_click_does_not_misfire_first_content_click_as_double() {
         "precondition: the mode opened synchronously"
     );
 
-    // The FIRST content click, at the SAME screen row (3) the stale tree click used, must place
-    // the marker on line 3 — not pair with the stale tree click as a double-click.
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 3));
+    // The first content press, at the SAME screen row (3) the tree click used, places the caret on
+    // source line 3 — and copies nothing.
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
     assert!(
         fx.redraw,
-        "the first content click places the marker and redraws"
+        "the first content press places the caret and redraws"
     );
     assert_eq!(
         ctrl.line_selection(),
         Some((3, 3)),
-        "the first content click must place the marker — not fire a stale cross-context double-click"
+        "the first content press places the caret on the clicked source line"
     );
     assert!(
         ctrl.line_select_active(),
-        "the mode must stay open — a stale pairing must not copy+close it before any real content click"
+        "the mode stays open — a press never copies or closes it"
     );
     assert!(
         copied.lock().unwrap().is_empty(),
-        "nothing should have been copied by a stale-click misfire"
+        "nothing is copied by a press"
     );
 }
 
@@ -1021,8 +1063,8 @@ fn entry_maps_wrapped_scroll_offset_to_source_line() {
 }
 
 #[test]
-fn mouse_click_maps_wrapped_row_to_source_line() {
-    // With wrap ON and scroll at the top, a click on screen row 4 (content top row 1 → display row
+fn mouse_press_maps_wrapped_row_to_source_line() {
+    // With wrap ON and scroll at the top, a press on screen row 4 (content top row 1 → display row
     // 3) must select source line 2 — display row 3 is the first wrapped row of line 2 — NOT the
     // pre-fix `scroll + (row - top) + 1` == 4.
     let dir = TempDir::new();
@@ -1040,12 +1082,12 @@ fn mouse_click_maps_wrapped_row_to_source_line() {
         "precondition: marker on line 1"
     );
 
-    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
-    assert!(fx.redraw, "a click that moves the marker redraws");
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 4));
+    assert!(fx.redraw, "a press that places the caret redraws");
     assert_eq!(
         ctrl.line_selection(),
         Some((2, 2)),
-        "click on wrapped display row 3 maps to source line 2, not the buggy row+1 (=4)"
+        "press on wrapped display row 3 maps to source line 2, not the buggy row+1 (=4)"
     );
 }
 

@@ -37,8 +37,8 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView,
-    PickerView, ViewState,
+    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry,
+    PickerRowView, PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
@@ -950,6 +950,9 @@ impl Controller {
         // mis-sizing the thumb / hiding the bar). Computed with the wrap we already have — no extra
         // tree walk.
         let content_rows = self.rendered_line_count_for(wrap);
+        // Gutter width for a character selection's highlight (0 when not applicable); computed once
+        // here so the line-select snapshot below stays a pure read.
+        let sel_gutter = self.selection_gutter_len();
         ViewState {
             nodes,
             selected,
@@ -1006,10 +1009,25 @@ impl Controller {
             // content path is byte-identical to the prior render (no other snapshot moves).
             line_select: self.modal.line_select().map(|s| {
                 let (start, end) = s.selection();
+                // A mouse drag carries character carets → the overlay highlights just those chars;
+                // a keyboard selection has none → the whole-line highlight.
+                let char_sel = if s.is_char_mode() {
+                    let ((sl, sc), (el, ec)) = s.char_span();
+                    Some(CharSelView {
+                        start_line: sl,
+                        start_col: sc,
+                        end_line: el,
+                        end_col: ec,
+                        gutter: sel_gutter,
+                    })
+                } else {
+                    None
+                };
                 LineSelectView {
                     marker: s.marker(),
                     start,
                     end,
+                    char_sel,
                 }
             }),
             help: self.help_view(),
@@ -2029,6 +2047,9 @@ enum Drag {
     TreeH,
     /// Dragging the finder overlay's vertical scrollbar (handled in `handle_finder_mouse`).
     FinderV,
+    /// Dragging out a character-granular text selection in the content pane while line-select mode
+    /// is active (handled in `handle_line_select_mouse`).
+    ContentSelect,
 }
 
 /// Whether a path names a markdown file (by extension, case-insensitive).

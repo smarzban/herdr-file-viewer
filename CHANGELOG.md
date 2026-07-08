@@ -6,14 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Mouse text selection in line-select mode.** Click-drag in the content pane to select text
+  character-by-character (press at the start, drag to the end — the pane auto-scrolls past an
+  edge — release), with the selected characters highlighted as you drag; `Enter`/`y`/`Y` copies
+  exactly the dragged characters. `Shift`+mouse is left untouched so the terminal's own native
+  selection still works.
+
 ### Changed
-- **Line-select mode now copies the selected lines' content, not a `path:line` reference.** `Enter`,
-  `y`/`Y`, or a double-click copies the actual text of the selected line (or, for a range, every
-  line joined by newlines, indentation preserved) — so it pastes as real code rather than a
-  location string. The syntax view's line-number gutter (`bat --style=numbers`) is stripped from
-  the copy, and residual control bytes are removed before it reaches the clipboard (tabs kept).
-  The confirmation notice names the copied line range (e.g. "Copied lines 42-58"). Marker
-  movement, extend, mouse handling, and the source-view auto-switch are unchanged.
+- **Line-select mode now copies the selected content, not a `path:line` reference.** `Enter`,
+  `y`/`Y` copies the actual text: for a keyboard selection, the line(s) joined by newlines; for a
+  mouse selection, the exact character span. The syntax view's line-number gutter
+  (`bat --style=numbers`) is stripped from the copy, indentation is preserved, and residual control
+  bytes are removed before it reaches the clipboard (tabs kept). The confirmation notice names what
+  was copied (e.g. "Copied lines 42-58" / "Copied selection"). A mouse press now places the
+  selection caret (previously a click placed the line marker; a double-click no longer copies).
 
 ## [1.10.0] - 2026-07-07
 

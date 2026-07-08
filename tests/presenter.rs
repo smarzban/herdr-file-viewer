@@ -2693,7 +2693,12 @@ fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
     st.focus = Focus::Content;
     st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
     st.content_rows = 6;
-    st.line_select = Some(LineSelectView { marker, start, end });
+    st.line_select = Some(LineSelectView {
+        marker,
+        start,
+        end,
+        char_sel: None,
+    });
     st
 }
 

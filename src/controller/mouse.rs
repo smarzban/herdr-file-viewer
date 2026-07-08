@@ -30,57 +30,76 @@ impl Controller {
         }
     }
 
-    /// Mouse handling while line-select mode owns the pointer (copy-line-reference). The mode is
-    /// keyboard-first, but a click is a natural way to place the marker: a left **release** in the
-    /// content pane ALWAYS moves the marker to the clicked source line (AC-8), regardless of the
-    /// Shift modifier — herdr and most terminals reserve Shift+mouse for native text selection, so
-    /// a shift-click extend can never be relied on to reach the plugin (keyboard `Shift`+`j`/`k`
-    /// is the supported way to extend). A double-click copies the reference and closes the mode
-    /// (AC-9) — mirroring the keyboard move / Enter. Every other event kind (press / drag / wheel)
-    /// is inert, so a click can't start a divider or scrollbar drag while the mode holds the
-    /// mouse. A click outside the content region is inert too and clears any pending double-click,
-    /// so a stray click can't pair a later one across regions.
+    /// Mouse handling while line-select mode owns the pointer. A left **press** in the content pane
+    /// drops the selection caret on the character under the cursor; **dragging** extends a
+    /// character-granular selection (scrolling the pane when the drag runs past an edge); the
+    /// **release** finalizes it, leaving the selection standing for `Enter`/`y` to copy. A press
+    /// with no drag collapses the selection to that character — click-then-`Enter` still copies the
+    /// clicked line (the copy path's collapsed-selection fallback).
+    ///
+    /// `Shift`+mouse is deliberately left untouched (returned inert) so the terminal's OWN native
+    /// selection/copy still works — herdr reserves `Shift`+drag for exactly that, and we don't want
+    /// to swallow it. Every non-left event (wheel, other buttons) is inert so nothing leaks to the
+    /// columns beneath while the mode holds the mouse.
     fn handle_line_select_mouse(&mut self, ev: MouseEvent) -> Effects {
-        // Act only on a completed left-click (consistent with `handle_click`); swallow the rest so
-        // the mode keeps the mouse and no divider/scrollbar drag starts underneath.
-        if ev.kind != MouseEventKind::Up(MouseButton::Left) {
+        // Leave Shift+mouse for the terminal's native selection — never swallow it.
+        if ev.modifiers.contains(KeyModifiers::SHIFT) {
             return Effects::noop();
         }
         let (col, row) = (ev.column, ev.row);
-        if self.hit_test(col, row) != MouseRegion::Content {
-            self.last_click = None; // outside content → inert, and break any pending double-click
-            return Effects::noop();
-        }
-        // Map the clicked screen row to a 1-based source line. The content area's top row is the
-        // content rect's `y`, so the clicked line's display-row offset is `content_scroll + (row -
-        // content_top)`; `line_at_content_row` maps that offset back to a source line, correctly even
-        // when the `w` wrap override is on (a source line then spans several display rows, so the
-        // mapping is NOT 1:1). Clamp into `[1, line_count]`. `hit_test == Content` guarantees
-        // `content_inner` is `Some` and `row >= content_inner.y`, so the subtraction never underflows.
-        let content_top = self.geom.content_inner.map_or(row, |c| c.y);
         let last = self.content.lines.len().max(1);
-        let display_row = self.content_scroll as usize + row.saturating_sub(content_top) as usize;
-        let line = self.line_at_content_row(display_row).clamp(1, last);
-
-        // Reuse the exact click-detection the columns use: same-row within the window is a
-        // double-click, and every non-content click above cleared `last_click`.
-        let now = Instant::now();
-        let double = is_double_click(self.last_click, (col, row), now);
-        self.last_click = Some((col, row, now));
-
-        if double {
-            return self.copy_line_content(); // AC-9: copy the lines' content + close, same as Enter
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A press outside the content region is inert and drops any in-flight drag.
+                if self.hit_test(col, row) != MouseRegion::Content {
+                    self.drag = None;
+                    return Effects::noop();
+                }
+                let (line, caret) = self.char_at_content_col(col, row);
+                if let Some(state) = self.modal.line_select_mut() {
+                    state.begin_char(line, caret, last);
+                }
+                self.drag = Some(Drag::ContentSelect); // subsequent drags extend the selection
+                Effects::redraw()
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Only extend when this drag began as a text selection (a press inside content);
+                // otherwise it's a stray drag we don't own.
+                if !matches!(self.drag, Some(Drag::ContentSelect)) {
+                    return Effects::noop();
+                }
+                let (line, caret) = self.char_at_content_col(col, row);
+                if let Some(state) = self.modal.line_select_mut() {
+                    state.drag_char(line, caret, last);
+                }
+                self.autoscroll_selection(row); // follow the cursor past a viewport edge
+                Effects::redraw()
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Finalize only a selection drag; a stray release is inert (so it can't be mistaken
+                // for a click that changes state).
+                if matches!(self.drag, Some(Drag::ContentSelect)) {
+                    self.drag = None;
+                    return Effects::redraw();
+                }
+                Effects::noop()
+            }
+            _ => Effects::noop(),
         }
-        if let Some(state) = self.modal.line_select_mut() {
-            // A single click ALWAYS places the marker (collapsing the anchor to the clicked
-            // line), regardless of the Shift modifier: herdr and most terminals reserve
-            // Shift+mouse for their own native text selection, so a shift-click never reliably
-            // reaches the plugin. If one does get through anyway, it harmlessly places the
-            // marker rather than claiming an extend we can't guarantee. Keyboard `Shift`+`j`/`k`
-            // (and Shift+arrows) is the supported way to extend a multi-line selection.
-            state.move_to(line, last); // AC-8: click places the marker
+    }
+
+    /// While dragging out a selection, nudge the content pane one line when the cursor is above the
+    /// top or below the bottom of the text viewport, so the selection can extend past what's on
+    /// screen. Only fires at the edges; a drag inside the viewport leaves the scroll alone.
+    fn autoscroll_selection(&mut self, row: u16) {
+        let Some(c) = self.geom.content_inner else {
+            return;
+        };
+        if row < c.y {
+            self.scroll_content(-1);
+        } else if row >= c.y + c.height {
+            self.scroll_content(1);
         }
-        Effects::redraw()
     }
 
     /// Handle a mouse event over the two columns, with no modal open (the [`handle_mouse`] gate
@@ -129,6 +148,9 @@ impl Controller {
                 // The finder is modal: its scrollbar drag is handled in handle_finder_mouse and
                 // never reaches this (non-finder) path. Covered here only for exhaustiveness.
                 Some(Drag::FinderV) => Effects::noop(),
+                // Text-selection drags belong to line-select mode (handle_line_select_mouse); the
+                // Modal::None gate means this path never sees one. Here only for exhaustiveness.
+                Some(Drag::ContentSelect) => Effects::noop(),
                 None => Effects::noop(),
             },
             MouseEventKind::Up(MouseButton::Left) => {

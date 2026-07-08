@@ -154,8 +154,8 @@ PowerShell launcher scripts.
 | `→` / `l` | Expand the selected directory — or **scroll the content pane right** when it is focused |
 | `←` / `h` | Collapse the selected directory — or **scroll the content pane left** when it is focused |
 | `H` (Shift+`h`) | Scroll the **tree** pane left (long / deeply-nested rows) — inert unless the tree is focused |
-| `L` (Shift+`l`) | Focus-gated: with the **tree** focused, scroll it right (long / deeply-nested rows); with the **content pane** focused (or zoomed), enter **line-select mode** to copy the selected lines' content (see below) |
-| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends the selection, `Enter` / `y` / `Y` (or double-click) copies the selected lines' **content**, `Esc` exits |
+| `L` (Shift+`l`) | Focus-gated: with the **tree** focused, scroll it right (long / deeply-nested rows); with the **content pane** focused (or zoomed), enter **line-select mode** to select and copy content — whole lines by keyboard or text by mouse click-drag (see below) |
+| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends a line selection; **click-drag** with the mouse selects **text** (character-granular); `Enter` / `y` / `Y` copies the selected content, `Esc` exits |
 | `Enter` | Activate the selection — expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `.` | Toggle hidden (dot-prefixed) files and folders |
@@ -205,17 +205,21 @@ on your clipboard, your terminal likely needs OSC 52 / clipboard-write enabled (
 
 **Copy line content (`L`).** With the content pane focused (or zoomed), `L` enters
 **line-select mode**: a marker lands on the top visible line, `j`/`k` (or `↑`/`↓`) move it, and
-holding `Shift` (`J`/`K`, or Shift+`↑`/`↓`) extends the selection over a range. `Enter`, `y`/`Y`
-— or a double-click — copies the **selected lines' text** to the clipboard: a single line copies
-that line, a range copies every line joined by newlines, so it pastes as real code (indentation
-preserved). A confirmation notice names the copied line range. A mouse **click** places the marker
-and a **double-click** copies; `Esc` leaves the mode. (Mouse shift-click extend isn't supported —
-most terminals reserve `Shift`+mouse for their own selection — so use keyboard `Shift`+`j`/`k` to
-extend from the mouse.) The copy uses the same **OSC 52** path as `y`/`Y`, so the lines are ready
-to paste straight into an agent chat, an editor, or an issue. Because line selection only maps
-onto the source, entering line-select from a rendered-markdown or diff view first switches that
-file to the line-numbered content view. With the **tree** focused, `L` keeps its tree
-horizontal-scroll behavior instead — the mode is gated on which pane has focus.
+holding `Shift` (`J`/`K`, or Shift+`↑`/`↓`) extends a whole-line selection. Or **click-drag with
+the mouse** to select **text** character-by-character — press where the selection starts, drag to
+where it ends (the pane scrolls if you drag past an edge), release; the selected characters are
+highlighted as you go. `Enter` or `y`/`Y` copies the selection to the clipboard: for a line
+selection, the lines joined by newlines; for a mouse text selection, exactly the characters you
+dragged over. Either way the syntax view's line-number
+gutter is stripped and indentation is preserved, so it pastes as real code. A confirmation notice
+names what was copied. The copy uses the same **OSC 52** path as `y`/`Y`, so it's ready to paste
+straight into an agent chat, an editor, or an issue. `Esc` leaves the mode.
+
+`Shift`+mouse is deliberately left alone so your terminal's own native selection/copy still works
+— most terminals reserve `Shift`+drag for exactly that. Because selection only maps onto the
+source, entering line-select from a rendered-markdown or diff view first switches that file to the
+line-numbered content view. With the **tree** focused, `L` keeps its tree horizontal-scroll
+behavior instead — the mode is gated on which pane has focus.
 
 ### Mouse
 

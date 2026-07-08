@@ -32,36 +32,95 @@ fn strip_line_gutter(plain: &str, n: usize) -> &str {
     if saw_sep { rest } else { plain }
 }
 
-/// In-progress line selection on the content pane: `anchor` is where the selection started,
-/// `marker` is the current cursor line. Both are 1-based source-line indices. A plain move
-/// collapses the selection (anchor follows marker); an extend move holds the anchor so the
-/// selection grows/shrinks toward the new marker.
+/// The char index within `s` displayed at 0-based display column `col` — i.e. how many chars sit
+/// to the left of a caret dropped at that column. Used to turn a mouse column into a character
+/// position for click-drag selection. Clamps to the char count when `col` is at/past the end (a
+/// caret at end-of-line).
+///
+/// v1 assumes one display column per char: `bat` expands tabs to spaces before we ever see the
+/// text, and code is overwhelmingly single-width, so `col` maps straight to a char index. Precise
+/// wide-glyph (CJK / emoji) column accounting is a follow-up; it would replace this body with a
+/// width-summing walk without changing the signature.
+fn char_index_at_col(s: &str, col: usize) -> usize {
+    col.min(s.chars().count())
+}
+
+/// In-progress selection on the content pane. `anchor` is where the selection started, `marker`
+/// the current cursor; both are 1-based source-line indices. Two granularities share this state:
+///
+/// - **Line** (keyboard `j`/`k`, Shift-extend): whole source lines. `char_mode` is `false` and the
+///   `*_col` carets are ignored — copy takes full lines.
+/// - **Character** (mouse click-drag): `anchor_col`/`marker_col` are char carets (0-based char
+///   indices into the *displayed* line, gutter included) pairing with `anchor`/`marker`. Set while
+///   `char_mode` is `true` — copy takes the exact `anchor..marker` character span.
+///
+/// A keyboard move reverts to line granularity (`char_mode = false`), so the two never tangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LineSelectState {
     anchor: usize,
     marker: usize,
+    anchor_col: usize,
+    marker_col: usize,
+    char_mode: bool,
 }
 
 impl LineSelectState {
-    /// Start a new selection collapsed onto a single `line`.
+    /// Start a new selection collapsed onto a single `line` (line granularity).
     pub(crate) fn new(line: usize) -> Self {
         Self {
             anchor: line,
             marker: line,
+            anchor_col: 0,
+            marker_col: 0,
+            char_mode: false,
         }
     }
 
+    /// Begin a character-granular selection collapsed at `(line, col)` — a mouse press. `col` is a
+    /// char caret into the displayed line; `line` is clamped to `[1, last]`.
+    pub(crate) fn begin_char(&mut self, line: usize, col: usize, last: usize) {
+        let l = Self::clamp(line, last);
+        self.anchor = l;
+        self.marker = l;
+        self.anchor_col = col;
+        self.marker_col = col;
+        self.char_mode = true;
+    }
+
+    /// Extend a character-granular selection: move the marker to `(line, col)` while holding the
+    /// anchor — a mouse drag. `line` is clamped to `[1, last]`.
+    pub(crate) fn drag_char(&mut self, line: usize, col: usize, last: usize) {
+        self.marker = Self::clamp(line, last);
+        self.marker_col = col;
+        self.char_mode = true;
+    }
+
+    /// Whether the selection is character-granular (a mouse drag), vs. whole-line (keyboard).
+    pub(crate) fn is_char_mode(&self) -> bool {
+        self.char_mode
+    }
+
+    /// The character selection as an ordered `((lo_line, lo_col), (hi_line, hi_col))` pair —
+    /// ascending by line then column, so a drag in either direction reads the same.
+    pub(crate) fn char_span(&self) -> ((usize, usize), (usize, usize)) {
+        let a = (self.anchor, self.anchor_col);
+        let m = (self.marker, self.marker_col);
+        if a <= m { (a, m) } else { (m, a) }
+    }
+
     /// Move the marker to `line` (clamped to `[1, last]`) and collapse the selection onto it —
-    /// the anchor follows the marker.
+    /// the anchor follows the marker. A keyboard move, so it reverts to line granularity.
     pub(crate) fn move_to(&mut self, line: usize, last: usize) {
         self.marker = Self::clamp(line, last);
         self.anchor = self.marker;
+        self.char_mode = false;
     }
 
     /// Move the marker to `line` (clamped to `[1, last]`) while holding the anchor fixed,
-    /// extending (or shrinking) the selection.
+    /// extending (or shrinking) the selection. A keyboard extend, so it reverts to line granularity.
     pub(crate) fn extend_to(&mut self, line: usize, last: usize) {
         self.marker = Self::clamp(line, last);
+        self.char_mode = false;
     }
 
     /// The marker (cursor) line — 1-based. Exposed for the Presenter's line-select overlay (T-9),
@@ -159,23 +218,118 @@ impl Controller {
         let hi = end.max(1).min(total);
         (lo..=hi)
             .map(|n| {
-                let plain: String = self.content.lines[n - 1]
-                    .spans
-                    .iter()
-                    .flat_map(|s| s.content.chars())
-                    .filter(|c| !c.is_control() || *c == '\t')
-                    .collect();
+                let plain = self.filtered_display_line(n);
                 strip_line_gutter(&plain, n).to_string()
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    /// Copy the CONTENT of the selected lines to the clipboard and close the mode (the `Enter` /
-    /// `y` / `Y` / double-click confirm). Builds the joined line text via
-    /// [`selected_lines_text`](Self::selected_lines_text), copies it, then surfaces a concise
-    /// outcome notice naming the line range — NOT the content itself, which may be many lines
-    /// ("Copied line 5" / "Copied lines 5-8" on `Ok`, a failure message on `Err`, AC-10/AC-11).
+    /// The plain text of 1-based source line `n` (its spans joined), with residual control chars
+    /// dropped but `\t` kept. Includes the syntax renderer's gutter — callers strip it with
+    /// [`strip_line_gutter`]. Caller guarantees `n` is in `[1, content.lines.len()]`.
+    fn filtered_display_line(&self, n: usize) -> String {
+        self.content.lines[n - 1]
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .filter(|c| !c.is_control() || *c == '\t')
+            .collect()
+    }
+
+    /// Map a screen `(col, row)` to a `(source line, char caret)` for mouse selection. The row maps
+    /// to a source line exactly as [`handle_line_select_mouse`](Self::handle_line_select_mouse)
+    /// does; the column subtracts the pane origin and the one-column selection glyph the overlay
+    /// prepends, adds any horizontal scroll, then resolves to a char caret in the displayed line.
+    /// Clamped to `[1, line_count]` for the line and `[0, line_len]` for the caret.
+    ///
+    /// The char caret is an index into the *displayed* line (gutter included); the copy path strips
+    /// the gutter afterward. Column accounting assumes the unwrapped view (the common case for a
+    /// mouse drag); precise mapping under the `w` wrap override is a follow-up.
+    pub(crate) fn char_at_content_col(&self, col: u16, row: u16) -> (usize, usize) {
+        if self.content.lines.is_empty() {
+            return (1, 0); // no content to index (line-select can't open on an empty pane anyway)
+        }
+        let last = self.content.lines.len();
+        let top = self.geom.content_inner.map_or(row, |c| c.y);
+        let x = self.geom.content_inner.map_or(0, |c| c.x);
+        let display_row = self.content_scroll as usize + row.saturating_sub(top) as usize;
+        let line = self.line_at_content_row(display_row).clamp(1, last);
+        // The overlay prepends a 1-col glyph, so real content begins one column right of the pane
+        // origin; add horizontal scroll, then drop that glyph column to index the displayed line.
+        let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
+        let disp_col = within.saturating_sub(1);
+        let caret = char_index_at_col(&self.filtered_display_line(line), disp_col);
+        (line, caret)
+    }
+
+    /// The number of leading chars the syntax renderer's line-number gutter occupies — constant
+    /// across the source-mapped view, so it's measured off the marker line. `0` when there is no
+    /// gutter (plain-text fallback / test stubs), no line-select, or empty content. The Presenter
+    /// uses it so a character selection's highlight never paints the gutter on continuation lines.
+    pub(crate) fn selection_gutter_len(&self) -> usize {
+        let Some(s) = self.modal.line_select() else {
+            return 0;
+        };
+        let total = self.content.lines.len();
+        if total == 0 {
+            return 0;
+        }
+        let n = s.marker().clamp(1, total);
+        let displayed = self.filtered_display_line(n);
+        let code = strip_line_gutter(&displayed, n);
+        displayed.chars().count() - code.chars().count()
+    }
+
+    /// The text of a character-granular selection from `(lo_line, lo_col)` to `(hi_line, hi_col)`
+    /// (both ordered ascending, char carets into the displayed line). The gutter is stripped per
+    /// line and the carets are re-based into the ungutter'd code, so the copy is source text alone:
+    /// the tail of the first line, whole middle lines, and the head of the last, joined by `\n`.
+    /// A collapsed selection (same line and caret) yields the empty string.
+    fn char_selection_text(
+        &self,
+        (lo_line, lo_col): (usize, usize),
+        (hi_line, hi_col): (usize, usize),
+    ) -> String {
+        let total = self.content.lines.len();
+        if total == 0 {
+            return String::new();
+        }
+        let lo_line = lo_line.clamp(1, total);
+        let hi_line = hi_line.clamp(1, total);
+        (lo_line..=hi_line)
+            .map(|n| {
+                let displayed = self.filtered_display_line(n);
+                let code = strip_line_gutter(&displayed, n);
+                // Chars the gutter occupies (constant across the view, but derive it per line so a
+                // gutter-less renderer yields 0), so a display-char caret maps into the code.
+                let gutter = displayed.chars().count() - code.chars().count();
+                let chars: Vec<char> = code.chars().collect();
+                let start = if n == lo_line {
+                    lo_col.saturating_sub(gutter)
+                } else {
+                    0
+                };
+                let end = if n == hi_line {
+                    hi_col.saturating_sub(gutter)
+                } else {
+                    chars.len()
+                };
+                let start = start.min(chars.len());
+                let end = end.min(chars.len()).max(start);
+                chars[start..end].iter().collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Copy the selected content to the clipboard and close the mode (the `Enter` / `y` / `Y`
+    /// confirm). Whole lines for a keyboard (line-granular) selection via
+    /// [`selected_lines_text`](Self::selected_lines_text), or the exact character span for a mouse
+    /// drag via [`char_selection_text`](Self::char_selection_text). Surfaces a concise outcome
+    /// notice — the line range or "selection", NOT the content itself, which may be many lines
+    /// ("Copied line 5" / "Copied lines 5-8" / "Copied selection" on `Ok`; a failure message on
+    /// `Err`, AC-10/AC-11).
     ///
     /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
     /// guidance screen is non-empty), so if there is no active selection or the selected node is
@@ -199,11 +353,33 @@ impl Controller {
             return Effects::noop();
         }
 
-        let text = self.selected_lines_text(start, end);
-        let label = if start == end {
-            format!("line {start}")
-        } else {
-            format!("lines {start}-{end}")
+        // Character granularity (a mouse drag) copies the exact selected span; line granularity
+        // (keyboard) copies whole lines. A collapsed character selection (a plain click, nothing
+        // dragged) falls back to copying the clicked line, so click-then-Enter still yields a line.
+        let char_span = self
+            .modal
+            .line_select()
+            .filter(|s| s.is_char_mode())
+            .map(|s| s.char_span());
+        let (text, label) = match char_span {
+            Some((lo, hi)) => {
+                let text = self.char_selection_text(lo, hi);
+                if text.is_empty() {
+                    let marker = self.line_selection().map_or(start, |(_, e)| e);
+                    (self.selected_lines_text(marker, marker), format!("line {marker}"))
+                } else {
+                    (text, "selection".to_string())
+                }
+            }
+            None => {
+                let text = self.selected_lines_text(start, end);
+                let label = if start == end {
+                    format!("line {start}")
+                } else {
+                    format!("lines {start}-{end}")
+                };
+                (text, label)
+            }
         };
         self.action_notice = Some(match self.clipboard.copy(&text) {
             Ok(()) => format!("Copied {label}"),
@@ -242,7 +418,7 @@ impl Controller {
     /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
-    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the selected lines'
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the selected
     /// content and closes the mode; `y`/`Y` do the same (the familiar copy keys)
     /// ([`copy_line_content`](Self::copy_line_content), AC-9). Any other key
     /// is inert. Ctrl/Alt chords are rejected up
@@ -261,11 +437,11 @@ impl Controller {
                 self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
                 return Effects::redraw();
             }
-            // Enter / y / Y all confirm: copy the selected lines' content, then close the mode.
-            // `y`/`Y` reach here because line-select routes every key through this handler, so the
-            // normal copy-path bindings would otherwise be inert; wiring them here matches the
-            // muscle memory of "y copies". `Y` arrives as the uppercase char + SHIFT, which the
-            // modifier guard above permits.
+            // Enter / y / Y all confirm: copy the selection, then close the mode. `y`/`Y` reach here
+            // because line-select routes every key through this handler, so the normal copy-path
+            // bindings would otherwise be inert; wiring them matches the app's `y`/`Y`=copy idiom
+            // (and vim's yank). `Y` arrives as the uppercase char + SHIFT, which the modifier guard
+            // above permits — accepted so holding Shift never makes copy silently fail.
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
                 return self.copy_line_content(); // AC-9
             }
@@ -360,6 +536,40 @@ mod tests {
         // Leading digits equal to `n` but with no separator (code that just starts with them) →
         // unchanged, so we never eat real content.
         assert_eq!(strip_line_gutter("5000 loops", 5), "5000 loops");
+    }
+
+    #[test]
+    fn char_index_at_col_maps_column_to_char_and_clamps() {
+        assert_eq!(char_index_at_col("hello", 0), 0);
+        assert_eq!(char_index_at_col("hello", 3), 3);
+        // Past the end clamps to a caret at end-of-line.
+        assert_eq!(char_index_at_col("hello", 99), 5);
+        assert_eq!(char_index_at_col("", 4), 0);
+    }
+
+    #[test]
+    fn char_span_orders_by_line_then_column() {
+        // Anchor after marker on the same line → ordered ascending by column.
+        let mut s = LineSelectState::new(3);
+        s.begin_char(3, 7, 10);
+        s.drag_char(3, 2, 10);
+        assert_eq!(s.char_span(), ((3, 2), (3, 7)));
+        assert!(s.is_char_mode());
+
+        // Anchor on a later line than the marker → ordered ascending by line.
+        let mut s = LineSelectState::new(5);
+        s.begin_char(5, 1, 10);
+        s.drag_char(2, 9, 10);
+        assert_eq!(s.char_span(), ((2, 9), (5, 1)));
+    }
+
+    #[test]
+    fn keyboard_move_reverts_to_line_mode() {
+        let mut s = LineSelectState::new(1);
+        s.begin_char(1, 4, 10);
+        assert!(s.is_char_mode(), "a mouse press is character-granular");
+        s.move_to(3, 10);
+        assert!(!s.is_char_mode(), "a keyboard move reverts to line granularity");
     }
 
     #[test]
