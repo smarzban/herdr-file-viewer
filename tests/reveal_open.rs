@@ -73,6 +73,7 @@ impl ContentProvider for StubContent {
         RenderResult {
             content: Text::raw("stub"),
             notices: Vec::new(),
+            source: None,
         }
     }
 }

@@ -67,6 +67,7 @@ impl ContentProvider for StubContent {
         RenderResult {
             content: Text::raw("stub-content"),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -751,6 +752,7 @@ impl ContentProvider for LinesContent {
         RenderResult {
             content: Text::raw(body),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -765,6 +767,7 @@ impl ContentProvider for WideContent {
         RenderResult {
             content: Text::raw(body),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -1988,6 +1991,7 @@ impl ContentProvider for PathContent {
         RenderResult {
             content: Text::raw(format!("showing {}", path.display())),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -5812,6 +5816,7 @@ impl ContentProvider for WrapLines {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -6121,6 +6126,7 @@ impl ContentProvider for SearchContent {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -6836,6 +6842,7 @@ impl ContentProvider for SwitchingContent {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -7089,6 +7096,7 @@ impl ContentProvider for ContentWithoutSentinel {
         RenderResult {
             content: Text::raw(lines),
             notices: Vec::new(),
+            source: None,
         }
     }
 }

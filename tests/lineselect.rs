@@ -60,6 +60,7 @@ impl ContentProvider for MultiLine {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -79,6 +80,7 @@ impl ContentProvider for WrapBody {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -169,6 +171,7 @@ impl ContentProvider for EmptyContent {
         RenderResult {
             content: Text::default(),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -184,6 +187,7 @@ impl ContentProvider for ControlContent {
         RenderResult {
             content: Text::raw("\tcode\x1bhere"),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -199,6 +203,7 @@ impl ContentProvider for GutterContent {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -1523,5 +1528,152 @@ fn ambient_drag_over_rendering_placeholder_copies_nothing() {
     assert!(
         copied.lock().unwrap().is_empty(),
         "dragging over the \"Rendering…\" placeholder copies nothing"
+    );
+}
+
+// ── retained source: copies are byte-faithful and the gutter is source-anchored ─────────────
+// A source-mapped render retains the file's raw lines (`RenderResult::source`, 1:1 with the
+// displayed lines). Whole-line copies then return the SOURCE text verbatim (real tabs — the
+// renderer expands them to spaces on screen — and no gutter parsing at all), and the gutter
+// width is anchored by matching the displayed line against its source instead of guessed from
+// leading digits — killing the heuristic's one false positive (a gutter-less line that happens
+// to start with its own line number).
+
+/// Bat-style displayed lines (gutter + tab expanded to 4 spaces) with the REAL source retained,
+/// as the live renderer supplies for `SyntaxContent`.
+#[derive(Clone, Copy)]
+struct GutterWithSource;
+impl ContentProvider for GutterWithSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let displayed = ["   1 fn main() {", "   2     let x = 5;", "   3 }"];
+        RenderResult {
+            content: Text::raw(displayed.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "\tlet x = 5;".to_string(), // REAL tab in the file; bat shows 4 spaces
+                "}".to_string(),
+            ]),
+        }
+    }
+}
+
+/// A gutter-less view (plain-text fallback) whose line 3 happens to START with "3 " — the exact
+/// input that fools the digit heuristic — with the source retained to anchor the truth.
+#[derive(Clone, Copy)]
+struct PlainWithSource;
+impl ContentProvider for PlainWithSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["fn main() {", "    let x = 5;", "3 loops below"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "\tlet x = 5;".to_string(),
+                "3 loops below".to_string(),
+            ]),
+        }
+    }
+}
+
+#[test]
+fn line_copy_returns_source_verbatim_real_tabs_no_gutter() {
+    // Whole-line copies come from the retained source: the bat gutter never needs stripping and
+    // the file's REAL tab indentation survives (the display shows expanded spaces).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), GutterWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('J'))); // extend 1 → 2
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("fn main() {\n\tlet x = 5;"),
+        "the copy is the SOURCE text: no gutter, and the real tab survives (not 4 spaces)"
+    );
+}
+
+#[test]
+fn gutterless_line_starting_with_its_own_number_is_not_mis_stripped() {
+    // Line 3 of a gutter-less view reads "3 loops below" — the digit heuristic alone would strip
+    // the leading "3 " as a gutter. With the source retained the copy is anchored to the truth.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('j'))); // 1 → 2
+    ctrl.handle_line_select_key(key(KeyCode::Char('j'))); // 2 → 3
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("3 loops below"),
+        "a line that merely starts with its own number keeps its leading digits"
+    );
+}
+
+#[test]
+fn char_drag_gutter_is_source_anchored_not_guessed() {
+    // The same false-positive line, selected char-granularly with the mouse: the source-anchored
+    // gutter is 0 (the displayed line IS the source), so carets [0, 3) map to "3 l" — the digit
+    // heuristic would have mis-based every caret by the phantom 2-char "gutter".
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainWithSource);
+    await_marker(&mut ctrl, "fn main");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.enter_line_select_at_top();
+
+    // L-mode geometry: content x=41 + 1 overlay glyph col. Row 3 → source line 3.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 42, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 3));
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("3 l"),
+        "carets are based off the source-anchored gutter (0), not the heuristic's guess"
+    );
+}
+
+#[test]
+fn source_control_bytes_are_still_scrubbed() {
+    // The retained source is untrusted file bytes — the AC-16 control scrub applies to it exactly
+    // as to display extraction (tabs kept, ESC dropped).
+    #[derive(Clone, Copy)]
+    struct HostileSource;
+    impl ContentProvider for HostileSource {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: Text::raw("clean view"),
+                notices: Vec::new(),
+                source: Some(vec!["\tcode\x1b[2Jhere".to_string()]),
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), HostileSource);
+    await_marker(&mut ctrl, "clean");
+    ctrl.set_content_viewport(80, 10);
+    ctrl.enter_line_select_at_top();
+
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    let log = copied.lock().unwrap();
+    let got = log.last().map(String::as_str).unwrap();
+    assert_eq!(
+        got, "\tcode[2Jhere",
+        "the ESC byte is dropped from the source-backed copy; the tab survives"
+    );
+    assert!(
+        !got.chars().any(|c| c.is_control() && c != '\t'),
+        "no control byte (other than tab) reaches the clipboard: {got:?}"
     );
 }

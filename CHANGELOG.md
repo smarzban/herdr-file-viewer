@@ -21,9 +21,10 @@ All notable changes to this project are documented here. The format is based on
 - **Line-select mode copies content with `y`/`Y`.** One selection, two products: `Enter` keeps
   copying the `path:line` / `path:start-end` **reference** (unchanged since 1.9.0), while the new
   `y`/`Y` copy the selected **content** — for a keyboard selection, the line(s) joined by
-  newlines; for a mouse selection, the exact character span. The syntax view's line-number gutter
-  (`bat --style=numbers`) is stripped from the content copy, indentation is preserved, and
-  residual control bytes are removed before it reaches the clipboard (tabs kept). The confirmation
+  newlines; for a mouse selection, the exact character span. Whole-line copies come from the
+  file's own retained text, byte-faithful (real tabs, no renderer decoration); the syntax view's
+  line-number gutter (`bat --style=numbers`) never reaches the copy, indentation is preserved,
+  and residual control bytes are removed before it reaches the clipboard (tabs kept). The confirmation
   notice names what was copied (e.g. "Copied lines 42-58" / "Copied selection").
 
 ### Changed

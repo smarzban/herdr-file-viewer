@@ -98,6 +98,13 @@ pub trait GitService: Send + Sync {
 pub struct RenderResult {
     pub content: Text<'static>,
     pub notices: Vec<String>,
+    /// The raw SOURCE lines behind a source-mapped (`SyntaxContent`) render — the file text the
+    /// renderer was fed, split into lines, 1:1 with `content.lines` — so the copy paths can
+    /// produce byte-faithful text (real tabs, no renderer decoration) and anchor the gutter
+    /// width exactly instead of heuristically. `None` for transformed views (markdown / diffs,
+    /// where no per-display-line source exists) and for providers that don't supply it; the
+    /// copy paths then fall back to display-text extraction.
+    pub source: Option<Vec<String>>,
 }
 
 /// Produce the content-pane text for `(file, mode)`. `Send` so a later task can run it on a
@@ -372,6 +379,11 @@ pub struct Controller {
     /// The content pane's current text and its notices (truncation/fallback).
     content: Text<'static>,
     content_notices: Vec<String>,
+    /// The raw source lines behind the displayed content when it is source-mapped
+    /// (`SyntaxContent`), 1:1 with `content.lines` — see [`RenderResult::source`]. Applied and
+    /// cleared in lockstep with `content` (`poll` / `clear_content`), so the copy paths can trust
+    /// that when it is `Some`, index `n-1` IS displayed line `n`'s source.
+    content_source: Option<Vec<String>>,
     /// The path of the file whose content is currently displayed in the pane — the title's
     /// source of truth, so the border label switches in lockstep with the body. `None`
     /// while no file's content has landed yet (launch, a re-root, or a directory/empty tree
@@ -550,6 +562,7 @@ impl Controller {
             overrides: HashMap::new(),
             content: Text::raw(""),
             content_notices: Vec::new(),
+            content_source: None,
             content_path: None,
             content_rendering: false,
             action_notice: None,
@@ -626,6 +639,7 @@ impl Controller {
                 .unwrap_or_else(|_| RenderResult {
                     content: Text::raw("[content unavailable — renderer error]"),
                     notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
+                    source: None,
                 });
                 if result_tx.send((job.seq, result)).is_err() {
                     break; // controller gone
@@ -1899,6 +1913,7 @@ impl Controller {
         {
             self.content = Text::raw("Rendering\u{2026}");
             self.content_notices.clear();
+            self.content_source = None; // the placeholder has no source; the landing render brings its own
             self.content_rendering = true;
         }
     }
@@ -1910,6 +1925,7 @@ impl Controller {
     fn clear_content(&mut self, reason: EmptyReason) {
         self.content = Text::raw(reason.label());
         self.content_notices.clear();
+        self.content_source = None; // guidance text has no source behind it
         // No file content is displayed for a directory/empty tree, and no render is in flight
         // (this path sends no `RenderJob`), so the title falls back to the selected node's name
         //.
@@ -1929,6 +1945,7 @@ impl Controller {
                 // dispatch_render's clear must not carry its stale coordinates onto the new body.
                 self.content_selection = None;
                 self.content_notices = result.notices;
+                self.content_source = result.source; // in lockstep with `content` (copy fidelity)
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
                 // the body has landed — now switch the title to match it. The latest
                 // dispatched render always corresponds to the current tree selection (every

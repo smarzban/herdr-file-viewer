@@ -35,6 +35,7 @@ impl ContentProvider for SlowContent {
         RenderResult {
             content: Text::raw(format!("rendered:{name}")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -55,6 +56,7 @@ impl ContentProvider for PanicOnContent {
         RenderResult {
             content: Text::raw(format!("rendered:{name}")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }

@@ -51,6 +51,16 @@ fn strip_line_gutter(plain: &str, n: usize) -> &str {
     if saw_sep { rest } else { plain }
 }
 
+/// Drop control characters from one line of untrusted file text while keeping `\t`, so
+/// indentation survives the AC-16 scrub. The per-line counterpart of
+/// [`crate::text_layout::sanitize_control`] (which would also eat tabs and newlines); callers
+/// join lines with `\n` AFTER filtering so line structure survives.
+fn filter_control_keep_tabs(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect()
+}
+
 /// The char index within `s` displayed at 0-based display column `col` — i.e. how many chars sit
 /// to the left of a caret dropped at that column. Used to turn a mouse column into a character
 /// position for click-drag selection. Clamps to the char count when `col` is at/past the end (a
@@ -242,16 +252,54 @@ impl Controller {
         let hi = end.max(1).min(total);
         (lo..=hi)
             .map(|n| {
+                // Prefer the retained SOURCE line (byte-faithful: real tabs, no renderer
+                // decoration, no gutter to strip) — the control filter still applies, since file
+                // bytes are untrusted (AC-16). Fall back to display extraction + gutter strip
+                // when no source is retained (transformed views / providers without it).
+                if let Some(src) = self.source_line(n) {
+                    return filter_control_keep_tabs(src);
+                }
                 let plain = self.filtered_display_line(n);
-                strip_line_gutter(&plain, n).to_string()
+                let gutter = self.gutter_len_of(&plain, n);
+                plain.chars().skip(gutter).collect()
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
+    /// The retained raw source text of 1-based displayed line `n`, when the current content is
+    /// source-mapped (see [`RenderResult::source`]); `None` otherwise. `content_source` is applied
+    /// in lockstep with `content`, so `Some` guarantees index `n-1` IS displayed line `n`'s source.
+    fn source_line(&self, n: usize) -> Option<&str> {
+        self.content_source
+            .as_ref()
+            .and_then(|src| src.get(n - 1))
+            .map(String::as_str)
+    }
+
+    /// Width (in chars) of the renderer's line-number gutter on displayed line `n`, given that
+    /// line's already-extracted plain text. **Source-anchored when possible**: the syntax renderer
+    /// emits the source line verbatim after its gutter, so if the displayed line ends with the
+    /// (control-filtered) source text, the gutter is exactly the length difference — no guessing,
+    /// and immune to the heuristic's one false positive (a gutter-less line that happens to start
+    /// with its own line number). When the anchor can't apply — no retained source, or the
+    /// renderer transformed the text (e.g. `bat` expands tabs, so a tab-bearing line won't match)
+    /// — fall back to the self-validating [`strip_line_gutter`] heuristic.
+    fn gutter_len_of(&self, displayed: &str, n: usize) -> usize {
+        if let Some(src) = self.source_line(n) {
+            let src = filter_control_keep_tabs(src);
+            if displayed.ends_with(src.as_str()) {
+                return displayed.chars().count() - src.chars().count();
+            }
+        }
+        let code = strip_line_gutter(displayed, n);
+        displayed.chars().count() - code.chars().count()
+    }
+
     /// The plain text of 1-based source line `n` (its spans joined), with residual control chars
-    /// dropped but `\t` kept. Includes the syntax renderer's gutter — callers strip it with
-    /// [`strip_line_gutter`]. Caller guarantees `n` is in `[1, content.lines.len()]`.
+    /// dropped but `\t` kept. Includes the syntax renderer's gutter — callers strip it via
+    /// [`gutter_len_of`](Self::gutter_len_of). Caller guarantees `n` is in
+    /// `[1, content.lines.len()]`.
     fn filtered_display_line(&self, n: usize) -> String {
         self.content.lines[n - 1]
             .spans
@@ -335,8 +383,7 @@ impl Controller {
         }
         let n = line.clamp(1, total);
         let displayed = self.filtered_display_line(n);
-        let code = strip_line_gutter(&displayed, n);
-        displayed.chars().count() - code.chars().count()
+        self.gutter_len_of(&displayed, n)
     }
 
     /// The gutter width on the L-mode marker line — [`content_gutter_len`](Self::content_gutter_len)
@@ -354,6 +401,12 @@ impl Controller {
     /// line and the carets are re-based into the ungutter'd code, so the copy is source text alone:
     /// the tail of the first line, whole middle lines, and the head of the last, joined by `\n`.
     /// A collapsed selection (same line and caret) yields the empty string.
+    ///
+    /// Deliberately extracts from the DISPLAYED text (what-you-see-is-what-you-copy — the carets
+    /// are display positions, so the copy is exactly the glyphs the user swept), with the gutter
+    /// width source-anchored via [`gutter_len_of`](Self::gutter_len_of). Whole-line copies
+    /// ([`selected_lines_text`](Self::selected_lines_text)) are the byte-faithful, source-backed
+    /// path.
     fn char_selection_text(
         &self,
         (lo_line, lo_col): (usize, usize),
@@ -368,11 +421,8 @@ impl Controller {
         (lo_line..=hi_line)
             .map(|n| {
                 let displayed = self.filtered_display_line(n);
-                let code = strip_line_gutter(&displayed, n);
-                // Chars the gutter occupies (constant across the view, but derive it per line so a
-                // gutter-less renderer yields 0), so a display-char caret maps into the code.
-                let gutter = displayed.chars().count() - code.chars().count();
-                let chars: Vec<char> = code.chars().collect();
+                let gutter = self.gutter_len_of(&displayed, n);
+                let chars: Vec<char> = displayed.chars().skip(gutter).collect();
                 let start = if n == lo_line {
                     lo_col.saturating_sub(gutter)
                 } else {
