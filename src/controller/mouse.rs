@@ -118,26 +118,21 @@ impl Controller {
             MouseEventKind::ScrollRight => self.hscroll_at(col, row, HSCROLL_STEP as i32),
             MouseEventKind::ScrollLeft => self.hscroll_at(col, row, -(HSCROLL_STEP as i32)),
             MouseEventKind::Down(MouseButton::Left) => {
-                // A press in the content pane begins an ambient character selection (a drag extends
-                // it, the release copies it); on the divider a resize drag; on a scrollbar a scroll
-                // drag AND a jump to the pressed position (click-to-scroll). Anything else waits for
-                // the release (a click) and drops a standing selection (click-away deselect). Always
-                // (re)set `drag` from the press — so a stale drag from a release we never saw (e.g.
-                // swallowed by a modal) can't keep acting on later moves.
+                // A press in the content pane begins an ambient character selection; on the divider a
+                // resize drag; on a scrollbar a scroll drag AND a jump to the pressed position
+                // (click-to-scroll). Anything else waits for the release (a click) and drops a standing
+                // selection (click-away deselect). Always (re)set `drag` from the press — so a stale
+                // drag from a release we never saw (e.g. swallowed by a modal) can't act on later moves.
                 let region = self.hit_test(col, row);
                 if region == MouseRegion::Content {
-                    // Focus follows the press (like a plain content click), then seed a fresh
-                    // collapsed char selection at the pressed caret. `char_at_content_col` subtracts
-                    // 0 glyph columns here (no modal → no gutter glyph). The Drag arm extends it and
-                    // Up finalizes (collapsed ⇒ it was a click; non-collapsed ⇒ copy).
+                    // Seed a fresh collapsed char selection at the pressed caret; the Drag arm
+                    // extends it and Up finalizes (collapsed ⇒ a click; non-collapsed ⇒ copy).
                     self.last_click = None;
                     self.focus = Focus::Content;
                     self.drag = None;
-                    // While a render is in flight the pane shows the "Rendering…" placeholder, not
-                    // real file text — pressing over it must not seed a selection (a drag would
-                    // otherwise copy the placeholder, which the file-node guard in
-                    // `copy_content_selection` does NOT catch: a file IS selected while it renders).
-                    // The press still focuses the pane; a fresh press after the render lands selects.
+                    // But not over the "Rendering…" placeholder: a file *is* selected mid-render, so
+                    // the is-file guard in `copy_content_selection` wouldn't stop a drag from copying
+                    // the placeholder text. (The press still focuses the pane.)
                     if self.content_rendering {
                         return Effects::redraw();
                     }
@@ -178,10 +173,8 @@ impl Controller {
                 // The finder is modal: its scrollbar drag is handled in handle_finder_mouse and
                 // never reaches this (non-finder) path. Covered here only for exhaustiveness.
                 Some(Drag::FinderV) => Effects::noop(),
-                // Extend the ambient content-pane selection to the dragged caret, scrolling the pane
-                // when the cursor runs past a viewport edge (mirrors the L-mode drag in
-                // handle_line_select_mouse, but writes the Modal-independent `content_selection`).
-                // The `as_mut` guard makes a stray ContentSelect drag inert.
+                // Extend the ambient selection to the dragged caret + autoscroll past a viewport edge
+                // — the L-mode drag, but on the Modal-independent `content_selection`.
                 Some(Drag::ContentSelect) => {
                     let (line, caret) = self.char_at_content_col(col, row);
                     let last = self.content.lines.len().max(1);
@@ -194,10 +187,9 @@ impl Controller {
                 None => Effects::noop(),
             },
             MouseEventKind::Up(MouseButton::Left) => match self.drag.take() {
-                // End of an ambient content-pane selection drag. A selection still collapsed at
-                // release was a plain click (the press emitted no Drag events): drop it and just
-                // focus the pane, exactly as a bare content click did before. A real (non-collapsed)
-                // selection auto-copies and stays highlighted for feedback.
+                // End of an ambient drag. Still collapsed ⇒ it was a plain click (no Drag events):
+                // drop it and just focus, as a bare content click did. Non-collapsed ⇒ auto-copy,
+                // keeping the highlight.
                 Some(Drag::ContentSelect) => {
                     let collapsed = self
                         .content_selection

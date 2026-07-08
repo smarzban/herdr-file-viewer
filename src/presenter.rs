@@ -116,11 +116,9 @@ pub struct ViewState {
     /// overlay. `None` ⇒ draw the content as-is (byte-identical to today — the `None` arm leaves the
     /// content path untouched, so no other snapshot moves).
     pub line_select: Option<LineSelectView>,
-    /// When `Some`, an ambient character selection was dragged out in the content pane during normal
-    /// navigation (no modal open). The Presenter overlays a gutter-less character highlight — no
-    /// ▶/│ glyph and no content shift, so it reads as a plain text selection rather than a mode.
-    /// Mutually exclusive with [`line_select`](Self::line_select) by construction; `draw_content`
-    /// still gives `line_select` precedence. `None` ⇒ no ambient selection (content drawn as-is).
+    /// When `Some`, an ambient character selection (a content-pane drag, no modal). Drawn as a
+    /// gutter-less highlight — no ▶/│ glyph, no content shift — so it reads as a plain text selection,
+    /// not a mode. `draw_content` gives [`line_select`](Self::line_select) precedence if both are set.
     pub content_selection: Option<CharSelView>,
     /// When `Some`, the in-app help overlay is drawn on top of everything else (AC-1, AC-5).
     /// `None` ⇒ no overlay. Drawn last in [`draw`] so it sits above the picker and finder.
@@ -591,15 +589,11 @@ fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'
         .collect()
 }
 
-/// Overlay an ambient character selection onto the content lines — the gutter-less counterpart of
-/// [`apply_line_select`]'s character branch. For each source line (1-based index `i + 1`) inside the
-/// selection, the selected characters are re-styled with [`crate::highlight::HIGHLIGHT`] via
-/// [`patch_char_range`]; every other line is cloned unchanged. Unlike [`apply_line_select`] it
-/// prepends NO gutter glyph and applies no whole-row style, so the content does not shift and reads
-/// as a plain text selection (there is no marker — an ambient selection has no cursor line). The
-/// boundary rows are partial (`start_col`/`end_col`, never left of the gutter); interior rows
-/// highlight from the gutter to end-of-line. The line count is preserved so `content_rows` stays
-/// valid, and the content text itself is never mutated — spans are cloned, only their style patched.
+/// Overlay an ambient character selection — the gutter-less counterpart of [`apply_line_select`]'s
+/// character branch: it re-styles the selected chars with [`crate::highlight::HIGHLIGHT`] but
+/// prepends NO ▶/│ glyph and no whole-row style, so the content does not shift. Boundary rows are
+/// partial (`start_col`..`end_col`, clamped past the gutter); interior rows run to end-of-line.
+/// Preserves the line count so `content_rows` stays valid.
 fn apply_char_selection(lines: &[Line<'static>], cs: &CharSelView) -> Vec<Line<'static>> {
     lines
         .iter()

@@ -411,15 +411,11 @@ pub struct Controller {
     /// What the held left button is dragging (divider resize or a scrollbar), so the release is
     /// treated as the end of the drag, not a click. `None` ⇒ no drag in progress.
     drag: Option<Drag>,
-    /// An ambient character-granular text selection dragged out in the content pane during normal
-    /// navigation — held OUTSIDE [`Modal`] so `Modal::None` stays in force and every keyboard
-    /// binding keeps its normal meaning (that is what makes it ambient, not a mode). Reuses the
-    /// [`LineSelectState`] char primitives (`begin_char`/`drag_char`/`char_span`), always in
-    /// char-mode. Mutually exclusive with L line-select mode by construction: this is created only
-    /// in `handle_column_mouse` (which runs only for `Modal::None`), and entering L mode clears it.
-    /// Copied automatically on the drag's release; drawn by a gutter-less presenter overlay. `None`
-    /// ⇒ no ambient selection. Cleared on any content change (`dispatch_render`/`poll`), Esc, a
-    /// click-away, a plain collapsed click, or entering L mode.
+    /// An ambient character selection dragged out in the content pane during normal navigation, held
+    /// OUTSIDE [`Modal`] so `Modal::None` stays in force and every keyboard binding keeps its normal
+    /// meaning — that is what makes it ambient, not a mode. Reuses the [`LineSelectState`] char
+    /// primitives (always char-mode). Mutually exclusive with L line-select mode by construction:
+    /// created only in `handle_column_mouse`, which runs only for `Modal::None`. Auto-copied on release.
     content_selection: Option<LineSelectState>,
     /// The newer version to advertise, if any (set from the cached value at startup and
     /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
@@ -1041,11 +1037,8 @@ impl Controller {
                     char_sel,
                 }
             }),
-            // The ambient content-pane selection (a mouse drag with no modal open). Snapshotted
-            // only when non-collapsed (a real drag, not a bare click) so a click never paints a
-            // zero-width highlight. It is mutually exclusive with `line_select` by construction, but
-            // `draw_content` still gives `line_select` precedence, so at most one overlay draws. The
-            // gutter is measured off the selection's start line via `content_gutter_len`.
+            // Snapshot the ambient selection only when non-collapsed, so a bare click never paints a
+            // zero-width highlight (`draw_content` gives `line_select` precedence if both were set).
             content_selection: self
                 .content_selection
                 .as_ref()
@@ -1669,12 +1662,8 @@ impl Controller {
     /// then un-zoom if zoomed, then quit. So from a committed search the sequence is:
     /// Esc → clears the search; Esc again → un-zooms (if zoomed) or quits. (AC-20, owner UX.)
     fn close_or_unzoom(&mut self) -> Effects {
-        // An ambient content-pane selection is dismissed FIRST: Esc "drops the highlight" before it
-        // comes out of a search, unzooms, or quits (the outermost layer of the same Esc stack).
-        // `take()` clears it in one step; a standing selection swallows this Esc and nothing else
-        // changes. The only other state this can catch is a collapsed selection held between a
-        // press and its first drag (mouse physically down while Esc is pressed) — swallowing that
-        // Esc is harmless, and the subsequent release then finds `None` and falls through to a click.
+        // Esc drops an ambient selection first — the outermost layer of the Esc stack, ahead of
+        // search / unzoom / quit. (A collapsed selection held mid-press is swallowed too; harmless.)
         if self.content_selection.take().is_some() {
             return Effects::redraw();
         }
@@ -1867,12 +1856,9 @@ impl Controller {
         // `self.search` directly — it does NOT call `dispatch_render` — so live typing is NOT
         // wiped by this clear.
         self.search = None;
-        // Any displayed-content change also drops an ambient content-pane selection: its
-        // source-line/char coordinates are only meaningful against the content they were dragged
-        // over, so a stale highlight must not map onto the new body (a later copy would read the
-        // wrong text). This one hook covers file-select, view-cycle, baseline-toggle, refresh,
-        // re-root, and the editor-return path (all funnel through here). Content SCROLLING keeps
-        // the selection — it does not call `dispatch_render`, and the coordinates stay valid.
+        // Drop an ambient selection on any content change: its line/char coordinates only mean
+        // something against the body it was dragged over, so a stale highlight (and copy) must not
+        // carry onto new content. Scrolling keeps it — it doesn't dispatch, and the coords stay valid.
         self.content_selection = None;
 
         let Some(node) = self.tree.selected() else {
@@ -1939,10 +1925,8 @@ impl Controller {
         while let Ok((seq, result)) = self.result_rx.try_recv() {
             if seq == self.latest_seq {
                 self.content = result.content;
-                // A selection dragged over the "Rendering…" placeholder must not survive onto the
-                // freshly-landed body (its coordinates were relative to the placeholder text).
-                // `dispatch_render` cleared it at dispatch time; this covers the placeholder→land
-                // window, where a drag could have started after the dispatch cleared it.
+                // Covers the placeholder→land window: a selection dragged over "Rendering…" after
+                // dispatch_render's clear must not carry its stale coordinates onto the new body.
                 self.content_selection = None;
                 self.content_notices = result.notices;
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
