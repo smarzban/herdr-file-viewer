@@ -286,12 +286,22 @@ impl Controller {
     /// renderer transformed the text (e.g. `bat` expands tabs, so a tab-bearing line won't match)
     /// — fall back to the self-validating [`strip_line_gutter`] heuristic.
     fn gutter_len_of(&self, displayed: &str, n: usize) -> usize {
-        if let Some(src) = self.source_line(n) {
-            let src = filter_control_keep_tabs(src);
-            if displayed.ends_with(src.as_str()) {
-                return displayed.chars().count() - src.chars().count();
-            }
+        // A line-number gutter exists ONLY behind a `SyntaxContent` render (`bat --style=numbers`),
+        // which is exactly when the raw source is retained (see `RenderResult::source`). Every
+        // other view (rendered markdown, diff, plain-text fallback, binary) has NO gutter and no
+        // source, so there is nothing to strip: return 0 rather than run the digit heuristic, which
+        // would otherwise drop a legitimate leading "N " from a copied line that happens to begin
+        // with its own display-line number.
+        let Some(src) = self.source_line(n) else {
+            return 0;
+        };
+        let src = filter_control_keep_tabs(src);
+        if displayed.ends_with(src.as_str()) {
+            return displayed.chars().count() - src.chars().count();
         }
+        // Source retained but the renderer transformed the line (e.g. `bat` expanded tabs, so it no
+        // longer ends with the raw source): the gutter is real but unanchorable, so fall back to
+        // the self-validating digit heuristic.
         let code = strip_line_gutter(displayed, n);
         displayed.chars().count() - code.chars().count()
     }
@@ -331,19 +341,32 @@ impl Controller {
         let x = self.geom.content_inner.map_or(0, |c| c.x);
         let display_row = self.content_scroll as usize + row.saturating_sub(top) as usize;
         let line = self.line_at_content_row(display_row).clamp(1, last);
-        // Subtract the active overlay's leading glyph column(s) (see `content_overlay_glyph_cols`)
-        // and the pane origin, add horizontal scroll, to index the displayed line.
+        // The pane-relative column, plus any horizontal scroll. The active overlay's leading glyph
+        // column(s) (see `content_overlay_glyph_cols`) are subtracted per display row below — they
+        // sit on the FIRST row only.
         let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
-        let disp_col = within.saturating_sub(self.content_overlay_glyph_cols());
+        let overlay = self.content_overlay_glyph_cols();
         let text = self.filtered_display_line(line);
         if !self.effective_wrap() {
-            return (line, char_index_at_col(&text, disp_col));
+            // The whole line is display row 0, so the overlay glyph precedes it.
+            return (
+                line,
+                char_index_at_col(&text, within.saturating_sub(overlay)),
+            );
         }
         // Under wrap a source line spans several display rows; the caret is the clicked row's
-        // START char (from the same break-position simulation the wrapped scroll math runs on —
-        // `wrap_row_starts` and `wrapped_rows` are one source of truth) plus the column, clamped
-        // into that row's span so a click past a row's end lands at its end, not on the next row.
-        let starts = crate::text_layout::wrap_row_starts(&text, self.content_width.max(1) as usize);
+        // START char (from `wrap_row_starts_prefixed` — the SAME glyph-aware break simulation the
+        // wrapped scroll/row-count math runs on, one source of truth) plus the column, clamped into
+        // that row's span so a click past a row's end lands at its end, not on the next row. The
+        // overlay glyph occupies a column on the FIRST display row only (ratatui renders it glued
+        // to the text, continuation rows carry none), so it is subtracted from the column on row 0
+        // and NOT on continuation rows — its effect on where later rows break is already baked into
+        // the prefixed break positions.
+        let starts = crate::text_layout::wrap_row_starts_prefixed(
+            &text,
+            self.content_width.max(1) as usize,
+            overlay,
+        );
         let row_within = display_row
             .saturating_sub(self.content_row_of_line(line))
             .min(starts.len() - 1); // the wide-glyph floor can inflate the row count past the port's
@@ -352,13 +375,19 @@ impl Controller {
             .get(row_within + 1)
             .copied()
             .unwrap_or_else(|| text.chars().count());
-        (line, (base + disp_col).min(seg_end))
+        let col_in_row = if row_within == 0 {
+            within.saturating_sub(overlay)
+        } else {
+            within
+        };
+        (line, (base + col_in_row).min(seg_end))
     }
 
     /// Leading columns the active content overlay prepends before the text, so a mouse column maps
     /// back to a caret: L mode draws a 1-col ▶/│ gutter glyph, the ambient overlay none — which is
-    /// exactly `line_select_active()`.
-    fn content_overlay_glyph_cols(&self) -> usize {
+    /// exactly `line_select_active()`. `pub(super)` so the shared wrapped-row math in the parent
+    /// module ([`wrapped_rows_before`]/[`line_at_content_row`]) counts the L-mode glyph too.
+    pub(super) fn content_overlay_glyph_cols(&self) -> usize {
         if self.line_select_active() { 1 } else { 0 }
     }
 

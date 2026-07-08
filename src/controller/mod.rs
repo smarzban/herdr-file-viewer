@@ -1310,11 +1310,12 @@ impl Controller {
     /// computed by the SAME wrapping logic and therefore always agree (AC-3/AC-4).
     fn wrapped_rows_before(&self, n: usize) -> usize {
         let w = self.content_width as usize;
+        let overlay = self.content_overlay_glyph_cols();
         self.content
             .lines
             .iter()
             .take(n)
-            .map(|l| crate::text_layout::line_wrapped_rows(l, w))
+            .map(|l| crate::text_layout::line_wrapped_rows_prefixed(l, w, overlay))
             .sum::<usize>()
     }
 
@@ -1344,9 +1345,10 @@ impl Controller {
             return row + 1;
         }
         let w = self.content_width as usize;
+        let overlay = self.content_overlay_glyph_cols();
         let mut acc = 0usize;
         for (i, line) in self.content.lines.iter().enumerate() {
-            acc += crate::text_layout::line_wrapped_rows(line, w);
+            acc += crate::text_layout::line_wrapped_rows_prefixed(line, w, overlay);
             if row < acc {
                 return i + 1;
             }

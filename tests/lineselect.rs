@@ -194,12 +194,35 @@ impl ContentProvider for ControlContent {
 
 /// Content that mimics `bat --style=numbers`: a right-aligned line-number gutter + a one-space
 /// separator, then the source line — with real indentation on line 2 — so a copy test proves the
-/// gutter is stripped while the code's own indentation survives.
+/// gutter is stripped while the code's own indentation survives. Carries the retained source, as
+/// the live `SyntaxContent` renderer always does (a line-number gutter exists ONLY behind that
+/// mode, which is exactly when source is retained — see `RenderResult::source`).
 #[derive(Clone, Copy)]
 struct GutterContent;
 impl ContentProvider for GutterContent {
     fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
         let lines = ["  1 fn main() {", "  2     let x = 5;", "  3 }"];
+        RenderResult {
+            content: Text::raw(lines.join("\n")),
+            notices: Vec::new(),
+            source: Some(vec![
+                "fn main() {".to_string(),
+                "    let x = 5;".to_string(),
+                "}".to_string(),
+            ]),
+        }
+    }
+}
+
+/// A genuinely source-less view (rendered markdown / diff — no per-display-line source, no gutter)
+/// whose line 2 happens to start with "2 " — the input that fools the bare digit heuristic. With no
+/// source to anchor, `gutter_len_of` must return 0 (there is no gutter in such a view), so the copy
+/// keeps the leading "2 ". Guards the source-less half of the gutter-strip fix.
+#[derive(Clone, Copy)]
+struct PlainNoSource;
+impl ContentProvider for PlainNoSource {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let lines = ["intro line", "2 spaces of intro", "tail line"];
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
@@ -1817,6 +1840,90 @@ fn char_drag_gutter_is_source_anchored_not_guessed() {
         copied.lock().unwrap().last().map(String::as_str),
         Some("3 l"),
         "carets are based off the source-anchored gutter (0), not the heuristic's guess"
+    );
+}
+
+#[test]
+fn sourceless_view_ambient_copy_keeps_a_leading_number() {
+    // A source-less view (rendered markdown / diff) is reachable for a copy only via the AMBIENT
+    // drag — entering L mode auto-switches to source. Line 2 reads "2 spaces of intro"; there is no
+    // gutter, so `gutter_len_of` returns 0 with no source to anchor and the leading "2 " survives.
+    // The bare digit heuristic would have wrongly eaten it. Guards the source-less half of the fix.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), PlainNoSource);
+    await_marker(&mut ctrl, "intro");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: the ambient path, no modal open"
+    );
+
+    // Drag across all of line 2 (screen row 2 with content_inner.y == 1, scroll 0): cols 41..58
+    // (pane x 41 + the 17 chars of "2 spaces of intro"), no L-mode glyph.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 58, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 58, 2));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("2 spaces of intro"),
+        "no source, no gutter: the leading \"2 \" is real text and survives the copy"
+    );
+}
+
+#[test]
+fn drag_past_the_viewport_edge_autoscrolls_the_content() {
+    // Dragging an ambient selection below the bottom (or above the top) of the content viewport
+    // nudges the scroll one line so the selection can extend past what is on screen; a drag inside
+    // the viewport leaves the scroll alone.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, _copied) = controller_with_clipboard(dir.path(), MultiLine);
+    await_marker(&mut ctrl, "line0");
+    // A short viewport (height 5) over the 20-line body, so there is room to scroll (max 15).
+    let geom = PaneGeometry {
+        content_inner: Some(Rect {
+            x: 41,
+            y: 1,
+            width: 58,
+            height: 5,
+        }),
+        divider_x: Some(40),
+        ..PaneGeometry::default()
+    };
+    ctrl.set_content_viewport(80, 5);
+    ctrl.set_pane_geometry(geom);
+    assert_eq!(ctrl.content_scroll(), 0, "precondition: not scrolled");
+
+    // Press inside the pane to start the ambient drag (content_inner bottom edge is row y+h = 6).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    // Drag below the bottom edge → scroll down one line, twice.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 6));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a drag below the bottom scrolls down one"
+    );
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 6));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "another edge drag scrolls one more"
+    );
+    // Drag back inside the viewport → no scroll change.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 3));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "a drag inside the viewport leaves the scroll alone"
+    );
+    // Drag above the top edge (row < y = 1) → scroll up one line.
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 44, 0));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a drag above the top scrolls up one"
     );
 }
 

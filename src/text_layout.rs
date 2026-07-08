@@ -124,6 +124,43 @@ pub(crate) fn line_wrapped_rows(line: &Line, width: usize) -> usize {
     rows
 }
 
+/// [`wrap_row_starts`] for a line the Presenter renders behind a `prefix`-column overlay glyph on
+/// its FIRST display row — the L-mode ▶/│ gutter caret. That glyph is a printable column GLUED to
+/// the text (no separating space), so ratatui wraps it as part of the first word; continuation
+/// rows carry no glyph. We model that faithfully by prepending `prefix` printable placeholder
+/// chars (1 col each, glued), wrapping, then shifting the row starts back into text coordinates.
+/// The returned starts are indices into `text` (glyph excluded); `prefix == 0` is byte-identical
+/// to [`wrap_row_starts`], so every non-overlay caller is unaffected.
+pub(crate) fn wrap_row_starts_prefixed(text: &str, width: usize, prefix: usize) -> Vec<usize> {
+    if prefix == 0 {
+        return wrap_row_starts(text, width);
+    }
+    let padded: String = "|".repeat(prefix) + text;
+    wrap_row_starts(&padded, width)
+        .into_iter()
+        .map(|s| s.saturating_sub(prefix))
+        .collect()
+}
+
+/// [`line_wrapped_rows`] for a line rendered behind a `prefix`-column overlay glyph on its first
+/// row (see [`wrap_row_starts_prefixed`]). The glyph adds `prefix` display columns and chars, so a
+/// line can wrap to more rows in L mode than bare; `prefix == 0` delegates unchanged. Used by the
+/// content scroll/marker math and the mouse caret mapping so they agree with the L-mode render.
+pub(crate) fn line_wrapped_rows_prefixed(line: &Line, width: usize, prefix: usize) -> usize {
+    if prefix == 0 {
+        return line_wrapped_rows(line, width);
+    }
+    let width = width.max(1);
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let padded: String = "|".repeat(prefix) + &text;
+    let rows = wrapped_rows(&padded, width);
+    let display_width = line.width() + prefix;
+    if display_width > padded.chars().count() {
+        return rows.max(display_width.div_ceil(width));
+    }
+    rows
+}
+
 /// Neutralize a string for display (a label/title) or for the clipboard: drop control characters
 /// (C0, DEL, and C1 — `char::is_control`), so a repo-controlled file name carrying ESC/CSI bytes
 /// cannot move the cursor, clear the screen, spoof the UI, or paste-inject once copied (AC-27,
