@@ -301,12 +301,12 @@ impl Controller {
     /// [`gutter_len_of`](Self::gutter_len_of). Caller guarantees `n` is in
     /// `[1, content.lines.len()]`.
     fn filtered_display_line(&self, n: usize) -> String {
-        self.content.lines[n - 1]
+        let joined: String = self.content.lines[n - 1]
             .spans
             .iter()
-            .flat_map(|s| s.content.chars())
-            .filter(|c| !c.is_control() || *c == '\t')
-            .collect()
+            .map(|s| s.content.as_ref())
+            .collect();
+        filter_control_keep_tabs(&joined)
     }
 
     /// Map a screen `(col, row)` to a `(source line, char caret)` for mouse selection — used by both
@@ -318,8 +318,10 @@ impl Controller {
     /// `[1, line_count]` for the line and `[0, line_len]` for the caret.
     ///
     /// The char caret is an index into the *displayed* line (gutter included); the copy path strips
-    /// the gutter afterward. Column accounting assumes the unwrapped view (the common case for a
-    /// mouse drag); precise mapping under the `w` wrap override is a follow-up.
+    /// the gutter afterward. Wrap-correct: unwrapped, the column indexes the line directly; under
+    /// wrap, the clicked display row is located within the line via
+    /// [`crate::text_layout::wrap_row_starts`] — the same break-position port the wrapped scroll
+    /// math counts rows with — so the caret lands on the character actually under the cursor.
     pub(crate) fn char_at_content_col(&self, col: u16, row: u16) -> (usize, usize) {
         if self.content.lines.is_empty() {
             return (1, 0); // no content to index (line-select can't open on an empty pane anyway)
@@ -333,8 +335,24 @@ impl Controller {
         // and the pane origin, add horizontal scroll, to index the displayed line.
         let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
         let disp_col = within.saturating_sub(self.content_overlay_glyph_cols());
-        let caret = char_index_at_col(&self.filtered_display_line(line), disp_col);
-        (line, caret)
+        let text = self.filtered_display_line(line);
+        if !self.effective_wrap() {
+            return (line, char_index_at_col(&text, disp_col));
+        }
+        // Under wrap a source line spans several display rows; the caret is the clicked row's
+        // START char (from the same break-position simulation the wrapped scroll math runs on —
+        // `wrap_row_starts` and `wrapped_rows` are one source of truth) plus the column, clamped
+        // into that row's span so a click past a row's end lands at its end, not on the next row.
+        let starts = crate::text_layout::wrap_row_starts(&text, self.content_width.max(1) as usize);
+        let row_within = display_row
+            .saturating_sub(self.content_row_of_line(line))
+            .min(starts.len() - 1); // the wide-glyph floor can inflate the row count past the port's
+        let base = starts[row_within];
+        let seg_end = starts
+            .get(row_within + 1)
+            .copied()
+            .unwrap_or_else(|| text.chars().count());
+        (line, (base + disp_col).min(seg_end))
     }
 
     /// Leading columns the active content overlay prepends before the text, so a mouse column maps
@@ -346,11 +364,11 @@ impl Controller {
 
     /// Auto-copy an ambient selection on the drag's release, leaving the highlight standing for
     /// feedback (the L-mode confirm instead closes the mode). Reuses
-    /// [`char_selection_text`](Self::char_selection_text), so the gutter strip / control-byte scrub
-    /// match the L-mode copy. Copies nothing for a non-file selection (a directory / empty tree shows
-    /// guidance with no file node) or an empty span. NB the `is_file` guard does NOT cover the
-    /// "Rendering…" placeholder (a file *is* selected mid-render) — `handle_column_mouse` blocks
-    /// seeding a selection while a render is in flight instead.
+    /// [`char_selection_text`](Self::char_selection_text), so the gutter handling / control-byte
+    /// scrub match the L-mode copy. Copies nothing for a non-file selection (a directory / empty
+    /// tree shows guidance with no file node) or an empty span. NB the `is_file` guard does NOT
+    /// cover the "Rendering…" placeholder (a file *is* selected mid-render) —
+    /// `handle_column_mouse` blocks seeding a selection while a render is in flight instead.
     pub(super) fn copy_content_selection(&mut self) -> Effects {
         let Some((lo, hi)) = self.content_selection.as_ref().map(|s| s.char_span()) else {
             return Effects::redraw();

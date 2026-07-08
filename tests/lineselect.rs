@@ -1531,6 +1531,183 @@ fn ambient_drag_over_rendering_placeholder_copies_nothing() {
     );
 }
 
+// ── wrapped views: mouse selection is char-granular through the break-position map ──────────
+// Under wrap (prose by default, or the `w` override) a source line spans several display rows.
+// `char_at_content_col` maps a click through `text_layout::wrap_row_starts` — the SAME greedy
+// word-packing simulation the wrapped scroll math counts rows with (`wrapped_rows` is defined
+// from it, so they can never drift) — so the caret lands on the character actually under the
+// cursor, and a drag copies exactly the swept span. WrapBody at width 80: source line 1
+// ("a"×170, one word) char-breaks at [0, 80, 160] (display rows 0-2); line 2 ("b"×90) at
+// [0, 80] (rows 3-4). Screen row = display row + 1 (content top y=1), ambient column = 41 + col.
+
+/// Await WrapBody, wire the geometry, and turn the `w` wrap override on WITHOUT entering L mode.
+fn setup_ambient_wrapped(ctrl: &mut Controller) {
+    await_marker(ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    assert!(!ctrl.line_select_active(), "precondition: no modal open");
+}
+
+#[test]
+fn wrapped_ambient_drag_copies_the_exact_char_span() {
+    // Press on screen row 1 col 50 → display row 0 → line 1, row-start 0, caret 9. Drag to screen
+    // row 4 col 50 → display row 3 → line 2's FIRST wrapped row, caret 9. The copy is exactly the
+    // swept span: the tail of line 1 from char 9 + the head of line 2 up to char 9.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+
+    assert!(fx.redraw, "the release redraws");
+    let expected = format!("{}\n{}", "a".repeat(161), "b".repeat(9));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "the wrapped drag copies the exact char span (line 1 from char 9 + line 2 up to char 9)"
+    );
+    assert!(
+        ctrl.notices().iter().any(|n| n == "Copied selection"),
+        "the notice confirms the selection copy: {:?}",
+        ctrl.notices()
+    );
+}
+
+#[test]
+fn wrapped_drag_across_rows_of_one_line_selects_its_chars() {
+    // Screen rows 1 and 2 are both display rows OF SOURCE LINE 1 (an "a"×170 word char-broken at
+    // 80). Press row 1 col 45 → caret 4; drag row 2 col 60 → row-start 80 + col 19 = caret 99.
+    // The copy is chars [4, 99) of that single line — a word-or-two selection inside one wrapped
+    // paragraph, the exact gesture line-granularity couldn't do.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 45, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 60, 2));
+
+    let expected = "a".repeat(95);
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "chars [4, 99) of the wrapped line — mapped through its row starts [0, 80, 160]"
+    );
+}
+
+#[test]
+fn wrapped_word_break_maps_columns_to_the_right_word() {
+    // Word wrap (not just char wrap): a 50-char word + a 40-char word at width 80 breaks BEFORE
+    // the second word — row 1 starts at char 51 (index 50 is the separator space, which stays on
+    // row 0). A drag on row 1 cols 3..8 must therefore select chars [54, 59) == "bbbbb", proving
+    // the caret map uses real break positions, not a naive row*width offset.
+    #[derive(Clone, Copy)]
+    struct WordWrapBody;
+    impl ContentProvider for WordWrapBody {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: Text::raw(format!("{} {}", "a".repeat(50), "b".repeat(40))),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WordWrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+
+    // Screen row 2 = display row 1 = the second word's row (starts at char 51).
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 44, 2)); // col 3 → caret 54
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 49, 2)); // col 8 → caret 59
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 49, 2));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("bbbbb"),
+        "row 1 begins at the second WORD (char 51) — the break-position map, not row×width"
+    );
+}
+
+#[test]
+fn wrapped_ambient_plain_click_copies_nothing() {
+    // A press + release with no drag under wrap is still a plain click: focus only, no selection,
+    // no copy.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    setup_ambient_wrapped(&mut ctrl);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 2));
+
+    assert!(
+        copied.lock().unwrap().is_empty(),
+        "a plain click under wrap copies nothing"
+    );
+    assert!(
+        ctrl.view_state().content_selection.is_none(),
+        "no selection highlight is left standing by a plain click"
+    );
+}
+
+#[test]
+fn wrapped_l_mode_drag_selects_chars_and_both_confirms_work() {
+    // In L mode under wrap the same mapping applies (minus the 1-col ▶ glyph): a press places the
+    // char caret, a drag extends it; `y` copies the swept chars and Enter the range reference.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), WrapBody);
+    await_marker(&mut ctrl, "aaa");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+    ctrl.enter_line_select_at_top();
+
+    // Press screen row 1 col 50 → disp col 8 (pane x 41 + 1 glyph) → line 1 caret 8; drag to
+    // screen row 4 col 50 → line 2 (its first wrapped row) caret 8.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    assert_eq!(
+        ctrl.line_selection(),
+        Some((1, 2)),
+        "the drag spans source lines 1-2"
+    );
+
+    // y copies the swept char span …
+    ctrl.handle_line_select_key(key(KeyCode::Char('y')));
+    let expected = format!("{}\n{}", "a".repeat(162), "b".repeat(8));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some(expected.as_str()),
+        "y copies the char span under wrap (line 1 from char 8 + line 2 up to char 8)"
+    );
+
+    // … and Enter (on a fresh identical selection) the range reference.
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 4));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 4));
+    ctrl.handle_line_select_key(key(KeyCode::Enter));
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("code.rs:1-2"),
+        "Enter copies the range reference for the wrapped drag"
+    );
+}
+
 // ── retained source: copies are byte-faithful and the gutter is source-anchored ─────────────
 // A source-mapped render retains the file's raw lines (`RenderResult::source`, 1:1 with the
 // displayed lines). Whole-line copies then return the SOURCE text verbatim (real tabs — the
@@ -1675,5 +1852,46 @@ fn source_control_bytes_are_still_scrubbed() {
     assert!(
         !got.chars().any(|c| c.is_control() && c != '\t'),
         "no control byte (other than tab) reaches the clipboard: {got:?}"
+    );
+}
+
+#[test]
+fn wrapped_break_dropped_space_does_not_shift_selection_to_the_line_above() {
+    // Regression (owner-caught live): ratatui DROPS the whitespace at a row break, so a line of
+    // two exact-width words renders in FEWER rows than ceil(chars/width) — the old char-wrap
+    // floor overcounted its rows, shifting the row→line mapping so a click on the next line
+    // selected the line ABOVE. Line 1 ("x"×40 + " " + "y"×40) renders as exactly 2 rows at
+    // width 40; the click on display row 2 (screen row 3) must therefore select line 2.
+    #[derive(Clone, Copy)]
+    struct DropBreakBody;
+    impl ContentProvider for DropBreakBody {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            let line1 = format!("{} {}", "x".repeat(40), "y".repeat(40));
+            RenderResult {
+                content: Text::raw(format!("{line1}\nsecond\nthird")),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), DropBreakBody);
+    await_marker(&mut ctrl, "second");
+    ctrl.set_content_viewport(40, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(ctrl.wrap_override(), "precondition: wrap override is on");
+
+    // Screen row 3 = display row 2 = the FIRST row after line 1's two wrapped rows → line 2.
+    // Drag chars [2, 6) of "second" and release: the copy must come from line 2, not line 1.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 43, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 47, 3));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 47, 3));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("cond"),
+        "the click on display row 2 maps to line 2 (\"second\") — not the line above"
     );
 }

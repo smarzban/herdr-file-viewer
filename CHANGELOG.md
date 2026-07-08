@@ -12,8 +12,10 @@ All notable changes to this project are documented here. The format is based on
   drag to the end while the pane auto-scrolls past an edge, release). Releasing the drag copies the
   selected text to the clipboard automatically ("Copied selection"), and the highlight stays for
   feedback; `Esc`, a click elsewhere, or switching files clears it. Line-select mode (`L`) remains a
-  separate keyboard-driven mode. `Shift`+drag is left untouched so the terminal's own native
-  selection still works, and dragging over placeholder text (a directory / empty pane) copies nothing.
+  separate keyboard-driven mode. Works in **wrapped** views (prose/markdown by default, or the
+  `w` toggle) too — the click maps through the same wrapping the pane draws with. `Shift`+drag is
+  left untouched so the terminal's own native selection still works, and dragging over placeholder
+  text (a directory / empty pane) copies nothing.
 - **Mouse text selection in line-select mode.** Click-drag in the content pane to select text
   character-by-character (press at the start, drag to the end — the pane auto-scrolls past an
   edge — release), with the selected characters highlighted as you drag. `Shift`+mouse is left

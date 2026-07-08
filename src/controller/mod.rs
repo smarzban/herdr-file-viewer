@@ -426,8 +426,9 @@ pub struct Controller {
     /// An ambient character selection dragged out in the content pane during normal navigation, held
     /// OUTSIDE [`Modal`] so `Modal::None` stays in force and every keyboard binding keeps its normal
     /// meaning — that is what makes it ambient, not a mode. Reuses the [`LineSelectState`] char
-    /// primitives (always char-mode). Mutually exclusive with L line-select mode by construction:
-    /// created only in `handle_column_mouse`, which runs only for `Modal::None`. Auto-copied on release.
+    /// primitives (always char-mode; `char_at_content_col` maps wrapped views too). Mutually
+    /// exclusive with L line-select mode by construction: created only in `handle_column_mouse`,
+    /// which runs only for `Modal::None`. Auto-copied on release.
     content_selection: Option<LineSelectState>,
     /// The newer version to advertise, if any (set from the cached value at startup and
     /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
@@ -2102,8 +2103,9 @@ enum Drag {
     TreeH,
     /// Dragging the finder overlay's vertical scrollbar (handled in `handle_finder_mouse`).
     FinderV,
-    /// Dragging out a character-granular text selection in the content pane while line-select mode
-    /// is active (handled in `handle_line_select_mouse`).
+    /// Dragging out a character-granular text selection in the content pane — in L mode (handled
+    /// in `handle_line_select_mouse`, on the modal's state) or ambient (handled in
+    /// `handle_column_mouse`, on `content_selection`; the release auto-copies).
     ContentSelect,
 }
 

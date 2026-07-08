@@ -221,9 +221,10 @@ A confirmation notice names what was copied. Both copies use the same **OSC 52**
 tree's `y`/`Y`. `Esc` leaves the mode.
 
 `Shift`+mouse is deliberately left alone so your terminal's own native selection/copy still works
-— most terminals reserve `Shift`+drag for exactly that. Because selection only maps onto the
-source, entering line-select from a rendered-markdown or diff view first switches that file to the
-line-numbered content view. With the **tree** focused, `L` keeps its tree horizontal-scroll
+— most terminals reserve `Shift`+drag for exactly that. Selection works in wrapped views too (the
+`w` toggle): the click maps through the same wrapping the pane draws with, so the caret lands on
+the character under the cursor. Because selection only maps onto the source, entering line-select
+from a rendered-markdown or diff view first switches that file to the line-numbered content view. With the **tree** focused, `L` keeps its tree horizontal-scroll
 behavior instead — the mode is gated on which pane has focus.
 
 ### Mouse
@@ -239,6 +240,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Horizontal wheel / swipe** | Scroll the content — or the tree — sideways (terminal-dependent — see below) |
 | **Drag** a scrollbar | Scroll that pane — drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
 | **Drag** the divider | Resize the tree / content split |
+| **Drag** over the content text | **Select and copy text** — the selection highlights character-by-character as you drag (auto-scrolling past an edge) and is copied to the clipboard on release; no mode needed. Works in wrapped views (prose/markdown) too. `Esc`, a click elsewhere, or switching files clears the highlight |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the
 viewer owns ordinary clicks — herdr reserves `Shift`+mouse for exactly this. (herdr forwards

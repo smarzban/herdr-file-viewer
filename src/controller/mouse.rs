@@ -33,9 +33,12 @@ impl Controller {
     /// Mouse handling while line-select mode owns the pointer. A left **press** in the content pane
     /// drops the selection caret on the character under the cursor; **dragging** extends a
     /// character-granular selection (scrolling the pane when the drag runs past an edge); the
-    /// **release** finalizes it, leaving the selection standing for `Enter`/`y` to copy. A press
-    /// with no drag collapses the selection to that character — click-then-`Enter` still copies the
-    /// clicked line (the copy path's collapsed-selection fallback).
+    /// **release** finalizes it, leaving the selection standing for `Enter` (the `path:line`
+    /// reference) or `y` (the content) to confirm. A press with no drag collapses the selection to
+    /// that character — click-then-`y` still copies the clicked line (the content path's
+    /// collapsed-selection fallback) and click-then-`Enter` its reference. Works under wrap too:
+    /// `char_at_content_col` maps the clicked row through the same break-position simulation the
+    /// wrapped scroll math uses, so the caret lands on the character actually under the cursor.
     ///
     /// `Shift`+mouse is deliberately left untouched (returned inert) so the terminal's OWN native
     /// selection/copy still works — herdr reserves `Shift`+drag for exactly that, and we don't want
@@ -127,6 +130,7 @@ impl Controller {
                 if region == MouseRegion::Content {
                     // Seed a fresh collapsed char selection at the pressed caret; the Drag arm
                     // extends it and Up finalizes (collapsed ⇒ a click; non-collapsed ⇒ copy).
+                    // `char_at_content_col` is wrap-aware, so this works on wrapped prose too.
                     self.last_click = None;
                     self.focus = Focus::Content;
                     self.drag = None;
