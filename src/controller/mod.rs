@@ -972,6 +972,17 @@ impl Controller {
         // mis-sizing the thumb / hiding the bar). Computed with the wrap we already have — no extra
         // tree walk.
         let content_rows = self.rendered_line_count_for(wrap);
+        // Inset the transformed views (rendered markdown / diff) one column from the left border so
+        // their delegate output — which starts at column 0 — doesn't hug it; syntax/plain files
+        // already get that gap from bat's line-number gutter, so they stay flush (no double gap).
+        // Keyed off the DISPLAYED content's file (`content_path`, the title's source of truth), so
+        // the gap switches in lockstep with the body — never off a still-loading selection.
+        let content_pad_left = self.content_path.as_ref().is_some_and(|p| {
+            matches!(
+                self.effective_mode(p),
+                ViewMode::RenderedMarkdown | ViewMode::Diff | ViewMode::FullDiff
+            )
+        });
         // Gutter width for a character selection's highlight (0 when not applicable); computed once
         // here so the line-select snapshot below stays a pure read.
         let sel_gutter = self.selection_gutter_len();
@@ -990,6 +1001,7 @@ impl Controller {
             tree_hscroll: self.tree_hscroll,
             content_rows,
             wrap,
+            content_pad_left,
             split_pct: self.split_pct,
             zoomed: self.zoomed,
             update_banner: self.update_banner(),

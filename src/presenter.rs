@@ -68,6 +68,12 @@ pub struct ViewState {
     /// Wrap long content lines (prose: markdown / plain text) instead of truncating them.
     /// Off for diffs and code, whose column alignment must be preserved.
     pub wrap: bool,
+    /// Inset the content text one column from the left border. Set for the transformed views
+    /// (rendered markdown, diff) whose delegate output starts at column 0 and otherwise hugs the
+    /// border; syntax/plain files get the same visual gap for free from bat's line-number gutter,
+    /// so it stays off for them (no double gap). Applied identically by [`draw_content`] and
+    /// [`geometry`] so the drawn text rect and the hit-test geometry inset the border in lockstep.
+    pub content_pad_left: bool,
     /// The tree column's share of the width, as a percentage (the content pane takes the
     /// rest). Adjustable from the keyboard; used only in the wide two-column layout.
     pub split_pct: u16,
@@ -747,6 +753,19 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     }
 }
 
+/// The content pane's outer block (border + optional left gap), WITHOUT its titles/styles.
+/// Shared by [`draw_content`] and [`geometry`] so the drawn text rect and the hit-test geometry
+/// inset the border identically — a mismatch would map a content-pane click one column off under
+/// the [`ViewState::content_pad_left`] gap.
+fn content_block(state: &ViewState) -> Block<'static> {
+    let block = Block::bordered();
+    if state.content_pad_left {
+        block.padding(Padding::left(1))
+    } else {
+        block
+    }
+}
+
 /// Draw the right column: a notices strip (if any) above the content pane. Returns the
 /// content viewport `(width, height)` so the controller can clamp scrolling to it.
 fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) {
@@ -774,7 +793,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // row (not the layout), so it never crowds the content or steals a row.
     let hint =
         Line::styled(sanitize_control(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
-    let block = Block::bordered()
+    let block = content_block(state)
         .title(title)
         .title_bottom(hint)
         .border_style(border_style(state.focus == Focus::Content));
@@ -1039,20 +1058,22 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         0
     };
 
-    // Content: notices split, then the same bar layout `draw_content` computes.
-    let (content_inner, content_vbar, content_hbar) = match content.map(inner) {
-        Some(ci) => {
-            let (_notices, content_area) = content_notice_split(ci, state.notices.len());
-            let (text, v, h) = content_bars(
-                content_area,
-                state.content_rows as usize,
-                content_max_line_width(&state.content),
-                state.wrap,
-            );
-            (Some(text), v, h)
-        }
-        None => (None, None, None),
-    };
+    // Content: the SAME block `draw_content` builds (border + optional left gap), then the notices
+    // split and bar layout it computes — so a click maps against the padded interior actually drawn.
+    let (content_inner, content_vbar, content_hbar) =
+        match content.map(|r| content_block(state).inner(r)) {
+            Some(ci) => {
+                let (_notices, content_area) = content_notice_split(ci, state.notices.len());
+                let (text, v, h) = content_bars(
+                    content_area,
+                    state.content_rows as usize,
+                    content_max_line_width(&state.content),
+                    state.wrap,
+                );
+                (Some(text), v, h)
+            }
+            None => (None, None, None),
+        };
 
     // Finder: if the finder overlay is open, compute its layout with the same helper
     // `draw_finder_overlay` uses (same `area` = `frame.area()` = the full terminal rect),
