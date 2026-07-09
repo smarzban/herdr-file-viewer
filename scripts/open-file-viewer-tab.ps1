@@ -2,13 +2,16 @@
 #
 # Idempotent launcher for the file viewer in its own TAB -- used by the `open-file-viewer-tab-windows`
 # action and a herdr keybinding (e.g. `prefix+shift+f`). "Open-or-switch, toggle on repeat",
-# scoped across tabs:
-#   - no Files pane anywhere                  -> open the viewer in a new tab (focused)
-#   - a Files pane lives in another tab       -> switch to that tab (no duplicate viewer)
+# scoped across the tabs of the CURRENT WORKSPACE:
+#   - no Files pane in this workspace         -> open the viewer in a new tab (focused)
+#   - a Files pane in another tab of this
+#     workspace                               -> switch to that tab (no duplicate viewer)
 #   - a Files pane is in the current tab,
 #     but not focused                         -> focus it in place
 #   - the focused pane IS the Files pane      -> close it ("toggle off"; herdr auto-closes the
 #                                               now-empty tab -- verified)
+# A viewer open in a DIFFERENT workspace is left alone and a fresh one opens here (never switches
+# you across workspaces).
 #
 # Sibling of scripts/open-file-viewer.ps1 (the split-pane variant) -- see its header for WHY the
 # Windows launchers spawn the viewer by ABSOLUTE path (`tab create` + `pane run`) instead of

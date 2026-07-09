@@ -21,7 +21,6 @@ struct Pane {
     #[serde(default)]
     focused: bool,
     tab_id: Option<String>,
-    workspace_id: Option<String>,
 }
 
 /// Decide the launcher action from a herdr `pane list` JSON, returning one line: `OPEN`,
@@ -118,15 +117,20 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
     "OPEN".to_string()
 }
 
-/// The workspace a pane belongs to: herdr's explicit `workspace_id` when present, else the
-/// prefix of its `tab_id`/`pane_id` (herdr ids are `workspace:...` tokens, e.g. `w19:tB`).
-/// `None` when nothing identifies the workspace, so the caller degrades to `OPEN` rather than
-/// guess.
+/// The workspace a pane belongs to, taken from the prefix of the id we actually act on — its
+/// `tab_id` (what `SWITCHTAB` emits), falling back to its `pane_id`. herdr ids are `workspace:…`
+/// tokens (e.g. `w19:tB`), so the segment before the first `:` is the workspace. Deriving the
+/// scope from the acted-upon id — rather than the separate `workspace_id` field, which a
+/// malformed `pane list` could set to a value that disagrees with the tab we would switch to —
+/// keeps the scope check and the emitted target self-consistent: we compare and switch on the
+/// same id. `None` when the id carries no `workspace:` prefix (an unqualified id is treated as
+/// unknown, never as a bare workspace), so the caller degrades to `OPEN` rather than guess.
 fn workspace_of(p: &Pane) -> Option<&str> {
-    p.workspace_id
+    p.tab_id
         .as_deref()
-        .or_else(|| p.tab_id.as_deref().and_then(|t| t.split(':').next()))
-        .or_else(|| p.pane_id.as_deref().and_then(|t| t.split(':').next()))
+        .and_then(|t| t.split_once(':'))
+        .or_else(|| p.pane_id.as_deref().and_then(|t| t.split_once(':')))
+        .map(|(ws, _)| ws)
         .filter(|w| !w.is_empty())
 }
 
@@ -146,9 +150,15 @@ mod tests {
     use super::*;
 
     fn pane(id: &str, label: &str, focused: bool, tab: &str) -> String {
-        // Derive workspace_id from the id prefix (herdr ids are `workspace:...`), mirroring the
-        // real `pane list` payload, so fixtures exercise the workspace-scoping path.
+        // Mirror the real `pane list` payload, including the `workspace_id` field herdr emits
+        // (derived here from the id prefix) — the decision logic deliberately ignores it and
+        // scopes off the `tab_id` prefix instead, so fixtures carry it to prove it is unused.
         let ws = tab.split(':').next().unwrap_or("");
+        pane_ws(id, label, focused, tab, ws)
+    }
+    // Like `pane`, but with an explicit `workspace_id` so a test can make it DISAGREE with the
+    // `tab_id` prefix (a malformed/hostile `pane list`).
+    fn pane_ws(id: &str, label: &str, focused: bool, tab: &str, ws: &str) -> String {
         format!(
             r#"{{"pane_id":"{id}","label":"{label}","focused":{focused},"tab_id":"{tab}","workspace_id":"{ws}"}}"#
         )
@@ -274,6 +284,30 @@ mod tests {
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
         assert_eq!(launch_decision_tab(&j), "SWITCHTAB wQ:tE");
+    }
+
+    #[test]
+    fn tab_spoofed_workspace_id_cannot_force_a_cross_workspace_switch() {
+        // Hostile/malformed `pane list`: the viewer's `workspace_id` is spoofed to the focused
+        // workspace (wQ) while its `tab_id` still names another workspace (w19:tB). Because the
+        // scope is derived from the `tab_id` prefix we actually switch on — not the separate
+        // `workspace_id` field — the mismatch is caught and we OPEN here, never SWITCHTAB across.
+        let j = list(&[
+            pane("wQ:p2K", "", true, "wQ:tH"),
+            pane_ws("w19:pT", "Files", false, "w19:tB", "wQ"),
+        ]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_id_without_a_workspace_prefix_opens_rather_than_guessing() {
+        // An id with no `workspace:` delimiter has an unknown workspace; it must not be treated as
+        // a bare workspace that could spuriously match. Focused id `p2K` (no `:`) → OPEN.
+        let j = list(&[
+            pane_ws("p2K", "", true, "tH", ""),
+            pane("w19:pT", "Files", false, "w19:tB"),
+        ]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
     }
 
     #[test]
