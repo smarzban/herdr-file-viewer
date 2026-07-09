@@ -1221,6 +1221,44 @@ fn content_pad_left_insets_the_transformed_views_one_column() {
 }
 
 #[test]
+fn content_pad_left_shifts_the_drawn_text_one_column() {
+    // The gap must land in the DRAWN buffer, not only in `geometry()`. A regression that dropped
+    // `content_block(state)` from `draw_content` while leaving `geometry` padded would keep the
+    // geometry test above green yet silently revert the visible text to hugging the border — so this
+    // renders both and compares the first content glyph's column. Zoomed so content fills the frame.
+    fn first_content_glyph_x(pad: bool) -> u16 {
+        let mut st = sample_state();
+        st.notices = vec![];
+        st.zoomed = true;
+        st.content_pad_left = pad;
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &st);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Body row 0 is at y=1 (just inside the top border). The border cell sits at x=0; the first
+        // cell that is neither the border nor a pad space is the leading 'f' of "fn main() {".
+        (1..buf.area().width)
+            .find(|&x| {
+                buf.cell((x, 1))
+                    .map(|c| c.symbol())
+                    .is_some_and(|s| s != " " && s != "│")
+            })
+            .expect("a content glyph is drawn on the first body row")
+    }
+    let x_flush = first_content_glyph_x(false);
+    let x_padded = first_content_glyph_x(true);
+    assert_eq!(
+        x_padded,
+        x_flush + 1,
+        "the drawn content text starts one column further right when padded \
+         (flush={x_flush}, padded={x_padded})"
+    );
+}
+
+#[test]
 fn zoomed_layout_hides_the_tree_and_fills_with_content() {
     // The `z` zoom toggle hides the tree so the content pane fills the whole frame — even at a
     // wide width that would normally show both columns.

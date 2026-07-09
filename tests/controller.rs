@@ -973,10 +973,21 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
     let md = TempDir::new();
     std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
     let (mut ctrl_md, _, _) = controller(md.path(), false, StubGit::default(), false);
+    // Keyed off the DISPLAYED content (`content_path`), not the tree cursor: before any body has
+    // landed the flag is false even though a markdown file is selected (a.md would render markdown).
+    assert_eq!(
+        ctrl_md.selected_view_mode(),
+        Some(ViewMode::RenderedMarkdown),
+        "precondition: the selected file would render as markdown"
+    );
+    assert!(
+        !ctrl_md.view_state().content_pad_left,
+        "no gap until the body lands — the flag follows content_path, which is None pre-render"
+    );
     await_marker(&mut ctrl_md, "stub-content");
     assert!(
         ctrl_md.view_state().content_pad_left,
-        "rendered markdown is inset from the border"
+        "rendered markdown is inset from the border once its body has landed"
     );
 
     let rs = TempDir::new();

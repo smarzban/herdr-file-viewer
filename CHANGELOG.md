@@ -36,8 +36,8 @@ All notable changes to this project are documented here. The format is based on
 ### Fixed
 - **Left gap in the rendered-markdown and diff views.** These views now sit one column in from the
   content pane's left border instead of hugging it, matching the gap syntax-highlighted files
-  already get from their line-number gutter. Purely visual: the border, scrollbars, and mouse
-  hit-testing are unchanged.
+  already get from their line-number gutter. Purely visual: the content interior is one column
+  narrower, and its text and mouse hit-testing shift together so clicks still map correctly.
 
 ## [1.10.0] - 2026-07-07
 

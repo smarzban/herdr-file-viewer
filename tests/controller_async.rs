@@ -438,6 +438,79 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
     );
 }
 
+/// the content-pane left gap (`content_pad_left`) keys off the DISPLAYED content, not the tree
+/// cursor — the same lockstep the title obeys. Selecting a markdown file while a code file is shown
+/// must NOT flip the gap on before the markdown body lands, or the gap would jump ahead of the body
+/// during an async render (the exact bug the `content_path`-keyed design avoids).
+#[test]
+fn the_left_gap_follows_the_displayed_file_not_the_selection_during_a_slow_render() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap(); // code → no gap
+    std::fs::write(dir.path().join("b.md"), "# hi\n").unwrap(); // markdown → gap
+
+    let delay = Duration::from_millis(120);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent { delay }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+
+    // Land a.rs (code): no gap.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()) == "rendered:a.rs" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "initial a.rs render never landed"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !ctrl.view_state().content_pad_left,
+        "precondition: the displayed code file has no gap"
+    );
+
+    // Select b.md (markdown). Its render is in flight: the gap must STAY OFF (it follows the still-
+    // displayed a.rs), exactly as the title stays on a.rs — never flipping to b.md's mode early.
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(
+        flatten(ctrl.content()),
+        LOADING_PLACEHOLDER,
+        "precondition: b.md's render is in flight"
+    );
+    assert!(
+        !ctrl.view_state().content_pad_left,
+        "the gap does not flip on ahead of the body — it tracks the displayed a.rs, not selected b.md"
+    );
+
+    // b.md's body lands: now the gap turns on, in lockstep with the body/title.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()) == "rendered:b.md" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "b.md render never landed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        ctrl.view_state().content_pad_left,
+        "once the markdown body lands, the gap is on"
+    );
+}
+
 /// a superseded render result (the user navigated on before it landed) must not
 /// overwrite the loading placeholder nor the current pane — it's dropped by the seq guard in
 /// `poll`. Two back-to-back selects leave only the LATEST file's render eligible to land.
