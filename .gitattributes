@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# The eol=lf baseline above suffices as-is. Add binary paths and
+# linguist-vendored/generated/diff-driver rules here only if your stack needs them.
