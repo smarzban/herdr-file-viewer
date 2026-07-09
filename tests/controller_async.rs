@@ -780,3 +780,29 @@ fn a_width_change_does_not_reflow_non_markdown() {
         "a resize must not re-render a non-markdown view"
     );
 }
+
+/// `w` flips the wrap width handed to glow: fit-to-pane (`Some(width)`, ellipsized table) when
+/// wrapped, natural width (`None` → glow's base `-w 0`, full table + horizontal scroll) when
+/// unwrapped. Toggling re-renders markdown (preserving view state) rather than only re-laying it out
+/// in the Presenter, because the two views come from different glow invocations.
+#[test]
+fn w_flips_the_markdown_wrap_width_between_fit_and_natural() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 5),
+    );
+    await_contains(&mut ctrl, "w=None:doc.md"); // initial: pane not measured yet
+
+    ctrl.set_content_viewport(40, 10); // fit view (wrapped default) → glow gets the pane width
+    await_contains(&mut ctrl, "w=Some(40):doc.md");
+
+    ctrl.handle(Intent::ToggleWrap); // → wide/unwrapped → glow gets no width (natural `-w 0`)
+    await_contains(&mut ctrl, "w=None:doc.md");
+
+    ctrl.handle(Intent::ToggleWrap); // → fit again → glow gets the pane width once more
+    await_contains(&mut ctrl, "w=Some(40):doc.md");
+}

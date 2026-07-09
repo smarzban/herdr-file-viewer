@@ -1054,6 +1054,58 @@ fn wrap_toggle_forces_wrapping_on_for_code_then_back_to_the_mode_default() {
 }
 
 #[test]
+fn w_toggles_markdown_between_the_fit_and_the_wide_unwrapped_view() {
+    // The table escape hatch: markdown fits the pane (wraps) by default, and `w` switches it to
+    // the wide, unwrapped view so a too-wide table renders in full and the pane scrolls sideways
+    // to reveal it. `w` again returns to the fit view.
+    let md = TempDir::new();
+    std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
+    let (mut ctrl, _, _) = controller(md.path(), false, StubGit::default(), false);
+    assert!(ctrl.view_state().wrap, "markdown fits (wraps) by default");
+
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(
+        !ctrl.view_state().wrap,
+        "`w` switches markdown to the wide, unwrapped (horizontal-scroll) view"
+    );
+    assert!(
+        !ctrl.wrap_override(),
+        "the force-wrap-on getter is false in the unwrapped state"
+    );
+
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(
+        ctrl.view_state().wrap,
+        "`w` again returns markdown to the fit (wrapped) view"
+    );
+}
+
+#[test]
+fn unwrapping_markdown_does_not_force_wrap_onto_a_code_file_viewed_next() {
+    // The `w` override is a uniform "wrap on/off everywhere" preference, not a per-mode inversion:
+    // turning wrap OFF to horizontally scroll a markdown table must not spring wrap ON for a code
+    // file viewed afterwards — code stays unwrapped so its columns stay aligned.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.md"), "# hi\n").unwrap();
+    std::fs::write(dir.path().join("z.rs"), "fn main() {}\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(
+        ctrl.view_state().wrap,
+        "precondition: a.md wraps (fit view)"
+    );
+    ctrl.handle(Intent::ToggleWrap); // unwrap markdown → force-off everywhere
+    assert!(!ctrl.view_state().wrap);
+
+    ctrl.handle(Intent::NavDown); // select z.rs (code)
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent));
+    assert!(
+        !ctrl.view_state().wrap,
+        "code stays unwrapped — the unwrap did not become a surprise wrap"
+    );
+}
+
+#[test]
 fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
     // A .rs file renders unwrapped (SyntaxContent), so its long lines can overflow the pane;
     // with the content focused, ←/→ scroll it sideways to read them. (When the tree is

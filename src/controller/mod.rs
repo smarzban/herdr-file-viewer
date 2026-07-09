@@ -390,9 +390,12 @@ pub struct Controller {
     /// The tree column's share of the width, as a percentage (the rest is the content pane).
     /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002).
     split_pct: u16,
-    /// User override forcing content wrap on regardless of view mode (the `w` toggle), so long
-    /// lines in code/diffs can be wrapped on demand. `false` ⇒ the per-mode default applies.
-    wrap_override: bool,
+    /// User override of the per-mode wrap default (the `w` toggle). `None` ⇒ the per-mode default
+    /// applies (prose wraps, code/diffs don't); `Some(true)` ⇒ force wrap on everywhere (read long
+    /// code/diff lines); `Some(false)` ⇒ force wrap off everywhere — which, for rendered markdown,
+    /// switches glow to natural-width layout so a wide table renders in full and the pane scrolls
+    /// horizontally to reveal it (instead of the fit-to-pane view that ellipsizes over-long cells).
+    wrap_override: Option<bool>,
     /// Hide the tree so the content pane fills the frame (the `z` zoom toggle). Pure layout
     /// state — the selection and rendered content are unchanged.
     zoomed: bool,
@@ -590,7 +593,7 @@ impl Controller {
             content_width: 0,
             content_height: 0,
             split_pct: SPLIT_DEFAULT,
-            wrap_override: false,
+            wrap_override: None,
             zoomed: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
@@ -851,9 +854,11 @@ impl Controller {
     pub fn split_pct(&self) -> u16 {
         self.split_pct
     }
-    /// Whether the `w` content-wrap override is on (carried across a re-root, AC-12).
+    /// Whether the `w` override is currently forcing wrap ON (carried across a re-root, AC-12).
+    /// `Some(false)` (force wrap off / horizontal-scroll) and `None` (per-mode default) both read
+    /// as `false` here — the getter reports the force-on state the tests assert after toggling.
     pub fn wrap_override(&self) -> bool {
-        self.wrap_override
+        self.wrap_override == Some(true)
     }
     pub fn tree(&self) -> &TreeModel {
         &self.tree
@@ -956,12 +961,13 @@ impl Controller {
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
-        // Rendered markdown is laid out by glow to the pane's drawable width so tables fit; a width
-        // change (terminal resize or split-bar drag) must therefore reflow it, preserving scroll and
-        // search (unlike a selection-change render). No-op for other modes and when nothing is shown.
-        // A height-only change never affects glow's layout, so it does not re-render.
-        if width_changed {
-            self.rerender_markdown_for_width();
+        // When markdown is fit-to-pane (wrapped), glow lays the table out to the pane width, so a
+        // width change (terminal resize or split-bar drag) must reflow it, preserving scroll and
+        // search (unlike a selection-change render). When unwrapped (the `w` horizontal-scroll view)
+        // glow's natural-width output is width-independent — the pane just re-clamps h-scroll, no
+        // re-render. A height-only change never affects glow's layout either.
+        if width_changed && self.effective_wrap() {
+            self.rerender_markdown_reflow();
         }
     }
 
@@ -1196,21 +1202,20 @@ impl Controller {
         Some(line)
     }
 
-    /// Whether the content pane wraps for `node`: forced on by the `w` override, else the
-    /// per-mode default — prose (rendered markdown / plain text) wraps; diffs and code stay
-    /// unwrapped so their columns align. Takes the node so the draw path needn't re-walk.
+    /// Whether the content pane wraps for `node`: the `w` override when set (`Some(true)` forces
+    /// wrap on, `Some(false)` forces it off), else the per-mode default — prose (rendered markdown /
+    /// plain text) wraps; diffs and code stay unwrapped so their columns align. Takes the node so
+    /// the draw path needn't re-walk.
     fn wrap_for(&self, node: Option<&Node>) -> bool {
-        if self.wrap_override {
-            return true;
-        }
-        match node {
+        let default = match node {
             Some(n) if n.kind == NodeKind::File => {
-                // Only prose wraps; diffs (compact and full-context) and code keep their lines
-                // so columns and the line-number gutter stay aligned.
+                // Only prose wraps by default; diffs (compact and full-context) and code keep their
+                // lines so columns and the line-number gutter stay aligned.
                 matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown)
             }
             _ => false,
-        }
+        };
+        self.wrap_override.unwrap_or(default)
     }
 
     // ---- intent handling ---------------------------------------------------------------
@@ -1768,14 +1773,22 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Flip the content-wrap override. Pure layout state — the content text is unchanged, only
-    /// how the Presenter lays it out; the scroll clamp recomputes from the new wrap.
+    /// Flip the content-wrap state (the `w` key): force it to the opposite of what the current
+    /// selection shows now, so a single press always visibly toggles. The override is a session
+    /// preference applied uniformly — `Some(true)` wraps everywhere, `Some(false)` unwraps
+    /// everywhere — so switching files doesn't spring a surprise wrap on the next one.
+    ///
+    /// For code/diffs this is pure layout (the delegate output is unchanged, only how the Presenter
+    /// lays it out). For rendered markdown the wrap state changes glow's `-w` (fit-to-pane vs.
+    /// natural width for horizontal scroll), so the content itself is re-rendered — preserving
+    /// scroll and search, like a resize reflow. The scroll clamp recomputes from the new layout.
     fn toggle_wrap(&mut self) -> Effects {
-        self.wrap_override = !self.wrap_override;
-        // Wrapping changes the content's layout, so re-clamp both offsets: vertical to the new
-        // line count, and horizontal to zero while wrapped (no line overflows the pane).
+        self.wrap_override = Some(!self.effective_wrap());
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+        // Markdown must re-render at the new wrap width (fit vs. natural); a no-op for other modes,
+        // which only need the re-clamp above.
+        self.rerender_markdown_reflow();
         Effects::redraw()
     }
 
@@ -1905,24 +1918,26 @@ impl Controller {
 
     // ---- content coordination ----------------------------------------------------------
 
-    /// The markdown wrap width to hand a render job: the content pane's drawable text width, or
-    /// `None` before the first draw has measured it (`content_width == 0`). Only the markdown
-    /// delegate consumes it — glow lays out tables to this width so they fit the pane.
+    /// The wrap width to hand a markdown render job: the content pane's drawable text width when
+    /// markdown is effectively **wrapped** (the fit-to-pane default) so glow lays the table out to
+    /// fit; `None` when unwrapped (the `w` horizontal-scroll view) so glow keeps its base `-w 0`
+    /// natural-width layout and the pane scrolls to reveal the whole table, and `None` before the
+    /// first draw has measured the pane (`content_width == 0`). Only the markdown delegate uses it.
     fn md_wrap_width(&self) -> Option<u16> {
-        (self.content_width > 0).then_some(self.content_width)
+        (self.content_width > 0 && self.effective_wrap()).then_some(self.content_width)
     }
 
-    /// Re-render the current selection at the new content-pane width **without** the view-state
-    /// reset [`dispatch_render`] performs — a resize (terminal resize or a split-bar drag) is not a
-    /// selection change, so scroll position and any active search must survive it. Only rendered
-    /// markdown is re-rendered: glow's table layout is tied to the width we pass it, so a narrower
-    /// pane must reflow the table (otherwise the Presenter re-wraps the now-too-wide `-w` output and
-    /// shatters it). Every other mode is width-independent here (diffs/code h-scroll), so this is a
-    /// no-op for them. The current content stays on screen until the new render lands (no
-    /// `Rendering…` placeholder), so a live split-drag doesn't flash; the worker collapses the
-    /// backlog so only the final width actually renders. [`poll`] applies the result by `seq` and,
-    /// seeing it flagged in `reflow_seq`, keeps the scroll and recomputes an active search.
-    fn rerender_markdown_for_width(&mut self) {
+    /// Re-render the current markdown selection **without** the view-state reset [`dispatch_render`]
+    /// performs — the triggers are a content-pane resize and the `w` wrap toggle, neither of which is
+    /// a selection change, so scroll position and any active search must survive. Only rendered
+    /// markdown is re-rendered: glow's layout is tied to the wrap width we pass it (fit-to-pane vs.
+    /// natural width), so a resize-while-fit or a wrap toggle must re-run glow; every other mode is
+    /// width-independent here (diffs/code re-wrap in the Presenter alone), so this is a no-op for
+    /// them. The current content stays on screen until the new render lands (no `Rendering…`
+    /// placeholder), so a live split-drag doesn't flash; the worker collapses the backlog so only the
+    /// final state renders. [`poll`] applies the result by `seq` and, seeing it flagged in
+    /// `reflow_seq`, keeps the scroll and recomputes an active search.
+    fn rerender_markdown_reflow(&mut self) {
         let Some(node) = self.tree.selected() else {
             return;
         };
