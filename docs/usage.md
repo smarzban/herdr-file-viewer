@@ -47,12 +47,16 @@ viewer via the same idempotent launcher. (Alternatively, `command` may invoke
 
 **Open in a tab instead of a split.** A second action, `open-file-viewer-tab`, opens the viewer
 in its **own tab** (`scripts/open-file-viewer-tab.sh`, `--placement tab`). Its launcher is
-idempotent *across tabs* — *open-or-switch-or-toggle*:
+idempotent *across the tabs of the current workspace* — *open-or-switch-or-toggle*:
 
-- no viewer anywhere → open it in a new tab (focused)
-- a viewer in another tab → **switch to that tab** (never a duplicate)
+- no viewer in this workspace → open it in a new tab (focused)
+- a viewer in another tab of this workspace → **switch to that tab** (never a duplicate)
 - a viewer in the current tab, not focused → focus it in place
 - the viewer already focused → close it (herdr auto-closes the emptied tab)
+
+The idempotency is scoped to the **current workspace**: a viewer already open in a *different*
+workspace is left where it is, and a fresh one opens here — the action reaches this workspace's
+viewer, it never pulls you across workspaces.
 
 Bind it to its own key — e.g. `prefix+shift+f` alongside `prefix+f` for the split:
 

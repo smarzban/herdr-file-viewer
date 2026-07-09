@@ -3,8 +3,8 @@
 
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
-    ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView, PickerView,
-    ViewState, draw,
+    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView,
+    PickerView, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -75,6 +75,7 @@ fn sample_state() -> ViewState {
         tree_hscroll: 0,
         content_rows: 3, // the fixture content is three lines
         wrap: false,
+        content_pad_left: false,
         split_pct: 40,
         zoomed: false,
         update_banner: None,
@@ -87,6 +88,7 @@ fn sample_state() -> ViewState {
         content_rendering: false,
         search: None,
         line_select: None,
+        content_selection: None,
         help: None,
     }
 }
@@ -1175,6 +1177,85 @@ fn geometry_matches_the_wide_two_column_layout() {
         "a wide layout has a draggable divider"
     );
     assert_eq!((g.area_x, g.area_width), (0, 100));
+}
+
+#[test]
+fn content_pad_left_insets_the_transformed_views_one_column() {
+    // Rendered-markdown / diff views set `content_pad_left` so their border-hugging delegate output
+    // gains a one-column left gap. The gap must land in BOTH the drawn text and the hit-test
+    // geometry (else a content click maps one column off), so assert on `content_inner` — the single
+    // rect that drives both.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut flush = sample_state();
+    flush.content_pad_left = false;
+    let mut padded = sample_state();
+    padded.content_pad_left = true;
+
+    let x_flush = geometry(area, &flush).content_inner.unwrap().x;
+    let x_padded = geometry(area, &padded).content_inner.unwrap().x;
+    assert_eq!(
+        x_padded,
+        x_flush + 1,
+        "the left gap shifts the content interior exactly one column right"
+    );
+    // The gap only insets the left: the interior narrows by the same one column, and everything
+    // else (the tree column) is untouched.
+    let g_flush = geometry(area, &flush);
+    let g_padded = geometry(area, &padded);
+    assert_eq!(
+        g_padded.content_inner.unwrap().width + 1,
+        g_flush.content_inner.unwrap().width,
+        "the gap comes out of the content width, not the border"
+    );
+    assert_eq!(
+        g_padded.tree_inner, g_flush.tree_inner,
+        "the tree column is never padded"
+    );
+}
+
+#[test]
+fn content_pad_left_shifts_the_drawn_text_one_column() {
+    // The gap must land in the DRAWN buffer, not only in `geometry()`. A regression that dropped
+    // `content_block(state)` from `draw_content` while leaving `geometry` padded would keep the
+    // geometry test above green yet silently revert the visible text to hugging the border — so this
+    // renders both and compares the first content glyph's column. Zoomed so content fills the frame.
+    fn first_content_glyph_x(pad: bool) -> u16 {
+        let mut st = sample_state();
+        st.notices = vec![];
+        st.zoomed = true;
+        st.content_pad_left = pad;
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &st);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Body row 0 is at y=1 (just inside the top border). The border cell sits at x=0; the first
+        // cell that is neither the border nor a pad space is the leading 'f' of "fn main() {".
+        (1..buf.area().width)
+            .find(|&x| {
+                buf.cell((x, 1))
+                    .map(|c| c.symbol())
+                    .is_some_and(|s| s != " " && s != "│")
+            })
+            .expect("a content glyph is drawn on the first body row")
+    }
+    let x_flush = first_content_glyph_x(false);
+    let x_padded = first_content_glyph_x(true);
+    assert_eq!(
+        x_padded,
+        x_flush + 1,
+        "the drawn content text starts one column further right when padded \
+         (flush={x_flush}, padded={x_padded})"
+    );
 }
 
 #[test]
@@ -2693,7 +2774,12 @@ fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
     st.focus = Focus::Content;
     st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
     st.content_rows = 6;
-    st.line_select = Some(LineSelectView { marker, start, end });
+    st.line_select = Some(LineSelectView {
+        marker,
+        start,
+        end,
+        char_sel: None,
+    });
     st
 }
 
@@ -2790,6 +2876,75 @@ fn line_select_marker_and_selection_carry_theme_styles() {
     );
 }
 
+// ── content_selection overlay — ambient mouse drag-select (gutter-less char highlight) ───────
+
+#[test]
+fn ambient_selection_highlights_only_selected_chars_without_shifting_content() {
+    // The ambient (no-modal) selection overlay highlights ONLY the dragged characters and prepends
+    // NO gutter glyph — so, unlike the L-mode overlay, the content is not shifted right one column.
+    use herdr_file_viewer::highlight::HIGHLIGHT;
+    use herdr_file_viewer::presenter::geometry;
+    use herdr_file_viewer::render::to_text;
+    use ratatui::layout::Rect;
+
+    // Content "line one\n…"; select chars [5, 8) of line 1 → "one" (gutter 0, no bat gutter).
+    let mut st = sample_state();
+    st.notices = vec![];
+    st.focus = Focus::Content;
+    st.content = to_text("line one\nline two\nline three\n");
+    st.content_rows = 3;
+    st.content_selection = Some(CharSelView {
+        start_line: 1,
+        start_col: 5,
+        end_line: 1,
+        end_col: 8,
+        gutter: 0,
+    });
+
+    let (w, h) = (100u16, 24u16);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let buf = render_buffer(&st, w, h);
+    let content_inner = geometry(area, &st)
+        .content_inner
+        .expect("content inner must be present");
+    let (first, top) = (content_inner.x, content_inner.y);
+
+    // No gutter glyph: the very first content cell is the real first char 'l' of "line one", not a
+    // ▶/│ glyph or a shifted char (the L-mode overlay would put a glyph here instead).
+    assert_eq!(
+        buf.cell((first, top)).unwrap().symbol(),
+        "l",
+        "the ambient overlay prepends no gutter glyph — content is not shifted right"
+    );
+
+    // The selected chars "one" (cols 5..8) carry the HIGHLIGHT background.
+    for dx in 5..8u16 {
+        let bg = buf.cell((first + dx, top)).unwrap().bg;
+        assert_eq!(
+            bg,
+            HIGHLIGHT.bg.unwrap(),
+            "selected char at col {dx} must carry the HIGHLIGHT background"
+        );
+    }
+    // The space just before the selection (col 4) is NOT highlighted.
+    assert_ne!(
+        buf.cell((first + 4, top)).unwrap().bg,
+        HIGHLIGHT.bg.unwrap(),
+        "an unselected char on the boundary line must not be highlighted"
+    );
+    // A line outside the selection (line 2) is entirely unselected.
+    assert_ne!(
+        buf.cell((first, top + 1)).unwrap().bg,
+        HIGHLIGHT.bg.unwrap(),
+        "a line outside the selection must not be highlighted"
+    );
+}
+
 // ── Help overlay tests (AC-5, AC-11) ────────────────────────────────────
 
 /// A `ViewState` with the help overlay open. Three sections (What's New, About, Settings —
@@ -2811,7 +2966,7 @@ fn help_state() -> ViewState {
              \n\
              github.com/smarzban/herdr-file-viewer\n\
              \n\
-             v1.10.0 · Up to date\n\
+             v1.11.0 · Up to date\n\
              MIT License\n\
              \n\
              If you enjoy the file viewer, don't forget to give it a ★ on GitHub!",

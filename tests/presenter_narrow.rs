@@ -39,6 +39,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         tree_hscroll: 0,
         content_rows: 1, // the fixture content is one line
         wrap: false,
+        content_pad_left: false,
         split_pct: 40,
         zoomed: false,
         update_banner: None,
@@ -51,6 +52,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         content_rendering: false,
         search: None,
         line_select: None,
+        content_selection: None,
         help: None,
     }
 }

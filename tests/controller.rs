@@ -67,6 +67,7 @@ impl ContentProvider for StubContent {
         RenderResult {
             content: Text::raw("stub-content"),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -85,6 +86,7 @@ impl ContentProvider for DelayedNamedContent {
         RenderResult {
             content: Text::raw(format!("BODY-OF:{name}")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -858,6 +860,7 @@ impl ContentProvider for LinesContent {
         RenderResult {
             content: Text::raw(body),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -872,6 +875,7 @@ impl ContentProvider for WideContent {
         RenderResult {
             content: Text::raw(body),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -1066,6 +1070,76 @@ fn wrap_is_on_for_markdown_and_off_for_code() {
     let (ctrl_rs, _, _) = controller(rs.path(), false, StubGit::default(), false);
     assert_eq!(ctrl_rs.selected_view_mode(), Some(ViewMode::SyntaxContent));
     assert!(!ctrl_rs.view_state().wrap, "code content does not wrap");
+}
+
+#[test]
+fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
+    // The transformed views (rendered markdown, diff) get a one-column left gap so their
+    // border-hugging delegate output doesn't touch the border; syntax content stays flush because
+    // bat's line-number gutter already supplies the gap. The flag tracks the DISPLAYED content's
+    // effective mode, so it is asserted only after the render lands (`content_path` set).
+    let md = TempDir::new();
+    std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
+    let (mut ctrl_md, _, _) = controller(md.path(), false, StubGit::default(), false);
+    // Keyed off the DISPLAYED content (`content_path`), not the tree cursor: before any body has
+    // landed the flag is false even though a markdown file is selected (a.md would render markdown).
+    assert_eq!(
+        ctrl_md.selected_view_mode(),
+        Some(ViewMode::RenderedMarkdown),
+        "precondition: the selected file would render as markdown"
+    );
+    assert!(
+        !ctrl_md.view_state().content_pad_left,
+        "no gap until the body lands — the flag follows content_path, which is None pre-render"
+    );
+    await_marker(&mut ctrl_md, "stub-content");
+    assert!(
+        ctrl_md.view_state().content_pad_left,
+        "rendered markdown is inset from the border once its body has landed"
+    );
+
+    let rs = TempDir::new();
+    std::fs::write(rs.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let (mut ctrl_rs, _, _) = controller(rs.path(), false, StubGit::default(), false);
+    await_marker(&mut ctrl_rs, "stub-content");
+    assert!(
+        !ctrl_rs.view_state().content_pad_left,
+        "syntax content stays flush (bat's gutter already gaps it)"
+    );
+
+    // A changed file (diff view) is inset; cycling it to the syntax view drops the gap.
+    let diff = TempDir::new();
+    std::fs::write(diff.path().join("changed.rs"), "fn main() {}\n").unwrap();
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (mut ctrl_diff, _, _) = controller(diff.path(), true, git, false);
+    await_marker(&mut ctrl_diff, "stub-content");
+    assert_eq!(ctrl_diff.selected_view_mode(), Some(ViewMode::Diff));
+    assert!(
+        ctrl_diff.view_state().content_pad_left,
+        "a diff is inset from the border"
+    );
+    ctrl_diff.handle(Intent::CycleView); // Diff → FullDiff — still transformed, still inset
+    await_marker(&mut ctrl_diff, "stub-content");
+    assert!(
+        ctrl_diff.view_state().content_pad_left,
+        "the full-context diff is inset too"
+    );
+    ctrl_diff.handle(Intent::CycleView); // FullDiff → SyntaxContent — gap drops
+    await_marker(&mut ctrl_diff, "stub-content");
+    assert_eq!(
+        ctrl_diff.selected_view_mode(),
+        Some(ViewMode::SyntaxContent)
+    );
+    assert!(
+        !ctrl_diff.view_state().content_pad_left,
+        "cycling the diff to the syntax view drops the gap"
+    );
 }
 
 #[test]
@@ -2095,6 +2169,7 @@ impl ContentProvider for PathContent {
         RenderResult {
             content: Text::raw(format!("showing {}", path.display())),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -5919,6 +5994,7 @@ impl ContentProvider for WrapLines {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -6228,6 +6304,7 @@ impl ContentProvider for SearchContent {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -6943,6 +7020,7 @@ impl ContentProvider for SwitchingContent {
         RenderResult {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -7196,6 +7274,7 @@ impl ContentProvider for ContentWithoutSentinel {
         RenderResult {
             content: Text::raw(lines),
             notices: Vec::new(),
+            source: None,
         }
     }
 }

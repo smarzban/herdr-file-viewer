@@ -1,6 +1,8 @@
-//! Line-reference formatting for the copy-line-reference feature — turns a selected line or
-//! line range on a file into the `path:line` / `path:start-end` string the Copy adapter (T-7)
-//! puts on the clipboard, plus the line-select modal state and its enter/exit on the Controller.
+//! The line-select modal: its in-progress selection state, the enter/exit transitions on the
+//! Controller, and the two confirm paths — `Enter` copies the selection's `path:line` /
+//! `path:start-end` REFERENCE (the v1.9.0 copy-line-reference contract, unchanged), while
+//! `y`/`Y` copy the selected lines' CONTENT (the actual file text). One selection, two
+//! products, one keystroke apart.
 
 use super::*;
 
@@ -21,36 +23,133 @@ pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) ->
     }
 }
 
-/// In-progress line selection on the content pane: `anchor` is where the selection started,
-/// `marker` is the current cursor line. Both are 1-based source-line indices. A plain move
-/// collapses the selection (anchor follows marker); an extend move holds the anchor so the
-/// selection grows/shrinks toward the new marker.
+/// Strip a leading line-number gutter (as the syntax renderer adds — `bat --style=numbers` prints
+/// a right-aligned number then a separator before each source line) from one rendered line's plain
+/// text, given the 1-based source line number `n` that line displays.
+///
+/// Self-validating: it only strips when the digits immediately after the right-align padding EQUAL
+/// `n` **and** are followed by a real separator (a space, and/or a box-drawing `│`/`|` with its
+/// spaces). So a renderer that adds no gutter (the plain-text fallback, or the test stubs), or a
+/// code line that merely happens to start with some other digits, is returned unchanged — and the
+/// code's OWN leading indentation, which sits after the single separator, is preserved intact.
+fn strip_line_gutter(plain: &str, n: usize) -> &str {
+    let after_pad = plain.trim_start_matches(' ');
+    let Some(rest) = after_pad.strip_prefix(&n.to_string()) else {
+        return plain;
+    };
+    // The gutter number must be followed by a separator; otherwise this isn't a gutter.
+    let mut rest = rest;
+    let mut saw_sep = false;
+    if let Some(r) = rest.strip_prefix(' ') {
+        rest = r;
+        saw_sep = true;
+    }
+    if let Some(r) = rest.strip_prefix('│').or_else(|| rest.strip_prefix('|')) {
+        rest = r.strip_prefix(' ').unwrap_or(r);
+        saw_sep = true;
+    }
+    if saw_sep { rest } else { plain }
+}
+
+/// Drop control characters from one line of untrusted file text while keeping `\t`, so
+/// indentation survives the AC-16 scrub. The per-line counterpart of
+/// [`crate::text_layout::sanitize_control`] (which would also eat tabs and newlines); callers
+/// join lines with `\n` AFTER filtering so line structure survives.
+fn filter_control_keep_tabs(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect()
+}
+
+/// The char index within `s` displayed at 0-based display column `col` — i.e. how many chars sit
+/// to the left of a caret dropped at that column. Used to turn a mouse column into a character
+/// position for click-drag selection. Clamps to the char count when `col` is at/past the end (a
+/// caret at end-of-line).
+///
+/// v1 assumes one display column per char: `bat` expands tabs to spaces before we ever see the
+/// text, and code is overwhelmingly single-width, so `col` maps straight to a char index. Precise
+/// wide-glyph (CJK / emoji) column accounting is a follow-up; it would replace this body with a
+/// width-summing walk without changing the signature.
+fn char_index_at_col(s: &str, col: usize) -> usize {
+    col.min(s.chars().count())
+}
+
+/// In-progress selection on the content pane. `anchor` is where the selection started, `marker`
+/// the current cursor; both are 1-based source-line indices. Two granularities share this state:
+///
+/// - **Line** (keyboard `j`/`k`, Shift-extend): whole source lines. `char_mode` is `false` and the
+///   `*_col` carets are ignored — copy takes full lines.
+/// - **Character** (mouse click-drag): `anchor_col`/`marker_col` are char carets (0-based char
+///   indices into the *displayed* line, gutter included) pairing with `anchor`/`marker`. Set while
+///   `char_mode` is `true` — copy takes the exact `anchor..marker` character span.
+///
+/// A keyboard move reverts to line granularity (`char_mode = false`), so the two never tangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LineSelectState {
     anchor: usize,
     marker: usize,
+    anchor_col: usize,
+    marker_col: usize,
+    char_mode: bool,
 }
 
 impl LineSelectState {
-    /// Start a new selection collapsed onto a single `line`.
+    /// Start a new selection collapsed onto a single `line` (line granularity).
     pub(crate) fn new(line: usize) -> Self {
         Self {
             anchor: line,
             marker: line,
+            anchor_col: 0,
+            marker_col: 0,
+            char_mode: false,
         }
     }
 
+    /// Begin a character-granular selection collapsed at `(line, col)` — a mouse press. `col` is a
+    /// char caret into the displayed line; `line` is clamped to `[1, last]`.
+    pub(crate) fn begin_char(&mut self, line: usize, col: usize, last: usize) {
+        let l = Self::clamp(line, last);
+        self.anchor = l;
+        self.marker = l;
+        self.anchor_col = col;
+        self.marker_col = col;
+        self.char_mode = true;
+    }
+
+    /// Extend a character-granular selection: move the marker to `(line, col)` while holding the
+    /// anchor — a mouse drag. `line` is clamped to `[1, last]`.
+    pub(crate) fn drag_char(&mut self, line: usize, col: usize, last: usize) {
+        self.marker = Self::clamp(line, last);
+        self.marker_col = col;
+        self.char_mode = true;
+    }
+
+    /// Whether the selection is character-granular (a mouse drag), vs. whole-line (keyboard).
+    pub(crate) fn is_char_mode(&self) -> bool {
+        self.char_mode
+    }
+
+    /// The character selection as an ordered `((lo_line, lo_col), (hi_line, hi_col))` pair —
+    /// ascending by line then column, so a drag in either direction reads the same.
+    pub(crate) fn char_span(&self) -> ((usize, usize), (usize, usize)) {
+        let a = (self.anchor, self.anchor_col);
+        let m = (self.marker, self.marker_col);
+        if a <= m { (a, m) } else { (m, a) }
+    }
+
     /// Move the marker to `line` (clamped to `[1, last]`) and collapse the selection onto it —
-    /// the anchor follows the marker.
+    /// the anchor follows the marker. A keyboard move, so it reverts to line granularity.
     pub(crate) fn move_to(&mut self, line: usize, last: usize) {
         self.marker = Self::clamp(line, last);
         self.anchor = self.marker;
+        self.char_mode = false;
     }
 
     /// Move the marker to `line` (clamped to `[1, last]`) while holding the anchor fixed,
-    /// extending (or shrinking) the selection.
+    /// extending (or shrinking) the selection. A keyboard extend, so it reverts to line granularity.
     pub(crate) fn extend_to(&mut self, line: usize, last: usize) {
         self.marker = Self::clamp(line, last);
+        self.char_mode = false;
     }
 
     /// The marker (cursor) line — 1-based. Exposed for the Presenter's line-select overlay (T-9),
@@ -93,11 +192,16 @@ impl Controller {
         // Reset double-click state (mirrors open_finder/open_help): a tree click made just before
         // entry must not pair with the FIRST content click inside the mode as a double-click —
         // `is_double_click` only compares the row, not the column/pane, so a stale prior-context
-        // click could otherwise fire `copy_line_reference` (copy + close) before the marker is
+        // click could otherwise fire `copy_line_content` (copy + close) before the marker is
         // ever placed. Cleared here, at the top of entry, so BOTH the synchronous path below and
         // the deferred (T-6 auto-switch) path are covered — the clear happens when entry begins,
         // not when the (possibly-deferred) modal actually opens.
         self.last_click = None;
+        // Drop any ambient selection AND in-flight drag so L mode starts clean: a still-held ambient
+        // press left `drag = Some(ContentSelect)`, which the mouse drag arm would otherwise honor and
+        // use to extend this freshly-opened L-mode selection from a press never made in L mode.
+        self.content_selection = None;
+        self.drag = None;
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
             // Source-mapped AND the displayed content is the latest render → the line→row mapping is
@@ -128,22 +232,278 @@ impl Controller {
         }
     }
 
+    /// Join the plain text of the currently-selected 1-based source lines `[start, end]` with `\n`.
+    ///
+    /// Line-select forces the source-mapped content view (`SyntaxContent`), so each entry in
+    /// `content.lines` is exactly one source line — the selection therefore indexes straight into
+    /// it (`line - 1`). For each selected line we (1) join its spans' text, (2) drop any residual
+    /// control char **while keeping `\t`** so indentation survives, and (3) strip the syntax
+    /// renderer's line-number gutter via [`strip_line_gutter`] so the copy is the source text
+    /// alone — not `bat`'s `   1 …` decoration. The `\n` joins are added only *after* that
+    /// per-line work so line structure survives (a whole-string `sanitize_control` would eat the
+    /// newlines/tabs — hence the per-line approach). Bounds are clamped into `[1, line_count]`; an
+    /// empty body yields an empty string.
+    fn selected_lines_text(&self, start: usize, end: usize) -> String {
+        let total = self.content.lines.len();
+        if total == 0 {
+            return String::new();
+        }
+        let lo = start.max(1).min(total);
+        let hi = end.max(1).min(total);
+        (lo..=hi)
+            .map(|n| {
+                // Prefer the retained SOURCE line (byte-faithful: real tabs, no renderer
+                // decoration, no gutter to strip) — the control filter still applies, since file
+                // bytes are untrusted (AC-16). Fall back to display extraction + gutter strip
+                // when no source is retained (transformed views / providers without it).
+                if let Some(src) = self.source_line(n) {
+                    return filter_control_keep_tabs(src);
+                }
+                let plain = self.filtered_display_line(n);
+                let gutter = self.gutter_len_of(&plain, n);
+                plain.chars().skip(gutter).collect()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The retained raw source text of 1-based displayed line `n`, when the current content is
+    /// source-mapped (see [`RenderResult::source`]); `None` otherwise. `content_source` is applied
+    /// in lockstep with `content`, so `Some` guarantees index `n-1` IS displayed line `n`'s source.
+    fn source_line(&self, n: usize) -> Option<&str> {
+        self.content_source
+            .as_ref()
+            .and_then(|src| src.get(n - 1))
+            .map(String::as_str)
+    }
+
+    /// Width (in chars) of the renderer's line-number gutter on displayed line `n`, given that
+    /// line's already-extracted plain text. **Source-anchored when possible**: the syntax renderer
+    /// emits the source line verbatim after its gutter, so if the displayed line ends with the
+    /// (control-filtered) source text, the gutter is exactly the length difference — no guessing,
+    /// and immune to the heuristic's one false positive (a gutter-less line that happens to start
+    /// with its own line number). When the anchor can't apply — no retained source, or the
+    /// renderer transformed the text (e.g. `bat` expands tabs, so a tab-bearing line won't match)
+    /// — fall back to the self-validating [`strip_line_gutter`] heuristic.
+    fn gutter_len_of(&self, displayed: &str, n: usize) -> usize {
+        // A line-number gutter exists ONLY behind a `SyntaxContent` render (`bat --style=numbers`),
+        // which is exactly when the raw source is retained (see `RenderResult::source`). Every
+        // other view (rendered markdown, diff, plain-text fallback, binary) has NO gutter and no
+        // source, so there is nothing to strip: return 0 rather than run the digit heuristic, which
+        // would otherwise drop a legitimate leading "N " from a copied line that happens to begin
+        // with its own display-line number.
+        let Some(src) = self.source_line(n) else {
+            return 0;
+        };
+        let src = filter_control_keep_tabs(src);
+        if displayed.ends_with(src.as_str()) {
+            return displayed.chars().count() - src.chars().count();
+        }
+        // Source retained but the renderer transformed the line (e.g. `bat` expanded tabs, so it no
+        // longer ends with the raw source): the gutter is real but unanchorable, so fall back to
+        // the self-validating digit heuristic.
+        let code = strip_line_gutter(displayed, n);
+        displayed.chars().count() - code.chars().count()
+    }
+
+    /// The plain text of 1-based source line `n` (its spans joined), with residual control chars
+    /// dropped but `\t` kept. Includes the syntax renderer's gutter — callers strip it via
+    /// [`gutter_len_of`](Self::gutter_len_of). Caller guarantees `n` is in
+    /// `[1, content.lines.len()]`.
+    fn filtered_display_line(&self, n: usize) -> String {
+        let joined: String = self.content.lines[n - 1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        filter_control_keep_tabs(&joined)
+    }
+
+    /// Map a screen `(col, row)` to a `(source line, char caret)` for mouse selection — used by both
+    /// the L-mode drag and the ambient content-pane drag. The row maps to a source line exactly as
+    /// [`handle_line_select_mouse`](Self::handle_line_select_mouse) does; the column subtracts the
+    /// pane origin and whatever leading glyph columns the ACTIVE overlay prepends
+    /// ([`content_overlay_glyph_cols`](Self::content_overlay_glyph_cols) — 1 in L mode, 0 ambient),
+    /// adds any horizontal scroll, then resolves to a char caret in the displayed line. Clamped to
+    /// `[1, line_count]` for the line and `[0, line_len]` for the caret.
+    ///
+    /// The char caret is an index into the *displayed* line (gutter included); the copy path strips
+    /// the gutter afterward. Wrap-correct: unwrapped, the column indexes the line directly; under
+    /// wrap, the clicked display row is located within the line via
+    /// [`crate::text_layout::wrap_row_starts`] — the same break-position port the wrapped scroll
+    /// math counts rows with — so the caret lands on the character actually under the cursor.
+    pub(crate) fn char_at_content_col(&self, col: u16, row: u16) -> (usize, usize) {
+        if self.content.lines.is_empty() {
+            return (1, 0); // no content to index (line-select can't open on an empty pane anyway)
+        }
+        let last = self.content.lines.len();
+        let top = self.geom.content_inner.map_or(row, |c| c.y);
+        let x = self.geom.content_inner.map_or(0, |c| c.x);
+        let display_row = self.content_scroll as usize + row.saturating_sub(top) as usize;
+        let line = self.line_at_content_row(display_row).clamp(1, last);
+        // The pane-relative column, plus any horizontal scroll. The active overlay's leading glyph
+        // column(s) (see `content_overlay_glyph_cols`) are subtracted per display row below — they
+        // sit on the FIRST row only.
+        let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
+        let overlay = self.content_overlay_glyph_cols();
+        let text = self.filtered_display_line(line);
+        if !self.effective_wrap() {
+            // The whole line is display row 0, so the overlay glyph precedes it.
+            return (
+                line,
+                char_index_at_col(&text, within.saturating_sub(overlay)),
+            );
+        }
+        // Under wrap a source line spans several display rows; the caret is the clicked row's
+        // START char (from `wrap_row_starts_prefixed` — the SAME glyph-aware break simulation the
+        // wrapped scroll/row-count math runs on, one source of truth) plus the column, clamped into
+        // that row's span so a click past a row's end lands at its end, not on the next row. The
+        // overlay glyph occupies a column on the FIRST display row only (ratatui renders it glued
+        // to the text, continuation rows carry none), so it is subtracted from the column on row 0
+        // and NOT on continuation rows — its effect on where later rows break is already baked into
+        // the prefixed break positions.
+        let starts = crate::text_layout::wrap_row_starts_prefixed(
+            &text,
+            self.content_width.max(1) as usize,
+            overlay,
+        );
+        let row_within = display_row
+            .saturating_sub(self.content_row_of_line(line))
+            .min(starts.len() - 1); // the wide-glyph floor can inflate the row count past the port's
+        let base = starts[row_within];
+        let seg_end = starts
+            .get(row_within + 1)
+            .copied()
+            .unwrap_or_else(|| text.chars().count());
+        let col_in_row = if row_within == 0 {
+            within.saturating_sub(overlay)
+        } else {
+            within
+        };
+        (line, (base + col_in_row).min(seg_end))
+    }
+
+    /// Leading columns the active content overlay prepends before the text, so a mouse column maps
+    /// back to a caret: L mode draws a 1-col ▶/│ gutter glyph, the ambient overlay none — which is
+    /// exactly `line_select_active()`. `pub(super)` so the shared wrapped-row math in the parent
+    /// module ([`wrapped_rows_before`]/[`line_at_content_row`]) counts the L-mode glyph too.
+    pub(super) fn content_overlay_glyph_cols(&self) -> usize {
+        if self.line_select_active() { 1 } else { 0 }
+    }
+
+    /// Auto-copy an ambient selection on the drag's release, leaving the highlight standing for
+    /// feedback (the L-mode confirm instead closes the mode). Reuses
+    /// [`char_selection_text`](Self::char_selection_text), so the gutter handling / control-byte
+    /// scrub match the L-mode copy. Copies nothing for a non-file selection (a directory / empty
+    /// tree shows guidance with no file node) or an empty span. NB the `is_file` guard does NOT
+    /// cover the "Rendering…" placeholder (a file *is* selected mid-render) —
+    /// `handle_column_mouse` blocks seeding a selection while a render is in flight instead.
+    pub(super) fn copy_content_selection(&mut self) -> Effects {
+        let Some((lo, hi)) = self.content_selection.as_ref().map(|s| s.char_span()) else {
+            return Effects::redraw();
+        };
+        let is_file = self
+            .tree
+            .selected()
+            .is_some_and(|node| node.kind == NodeKind::File);
+        if !is_file {
+            return Effects::redraw();
+        }
+        let text = self.char_selection_text(lo, hi);
+        if text.is_empty() {
+            return Effects::redraw();
+        }
+        self.action_notice = Some(match self.clipboard.copy(&text) {
+            Ok(()) => "Copied selection".to_string(),
+            Err(e) => format!("Could not copy selection: {e}"),
+        });
+        Effects::redraw()
+    }
+
+    /// Width of the syntax renderer's line-number gutter on 1-based source `line` (0 with no gutter —
+    /// plain-text fallback / test stubs — or empty content). Both char-selection overlays subtract it
+    /// so a highlight never paints the gutter. `line` is clamped into `[1, line_count]`.
+    pub(crate) fn content_gutter_len(&self, line: usize) -> usize {
+        let total = self.content.lines.len();
+        if total == 0 {
+            return 0;
+        }
+        let n = line.clamp(1, total);
+        let displayed = self.filtered_display_line(n);
+        self.gutter_len_of(&displayed, n)
+    }
+
+    /// The gutter width on the L-mode marker line — [`content_gutter_len`](Self::content_gutter_len)
+    /// measured off the active line-select marker. `0` when line-select is inactive or content is
+    /// empty. The Presenter uses it for the L-mode character-selection highlight.
+    pub(crate) fn selection_gutter_len(&self) -> usize {
+        let Some(s) = self.modal.line_select() else {
+            return 0;
+        };
+        self.content_gutter_len(s.marker())
+    }
+
+    /// The text of a character-granular selection from `(lo_line, lo_col)` to `(hi_line, hi_col)`
+    /// (both ordered ascending, char carets into the displayed line). The gutter is stripped per
+    /// line and the carets are re-based into the ungutter'd code, so the copy is source text alone:
+    /// the tail of the first line, whole middle lines, and the head of the last, joined by `\n`.
+    /// A collapsed selection (same line and caret) yields the empty string.
+    ///
+    /// Deliberately extracts from the DISPLAYED text (what-you-see-is-what-you-copy — the carets
+    /// are display positions, so the copy is exactly the glyphs the user swept), with the gutter
+    /// width source-anchored via [`gutter_len_of`](Self::gutter_len_of). Whole-line copies
+    /// ([`selected_lines_text`](Self::selected_lines_text)) are the byte-faithful, source-backed
+    /// path.
+    fn char_selection_text(
+        &self,
+        (lo_line, lo_col): (usize, usize),
+        (hi_line, hi_col): (usize, usize),
+    ) -> String {
+        let total = self.content.lines.len();
+        if total == 0 {
+            return String::new();
+        }
+        let lo_line = lo_line.clamp(1, total);
+        let hi_line = hi_line.clamp(1, total);
+        (lo_line..=hi_line)
+            .map(|n| {
+                let displayed = self.filtered_display_line(n);
+                let gutter = self.gutter_len_of(&displayed, n);
+                let chars: Vec<char> = displayed.chars().skip(gutter).collect();
+                let start = if n == lo_line {
+                    lo_col.saturating_sub(gutter)
+                } else {
+                    0
+                };
+                let end = if n == hi_line {
+                    hi_col.saturating_sub(gutter)
+                } else {
+                    chars.len()
+                };
+                let start = start.min(chars.len());
+                let end = end.min(chars.len()).max(start);
+                chars[start..end].iter().collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Copy the current line reference for the selected file to the clipboard and close the mode
-    /// (the `Enter` / double-click confirm, T-7). Mirrors [`copy_path`](Controller::copy_path):
+    /// (the `Enter` confirm — the v1.9.0 copy-line-reference contract, unchanged by the
+    /// copy-content addition; `y`/`Y` copy the CONTENT instead, see
+    /// [`copy_line_content`](Self::copy_line_content)). Mirrors [`copy_path`](Controller::copy_path):
     /// build the `path:line` / `path:start-end` reference, run it through
     /// [`sanitize_control`](crate::text_layout::sanitize_control) **before** it reaches the
     /// clipboard *or* the notice (AC-16 — a crafted file name may carry ESC/newline), then surface
     /// the outcome as a transient notice ("Copied …" on `Ok` / a failure message on `Err`,
-    /// AC-10/AC-11).
+    /// AC-10/AC-11). A character-granular (mouse) selection references the lines its span covers —
+    /// the drag's line range is exactly [`line_selection`](Self::line_selection).
     ///
-    /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
-    /// guidance screen is non-empty), so if there is no active selection or the selected node is
-    /// not a file, copy nothing and return [`Effects::noop`] rather than fabricate a reference.
-    /// Read-only (AC-17): touches only the clipboard and in-memory notice / modal state.
-    ///
-    /// The mode closes on **both** `Ok` and `Err` (via [`exit_line_select`](Self::exit_line_select))
-    /// so `Enter` is a completed action that returns to normal navigation — consistent with the
-    /// finder/picker/prompt confirm paths; the notice conveys the outcome.
+    /// Guards the no-real-file case exactly as [`copy_line_content`](Self::copy_line_content)
+    /// does: no active selection or a non-file node ⇒ copy nothing, [`Effects::noop`] — never
+    /// fabricate a reference. Read-only (AC-17): touches only the clipboard and in-memory
+    /// notice / modal state. The mode closes on **both** `Ok` and `Err` (via
+    /// [`exit_line_select`](Self::exit_line_select)) so `Enter` is a completed action.
     pub fn copy_line_reference(&mut self) -> Effects {
         // Both an active selection AND a selected file node are required; otherwise there is no
         // reference to copy — do not fabricate one.
@@ -171,6 +531,76 @@ impl Controller {
         self.action_notice = Some(match self.clipboard.copy(&text) {
             Ok(()) => format!("Copied {text}"),
             Err(e) => format!("Could not copy line reference: {e}"),
+        });
+        self.exit_line_select();
+        Effects::redraw()
+    }
+
+    /// Copy the selected content to the clipboard and close the mode (the `y` / `Y`
+    /// confirm — `Enter` copies the REFERENCE instead, see
+    /// [`copy_line_reference`](Self::copy_line_reference)). Whole lines for a keyboard (line-granular) selection via
+    /// [`selected_lines_text`](Self::selected_lines_text), or the exact character span for a mouse
+    /// drag via [`char_selection_text`](Self::char_selection_text). Surfaces a concise outcome
+    /// notice — the line range or "selection", NOT the content itself, which may be many lines
+    /// ("Copied line 5" / "Copied lines 5-8" / "Copied selection" on `Ok`; a failure message on
+    /// `Err`, AC-10/AC-11).
+    ///
+    /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
+    /// guidance screen is non-empty), so if there is no active selection or the selected node is
+    /// not a file, copy nothing and return [`Effects::noop`] rather than copy the guidance text.
+    /// Read-only (AC-17): touches only the clipboard and in-memory notice / modal state.
+    ///
+    /// The mode closes on **both** `Ok` and `Err` (via [`exit_line_select`](Self::exit_line_select))
+    /// so the confirm is a completed action that returns to normal navigation — consistent with the
+    /// finder/picker/prompt confirm paths; the notice conveys the outcome.
+    pub fn copy_line_content(&mut self) -> Effects {
+        // Both an active selection AND a selected file node are required; otherwise there is no
+        // file content to copy — do not copy the non-file guidance screen (T-4).
+        let Some((start, end)) = self.line_selection() else {
+            return Effects::noop();
+        };
+        let is_file = self
+            .tree
+            .selected()
+            .is_some_and(|node| node.kind == NodeKind::File);
+        if !is_file {
+            return Effects::noop();
+        }
+
+        // Character granularity (a mouse drag) copies the exact selected span; line granularity
+        // (keyboard) copies whole lines. A collapsed character selection (a plain click, nothing
+        // dragged) falls back to copying the clicked line, so click-then-Enter still yields a line.
+        let char_span = self
+            .modal
+            .line_select()
+            .filter(|s| s.is_char_mode())
+            .map(|s| s.char_span());
+        let (text, label) = match char_span {
+            Some((lo, hi)) => {
+                let text = self.char_selection_text(lo, hi);
+                if text.is_empty() {
+                    let marker = self.line_selection().map_or(start, |(_, e)| e);
+                    (
+                        self.selected_lines_text(marker, marker),
+                        format!("line {marker}"),
+                    )
+                } else {
+                    (text, "selection".to_string())
+                }
+            }
+            None => {
+                let text = self.selected_lines_text(start, end);
+                let label = if start == end {
+                    format!("line {start}")
+                } else {
+                    format!("lines {start}-{end}")
+                };
+                (text, label)
+            }
+        };
+        self.action_notice = Some(match self.clipboard.copy(&text) {
+            Ok(()) => format!("Copied {label}"),
+            Err(e) => format!("Could not copy {label}: {e}"),
         });
         self.exit_line_select();
         Effects::redraw()
@@ -205,8 +635,10 @@ impl Controller {
     /// reports Shift+letter as the **uppercase char** (`J`/`K`) and Shift+arrow as the arrow key
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
-    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the reference and
-    /// closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9). Any other key
+    /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the `path:line`
+    /// REFERENCE and closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9 —
+    /// the shipped v1.9.0 behavior, unchanged); `y`/`Y` copy the selected CONTENT instead
+    /// ([`copy_line_content`](Self::copy_line_content)) — one selection, two products. Any other key
     /// is inert. Ctrl/Alt chords are rejected up
     /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
     /// arrows) and is allowed.
@@ -223,8 +655,17 @@ impl Controller {
                 self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
                 return Effects::redraw();
             }
+            // Two confirms, one selection: `Enter` copies the `path:line` REFERENCE (the shipped
+            // v1.9.0 contract — ready to paste into an agent chat or an issue), while `y`/`Y` copy
+            // the selected CONTENT (the actual text — vim's yank, and the app's `y`=copy idiom;
+            // they reach here because line-select routes every key through this handler). `Y`
+            // arrives as the uppercase char + SHIFT, which the modifier guard above permits —
+            // accepted so holding Shift never makes copy silently fail. Both close the mode.
             KeyCode::Enter => {
-                return self.copy_line_reference(); // AC-9: copy the reference, then close the mode
+                return self.copy_line_reference(); // AC-9: the reference, as shipped
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                return self.copy_line_content(); // the content — the PR #78 addition
             }
             _ => {}
         }
@@ -300,6 +741,82 @@ mod tests {
         assert_eq!(
             format_line_reference("src/editor.rs", 58, 50),
             "src/editor.rs:50-58"
+        );
+    }
+
+    #[test]
+    fn strip_gutter_removes_number_and_space_keeps_code() {
+        // `bat --style=numbers`-style: right-aligned number + one space, then the source line.
+        assert_eq!(
+            strip_line_gutter("   1 # Architecture", 1),
+            "# Architecture"
+        );
+        assert_eq!(strip_line_gutter("  42 fn main() {", 42), "fn main() {");
+    }
+
+    #[test]
+    fn strip_gutter_preserves_code_indentation() {
+        // Only the single separator space is consumed; the code's own leading indentation stays.
+        assert_eq!(strip_line_gutter("  2     let x = 5;", 2), "    let x = 5;");
+    }
+
+    #[test]
+    fn strip_gutter_handles_box_drawing_separator() {
+        // Some `bat` styles put a `│` between the number and the code.
+        assert_eq!(strip_line_gutter("  1 │ code", 1), "code");
+        assert_eq!(strip_line_gutter("  1 | code", 1), "code");
+    }
+
+    #[test]
+    fn strip_gutter_blank_line_becomes_empty() {
+        assert_eq!(strip_line_gutter("   2 ", 2), "");
+    }
+
+    #[test]
+    fn strip_gutter_leaves_ungutter_content_untouched() {
+        // No matching leading number (the test stubs render "line4" etc.) → unchanged.
+        assert_eq!(strip_line_gutter("line4", 5), "line4");
+        // Digits present but NOT equal to the line number → not a gutter, unchanged.
+        assert_eq!(strip_line_gutter("42 is the answer", 7), "42 is the answer");
+        // Leading digits equal to `n` but with no separator (code that just starts with them) →
+        // unchanged, so we never eat real content.
+        assert_eq!(strip_line_gutter("5000 loops", 5), "5000 loops");
+    }
+
+    #[test]
+    fn char_index_at_col_maps_column_to_char_and_clamps() {
+        assert_eq!(char_index_at_col("hello", 0), 0);
+        assert_eq!(char_index_at_col("hello", 3), 3);
+        // Past the end clamps to a caret at end-of-line.
+        assert_eq!(char_index_at_col("hello", 99), 5);
+        assert_eq!(char_index_at_col("", 4), 0);
+    }
+
+    #[test]
+    fn char_span_orders_by_line_then_column() {
+        // Anchor after marker on the same line → ordered ascending by column.
+        let mut s = LineSelectState::new(3);
+        s.begin_char(3, 7, 10);
+        s.drag_char(3, 2, 10);
+        assert_eq!(s.char_span(), ((3, 2), (3, 7)));
+        assert!(s.is_char_mode());
+
+        // Anchor on a later line than the marker → ordered ascending by line.
+        let mut s = LineSelectState::new(5);
+        s.begin_char(5, 1, 10);
+        s.drag_char(2, 9, 10);
+        assert_eq!(s.char_span(), ((2, 9), (5, 1)));
+    }
+
+    #[test]
+    fn keyboard_move_reverts_to_line_mode() {
+        let mut s = LineSelectState::new(1);
+        s.begin_char(1, 4, 10);
+        assert!(s.is_char_mode(), "a mouse press is character-granular");
+        s.move_to(3, 10);
+        assert!(
+            !s.is_char_mode(),
+            "a keyboard move reverts to line granularity"
         );
     }
 

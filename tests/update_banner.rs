@@ -40,6 +40,7 @@ impl ContentProvider for Content {
         RenderResult {
             content: Text::raw(""),
             notices: Vec::new(),
+            source: None,
         }
     }
 }

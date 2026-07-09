@@ -18,6 +18,31 @@ All notable changes to this project are documented here. The format is based on
   overlay gained a third **Settings** section showing the currently effective values and whether
   the config loaded, was absent, or was malformed — display-only, not an in-app editor.
 
+## [1.11.0] - 2026-07-09
+
+Mouse-driven text selection in the content pane, plus content copy in line-select mode.
+
+### Added
+- **Ambient mouse text selection.** Click-drag anywhere in the content pane during normal
+  navigation to select text character-by-character; release to copy ("Copied selection"). Works in
+  wrapped views, and `Shift`+drag still gives the terminal's native selection. Thanks @j-pollack!
+- **Mouse text selection in line-select mode**, character-by-character with a live highlight as you
+  drag.
+- **`y`/`Y` in line-select mode copy the selected content** (byte-faithful, no line-number gutter,
+  indentation preserved), while `Enter` keeps copying the `path:line` / `path:start-end` reference.
+
+### Changed
+- **In line-select mode, a mouse press now places the selection caret** (previously a click placed
+  the line marker and a double-click copied); copying is now always an explicit `Enter`/`y`.
+
+### Fixed
+- **Open-in-tab (`prefix+shift+f`) no longer jumps to a viewer in another workspace.** Invoking the
+  tab action from a different workspace now opens a fresh viewer in the current workspace instead of
+  switching you to the other workspace's tab. Within-workspace open-or-switch-or-toggle is unchanged.
+- **Left gap in the rendered-markdown and diff views.** These views now sit one column in from the
+  content pane's left border, matching the gap syntax-highlighted files already get from their
+  line-number gutter.
+
 ## [1.10.0] - 2026-07-07
 
 ### Added

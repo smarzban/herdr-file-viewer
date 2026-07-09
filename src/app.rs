@@ -335,10 +335,22 @@ impl ContentProvider for LiveContent {
             render::classify(&self.root, path)
         };
         let name = path.file_name().and_then(OsStr::to_str);
+        // Retain the raw source lines behind a source-mapped render: `SyntaxContent` displays one
+        // rendered line per source line, so the copy paths can hand back the file's own text
+        // (byte-faithful — real tabs, no `bat` gutter/tab-expansion) and anchor the gutter width
+        // exactly. Transformed views (markdown / diffs) have no per-display-line source → `None`.
+        let source = match (&mode, &prepared) {
+            (ViewMode::SyntaxContent, Prepared::Full { text })
+            | (ViewMode::SyntaxContent, Prepared::Truncated { text, .. }) => {
+                Some(text.lines().map(str::to_owned).collect())
+            }
+            _ => None,
+        };
         let (content, notice) = render::render(&self.renderers, &prepared, mode, raw_diff, name);
         RenderResult {
             content,
             notices: notice.into_iter().collect(),
+            source,
         }
     }
 }
