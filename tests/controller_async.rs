@@ -6,6 +6,7 @@
 mod common;
 
 use common::TempDir;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
     Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
     RenderResult, RootProviders,
@@ -583,5 +584,199 @@ fn a_superseded_render_does_not_overwrite_the_loading_placeholder_nor_the_pane()
         flatten(ctrl.content()),
         "rendered:c.rs",
         "a superseded render (b.rs) must not overwrite the newer selection (c.rs)"
+    );
+}
+
+// ---- content-pane resize → markdown reflow (the table fix) --------------------------------
+
+/// A content provider that records the wrap `width` handed to every `render_at_width` call and
+/// returns `lines` short lines, the first of which encodes that width (`w=<width>:<name>`). It lets
+/// a test observe (a) that a content-pane resize threads the new pane width into the render, and
+/// (b) that a reflow preserves view state — the body has enough lines to scroll and carries a
+/// stable `lineN` token to search for.
+struct WidthProbe {
+    widths: Arc<Mutex<Vec<Option<u16>>>>,
+    lines: usize,
+}
+impl WidthProbe {
+    fn body(&self, width: Option<u16>, name: &str) -> RenderResult {
+        let mut s = format!("w={width:?}:{name}");
+        for i in 1..self.lines {
+            s.push_str(&format!("\nline{i}"));
+        }
+        RenderResult {
+            content: Text::raw(s),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+impl ContentProvider for WidthProbe {
+    fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
+        self.render_at_width(path, mode, raw_diff, None)
+    }
+    fn render_at_width(
+        &self,
+        path: &Path,
+        _mode: ViewMode,
+        _raw_diff: Option<&str>,
+        width: Option<u16>,
+    ) -> RenderResult {
+        self.widths.lock().unwrap().push(width);
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        self.body(width, &name)
+    }
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// Spin `poll()` until the content pane contains `marker` (or the deadline trips).
+fn await_contains(ctrl: &mut Controller, marker: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()).contains(marker) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "content never contained {marker:?}; was {:?}",
+            flatten(ctrl.content())
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn width_probe_components(widths: Arc<Mutex<Vec<Option<u16>>>>, lines: usize) -> Components {
+    Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(WidthProbe {
+                widths: Arc::clone(&widths),
+                lines,
+            }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    }
+}
+
+/// The core of the table fix: a content-pane *width* change re-renders rendered markdown at the new
+/// pane width (so glow lays out tables to fit), while a *height*-only change does not (glow's layout
+/// does not depend on height — re-rendering would be wasted work and would flash the pane).
+#[test]
+fn a_width_change_reflows_markdown_at_the_new_width_but_a_height_change_does_not() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 5),
+    );
+
+    // The initial render happens before any draw measured the pane → width unknown (None).
+    await_contains(&mut ctrl, "w=None:doc.md");
+
+    // A width change reflows markdown at the new pane width.
+    ctrl.set_content_viewport(50, 10);
+    await_contains(&mut ctrl, "w=Some(50):doc.md");
+    assert!(
+        widths.lock().unwrap().contains(&Some(50)),
+        "a resize must thread the new pane width into the markdown render: {:?}",
+        widths.lock().unwrap()
+    );
+
+    // A height-only change (same width) must NOT reflow — no further render is dispatched.
+    let before = widths.lock().unwrap().len();
+    ctrl.set_content_viewport(50, 14);
+    std::thread::sleep(Duration::from_millis(50)); // give any (wrong) reflow time to land
+    ctrl.poll();
+    assert_eq!(
+        widths.lock().unwrap().len(),
+        before,
+        "a height-only change must not re-render markdown"
+    );
+}
+
+/// A width reflow is not a selection change: it must preserve the user's scroll position (a
+/// split-bar drag must not yank the pane to the top) and recompute — rather than drop — a committed
+/// search (a resize must not silently clear the active highlighting).
+#[test]
+fn a_width_reflow_preserves_scroll_and_recomputes_a_committed_search() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 50), // 50 lines → scrollable
+    );
+    await_contains(&mut ctrl, "w=None:doc.md");
+
+    // Measure the pane (width 40, height 10) and land that reflow.
+    ctrl.set_content_viewport(40, 10);
+    await_contains(&mut ctrl, "w=Some(40):doc.md");
+
+    // Commit a search for a token present in every render, then scroll away from the top.
+    ctrl.handle(Intent::OpenSearch);
+    for c in "line5".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert!(
+        ctrl.search()
+            .map(|s| !s.matches.is_empty())
+            .unwrap_or(false),
+        "precondition: a committed search with matches"
+    );
+    ctrl.scroll_to_line(20);
+    let scrolled = ctrl.content_scroll();
+    assert!(scrolled > 0, "precondition: scrolled away from the top");
+
+    // Resize narrower (a width change) → reflow. Scroll and the committed search must survive.
+    ctrl.set_content_viewport(30, 10);
+    await_contains(&mut ctrl, "w=Some(30):doc.md");
+    assert_eq!(
+        ctrl.content_scroll(),
+        scrolled,
+        "a width reflow must preserve the scroll position, not reset to the top"
+    );
+    let search = ctrl
+        .search()
+        .expect("a committed search must survive a width reflow (recomputed, not dropped)");
+    assert_eq!(search.query, "line5", "the committed query is unchanged");
+    assert!(
+        !search.matches.is_empty(),
+        "the search is recomputed against the reflowed content"
+    );
+}
+
+/// A resize only reflows rendered markdown — a non-markdown view (code / plain text) is
+/// width-independent here (it h-scrolls, and its delegate manages its own width), so a width change
+/// must not re-render it.
+#[test]
+fn a_width_change_does_not_reflow_non_markdown() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 5),
+    );
+    await_contains(&mut ctrl, "w=None:a.rs");
+
+    let before = widths.lock().unwrap().len();
+    ctrl.set_content_viewport(50, 10); // width change, but the selection is code, not markdown
+    std::thread::sleep(Duration::from_millis(50));
+    ctrl.poll();
+    assert_eq!(
+        widths.lock().unwrap().len(),
+        before,
+        "a resize must not re-render a non-markdown view"
     );
 }

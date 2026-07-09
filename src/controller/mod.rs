@@ -111,6 +111,26 @@ pub struct RenderResult {
 /// worker thread (AC-23). Behind a trait so tests stub it instead of spawning glow/delta/bat.
 pub trait ContentProvider: Send {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult;
+
+    /// Render honoring the content pane's drawable text `width` (columns), so a width-sensitive
+    /// delegate (glow, for markdown) can lay out and wrap tables to fit the pane rather than
+    /// overflow it. `None` (or `0`) means "unknown / no bound" — behave exactly as [`render`].
+    ///
+    /// Defaulted to call [`render`], so a test double (which never spawns a real width-sensitive
+    /// renderer) need not implement it; only the live [`LiveContent`] overrides it to thread the
+    /// width into glow's `-w`.
+    ///
+    /// [`render`]: ContentProvider::render
+    fn render_at_width(
+        &self,
+        path: &Path,
+        mode: ViewMode,
+        raw_diff: Option<&str>,
+        width: Option<u16>,
+    ) -> RenderResult {
+        let _ = width;
+        self.render(path, mode, raw_diff)
+    }
 }
 
 /// The outcome of an editor hand-off (AC-19). Distinguishing the failure modes lets the
@@ -238,6 +258,11 @@ struct RenderJob {
     mode: ViewMode,
     baseline: Baseline,
     is_git: bool,
+    /// The content pane's drawable text width (columns) at dispatch, or `None` when unknown
+    /// (e.g. the very first render before the first draw measured the pane). Only the markdown
+    /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
+    /// instead of overflowing and being shattered by the Presenter's re-wrap.
+    wrap_width: Option<u16>,
 }
 
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
@@ -415,6 +440,14 @@ pub struct Controller {
     job_tx: mpsc::Sender<RenderJob>,
     result_rx: mpsc::Receiver<(u64, RenderResult)>,
     latest_seq: u64,
+    /// The `seq` of an in-flight markdown re-render triggered by a content-pane *resize*
+    /// ([`rerender_markdown_for_width`]), as opposed to a selection change. When [`poll`] applies a
+    /// result whose seq matches, it preserves the current scroll and recomputes an active search
+    /// (a resize must not jump to the top or drop the search), instead of the from-scratch reset a
+    /// selection-change render gets. `None` when no resize re-render is pending.
+    ///
+    /// [`rerender_markdown_for_width`]: Controller::rerender_markdown_for_width
+    reflow_seq: Option<u64>,
     /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
     /// event can be mapped to a tree row / the content pane / the divider.
     geom: PaneGeometry,
@@ -575,6 +608,7 @@ impl Controller {
             job_tx,
             result_rx,
             latest_seq: 0,
+            reflow_seq: None,
             geom: PaneGeometry::default(),
             last_click: None,
             drag: None,
@@ -635,7 +669,12 @@ impl Controller {
                         } else {
                             None
                         };
-                    content.render(&job.path, job.mode, raw_diff.as_deref())
+                    content.render_at_width(
+                        &job.path,
+                        job.mode,
+                        raw_diff.as_deref(),
+                        job.wrap_width,
+                    )
                 }))
                 .unwrap_or_else(|_| RenderResult {
                     content: Text::raw("[content unavailable: renderer error]"),
@@ -910,12 +949,20 @@ impl Controller {
         if width == self.content_width && height == self.content_height {
             return; // unchanged — avoid recomputing the clamp on every (mostly idle) draw
         }
+        let width_changed = width != self.content_width;
         self.content_width = width;
         self.content_height = height;
         // A smaller viewport shrinks the max offset, so an existing scroll could now point past
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+        // Rendered markdown is laid out by glow to the pane's drawable width so tables fit; a width
+        // change (terminal resize or split-bar drag) must therefore reflow it, preserving scroll and
+        // search (unlike a selection-change render). No-op for other modes and when nothing is shown.
+        // A height-only change never affects glow's layout, so it does not re-render.
+        if width_changed {
+            self.rerender_markdown_for_width();
+        }
     }
 
     /// Receive the hit-test geometry the Presenter drew this frame (fed back from the draw
@@ -1858,6 +1905,49 @@ impl Controller {
 
     // ---- content coordination ----------------------------------------------------------
 
+    /// The markdown wrap width to hand a render job: the content pane's drawable text width, or
+    /// `None` before the first draw has measured it (`content_width == 0`). Only the markdown
+    /// delegate consumes it — glow lays out tables to this width so they fit the pane.
+    fn md_wrap_width(&self) -> Option<u16> {
+        (self.content_width > 0).then_some(self.content_width)
+    }
+
+    /// Re-render the current selection at the new content-pane width **without** the view-state
+    /// reset [`dispatch_render`] performs — a resize (terminal resize or a split-bar drag) is not a
+    /// selection change, so scroll position and any active search must survive it. Only rendered
+    /// markdown is re-rendered: glow's table layout is tied to the width we pass it, so a narrower
+    /// pane must reflow the table (otherwise the Presenter re-wraps the now-too-wide `-w` output and
+    /// shatters it). Every other mode is width-independent here (diffs/code h-scroll), so this is a
+    /// no-op for them. The current content stays on screen until the new render lands (no
+    /// `Rendering…` placeholder), so a live split-drag doesn't flash; the worker collapses the
+    /// backlog so only the final width actually renders. [`poll`] applies the result by `seq` and,
+    /// seeing it flagged in `reflow_seq`, keeps the scroll and recomputes an active search.
+    fn rerender_markdown_for_width(&mut self) {
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        if node.kind != NodeKind::File
+            || self.effective_mode(&node.path) != ViewMode::RenderedMarkdown
+        {
+            return;
+        }
+        self.latest_seq += 1;
+        let seq = self.latest_seq;
+        self.reflow_seq = Some(seq);
+        let rel = self.rel(&node.path);
+        // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
+        // never receive a result for this seq, which is fine (nothing was cleared).
+        let _ = self.job_tx.send(RenderJob {
+            seq,
+            path: node.path,
+            rel,
+            mode: ViewMode::RenderedMarkdown,
+            baseline: self.baseline,
+            is_git: self.is_git_repo,
+            wrap_width: self.md_wrap_width(),
+        });
+    }
+
     /// Dispatch a render of the current selection to the worker thread (AC-23) — never
     /// blocking and doing **no git or rendering work on the input thread**: the worker reads
     /// the diff and delegates to the external renderer. A directory or empty selection clears
@@ -1923,6 +2013,7 @@ impl Controller {
                 mode,
                 baseline: self.baseline,
                 is_git: self.is_git_repo,
+                wrap_width: self.md_wrap_width(),
             })
             .is_ok()
         {
@@ -1955,13 +2046,28 @@ impl Controller {
         let mut applied = false;
         while let Ok((seq, result)) = self.result_rx.try_recv() {
             if seq == self.latest_seq {
+                // A width-reflow re-render (a resize, not a selection change): its content replaces
+                // the current body, but scroll and search must survive — the user did not navigate.
+                // Cleared unconditionally so a later selection-change render is never mistaken for a
+                // reflow (its seq won't match a stale value anyway, but keep the flag tight).
+                let is_reflow = self.reflow_seq == Some(seq);
+                self.reflow_seq = None;
                 self.content = result.content;
                 // Covers the placeholder→land window: a selection dragged over "Rendering…" after
                 // dispatch_render's clear must not carry its stale coordinates onto the new body.
+                // (Also dropped on a reflow: an ambient selection's line/col coords are against the
+                // pre-reflow rendered lines, so they no longer point at the same text.)
                 self.content_selection = None;
                 self.content_notices = result.notices;
                 self.content_source = result.source; // in lockstep with `content` (copy fidelity)
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
+                // A reflow keeps the user's scroll position, but the reflowed body may have a
+                // different rendered-row count (a table re-lays-out at the new width), so re-clamp
+                // the offset to the new content. A selection-change render already reset scroll to 0
+                // in dispatch_render, so this is gated to the reflow path.
+                if is_reflow {
+                    self.content_scroll = self.content_scroll.min(self.max_content_scroll());
+                }
                 // the body has landed — now switch the title to match it. The latest
                 // dispatched render always corresponds to the current tree selection (every
                 // selection change calls `dispatch_render`), so the applied result's file is the
@@ -2002,9 +2108,13 @@ impl Controller {
                 // A render that was in flight when a search was opened/committed lands here and
                 // swaps self.content; matches computed against the OLD content are now stale.
                 // Mirror dispatch_render's AC-20 clear: recompute an open Search prompt against
-                // the new content, else drop a committed search.
+                // the new content, else drop a committed search — UNLESS this was a width reflow,
+                // where a committed search must be recomputed (not dropped), so a resize does not
+                // silently clear the user's active highlighting.
                 if self.modal.prompt().map(|p| p.mode) == Some(crate::infile::PromptMode::Search) {
                     self.refresh_search();
+                } else if is_reflow {
+                    self.recompute_committed_search();
                 } else {
                     self.search = None;
                 }
