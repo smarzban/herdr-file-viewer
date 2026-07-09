@@ -34,6 +34,11 @@ All notable changes to this project are documented here. The format is based on
   the line marker, and a double-click copied — copying is now always an explicit `Enter`/`y`).
 
 ### Fixed
+- **Open-in-tab (`prefix+shift+f`) no longer jumps to a viewer in another workspace.** When a file
+  viewer tab is already open in one workspace, invoking the tab action from a *different* workspace
+  now opens a fresh viewer in the current workspace instead of switching you to the other
+  workspace's tab. The open-or-switch idempotency stays intact within a workspace (still switches
+  to an existing viewer tab of the same workspace, and toggles off when you're on it).
 - **Left gap in the rendered-markdown and diff views.** These views now sit one column in from the
   content pane's left border instead of hugging it, matching the gap syntax-highlighted files
   already get from their line-number gutter. Purely visual: the content interior is one column

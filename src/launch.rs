@@ -21,6 +21,7 @@ struct Pane {
     #[serde(default)]
     focused: bool,
     tab_id: Option<String>,
+    workspace_id: Option<String>,
 }
 
 /// Decide the launcher action from a herdr `pane list` JSON, returning one line: `OPEN`,
@@ -63,15 +64,17 @@ pub fn launch_decision(pane_list_json: &str) -> String {
 /// Decide the launcher action for the **tab** variant (`scripts/open-file-viewer-tab.sh`),
 /// returning one line: `OPEN`, `SWITCHTAB <tab_id>`, `FOCUS <pane_id>`, or `CLOSE <pane_id>`.
 ///
-/// Like [`launch_decision`] but tab-scoped: a `"Files"` pane in *another* tab is **switched to**
-/// (`herdr tab focus <tab_id>`) rather than duplicated — the idempotency that makes a single
-/// keystroke reach the one viewer wherever it lives.
+/// Like [`launch_decision`] but tab-scoped: a `"Files"` pane in *another tab of the same
+/// workspace* is **switched to** (`herdr tab focus <tab_id>`) rather than duplicated — the
+/// idempotency that makes a single keystroke reach the one viewer in this workspace.
 ///
 /// - Unparseable JSON, or no focused pane (current tab unknown) → `OPEN`.
 /// - A `"Files"` pane in the **focused** tab: `CLOSE` it when it *is* the focused pane (toggle
 ///   off — herdr auto-closes the emptied tab), otherwise `FOCUS` it in place.
-/// - Else a `"Files"` pane in **any other** tab: `SWITCHTAB` to its tab.
-/// - Else `OPEN`.
+/// - Else a `"Files"` pane in **another tab of the focused pane's workspace**: `SWITCHTAB` to it.
+/// - Else `OPEN`. In particular a viewer that lives only in a **different workspace** is left
+///   alone and a fresh viewer is opened here — switching to it would yank the user across
+///   workspaces (the launcher is meant to reach *this* workspace's viewer, not teleport away).
 /// - A pane/tab id that is not flag-safe is never emitted (→ `OPEN`), so a host-supplied id can
 ///   never option-inject when the launcher passes it to `herdr pane`/`herdr tab`.
 pub fn launch_decision_tab(pane_list_json: &str) -> String {
@@ -99,13 +102,32 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
         };
     }
 
-    // Otherwise switch to a viewer living in another tab, by its (validated) tab id.
-    if let Some(elsewhere) = panes.iter().find(is_viewer)
+    // Otherwise switch to a viewer living in another tab OF THE SAME WORKSPACE, by its
+    // (validated) tab id. A viewer in a different workspace is deliberately ignored: switching
+    // to it would pull the user out of their current workspace, so we OPEN a fresh viewer here
+    // instead. If the focused pane's workspace is unknown, we can't scope safely → OPEN.
+    let focused_ws = workspace_of(focused);
+    if focused_ws.is_some()
+        && let Some(elsewhere) = panes
+            .iter()
+            .find(|p| is_viewer(p) && workspace_of(p) == focused_ws)
         && let Some(tab) = elsewhere.tab_id.as_deref().filter(|t| is_flag_safe(t))
     {
         return format!("SWITCHTAB {tab}");
     }
     "OPEN".to_string()
+}
+
+/// The workspace a pane belongs to: herdr's explicit `workspace_id` when present, else the
+/// prefix of its `tab_id`/`pane_id` (herdr ids are `workspace:...` tokens, e.g. `w19:tB`).
+/// `None` when nothing identifies the workspace, so the caller degrades to `OPEN` rather than
+/// guess.
+fn workspace_of(p: &Pane) -> Option<&str> {
+    p.workspace_id
+        .as_deref()
+        .or_else(|| p.tab_id.as_deref().and_then(|t| t.split(':').next()))
+        .or_else(|| p.pane_id.as_deref().and_then(|t| t.split(':').next()))
+        .filter(|w| !w.is_empty())
 }
 
 /// A pane id is safe to place in an argv iff it is a non-empty token of `[A-Za-z0-9_:.-]` that
@@ -124,7 +146,12 @@ mod tests {
     use super::*;
 
     fn pane(id: &str, label: &str, focused: bool, tab: &str) -> String {
-        format!(r#"{{"pane_id":"{id}","label":"{label}","focused":{focused},"tab_id":"{tab}"}}"#)
+        // Derive workspace_id from the id prefix (herdr ids are `workspace:...`), mirroring the
+        // real `pane list` payload, so fixtures exercise the workspace-scoping path.
+        let ws = tab.split(':').next().unwrap_or("");
+        format!(
+            r#"{{"pane_id":"{id}","label":"{label}","focused":{focused},"tab_id":"{tab}","workspace_id":"{ws}"}}"#
+        )
     }
     fn list(panes: &[String]) -> String {
         format!(r#"{{"result":{{"panes":[{}]}}}}"#, panes.join(","))
@@ -223,6 +250,30 @@ mod tests {
             pane("wE:pD", "Files", false, "wE:t4"),
         ]);
         assert_eq!(launch_decision_tab(&j), "SWITCHTAB wE:t4");
+    }
+
+    #[test]
+    fn tab_viewer_only_in_another_workspace_opens_here() {
+        // Regression (cross-workspace jump): the focused pane is in workspace wQ; the only Files
+        // viewer lives in workspace w19. Switching to it would yank the user out of wQ, so the
+        // launcher must OPEN a fresh viewer in the current workspace instead.
+        let j = list(&[
+            pane("wQ:p2K", "", true, "wQ:tH"),
+            pane("w19:pT", "Files", false, "w19:tB"),
+        ]);
+        assert_eq!(launch_decision_tab(&j), "OPEN");
+    }
+
+    #[test]
+    fn tab_prefers_a_same_workspace_viewer_over_one_in_another_workspace() {
+        // A viewer exists both in another tab of THIS workspace and in a different workspace →
+        // switch to the one in this workspace, never the foreign one.
+        let j = list(&[
+            pane("wQ:p2K", "", true, "wQ:tH"),
+            pane("wQ:pV", "Files", false, "wQ:tE"),
+            pane("w19:pT", "Files", false, "w19:tB"),
+        ]);
+        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wQ:tE");
     }
 
     #[test]
