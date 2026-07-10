@@ -806,3 +806,154 @@ fn w_flips_the_markdown_wrap_width_between_fit_and_natural() {
     ctrl.handle(Intent::ToggleWrap); // → fit again → glow gets the pane width once more
     await_contains(&mut ctrl, "w=Some(40):doc.md");
 }
+
+// ---- advisory test-coverage backfill (empanel round 1) ---------------------------------------
+
+/// `toggle_wrap` unconditionally calls `rerender_markdown_reflow`, which is a no-op for a
+/// non-markdown selection (the inner mode-guard returns early). Guard against a regression that
+/// drops that guard: toggling `w` on a code file must dispatch NO render.
+#[test]
+fn toggle_wrap_on_a_code_file_dispatches_no_render() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 5),
+    );
+    await_contains(&mut ctrl, "w=None:a.rs");
+    ctrl.set_content_viewport(50, 10); // code view is width-independent → no reflow
+    let before = widths.lock().unwrap().len();
+    ctrl.handle(Intent::ToggleWrap); // toggle wrap on a code file
+    std::thread::sleep(Duration::from_millis(50)); // give any (wrong) dispatch time to land
+    ctrl.poll();
+    assert_eq!(
+        widths.lock().unwrap().len(),
+        before,
+        "toggling wrap on a code file must not dispatch a render"
+    );
+}
+
+/// The worker now calls `render_at_width`, so every non-markdown test double relies on the trait's
+/// DEFAULT `render_at_width` forwarding to `render` and ignoring the width. Assert that contract
+/// directly on a stub that implements only `render`.
+#[test]
+fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
+    struct DefaultStub;
+    impl ContentProvider for DefaultStub {
+        fn render(&self, path: &Path, _mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            RenderResult {
+                content: Text::raw(format!("r:{name}:{}", raw_diff.unwrap_or("-"))),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+    let s = DefaultStub;
+    let p = Path::new("/x/a.rs");
+    let base = s.render(p, ViewMode::SyntaxContent, Some("d"));
+    let widthed = s.render_at_width(p, ViewMode::SyntaxContent, Some("d"), Some(42));
+    assert_eq!(
+        flatten(&base.content),
+        flatten(&widthed.content),
+        "the default render_at_width ignores the width and forwards to render"
+    );
+}
+
+/// A content provider whose number of `match` lines depends on the wrap width it is handed: the
+/// fit (wide) render carries 8, a narrow one carries 2. A resize that narrows the pane therefore
+/// SHRINKS the committed-search match count, exercising `recompute_committed_search`'s clamp of the
+/// selected ordinal (`current.min(len-1)`) — the path the reflow test with identical tokens can't hit.
+struct WidthDependentMatches;
+impl ContentProvider for WidthDependentMatches {
+    fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
+        self.render_at_width(path, mode, raw_diff, None)
+    }
+    fn render_at_width(
+        &self,
+        _path: &Path,
+        _mode: ViewMode,
+        _raw_diff: Option<&str>,
+        width: Option<u16>,
+    ) -> RenderResult {
+        let n = match width {
+            Some(w) if w >= 40 => 8,
+            _ => 2,
+        };
+        let mut s = format!("header n={n}");
+        for _ in 0..n {
+            s.push_str("\nmatch here");
+        }
+        RenderResult {
+            content: Text::raw(s),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+#[test]
+fn a_committed_search_ordinal_is_clamped_when_a_reflow_shrinks_the_match_count() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(WidthDependentMatches),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_contains(&mut ctrl, "n=2"); // initial render (pane not measured → narrow branch)
+
+    // Measure a wide pane → fit reflow → 8 match lines.
+    ctrl.set_content_viewport(50, 20);
+    await_contains(&mut ctrl, "n=8");
+
+    // Commit a search that matches all 8 lines, then advance to the LAST match (ordinal 7).
+    ctrl.handle(Intent::OpenSearch);
+    for c in "match".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.search().map(|s| s.matches.len()),
+        Some(8),
+        "8 matches at the wide width"
+    );
+    for _ in 0..7 {
+        ctrl.handle(Intent::NextMatch);
+    }
+    assert_eq!(
+        ctrl.search().map(|s| s.current),
+        Some(7),
+        "advanced to the last match"
+    );
+
+    // Narrow the pane → reflow to 2 match lines → recompute must clamp the ordinal (7 → 1), never
+    // leaving `current` pointing past the end (which navigation would index out of bounds).
+    ctrl.set_content_viewport(30, 20);
+    await_contains(&mut ctrl, "n=2");
+    let s = ctrl
+        .search()
+        .expect("the committed search survives the reflow");
+    assert_eq!(
+        s.matches.len(),
+        2,
+        "the match count shrank on the narrower reflow"
+    );
+    assert_eq!(
+        s.current, 1,
+        "the ordinal is clamped to the last valid match (no out-of-bounds)"
+    );
+    // And navigation on the clamped state does not panic.
+    ctrl.handle(Intent::NextMatch);
+}

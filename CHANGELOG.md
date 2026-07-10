@@ -6,20 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Changed
-- **`w` now toggles rendered markdown between fit-to-pane and a wide, horizontally-scrollable
-  view.** In the wide view a table renders at its full natural width with every cell intact, and
-  the content pane scrolls sideways (`←`/`→` or the scrollbar) to reveal it; press `w` again to
-  return to the fit view. Previously `w` had no effect on markdown (which always wrapped). `w`
-  remains a uniform wrap on/off preference, so it never springs an unexpected wrap on a code file.
-
 ### Fixed
-- **Wide tables in the rendered-markdown view.** In the default (fit) view a table is now laid out
-  to fit the content pane (columns sized to the pane width, over-long cells ellipsized with `…`)
-  instead of overflowing at its natural width and being shattered across the border rows by the
-  pane's line-wrapping. Resizing the pane (or dragging the split bar) reflows the table to the new
-  width, keeping your scroll position and any active search. To read a truncated cell in full,
-  press `w` for the wide, horizontally-scrollable view (see above).
+- **Wide tables in the rendered-markdown view no longer shatter.** A table is now laid out to fit
+  the content pane (columns sized to the pane width, over-long cells ellipsized with `…`) instead
+  of overflowing at its natural width and being broken across the border rows by the pane's
+  line-wrapping. Resizing the pane (or dragging the split bar) reflows the table, preserving your
+  scroll position and any active search. Press `w` to switch to a wide, horizontally-scrollable
+  view that renders the table at full natural width with every cell intact (`←`/`→` or the
+  scrollbar to pan); press `w` again to return. (`w` remains a uniform wrap on/off preference, so
+  it never springs an unexpected wrap on a code file.)
 
 ## [1.11.0] - 2026-07-09
 
