@@ -175,6 +175,7 @@ PowerShell launcher scripts.
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
 | `w` | Toggle line wrapping for the content pane. For rendered markdown this switches between the fit-to-pane view (wide tables sized to fit, over-long cells shown as `…`) and a wide view that renders tables at full width and scrolls horizontally (`←`/`→`) so you can read every cell |
 | `z` | Zoom: hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
+| `Z` (Shift+`z`) | **Full-screen a file** (toggle): open the selected file like `Enter` _and_ zoom the viewer's herdr pane to fill the whole terminal, so the file takes over the entire screen instead of just the split. Press `Z` again to return to the normal two-column split. Reads herdr's actual pane-zoom state, so it stays in sync with herdr's own pane-zoom key. On a directory it just expands/collapses like `Enter`; falls back to the in-pane zoom when the host isn't herdr |
 | `r` | Refresh git state: pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `W` (Shift+`w`) | **Switch worktree**: open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels |
 | `?` (Shift+`/`) | Open the **help overlay**: What's New (latest changelog, rendered markdown) + About (version, repo, license, update status); `Esc` / `q` closes it |
@@ -196,7 +197,7 @@ content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
 never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`,
-`O`, `R`, `?`, `H`/`L`, and `J`/`K` in line-select mode).
+`O`, `R`, `Z`, `?`, `H`/`L`, and `J`/`K` in line-select mode).
 
 **Copy a path (`y` / `Y`).** `y` copies the selected file's repo-relative path; `Y` copies its
 absolute path, handy for pasting into a prompt, a command, or an agent. The copy uses the

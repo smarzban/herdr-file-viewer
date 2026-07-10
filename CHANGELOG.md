@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **`Z` (Shift+`z`) toggles a file full-screen.** The first press opens the selected file like
+  `Enter` and zooms the viewer's herdr pane to fill the whole terminal, so the file takes over the
+  entire screen instead of just the split; press `Z` again (or `Esc`/`q`, or `z`) to return to the
+  normal two-column split. Switching worktree or quitting the viewer also restores the pane.
+  Read-only: the pane zoom is a host layout op, never a file or git change, and it degrades to the
+  in-pane zoom when the host isn't herdr. Lowercase `z` still toggles the in-pane zoom only; on a
+  directory, `Z` just expands/collapses like `Enter`.
+
 ### Fixed
 - **Wide tables in the rendered-markdown view no longer shatter.** A table is now laid out to fit
   the content pane (columns sized to the pane width, over-long cells ellipsized with `…`) instead

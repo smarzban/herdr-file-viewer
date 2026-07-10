@@ -1259,6 +1259,7 @@ impl Controller {
             Intent::Expand => self.expand(),
             Intent::Collapse => self.collapse(),
             Intent::Activate => self.activate(),
+            Intent::OpenFullscreen => self.open_fullscreen(),
             Intent::ToggleIgnore => self.toggle_ignore(),
             Intent::ToggleHidden => self.toggle_hidden(),
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
@@ -1509,6 +1510,62 @@ impl Controller {
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
+        }
+    }
+
+    /// `Z` (Shift+`z`): a full-screen **toggle** for reading the selected file. When the pane is
+    /// not already full-screen, open the selection the way [`activate`](Self::activate) does and —
+    /// for a **file** — additionally zoom this pane in herdr so the file takes over the whole
+    /// terminal, not just the plugin's split. When the pane IS full-screen, reverse it: un-zoom the
+    /// pane and restore the two-column split, back to browsing.
+    ///
+    /// The current zoom state is read from herdr ([`host_pane_zoomed`](Self::host_pane_zoomed))
+    /// rather than a local flag, so the toggle stays correct even when the pane was zoomed or
+    /// un-zoomed with herdr's own pane-zoom key. Read-only w.r.t. files/git (herdr layout only) and
+    /// best-effort: with herdr absent the state reads as "not zoomed", so `Z` still opens the file
+    /// in the in-plugin zoom. A directory (only reachable when not full-screen) just
+    /// expands/collapses. The file kind is read — and the tree borrow dropped — *before* `activate`
+    /// so the borrow checker is satisfied.
+    fn open_fullscreen(&mut self) -> Effects {
+        if self.host_pane_zoomed() == Some(true) {
+            // Already full-screen → Z brings it back to the split.
+            self.host_zoom(false);
+            self.zoomed = false;
+            self.focus = Focus::Tree;
+            return Effects::redraw();
+        }
+        // Not full-screen → open the selection; a file additionally goes full-screen.
+        let is_file = matches!(self.tree.selected().map(|n| n.kind), Some(NodeKind::File));
+        let effects = self.activate();
+        if is_file {
+            self.host_zoom(true);
+        }
+        effects
+    }
+
+    /// Whether herdr currently reports THIS pane as zoomed, read from
+    /// `herdr pane layout --current` (`result.layout.zoomed`). `None` when there is no herdr seam
+    /// or its output can't be parsed — [`open_fullscreen`](Self::open_fullscreen) treats that as
+    /// "not zoomed" and falls back to the in-plugin zoom. Read-only (a herdr query).
+    fn host_pane_zoomed(&self) -> Option<bool> {
+        let json = self
+            .herdr
+            .as_ref()?
+            .run_json(&["pane", "layout", "--current"])
+            .ok()?;
+        let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+        v.get("result")?.get("layout")?.get("zoomed")?.as_bool()
+    }
+
+    /// Zoom this pane to full-screen (`on`) or restore it (`!on`) via
+    /// `herdr pane zoom --current --on|--off`. `--current` resolves to the focused pane, always the
+    /// viewer while it is processing a keystroke. The argv is entirely static — no pane id is
+    /// interpolated — so there is no option-injection surface. Best-effort and read-only w.r.t.
+    /// files/git (a herdr layout op): a missing or failing herdr is swallowed.
+    fn host_zoom(&self, on: bool) {
+        if let Some(herdr) = self.herdr.as_ref() {
+            let flag = if on { "--on" } else { "--off" };
+            let _ = herdr.run(&["pane", "zoom", "--current", flag]);
         }
     }
 
