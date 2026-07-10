@@ -77,7 +77,7 @@ These shape every decision; violating one is a design error, not a style nit:
 - **YAGNI.** Smallest thing that meets the criteria; resist turning a viewer into a file manager or
   git client.
 
-### Stack specifics (pinned in `techstack.md`)
+### Stack specifics
 
 - **Rust 1.96 (edition 2024)** + **ratatui 0.30.1** (uses `ratatui-core` 0.1.x) + **crossterm 0.29.0**
 - **`ansi-to-tui` 8.0.1** ingests the external renderers' ANSI output into ratatui spans, and
