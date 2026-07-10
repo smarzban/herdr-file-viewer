@@ -15,7 +15,7 @@ collaborator handed you. Its security posture is built around that.
   a file name can't inject), and the result is run through an escape-sequence neutralizer before
   display: cursor-movement, screen-control, OSC, C1, and other control sequences are stripped;
   only SGR (color/style) is kept and mapped to ratatui styles. A malicious file therefore cannot
-  move the cursor, clear the screen, set the window title, or otherwise drive the terminal — it
+  move the cursor, clear the screen, set the window title, or otherwise drive the terminal; it
   can only paint text inside the viewer's own region.
 
 - **Untrusted repository → hardened git invocations.** Because the opened repo may be hostile,

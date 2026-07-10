@@ -1457,14 +1457,14 @@ fn entering_line_select_clears_an_ambient_selection() {
 
 #[test]
 fn ambient_drag_over_directory_guidance_copies_nothing() {
-    // The pane can show first-party guidance ("Directory — select a file to view") when a directory
+    // The pane can show first-party guidance ("Directory: select a file to view") when a directory
     // is selected. Dragging over it must copy nothing — the is_file guard, shared with the L-mode
     // copy path. A temp dir whose only entry is a subdirectory selects that directory by default.
     let dir = TempDir::new();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub").join("inner.rs"), "x\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
-    await_marker(&mut ctrl, "Directory \u{2014}"); // the directory-selected guidance ("Directory —")
+    await_marker(&mut ctrl, "Directory:"); // the directory-selected guidance ("Directory: select a file to view")
     ctrl.set_content_viewport(80, 20);
     ctrl.set_pane_geometry(content_geometry());
 

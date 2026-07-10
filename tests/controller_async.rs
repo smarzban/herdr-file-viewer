@@ -311,7 +311,7 @@ fn a_panicking_renderer_is_contained_and_the_worker_survives() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         ctrl.poll();
-        if flatten(ctrl.content()).contains("[content unavailable — renderer error]") {
+        if flatten(ctrl.content()).contains("[content unavailable: renderer error]") {
             break;
         }
         assert!(

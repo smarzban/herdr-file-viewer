@@ -9,19 +9,23 @@
 *.swp
 *~
 
-# Local Claude Code tooling (skills, local settings) — not part of the plugin
+# Local Claude Code tooling (skills, local settings), not part of the plugin
 .claude/
 
-# Review-gate run logs / dismissal records — local audit trail, not part of the plugin
+# Review-gate run logs / dismissal records: local audit trail, not part of the plugin
 .review-gate/
 
-# Repo-audit backlog — internal triage snapshot, kept local only
+# Private, per-working-copy agent overlay: never committed (see AGENTS.md routing guideline)
+AGENTS.local.md
+
+# Repo-audit backlog: internal triage snapshot, kept local only
 /AUDIT.md
 
-# Spec / process / meta docs — kept local only, not tracked in the plugin repo (per owner)
-/CLAUDE.md
-/CONTEXT.md
-/constitution.md
+# Local-only design / process / meta docs: kept local only (per owner).
+# NOTE: AGENTS.md, CLAUDE.md (frozen pointer), CONTEXT.md, and constitution.md are now
+# tracked/public and intentionally NOT ignored here.
+/HANDOFF.md
 /specs/
 /docs/adr/
 /docs/manual-verification.md
+/.agent-sdlc/
