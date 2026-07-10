@@ -158,7 +158,7 @@ impl EmptyReason {
     /// The empty-state guidance copy for this case.
     fn label(self) -> &'static str {
         match self {
-            EmptyReason::Directory => "Directory — select a file to view",
+            EmptyReason::Directory => "Directory: select a file to view",
             EmptyReason::NoFiles => "No files",
         }
     }
@@ -638,7 +638,7 @@ impl Controller {
                     content.render(&job.path, job.mode, raw_diff.as_deref())
                 }))
                 .unwrap_or_else(|_| RenderResult {
-                    content: Text::raw("[content unavailable — renderer error]"),
+                    content: Text::raw("[content unavailable: renderer error]"),
                     notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
                     source: None,
                 });

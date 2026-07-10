@@ -1,4 +1,4 @@
-# Constitution — herdr-file-viewer
+# Constitution: herdr-file-viewer
 
 Standing principles for this project. These outlast any single feature; change them
 deliberately.
@@ -13,14 +13,14 @@ deliberately.
    problems.
 
 3. **Git is first-class, not a mode.** Git status and diffs are woven through the tree
-   and content pane — not a separate preview feature.
+   and content pane, not a separate preview feature.
 
 4. **Keyboard-first.** Every action is reachable from the keyboard. Mouse support, if
    any, is additive.
 
 5. **Be a good plugin citizen.** herdr runs plugins unsandboxed, as the user. Touch
    only what the task needs, keep state in the plugin's own state/config dirs, and
-   drive herdr through its documented CLI/socket — never around it.
+   drive herdr through its documented CLI/socket, never around it.
 
 6. **YAGNI.** Ship the smallest thing that delivers the core value. Resist scope that
    turns a viewer into a file manager or a git client.

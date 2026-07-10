@@ -87,7 +87,7 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
         let preview: String = text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
         let cap = if over_bytes { "1 MB size" } else { "5000-line" };
         let notice = format!(
-            "⚠ Truncated preview — showing {} lines ({} of {} bytes); file exceeds the {} cap.",
+            "⚠ Truncated preview: showing {} lines ({} of {} bytes); file exceeds the {} cap.",
             preview.lines().count(),
             preview.len(),
             byte_len,
@@ -153,7 +153,7 @@ pub fn render(
 
     // Content modes: a binary file shows a placeholder, never raw bytes (AC-12).
     let (content, base_notice) = match prepared {
-        Prepared::Binary => return (Text::raw("[binary file — preview not shown]"), None),
+        Prepared::Binary => return (Text::raw("[binary file: preview not shown]"), None),
         Prepared::Full { text } => (text.as_str(), None),
         Prepared::Truncated { text, notice } => (text.as_str(), Some(notice.clone())),
     };
@@ -233,7 +233,7 @@ fn cap_preview(text: &str) -> (String, Option<String>) {
     }
     (
         preview,
-        Some("⚠ Truncated diff preview — diff exceeds the size cap.".into()),
+        Some("⚠ Truncated diff preview: diff exceeds the size cap.".into()),
     )
 }
 
