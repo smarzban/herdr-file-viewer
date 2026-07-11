@@ -55,6 +55,239 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
     }
 }
 
+/// One row of the [keybinding registry](REGISTRY): a single [`Intent`] paired with its stable
+/// snake_case name, its default key(s), and a human description.
+///
+/// This is the single source of truth for each global action's default binding. The dispatcher,
+/// the help overlay, and the README docs-consistency check all derive from it, so a key, its
+/// config name, and its description live in exactly one place. `default_keys` reproduces the
+/// current [`map_key`] bindings verbatim; `name` is the public `[keys]` config key.
+#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
+pub(crate) struct Binding {
+    /// The global action this row binds.
+    pub intent: Intent,
+    /// The stable snake_case identifier, used as the `[keys]` config key (e.g. `nav_up`).
+    pub name: &'static str,
+    /// The default key(s) that decode to `intent` absent any user config. Non-empty.
+    pub default_keys: &'static [KeyCode],
+    /// A concise, human-readable one-liner describing the action.
+    pub description: &'static str,
+}
+
+/// The keybinding registry: one [`Binding`] per [`Intent::ALL`] member, in that order.
+///
+/// The `default_keys` mirror [`map_key`] exactly (behavior-preserving foundation). Invariants,
+/// all test-enforced rather than at runtime: every `Intent::ALL` member appears exactly once
+/// (AC-2), no two rows share a `name` (AC-5), and no [`KeyCode`] is a default of two rows (AC-3).
+#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
+pub(crate) const REGISTRY: &[Binding] = &[
+    Binding {
+        intent: Intent::NavUp,
+        name: "nav_up",
+        default_keys: &[KeyCode::Up, KeyCode::Char('k')],
+        description: "Move the tree cursor up one row.",
+    },
+    Binding {
+        intent: Intent::NavDown,
+        name: "nav_down",
+        default_keys: &[KeyCode::Down, KeyCode::Char('j')],
+        description: "Move the tree cursor down one row.",
+    },
+    Binding {
+        intent: Intent::Expand,
+        name: "expand",
+        default_keys: &[KeyCode::Right, KeyCode::Char('l')],
+        description: "Expand the selected directory.",
+    },
+    Binding {
+        intent: Intent::Collapse,
+        name: "collapse",
+        default_keys: &[KeyCode::Left, KeyCode::Char('h')],
+        description: "Collapse the selected directory.",
+    },
+    Binding {
+        intent: Intent::Activate,
+        name: "activate",
+        default_keys: &[KeyCode::Enter],
+        description: "Activate the selected node: expand/collapse a directory, or open a file.",
+    },
+    Binding {
+        intent: Intent::OpenFullscreen,
+        name: "open_fullscreen",
+        default_keys: &[KeyCode::Char('Z')],
+        description: "Toggle full-screen reading of the selected file (in-pane plus herdr pane zoom).",
+    },
+    Binding {
+        intent: Intent::ToggleIgnore,
+        name: "toggle_ignore",
+        default_keys: &[KeyCode::Char('i')],
+        description: "Reveal or hide gitignored files.",
+    },
+    Binding {
+        intent: Intent::ToggleHidden,
+        name: "toggle_hidden",
+        default_keys: &[KeyCode::Char('.')],
+        description: "Hide or reveal dot-prefixed (hidden) files and folders.",
+    },
+    Binding {
+        intent: Intent::ToggleChangedOnly,
+        name: "toggle_changed_only",
+        default_keys: &[KeyCode::Char('c')],
+        description: "Restrict the tree to changed files, or restore the full tree.",
+    },
+    Binding {
+        intent: Intent::ToggleBaseline,
+        name: "toggle_baseline",
+        default_keys: &[KeyCode::Char('b')],
+        description: "Switch the diff baseline between base-branch and HEAD.",
+    },
+    Binding {
+        intent: Intent::CycleView,
+        name: "cycle_view",
+        default_keys: &[KeyCode::Char('v')],
+        description: "Cycle the content pane's view mode.",
+    },
+    Binding {
+        intent: Intent::OpenInEditor,
+        name: "open_in_editor",
+        default_keys: &[KeyCode::Char('e')],
+        description: "Hand the selected file off to an external editor.",
+    },
+    Binding {
+        intent: Intent::OpenWithApp,
+        name: "open_with_app",
+        default_keys: &[KeyCode::Char('O')],
+        description: "Open the selected entry with the OS default application.",
+    },
+    Binding {
+        intent: Intent::RevealInFileManager,
+        name: "reveal_in_file_manager",
+        default_keys: &[KeyCode::Char('R')],
+        description: "Reveal the selected entry in the OS file manager.",
+    },
+    Binding {
+        intent: Intent::CopyRepoPath,
+        name: "copy_repo_path",
+        default_keys: &[KeyCode::Char('y')],
+        description: "Copy the selected node's repo-relative path to the clipboard.",
+    },
+    Binding {
+        intent: Intent::CopyAbsPath,
+        name: "copy_abs_path",
+        default_keys: &[KeyCode::Char('Y')],
+        description: "Copy the selected node's absolute path to the clipboard.",
+    },
+    Binding {
+        intent: Intent::ToggleFocus,
+        name: "toggle_focus",
+        default_keys: &[KeyCode::Tab],
+        description: "Move focus between the tree and content columns.",
+    },
+    Binding {
+        intent: Intent::ShrinkTree,
+        name: "shrink_tree",
+        default_keys: &[KeyCode::Char('<')],
+        description: "Narrow the tree column.",
+    },
+    Binding {
+        intent: Intent::GrowTree,
+        name: "grow_tree",
+        default_keys: &[KeyCode::Char('>')],
+        description: "Widen the tree column.",
+    },
+    Binding {
+        intent: Intent::ToggleWrap,
+        name: "toggle_wrap",
+        default_keys: &[KeyCode::Char('w')],
+        description: "Force content-line wrapping on or off.",
+    },
+    Binding {
+        intent: Intent::ToggleZoom,
+        name: "toggle_zoom",
+        default_keys: &[KeyCode::Char('z')],
+        description: "Hide the tree so the content pane fills the frame, or restore the split.",
+    },
+    Binding {
+        intent: Intent::Refresh,
+        name: "refresh",
+        default_keys: &[KeyCode::Char('r')],
+        description: "Re-read git state (status and changed-set) and re-render.",
+    },
+    Binding {
+        intent: Intent::DismissUpdate,
+        name: "dismiss_update",
+        default_keys: &[KeyCode::Char('u')],
+        description: "Dismiss the update-available banner for this session.",
+    },
+    Binding {
+        intent: Intent::SwitchWorktree,
+        name: "switch_worktree",
+        default_keys: &[KeyCode::Char('W')],
+        description: "Open the worktree picker to re-root at another git worktree.",
+    },
+    Binding {
+        intent: Intent::OpenFinder,
+        name: "open_finder",
+        default_keys: &[KeyCode::Char('f')],
+        description: "Open the go-to-file finder to navigate to any file by fuzzy query.",
+    },
+    Binding {
+        intent: Intent::OpenGoToLine,
+        name: "open_go_to_line",
+        default_keys: &[KeyCode::Char(':')],
+        description: "Open the go-to-line prompt to scroll the content pane to a line number.",
+    },
+    Binding {
+        intent: Intent::OpenSearch,
+        name: "open_search",
+        default_keys: &[KeyCode::Char('/')],
+        description: "Open the search prompt at the bottom of the content pane.",
+    },
+    Binding {
+        intent: Intent::NextMatch,
+        name: "next_match",
+        default_keys: &[KeyCode::Char('n')],
+        description: "Advance to the next search match (wraps at the end).",
+    },
+    Binding {
+        intent: Intent::PrevMatch,
+        name: "prev_match",
+        default_keys: &[KeyCode::Char('N')],
+        description: "Retreat to the previous search match (wraps at the start).",
+    },
+    Binding {
+        intent: Intent::TreeScrollLeft,
+        name: "tree_scroll_left",
+        default_keys: &[KeyCode::Char('H')],
+        description: "Scroll the tree pane left.",
+    },
+    Binding {
+        intent: Intent::TreeScrollRight,
+        name: "tree_scroll_right",
+        default_keys: &[KeyCode::Char('L')],
+        description: "Scroll the tree pane right.",
+    },
+    Binding {
+        intent: Intent::ShowHelp,
+        name: "show_help",
+        default_keys: &[KeyCode::Char('?')],
+        description: "Open the in-app help overlay (What's New and About).",
+    },
+    Binding {
+        intent: Intent::Close,
+        name: "close",
+        default_keys: &[KeyCode::Char('q'), KeyCode::Esc],
+        description: "Close the viewer and return to the prior pane.",
+    },
+];
+
+/// Borrow the [keybinding registry](REGISTRY) rows: the single source of truth for each global
+/// action's default key(s), snake_case name, and description.
+#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
+pub(crate) fn registry() -> &'static [Binding] {
+    REGISTRY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +338,55 @@ mod tests {
         (KeyCode::Char('q'), Intent::Close),
         (KeyCode::Esc, Intent::Close),
     ];
+
+    #[test]
+    fn registry_covers_every_intent_exactly_once_with_nonempty_keys() {
+        // AC-2: every global action (Intent::ALL member) appears in the registry exactly once
+        // with a non-empty default key set, so nothing is unreachable by default.
+        let intents: HashSet<Intent> = registry().iter().map(|b| b.intent).collect();
+        let all: HashSet<Intent> = Intent::ALL.iter().copied().collect();
+        assert_eq!(intents, all, "REGISTRY must cover exactly Intent::ALL");
+        assert_eq!(
+            registry().len(),
+            Intent::ALL.len(),
+            "REGISTRY must have one row per Intent::ALL member (no duplicates)"
+        );
+        for b in registry() {
+            assert!(
+                !b.default_keys.is_empty(),
+                "{:?} ({}) must have >=1 default key",
+                b.intent,
+                b.name
+            );
+        }
+    }
+
+    #[test]
+    fn registry_names_are_unique() {
+        // AC-5: each global action carries a unique snake_case intent name (these become the
+        // public `[keys]` config keys, so a clash would make one intent unaddressable).
+        let names: HashSet<&str> = registry().iter().map(|b| b.name).collect();
+        assert_eq!(
+            names.len(),
+            registry().len(),
+            "no two REGISTRY rows may share a name"
+        );
+    }
+
+    #[test]
+    fn registry_default_keys_are_collision_free() {
+        // AC-3: no bindable key is in the default key set of two different actions.
+        let all_keys: Vec<KeyCode> = registry()
+            .iter()
+            .flat_map(|b| b.default_keys.iter().copied())
+            .collect();
+        let unique: HashSet<KeyCode> = all_keys.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            all_keys.len(),
+            "REGISTRY default keys must be collision-free (no key in two rows)"
+        );
+    }
 
     #[test]
     fn bound_keys_map_to_their_intents() {
