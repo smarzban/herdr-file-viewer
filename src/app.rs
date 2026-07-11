@@ -47,11 +47,25 @@ pub fn run() -> io::Result<()> {
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
 
+    // Load + resolve the plugin's optional TOML config once, up front (AC-3..AC-5, AC-14, AC-16,
+    // AC-17): `eff` is the fully-resolved config > env > default settings the rest of `run` wires
+    // in below. Kept alive (borrowed, never moved wholesale) so the Settings section (T-9) below
+    // can read `eff`/`load_outcome` for the in-app Settings display. With no config file present,
+    // `load_config_from_env` returns `Config::default()`, so default behavior is unchanged.
+    let (cfg, load_outcome) = crate::config::load_config_from_env();
+    let eff = crate::config::resolve(&cfg, |k| std::env::var(k).ok());
+
+    // The effective renderers (config overrides layered onto the built-in defaults, AC-7) — built
+    // once and reused for both renderer sites below (the root-bound factory's `LiveContent` and
+    // `Components`), so a config override is honored identically wherever the renderers are used.
+    let renderers = crate::config::effective_renderers(&eff, &default_renderers());
+
     // The root-bound providers are built by a factory so a later re-root rebuilds them against
     // the new root (ADR-0004). Non-capturing — it reads the passed `Resolved`, so re-root gets
     // the new root's git/renderer rather than closing over the launch root.
+    let factory_renderers = renderers.clone();
     let providers: Box<dyn Fn(&root::Resolved) -> RootProviders> =
-        Box::new(|resolved: &root::Resolved| {
+        Box::new(move |resolved: &root::Resolved| {
             let git: Arc<dyn GitService> = Arc::new(LiveGit {
                 // In a non-repo there is no repo_root; git is never queried then, but a path is
                 // still required, so fall back to the tree root.
@@ -63,12 +77,14 @@ pub fn run() -> io::Result<()> {
             });
             let content: Box<dyn ContentProvider> = Box::new(LiveContent {
                 root: resolved.root.clone(),
-                renderers: default_renderers(),
+                renderers: factory_renderers.clone(),
             });
             RootProviders { git, content }
         });
+    // The effective editor (AC-6): config > `$EDITOR` (already encoded in `eff.editor`) >
+    // platform default (`resolve_editor(None)` — e.g. Notepad on Windows).
     let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
-        editor: resolve_editor(std::env::var_os("EDITOR")),
+        editor: crate::config::effective_editor(&eff, resolve_editor(None)),
     });
     let clipboard: Box<dyn Clipboard> = Box::new(Osc52Clipboard);
 
@@ -81,12 +97,26 @@ pub fn run() -> io::Result<()> {
             providers,
             editor,
             clipboard,
-            renderers: Some(default_renderers()),
+            renderers: Some(renderers),
         },
     );
+    // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
+    // still flips it later.
+    controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
+    // outcome plus every effective setting, so a user can see what's actually in effect, and the
+    // resolved config-file location so they know what to fix or create.
+    controller.set_settings_display(&eff, &load_outcome, &crate::config::config_path_from_env());
     // Kick off the once-a-day update check (off the UI thread; disabled by
-    // HERDR_FILE_VIEWER_NO_UPDATE_CHECK). The banner, if any, appears on a later draw.
-    controller.set_update(crate::update::start_default());
+    // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
+    // if any, appears on a later draw.
+    if crate::config::should_start_update_check(&eff) {
+        // Gate on the RESOLVED `update_check` (config > env > default) and pass that decision
+        // straight through (disabled = false here, since the gate already applied precedence).
+        // `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let the env
+        // silently override a config `update_check = true` (AC-3/AC-10).
+        controller.set_update(crate::update::start_default_with(false));
+    }
     // Inject the herdr query channel + the viewer's own workspace id for the worktree picker's
     // agent-active overlay (AC-3) — the first real use of the host seam. `ctx` is still in
     // scope (only borrowed by `root::resolve`). A missing/failing herdr degrades to a git-only
@@ -97,11 +127,14 @@ pub fn run() -> io::Result<()> {
     );
     // Inject the live OS opener for the `O` / `R` hand-offs (AC-13). Non-blocking: unlike the
     // editor hand-off it does NOT suspend the TUI; the opener runs with stdio redirected to null
-    // so it cannot draw onto our screen.
-    controller.set_opener(Box::new(crate::opener::CommandOpener::new(
-        current_os_kind(),
-        Box::new(OpenerSpawner),
-    )));
+    // so it cannot draw onto our screen. `with_overrides` layers the config's `open`/`reveal`
+    // command overrides on top of the per-OS defaults (AC-8).
+    let to_argv =
+        |v: Option<Vec<String>>| v.map(|xs| xs.into_iter().map(OsString::from).collect::<Vec<_>>());
+    controller.set_opener(Box::new(
+        crate::opener::CommandOpener::new(current_os_kind(), Box::new(OpenerSpawner))
+            .with_overrides(to_argv(eff.open.clone()), to_argv(eff.reveal.clone())),
+    ));
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a

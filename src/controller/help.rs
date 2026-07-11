@@ -142,7 +142,19 @@ impl Controller {
             body: crate::render::to_text(&about_body),
             scroll: 0,
         };
-        self.modal = Modal::Help(HelpState::new(vec![whats_new, about]));
+        // Settings (AC-15, AC-18): a third section, appended LAST so index-based tests over the
+        // pre-existing [What's New, About] pair stay valid. Only present once `app::run` has
+        // injected the formatted text via `set_settings_display` — a controller that never calls
+        // it (most tests) keeps the original two-section overlay.
+        let mut sections = vec![whats_new, about];
+        if let Some(text) = &self.settings_display {
+            sections.push(HelpSectionState {
+                label: "Settings",
+                body: crate::render::to_text(text),
+                scroll: 0,
+            });
+        }
+        self.modal = Modal::Help(HelpState::new(sections));
         // Reset double-click state (mirrors open_finder): a tree click made just before the overlay
         // opened must not pair with a same-row click made just after it closes as a double-click.
         self.last_click = None;

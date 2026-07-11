@@ -72,6 +72,25 @@ impl ContentProvider for StubContent {
     }
 }
 
+/// A Content Renderer keyed to the file's name (`BODY-OF:<name>`) with a configurable delay
+/// before it returns — the delay stands in for a real glow/bat/delta subprocess spawn, giving
+/// the async startup race between `Controller::new`'s initial render and a post-construction
+/// setter (like `apply_hide_dotfiles`) room to manifest, the way it does against a real renderer.
+struct DelayedNamedContent {
+    delay: Duration,
+}
+impl ContentProvider for DelayedNamedContent {
+    fn render(&self, path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        std::thread::sleep(self.delay);
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        RenderResult {
+            content: Text::raw(format!("BODY-OF:{name}")),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
 /// An Editor Launcher stub that returns a configurable [`EditorOutcome`] on demand, and
 /// records the file it was asked to open. `fail` keeps the historical "launch failure"
 /// shortcut; richer cases use `outcome` directly.
@@ -190,6 +209,115 @@ fn toggle_hidden_hides_dotfiles_in_the_tree_and_redraws() {
     assert!(
         names(&ctrl).contains(&".secret".to_string()),
         "ToggleHidden again reveals dotfiles"
+    );
+}
+
+#[test]
+fn apply_hide_dotfiles_sets_the_tree_startup_default_and_mirrors_the_toggle_state() {
+    // AC-9 (T-8, Settings Applier): a config-driven startup default for the `.` hide-dotfiles
+    // filter — applied once after construction, distinct from the interactive ToggleHidden
+    // intent. Both the tree's own filter (what actually hides rows) and the controller's
+    // `hide_hidden()` mirror (what the later `.` toggle reads/flips) must reflect it, so a
+    // config default of `true` doesn't get silently undone by the very next `.` press.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".secret"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(!ctrl.tree().hide_hidden(), "off by default before applying");
+    assert!(!ctrl.hide_hidden(), "controller mirror off by default too");
+
+    ctrl.apply_hide_dotfiles(true);
+    assert!(ctrl.tree().hide_hidden(), "the tree's filter is now on");
+    assert!(ctrl.hide_hidden(), "the controller's mirror is now on too");
+
+    ctrl.apply_hide_dotfiles(false);
+    assert!(!ctrl.tree().hide_hidden(), "the tree's filter is off again");
+    assert!(
+        !ctrl.hide_hidden(),
+        "the controller's mirror is off again too"
+    );
+}
+
+#[test]
+fn apply_hide_dotfiles_true_then_the_first_interactive_toggle_flips_it_off() {
+    // AC-9 end-to-end: a config default of `hide_dotfiles = true` must survive startup and be
+    // flipped OFF (not back to true) by the very next interactive `.` press — the interaction the
+    // `apply_hide_dotfiles` comment warns about, exercised here rather than only asserted on the
+    // mirror. (The startup default is applied once, then `ToggleHidden` reads/flips the mirror.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".secret"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.apply_hide_dotfiles(true);
+    assert!(ctrl.hide_hidden(), "config default on at startup");
+
+    ctrl.handle(Intent::ToggleHidden);
+    assert!(
+        !ctrl.hide_hidden(),
+        "the first `.` press flips the configured-on default OFF, not back to true"
+    );
+}
+
+#[test]
+fn apply_hide_dotfiles_at_startup_re_renders_so_content_matches_the_new_selection() {
+    // Important finding (T-8 review): `Controller::new` dispatches ONE render against the
+    // UNFILTERED tree (cursor 0), before `hide_dotfiles` is ever applied — mirroring
+    // `app::run`, which calls `Controller::new` (renders cursor 0), THEN
+    // `apply_hide_dotfiles(eff.hide_dotfiles)` right after. With a leading dotfile (the common
+    // case — sorts first lexically), cursor 0 at construction time IS the dotfile; applying the
+    // filter afterward silently moves the selection to the first visible file. Pre-fix,
+    // `apply_hide_dotfiles` updated the filter but dispatched no new render, so when the STALE
+    // dotfile render landed, `poll()` paired its (dotfile) body with the tree's (already
+    // filtered) NEW selection — a mismatched title/body. The fix mirrors `toggle_hidden`'s own
+    // re-render after the same two field updates.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".env"), "secret").unwrap();
+    std::fs::write(dir.path().join("keep.txt"), "k").unwrap();
+
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(DelayedNamedContent {
+                delay: Duration::from_millis(150),
+            }),
+        }),
+        editor: Box::new(StubEditor::default()),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    // Sanity: cursor 0 is the dotfile before the filter is applied, exactly like `app::run`'s
+    // ordering — `Controller::new` has already dispatched a render for it.
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        ".env",
+        "the dotfile sorts first, before the filter is applied"
+    );
+
+    // Mirrors `app::run`: apply the config startup default right after construction.
+    ctrl.apply_hide_dotfiles(true);
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        "keep.txt",
+        "hiding dotfiles shifted the selection to the only visible file"
+    );
+
+    // Drain until content lands, then require the body to belong to the SAME file as the title.
+    await_marker(&mut ctrl, "BODY-OF:");
+    assert_eq!(
+        ctrl.view_state().content_title.as_deref(),
+        Some("keep.txt"),
+        "the title reflects the visible selection"
+    );
+    assert_eq!(
+        flatten(ctrl.content()),
+        "BODY-OF:keep.txt",
+        "the body must belong to the SAME file as the title — not the hidden dotfile's stale \
+         render that `Controller::new` dispatched before the filter was applied"
     );
 }
 
@@ -8953,10 +9081,14 @@ fn controller_counting_git(root: &Path, is_git_repo: bool) -> (Controller, Recor
     (ctrl, calls)
 }
 
-// AC-N6 (via open_help): the HelpState the controller actually builds has EXACTLY two sections,
-// labelled "What's New" then "About" — no third section (scope guard vs. a deferred Settings/Keybindings
-// Keybindings/Settings). This complements the source-level guard in `src/help.rs` by asserting the
-// runtime object `open_help` constructs matches the contract.
+// AC-N6, no-config-display path: when `set_settings_display` has NOT been called (as here), the
+// HelpState `open_help` builds has EXACTLY two sections, labelled "What's New" then "About" — no
+// third section. This complements the enum-level guard in `src/help.rs`
+// (`help_section_set_is_exactly_whats_new_and_about`) by asserting the runtime object `open_help`
+// constructs matches the contract on this path. It does NOT mean the overlay can never show a third
+// tab: settings-config/SMA-49 legitimately supersedes AC-N6 by appending a Settings section when
+// display IS set — see `open_help_appends_settings_section_when_display_is_set`, below, for that
+// 3-section path (the one a real `app::run` launch actually takes).
 #[test]
 fn open_help_builds_exactly_two_sections_whats_new_and_about() {
     let dir = TempDir::new();
@@ -8976,6 +9108,59 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
         state.sections.len(),
         2,
         "AC-N6: exactly two sections — no third (deferred Settings/Keybindings) section"
+    );
+}
+
+// AC-18/AC-15 (T-9): once `set_settings_display` has injected a formatted Settings body,
+// `open_help` appends a THIRD "Settings" section (after What's New/About) whose body is
+// non-empty. A controller that never calls the setter (the test above) keeps the two-section
+// overlay unchanged — this is additive, opt-in wiring.
+#[test]
+fn open_help_appends_settings_section_when_display_is_set() {
+    use herdr_file_viewer::config::{EffectiveSettings, LoadOutcome};
+
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let eff = EffectiveSettings {
+        editor: None,
+        markdown: None,
+        diff: None,
+        syntax: None,
+        open: None,
+        reveal: None,
+        hide_dotfiles: false,
+        update_check: true,
+    };
+    ctrl.set_settings_display(
+        &eff,
+        &LoadOutcome::Absent,
+        std::path::Path::new("/cfg/config.toml"),
+    );
+
+    ctrl.handle(Intent::ShowHelp);
+    let state = ctrl
+        .help_state()
+        .expect("help_state() must be Some after ShowHelp");
+
+    let labels = state.section_labels();
+    assert!(
+        labels.contains(&"Settings"),
+        "AC-18: section_labels() must contain 'Settings' once set_settings_display was called: {labels:?}"
+    );
+    assert_eq!(
+        labels,
+        vec!["What's New", "About", "Settings"],
+        "Settings must be appended LAST, after What's New and About"
+    );
+
+    let settings_idx = labels
+        .iter()
+        .position(|l| *l == "Settings")
+        .expect("Settings label present");
+    assert!(
+        !state.sections[settings_idx].body.lines.is_empty(),
+        "the Settings section body must be non-empty"
     );
 }
 

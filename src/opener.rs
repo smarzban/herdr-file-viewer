@@ -124,18 +124,56 @@ pub trait Opener {
 pub struct CommandOpener {
     os: OsKind,
     spawner: Box<dyn Spawner>,
+    open_override: Option<Vec<OsString>>,
+    reveal_override: Option<Vec<OsString>>,
 }
 
 impl CommandOpener {
-    /// Create an opener for the given target OS, spawning through `spawner`.
+    /// Create an opener for the given target OS, spawning through `spawner`. Uses the per-OS
+    /// default argv for both actions; see [`Self::with_overrides`] to configure a replacement.
     pub fn new(os: OsKind, spawner: Box<dyn Spawner>) -> Self {
-        Self { os, spawner }
+        Self {
+            os,
+            spawner,
+            open_override: None,
+            reveal_override: None,
+        }
     }
 
-    /// Build the argv for `action`/`path`, spawn it, and map the spawn result onto an
-    /// [`OpenerOutcome`]. The only external effect goes through the injected [`Spawner`].
+    /// Configure optional per-action override argv (e.g. from user config). When `Some(prefix)`,
+    /// the corresponding action spawns `prefix` with `path` appended as one trailing argv
+    /// element instead of the per-OS default from [`opener_argv`] (AC-8). `None` leaves that
+    /// action's default behavior unchanged (AC-12: no shell — the path is never concatenated).
+    pub fn with_overrides(
+        mut self,
+        open: Option<Vec<OsString>>,
+        reveal: Option<Vec<OsString>>,
+    ) -> Self {
+        self.open_override = open;
+        self.reveal_override = reveal;
+        self
+    }
+
+    /// Build the argv for `action`/`path` — the configured override (with `path` appended as
+    /// one trailing element) if set, else the per-OS default — spawn it, and map the spawn
+    /// result onto an [`OpenerOutcome`]. The only external effect goes through the injected
+    /// [`Spawner`].
     fn run(&mut self, action: OpenAction, path: &Path) -> OpenerOutcome {
-        let argv = opener_argv(self.os, action, path);
+        let override_prefix = match action {
+            OpenAction::Open => &self.open_override,
+            OpenAction::Reveal => &self.reveal_override,
+        };
+        let argv = match override_prefix {
+            Some(prefix) if !prefix.is_empty() => {
+                let mut argv = prefix.clone();
+                argv.push(path.as_os_str().to_os_string());
+                argv
+            }
+            // An empty override (e.g. `open = ""`, or whitespace-only, tokenizes to no args) is
+            // meaningless — building `argv = [path]` would spawn the SELECTED FILE itself as a
+            // program. Fall through to the per-OS default instead of executing repo content.
+            _ => opener_argv(self.os, action, path),
+        };
         match self.spawner.spawn(&argv) {
             Ok(()) => OpenerOutcome::Launched,
             Err(SpawnError::NotLaunched(e)) => OpenerOutcome::NotLaunched(e.to_string()),
@@ -405,6 +443,90 @@ mod tests {
         assert_eq!(
             argv[1],
             OsString::from("/select,/tmp/a dir/-weird;name.txt")
+        );
+    }
+
+    #[test]
+    fn with_overrides_open_replaces_default_argv() {
+        // AC-8: a configured open override replaces the per-OS default entirely.
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder)).with_overrides(
+            Some(vec![OsString::from("myopen"), OsString::from("-x")]),
+            None,
+        );
+        let outcome = opener.open(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            vec![
+                OsString::from("myopen"),
+                OsString::from("-x"),
+                OsString::from("/a/b.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn with_overrides_none_keeps_per_os_default() {
+        // AC-8: `with_overrides(None, None)` (and plain `new`) must still produce the
+        // existing per-OS default argv, unchanged.
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener =
+            CommandOpener::new(OsKind::Linux, Box::new(recorder)).with_overrides(None, None);
+        let outcome = opener.reveal(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            opener_argv(OsKind::Linux, OpenAction::Reveal, Path::new("/a/b.txt"))
+        );
+    }
+
+    #[test]
+    fn with_overrides_path_is_distinct_trailing_element() {
+        // AC-12: the override prefix is used verbatim (program untouched) and the path is
+        // appended as one distinct trailing argv element — never concatenated or shell-split.
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder))
+            .with_overrides(Some(vec![OsString::from("my open")]), None);
+        let outcome = opener.open(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        let calls = calls.borrow();
+        assert_eq!(calls[0][0], OsString::from("my open"), "program untouched");
+        assert_eq!(
+            calls[0].last().unwrap(),
+            &OsString::from("/a/b.txt"),
+            "path is the last, distinct argv element"
+        );
+    }
+
+    #[test]
+    fn with_overrides_reveal_replaces_default_argv() {
+        // AC-8: a configured `reveal` override reaches the spawn seam too — each of {open, reveal}
+        // is covered, not just `open`.
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder))
+            .with_overrides(None, Some(vec![OsString::from("nautilus")]));
+        let outcome = opener.reveal(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            vec![OsString::from("nautilus"), OsString::from("/a/b.txt")],
+        );
+    }
+
+    #[test]
+    fn with_overrides_empty_prefix_falls_through_to_the_per_os_default() {
+        // An empty override (e.g. `open = ""` tokenizes to no args) must NOT spawn the selected
+        // file itself as a program — it falls through to the per-OS default argv.
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Linux, Box::new(recorder))
+            .with_overrides(Some(vec![]), Some(vec![]));
+        let outcome = opener.open(Path::new("/a/b.txt"));
+        assert_eq!(outcome, OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            opener_argv(OsKind::Linux, OpenAction::Open, Path::new("/a/b.txt")),
+            "empty override falls through to the default, never [path] alone",
         );
     }
 }

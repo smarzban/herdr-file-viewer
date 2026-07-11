@@ -20,7 +20,15 @@ pub fn changelog_display() -> &'static str {
     }
 }
 
-/// The two sections of the help overlay.
+/// The built-in, fixed sections of the help overlay: What's New and About.
+///
+/// This enum is intentionally closed at these two variants — it is NOT the full inventory of
+/// sections the overlay can show. `HelpState.sections` (below) is a generic `Vec<HelpSectionState>`
+/// precisely so later features can append further sections without touching this enum; the
+/// settings-config feature (SMA-49) does exactly that, appending a display-only "Settings" section
+/// at runtime as a raw `HelpSectionState` (see `open_help` / `set_settings_display`) rather than
+/// adding a `Settings` variant here. Do not "fix" a 3-tab runtime overlay by adding a variant to
+/// this enum — the enum staying two-variant is the intended seam, not a bug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpSection {
     WhatsNew,
@@ -190,6 +198,65 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
         status = status,
         license = env!("CARGO_PKG_LICENSE"),
         star_cta = "If you enjoy the file viewer, don't forget to give it a ★ on GitHub!",
+    )
+}
+
+/// Assemble the "Settings" pane text (AC-15, AC-18): a first line reflecting the config
+/// [`crate::config::LoadOutcome`], then one row per effective setting. Pure — no env/FS; both
+/// arguments are already-resolved values the caller computed once at startup (`app::run`).
+///
+/// `None` renderer/editor fields print as `(default)`; `hide_dotfiles`/`update_check` print as
+/// `true`/`false` and `on`/`off` respectively. Formatting is kept simple and stable since this
+/// feeds a presenter snapshot.
+pub fn settings_text(
+    eff: &crate::config::EffectiveSettings,
+    outcome: &crate::config::LoadOutcome,
+    config_path: &std::path::Path,
+) -> String {
+    let status_line = match outcome {
+        crate::config::LoadOutcome::Loaded => "Config: loaded.".to_owned(),
+        crate::config::LoadOutcome::Absent => "Config: no file found, using defaults.".to_owned(),
+        crate::config::LoadOutcome::Malformed(reason) => {
+            // `reason` is the toml crate's error, which is MULTI-LINE (it appends a source
+            // snippet and a `^` caret pointer). Keep only its first line so the status stays a
+            // single readable line instead of spilling the caret art across the overlay rows.
+            let summary = reason.lines().next().unwrap_or("parse error").trim();
+            format!("Config: invalid, using defaults ({summary}).")
+        }
+    };
+    // Always show where the file is (or would be) so the user knows what to fix or create.
+    let location_line = format!("Location: {}", config_path.display());
+
+    let opt_os = |v: &Option<std::ffi::OsString>| -> String {
+        v.as_ref()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "(default)".to_owned())
+    };
+    let opt_argv = |v: &Option<Vec<String>>| -> String {
+        v.as_ref()
+            .map(|argv| argv.join(" "))
+            .unwrap_or_else(|| "(default)".to_owned())
+    };
+
+    format!(
+        "{status_line}\n\
+         {location_line}\n\
+         editor        = {editor}\n\
+         markdown      = {markdown}\n\
+         diff          = {diff}\n\
+         syntax        = {syntax}\n\
+         open          = {open}\n\
+         reveal        = {reveal}\n\
+         hide_dotfiles = {hide_dotfiles}\n\
+         update_check  = {update_check}",
+        editor = opt_os(&eff.editor),
+        markdown = opt_argv(&eff.markdown),
+        diff = opt_argv(&eff.diff),
+        syntax = opt_argv(&eff.syntax),
+        open = opt_argv(&eff.open),
+        reveal = opt_argv(&eff.reveal),
+        hide_dotfiles = eff.hide_dotfiles,
+        update_check = if eff.update_check { "on" } else { "off" },
     )
 }
 
@@ -480,11 +547,15 @@ mod tests {
 
     // --- negative-criteria conformance (AC-N5, AC-N6) ---
 
-    // AC-N6 (scope guard, source level): the two-section set the overlay ships in v1 is
-    // exactly {What's New, About}. `HelpState` itself is a generic Vec (the settings seam), so the
-    // guarantee that there is no third section is anchored at the SOURCE that defines the sections:
-    // `HelpSection` enumerates exactly those two variants, with exactly those labels. A future
-    // settings section would have to add a variant here — which would flip this test red on purpose.
+    // AC-N6 (in-app-help-overlay's v1 scope guard) is INTENTIONALLY SUPERSEDED by
+    // settings-config's AC-18 (SMA-49): a real `app::run` launch now wires `set_settings_display`,
+    // so the live overlay ships a third "Settings" tab. This test's actual, narrower job is proving
+    // the *built-in* `HelpSection` enum stays closed at exactly {WhatsNew, About} — no Keybindings
+    // variant, no Settings variant. That enum-level closure still holds and is still worth guarding:
+    // the Settings section deliberately bypasses this enum via the generic `HelpSectionState` seam
+    // (`HelpState.sections: Vec<..>`) that the in-app-help-overlay design itself reserved for it, so
+    // a 3-tab runtime overlay does NOT contradict this test passing. Do not read this as "the overlay
+    // must only ever show two tabs," and do not "fix" it by adding a `Settings` variant here.
     #[test]
     fn help_section_set_is_exactly_whats_new_and_about() {
         // Exhaustively enumerate the variants by matching every one: adding a variant makes this
@@ -495,7 +566,8 @@ mod tests {
                 HelpSection::About => assert_eq!(s.label(), "About"),
             }
         }
-        // And the ordered v1 label set is precisely these two, in this order.
+        // And the built-in enum's label set is precisely these two, in this order — the runtime
+        // overlay may append further HelpSectionState entries (e.g. Settings, SMA-49) beyond this.
         let labels: Vec<&str> = [HelpSection::WhatsNew, HelpSection::About]
             .iter()
             .map(|s| s.label())
@@ -503,7 +575,10 @@ mod tests {
         assert_eq!(
             labels,
             vec!["What's New", "About"],
-            "AC-N6: v1 exposes exactly What's New then About — no Keybindings/Settings"
+            "AC-N6 (enum-level, superseded at the overlay level by SMA-49): the built-in \
+             HelpSection enum is exactly What's New then About — no Keybindings/Settings variant. \
+             The runtime overlay's separate Settings HelpSectionState is expected and does not \
+             violate this."
         );
     }
 
@@ -543,5 +618,153 @@ mod tests {
         assert!(!a1.contains("Update available"));
         assert!(b1.contains("Update available: v9.9.9"));
         assert!(!b1.contains("Up to date"));
+    }
+
+    // --- settings_text tests (AC-15, AC-18) ---
+
+    use crate::config::{EffectiveSettings, LoadOutcome};
+
+    fn sample_eff() -> EffectiveSettings {
+        EffectiveSettings {
+            editor: Some(std::ffi::OsString::from("nano")),
+            markdown: Some(vec!["glow".to_string(), "-w".to_string(), "80".to_string()]),
+            diff: None,
+            syntax: None,
+            open: None,
+            reveal: None,
+            hide_dotfiles: true,
+            update_check: false,
+        }
+    }
+
+    // AC-18: every setting key appears with its effective value; unset fields show "(default)".
+    #[test]
+    fn settings_text_lists_every_setting_row() {
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+        );
+
+        for key in [
+            "editor",
+            "markdown",
+            "diff",
+            "syntax",
+            "open",
+            "reveal",
+            "hide_dotfiles",
+            "update_check",
+        ] {
+            assert!(
+                text.contains(key),
+                "settings_text must contain a row for '{key}':\n{text}"
+            );
+        }
+        assert!(text.contains("nano"), "editor value must appear:\n{text}");
+        assert!(
+            text.contains("glow -w 80"),
+            "the markdown argv must appear space-joined:\n{text}"
+        );
+        assert!(
+            text.contains("true"),
+            "hide_dotfiles=true must appear:\n{text}"
+        );
+        assert!(
+            text.contains("off"),
+            "update_check=false must render as 'off':\n{text}"
+        );
+        // None fields show "(default)" — diff/syntax/open/reveal are all None in the fixture.
+        let default_count = text.matches("(default)").count();
+        assert_eq!(
+            default_count, 4,
+            "diff/syntax/open/reveal are None and must each show '(default)':\n{text}"
+        );
+    }
+
+    #[test]
+    fn settings_text_loaded_outcome_reflects_success() {
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+        );
+        assert!(
+            text.starts_with("Config: loaded."),
+            "the Loaded outcome must be reflected on the first line:\n{text}"
+        );
+    }
+
+    // AC-15: a Malformed outcome surfaces a "using defaults" indicator plus the reason.
+    #[test]
+    fn settings_text_malformed_outcome_shows_using_defaults_and_reason() {
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Malformed("bad toml".to_string()),
+            std::path::Path::new("/cfg/config.toml"),
+        );
+        assert!(
+            text.contains("using defaults"),
+            "AC-15: a Malformed outcome must contain a 'using defaults' indicator:\n{text}"
+        );
+        assert!(
+            text.contains("bad toml"),
+            "AC-15: the malformed reason must be surfaced:\n{text}"
+        );
+    }
+
+    #[test]
+    fn settings_text_malformed_reason_is_collapsed_to_a_single_status_line() {
+        // Regression: the real toml error is MULTI-LINE (a source snippet + a `^` caret). The
+        // status line must show only its first line, not spill the caret art across the overlay.
+        let eff = sample_eff();
+        let multiline =
+            "TOML parse error at line 1, column 5\n  |\n1 | x = = [\n  |     ^\nexpected value";
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Malformed(multiline.to_string()),
+            std::path::Path::new("/cfg/config.toml"),
+        );
+        let status = text.lines().next().unwrap();
+        assert!(
+            status.contains("using defaults") && status.contains("line 1, column 5"),
+            "status keeps a one-line locator:\n{status}"
+        );
+        assert!(
+            !text.contains('^') && !text.contains("expected value"),
+            "the multi-line caret/snippet must not leak into the overlay:\n{text}"
+        );
+    }
+
+    #[test]
+    fn settings_text_shows_the_config_location() {
+        // The resolved config path is surfaced so the user knows what to fix/create.
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/home/u/.config/herdr-file-viewer/config.toml"),
+        );
+        assert!(
+            text.contains("/home/u/.config/herdr-file-viewer/config.toml"),
+            "the config-file location must be shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn settings_text_absent_outcome_shows_using_defaults() {
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+        );
+        assert!(
+            text.contains("using defaults"),
+            "an Absent outcome must also indicate defaults are in use:\n{text}"
+        );
     }
 }

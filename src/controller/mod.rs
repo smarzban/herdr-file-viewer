@@ -484,6 +484,11 @@ pub struct Controller {
     /// The newer version to advertise, if any (set from the cached value at startup and
     /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
     update_available: Option<Version>,
+    /// The pre-formatted Settings section body (AC-15, AC-18), or `None` before
+    /// [`set_settings_display`](Self::set_settings_display) is called. Injected post-construction
+    /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
+    /// test that never calls the setter gets the pre-T-9 two-section overlay unchanged.
+    settings_display: Option<String>,
     /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
     /// next launch while still behind.
     update_dismissed: bool,
@@ -633,6 +638,7 @@ impl Controller {
             drag: None,
             content_selection: None,
             update_available: None,
+            settings_display: None,
             update_dismissed: false,
             update_rx: None,
             status_rx: None,
@@ -950,6 +956,19 @@ impl Controller {
         self.update_rx = state.rx;
     }
 
+    /// Install the formatted Settings section body (AC-15, AC-18), so [`open_help`](Self::open_help)
+    /// appends a third "Settings" section to the `?` overlay. Called once by `app::run` after
+    /// construction (mirrors [`set_update`](Self::set_update)); a test that never calls this keeps
+    /// the pre-existing two-section overlay.
+    pub fn set_settings_display(
+        &mut self,
+        eff: &crate::config::EffectiveSettings,
+        outcome: &crate::config::LoadOutcome,
+        config_path: &std::path::Path,
+    ) {
+        self.settings_display = Some(crate::help::settings_text(eff, outcome, config_path));
+    }
+
     /// Inject the host query channel + the viewer's own workspace id (mirrors [`set_update`]).
     /// Called by `app::run` after construction; tests that exercise the picker call it with a
     /// fake [`HerdrCli`]. Session-level — NOT reset on a re-root (the viewer's workspace doesn't
@@ -966,6 +985,27 @@ impl Controller {
     /// stays hermetic in tests — a test injects a fake; production injects the live opener (AC-13).
     pub fn set_opener(&mut self, opener: Box<dyn crate::opener::Opener>) {
         self.opener = Some(opener);
+    }
+
+    /// Apply the startup hide-dotfiles default from config (AC-9). Called once by `app::run`
+    /// right after construction, before the first draw. Mirrors `toggle_hidden`'s two-field
+    /// update (the controller's own `hide_hidden` mirror plus the tree's filter) so the later
+    /// interactive `.` toggle reads a value already in sync with what it's hiding, rather than
+    /// re-applying (or silently undoing) the configured default on the very first press.
+    pub fn apply_hide_dotfiles(&mut self, hide: bool) {
+        if hide == self.hide_hidden {
+            // No change from the current (startup) state — `Controller::new`'s initial render
+            // already reflects it, so re-rendering would be redundant. This is the common
+            // no-config case, where `hide` is the default `false`.
+            return;
+        }
+        self.hide_hidden = hide;
+        self.tree.set_hide_hidden(hide);
+        // Hiding dotfiles can shift which node the cursor lands on (e.g. a leading dotfile
+        // sorting first at cursor 0), so re-render the content pane for the (possibly) new
+        // selection — mirrors toggle_hidden's own post-filter re-render, and supersedes
+        // `Controller::new`'s single unfiltered render dispatched just before this runs.
+        self.dispatch_render();
     }
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content

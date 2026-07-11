@@ -89,7 +89,7 @@ impl EditorLauncher {
 /// stays one token instead of being split apart. Whitespace outside quotes separates tokens;
 /// the quote characters themselves are not included in the token. Cross-platform — not
 /// `cfg`-gated, since a quoted-path `$EDITOR` value is a valid configuration on any platform.
-fn tokenize_command(s: &str) -> Vec<String> {
+pub(crate) fn tokenize_command(s: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_token = false;

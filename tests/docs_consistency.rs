@@ -47,6 +47,53 @@ fn readme_documents_reveal_open_keys() {
 }
 
 #[test]
+fn readme_documents_config_file() {
+    // README must document the config file: its path (herdr-provided + XDG fallback) and every
+    // key. Scope every assertion to the `## Configuration` section itself (heading to the next
+    // `## ` heading) rather than the whole README -- several of these bare words (e.g. `editor`,
+    // `markdown`, `diff`, `open`, `reveal`) also appear elsewhere (the Keys table, the `e`/`O`/`R`
+    // key descriptions, the roadmap), so an unscoped `README.contains` would still pass even if
+    // the Configuration section were deleted outright. Slicing on the heading keeps this a real
+    // regression guard, the same way `changelog_documents_line_reference_release` slices the
+    // CHANGELOG on its release heading.
+    let start = README
+        .find("## Configuration")
+        .expect("README.md must carry a `## Configuration` section");
+    let rest = &README[start + "## Configuration".len()..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    let section = &rest[..end];
+
+    assert!(
+        section.contains("config.toml"),
+        "README `## Configuration` section must name the config file config.toml"
+    );
+    assert!(
+        section.contains("HERDR_PLUGIN_CONFIG_DIR"),
+        "README `## Configuration` section must name the herdr config-dir env var"
+    );
+    // XDG fallback location:
+    assert!(
+        section.contains(".config/herdr-file-viewer") || section.contains("XDG_CONFIG_HOME"),
+        "README `## Configuration` section must document the XDG fallback location"
+    );
+    for key in [
+        "editor",
+        "markdown",
+        "diff",
+        "syntax",
+        "open",
+        "reveal",
+        "hide_dotfiles",
+        "update_check",
+    ] {
+        assert!(
+            section.contains(key),
+            "README `## Configuration` section must document the `{key}` key"
+        );
+    }
+}
+
+#[test]
 fn changelog_documents_line_reference_release() {
     // The feature shipped in `[1.9.0]`; that section is its permanent CHANGELOG home. Slice from
     // its heading to the next release heading so the check stays anchored to this release's block.

@@ -2947,14 +2947,19 @@ fn ambient_selection_highlights_only_selected_chars_without_shifting_content() {
 
 // ── Help overlay tests (AC-5, AC-11) ────────────────────────────────────
 
-/// A `ViewState` with the help overlay open. Two sections, active = the SECOND (About) so the
-/// snapshot proves the active indicator picks the active tab — not just the first. The body is a
-/// few lines of plain text; the hint string is what the controller carries (AC-11).
+/// A `ViewState` with the help overlay open. Three sections (What's New, About, Settings —
+/// Settings appended LAST per T-9), active = the SECOND (About) so the snapshot proves the
+/// active indicator picks the active tab — not just the first. The body is a few lines of plain
+/// text; the hint string is what the controller carries (AC-11).
 fn help_state() -> ViewState {
     let mut state = sample_state();
     state.help = Some(HelpView {
         active: 1, // About is active (the second tab) — proves the active indicator
-        labels: vec!["What's New".to_string(), "About".to_string()],
+        labels: vec![
+            "What's New".to_string(),
+            "About".to_string(),
+            "Settings".to_string(),
+        ],
         body: to_text(
             "Herdr File Viewer\n\
              A git-aware, read-only file viewer\n\
@@ -3174,7 +3179,7 @@ fn help_tab_rects_agree_with_drawn_tab_positions() {
     use ratatui::layout::{Position, Rect};
     use ratatui::style::Modifier;
 
-    let st = help_state(); // active = 1 (About); labels = ["What's New", "About"]
+    let st = help_state(); // active = 1 (About); labels = ["What's New", "About", "Settings"]
     let (w, h) = (100u16, 24u16);
     let area = Rect {
         x: 0,
@@ -3204,10 +3209,10 @@ fn help_tab_rects_agree_with_drawn_tab_positions() {
     };
 
     let g = geometry(area, &st);
-    assert_eq!(g.help_tabs.len(), 2, "both section tabs have a rect");
+    assert_eq!(g.help_tabs.len(), 3, "all three section tabs have a rect");
 
     // Each label's drawn start cell must be contained in its reported tab rect.
-    let labels = ["What's New", "About"];
+    let labels = ["What's New", "About", "Settings"];
     for (idx, rect) in &g.help_tabs {
         let (dx, dy) = find_cell(labels[*idx]);
         assert!(

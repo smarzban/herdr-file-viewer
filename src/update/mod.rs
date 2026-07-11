@@ -268,7 +268,15 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
 
 /// The real entry point: read the env/clock/cache and use the `git` runner.
 pub fn start_default() -> UpdateState {
-    let disabled = std::env::var_os(DISABLE_ENV).is_some();
+    start_default_with(std::env::var_os(DISABLE_ENV).is_some())
+}
+
+/// Like [`start_default`] but with the disable decision **already made by the caller**, so the
+/// resolved `config > env > default` precedence is not re-litigated here by re-reading
+/// [`DISABLE_ENV`] (AC-3/AC-10). `app::run` passes the effective `update_check` through this: a
+/// config `update_check = true` that already won over the env must not be silently vetoed by the
+/// env a second time.
+pub fn start_default_with(disabled: bool) -> UpdateState {
     if disabled {
         return UpdateState::disabled();
     }
@@ -539,5 +547,21 @@ mod tests {
             run: Box::new(|_| panic!("must not probe when disabled")),
         });
         assert!(state.initial.is_none() && state.rx.is_none());
+    }
+
+    #[test]
+    fn start_default_with_honors_the_passed_decision_not_the_env() {
+        // AC-3/AC-10 wiring regression: the update start must obey the ALREADY-RESOLVED
+        // decision (config > env > default) the caller passes, NOT re-read
+        // HERDR_FILE_VIEWER_NO_UPDATE_CHECK. Passing `disabled = true` yields the disabled
+        // sentinel (no probe thread, no banner) — proving the arg governs. The enabled path
+        // (`disabled = false`) is the env-free `start_with` already covered above; before the
+        // fix, `app::run` routed through `start_default()`, letting a set env var silently veto a
+        // config `update_check = true`.
+        let state = start_default_with(true);
+        assert!(
+            state.initial.is_none() && state.rx.is_none(),
+            "disabled=true → the disabled sentinel, regardless of the env"
+        );
     }
 }
