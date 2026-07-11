@@ -94,6 +94,47 @@ fn readme_documents_config_file() {
 }
 
 #[test]
+fn readme_documents_keys_remapping() {
+    // AC-22: the README `## Configuration` section must document the `[keys]` remapping surface --
+    // that a binding is written `intent_name = <key spec>` (a string AND an array example), that
+    // only modifier-free keys are bindable (no Ctrl/Alt), and that a `[keys]` value replaces the
+    // action's default keys. Scope every assertion to the `## Configuration` section (heading to
+    // the next `## ` heading), the same way `readme_documents_config_file` does, so a mention
+    // elsewhere in the README cannot satisfy the check.
+    let start = README
+        .find("## Configuration")
+        .expect("README.md must carry a `## Configuration` section");
+    let rest = &README[start + "## Configuration".len()..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    let section = &rest[..end];
+
+    assert!(
+        section.contains("[keys]"),
+        "README `## Configuration` section must name the `[keys]` remapping table"
+    );
+    // The `intent_name = <key spec>` form, shown by example in BOTH the string and the array shape.
+    assert!(
+        section.contains("refresh = \"g\""),
+        "README `## Configuration` section must show a single-string key spec (refresh = \"g\")"
+    );
+    assert!(
+        section.contains("nav_up = [\"w\", \"Up\"]"),
+        "README `## Configuration` section must show an array key spec (nav_up = [\"w\", \"Up\"])"
+    );
+    // Only modifier-free keys are bindable: no Ctrl / Alt chords.
+    assert!(
+        section.contains("Ctrl") && section.contains("Alt"),
+        "README `## Configuration` section must state that Ctrl/Alt chords are not bindable"
+    );
+    // Precedence: a `[keys]` value replaces/overrides the action's default keys.
+    let lower = section.to_lowercase();
+    assert!(
+        lower.contains("replace"),
+        "README `## Configuration` section must state a `[keys]` value replaces the default keys"
+    );
+}
+
+#[test]
 fn changelog_documents_line_reference_release() {
     // The feature shipped in `[1.9.0]`; that section is its permanent CHANGELOG home. Slice from
     // its heading to the next release heading so the check stays anchored to this release's block.

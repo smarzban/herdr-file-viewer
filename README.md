@@ -64,6 +64,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
   changelog entries, rendered as markdown) and About (version, repo, license, and update status).
   Keyboard and mouse; `Esc` or `q` closes it. A `? help` hint rides the content pane's bottom
   border so the overlay is discoverable without already knowing the key.
+- **Make the keys yours**: remap any global key with a `[keys]` table in the
+  [config file](#configuration), keyed by intent name (a single key or a list); the `?` overlay's
+  **Keybindings** section is a live reference of every action's effective keys. `Esc` always
+  closes, so a remap can never lock you out.
 - **Git woven in**: per-file status markers (`M`/`A`/`D`/`?`), and a `●` on a directory that
   contains any change; **colored** so changes read at a glance (changed files and dirty folders
   are red, new files green), with the glyph as a non-color cue so it survives a colorblind palette
@@ -181,6 +185,9 @@ PowerShell launcher scripts.
 | `?` (Shift+`/`) | Open the **help overlay**: What's New (latest changelog, rendered markdown) + About (version, repo, license, update status); `Esc` / `q` closes it |
 | `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
+
+These are the **default** keys. Remap any of them with a `[keys]` table in the
+[config file](#configuration) (see [Keybindings](#keybindings) below).
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
@@ -344,6 +351,39 @@ that flag (nonzero exit or spawn failure), the full-file-diff view falls all the
 plain, unrendered diff text (with a notice), not just a missing gutter. Renderer timeouts and
 other limits aren't configurable.
 
+### Keybindings
+
+A `[keys]` table remaps the viewer's global keys, keyed by **intent name** (the stable snake_case
+id of an action, e.g. `refresh`, `nav_up`, `switch_worktree`). Each value is a **key spec**: a
+single string, or an array of strings, naming the key(s) that action should answer to. An entry
+**replaces** that action's default key set, so list every key you want it to keep.
+
+```toml
+[keys]
+refresh = "g"               # a single key: `g` refreshes, and the default `r` no longer does
+nav_up = ["w", "Up"]        # an array: bind several keys at once (the default `k` is dropped)
+switch_worktree = "F2"      # a named key
+```
+
+**Bindable keys** are the modifier-free surface the viewer already uses: any printable or shifted
+character (`g`, `<`, `?`, and capitals such as `W` are each their own key), plus the named keys
+`Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Backspace`,
+`Delete`, `Insert`, and `F1` through `F12` (named keys are matched case-insensitively). There are
+**no `Ctrl` / `Alt` chords**: a chord never fires a viewer action, so terminal combinations like
+`Ctrl+C` always pass straight through.
+
+**Precedence is `config > default`:** a `[keys]` value replaces the action's built-in keys, and any
+action you don't list keeps its defaults. The load is defensive, like the rest of the config: a
+malformed table, an unknown intent name, an unbindable key, or two actions claiming the same key is
+ignored for the affected entries only (their defaults are kept) and never crashes the viewer.
+Whatever you configure, **`Esc` always closes** the viewer: that floor cannot be rebound away, so
+you can never strand yourself (you may still move the `q` Close key or any other action). Only the
+global keys are remappable; keys handled inside a modal (the finder query, the `:` / `/` prompt,
+line-select mode) keep their own keys.
+
+See your bindings in effect any time in the `?` help overlay's new **Keybindings** section, which
+lists every action with its effective key(s) and description and marks the ones you have customized.
+
 ## Documentation
 
 - **[Install & updating](docs/install.md)**: prebuilt vs. source, pinning a version, local-dev linking, and how updates surface (the in-app "update available" banner).
@@ -356,7 +396,7 @@ other limits aren't configurable.
 
 A few things on the way:
 
-- **Keymaps, themes, and layout** — the [config file](#configuration) already covers the editor, renderer, and opener commands plus a couple of startup toggles; customizable keybindings, a theme, and the default split/layout are still on the way.
+- **Themes and layout**: the [config file](#configuration) already covers the editor, renderer, and opener commands, a couple of startup toggles, and now [customizable keybindings](#keybindings); a theme and the default split/layout are still on the way.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues). Bug reports and feature requests are very welcome.
 

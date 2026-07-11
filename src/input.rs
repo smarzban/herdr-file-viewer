@@ -1274,4 +1274,52 @@ mod tests {
         assert!(b.is_customized(Intent::Refresh));
         assert!(!b.is_customized(Intent::NavDown));
     }
+
+    // --- T-8 docs consistency: the README `## Keys` table stays in sync with the registry (AC-21) ---
+
+    /// The README source, compiled in so a drift between the registry and the front-door `## Keys`
+    /// table fails the build. This assertion lives here, not in `tests/docs_consistency.rs`,
+    /// because it reads the `pub(crate)` [`registry`] / [`key_label`], which an integration test
+    /// cannot see.
+    const README: &str = include_str!("../README.md");
+
+    #[test]
+    fn readme_keys_table_documents_every_registry_action_ac21() {
+        // AC-21: the README `## Keys` table must document every global action in the registry so
+        // the table can never silently drift from the bindings. Scope the check to the `## Keys`
+        // section (its heading to the next `## ` heading) so a stray backtick elsewhere in the
+        // README cannot satisfy it.
+        let start = README
+            .find("## Keys")
+            .expect("README.md must carry a `## Keys` section");
+        let rest = &README[start + "## Keys".len()..];
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        let keys_section = &rest[..end];
+
+        // Per action, require AT LEAST ONE of its default keys to appear as a backtick-wrapped
+        // label (e.g. `` `k` ``). Rationale: an action with an arrow default (nav_up = [Up, k]) is
+        // written in the table with the glyph `↑`, not the word `Up`, so a literal `Up` check
+        // would fail spuriously; but every such action ALSO carries a letter key (`k`) whose
+        // backtick form IS in the table. A per-action "at least one key documented" check is
+        // therefore robust to the glyph-vs-name spelling AND still catches a NEW registry action
+        // that has no README row at all (none of its keys would appear).
+        for binding in registry() {
+            let documented = binding
+                .default_keys
+                .iter()
+                .any(|&code| keys_section.contains(&format!("`{}`", key_label(code))));
+            assert!(
+                documented,
+                "the README `## Keys` table documents no key for `{}` (intent {:?}); expected a \
+                 backtick-wrapped label for one of {:?}",
+                binding.name,
+                binding.intent,
+                binding
+                    .default_keys
+                    .iter()
+                    .map(|&c| key_label(c))
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
 }
