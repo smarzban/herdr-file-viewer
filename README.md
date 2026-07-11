@@ -383,8 +383,9 @@ you can never strand yourself (you may still move the `q` Close key or any other
 global keys are remappable; keys handled inside a modal (the finder query, the `:` / `/` prompt,
 line-select mode) keep their own keys.
 
-See your bindings in effect any time in the `?` help overlay's new **Keybindings** section, which
-lists every action with its effective key(s) and description and marks the ones you have customized.
+See your bindings in effect any time in the `?` help overlay's new **Keybindings** section. It
+groups the actions into sections and shows, for each, its config-var name (the `[keys]` id you type
+to remap it), its effective key(s), and its description, marking the ones you have customized.
 
 ## Documentation
 

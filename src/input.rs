@@ -116,7 +116,24 @@ pub(crate) struct Binding {
     pub default_keys: &'static [KeyCode],
     /// A concise, human-readable one-liner describing the action.
     pub description: &'static str,
+    /// The display group this action belongs to in the Keybindings overlay (one of
+    /// [`CATEGORY_ORDER`]). Purely presentational: it groups the flat registry into sections and
+    /// never affects decoding. Every row's category must be a member of [`CATEGORY_ORDER`]
+    /// (test-enforced), so the overlay can iterate categories in order and lose no action.
+    pub category: &'static str,
 }
+
+/// The Keybindings-overlay display groups, in render order. Each [`Binding::category`] is one of
+/// these; the view-model walks them in this order and lists every action whose category matches.
+/// Presentational only (grouping does not touch the dispatcher).
+pub(crate) const CATEGORY_ORDER: &[&str] = &[
+    "Navigation",
+    "View & layout",
+    "Git & filters",
+    "Open & copy",
+    "Search & jump",
+    "Session",
+];
 
 /// The keybinding registry: one [`Binding`] per [`Intent::ALL`] member, in that order.
 ///
@@ -129,198 +146,231 @@ pub(crate) const REGISTRY: &[Binding] = &[
         name: "nav_up",
         default_keys: &[KeyCode::Up, KeyCode::Char('k')],
         description: "Move the tree cursor up one row.",
+        category: "Navigation",
     },
     Binding {
         intent: Intent::NavDown,
         name: "nav_down",
         default_keys: &[KeyCode::Down, KeyCode::Char('j')],
         description: "Move the tree cursor down one row.",
+        category: "Navigation",
     },
     Binding {
         intent: Intent::Expand,
         name: "expand",
         default_keys: &[KeyCode::Right, KeyCode::Char('l')],
         description: "Expand the selected directory.",
+        category: "Navigation",
     },
     Binding {
         intent: Intent::Collapse,
         name: "collapse",
         default_keys: &[KeyCode::Left, KeyCode::Char('h')],
         description: "Collapse the selected directory.",
+        category: "Navigation",
     },
     Binding {
         intent: Intent::Activate,
         name: "activate",
         default_keys: &[KeyCode::Enter],
         description: "Activate the selected node: expand/collapse a directory, or open a file.",
+        category: "Navigation",
     },
     Binding {
         intent: Intent::OpenFullscreen,
         name: "open_fullscreen",
         default_keys: &[KeyCode::Char('Z')],
         description: "Toggle full-screen reading of the selected file (in-pane plus herdr pane zoom).",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::ToggleIgnore,
         name: "toggle_ignore",
         default_keys: &[KeyCode::Char('i')],
         description: "Reveal or hide gitignored files.",
+        category: "Git & filters",
     },
     Binding {
         intent: Intent::ToggleHidden,
         name: "toggle_hidden",
         default_keys: &[KeyCode::Char('.')],
         description: "Hide or reveal dot-prefixed (hidden) files and folders.",
+        category: "Git & filters",
     },
     Binding {
         intent: Intent::ToggleChangedOnly,
         name: "toggle_changed_only",
         default_keys: &[KeyCode::Char('c')],
         description: "Restrict the tree to changed files, or restore the full tree.",
+        category: "Git & filters",
     },
     Binding {
         intent: Intent::ToggleBaseline,
         name: "toggle_baseline",
         default_keys: &[KeyCode::Char('b')],
         description: "Switch the diff baseline between base-branch and HEAD.",
+        category: "Git & filters",
     },
     Binding {
         intent: Intent::CycleView,
         name: "cycle_view",
         default_keys: &[KeyCode::Char('v')],
         description: "Cycle the content pane's view mode.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::OpenInEditor,
         name: "open_in_editor",
         default_keys: &[KeyCode::Char('e')],
         description: "Hand the selected file off to an external editor.",
+        category: "Open & copy",
     },
     Binding {
         intent: Intent::OpenWithApp,
         name: "open_with_app",
         default_keys: &[KeyCode::Char('O')],
         description: "Open the selected entry with the OS default application.",
+        category: "Open & copy",
     },
     Binding {
         intent: Intent::RevealInFileManager,
         name: "reveal_in_file_manager",
         default_keys: &[KeyCode::Char('R')],
         description: "Reveal the selected entry in the OS file manager.",
+        category: "Open & copy",
     },
     Binding {
         intent: Intent::CopyRepoPath,
         name: "copy_repo_path",
         default_keys: &[KeyCode::Char('y')],
         description: "Copy the selected node's repo-relative path to the clipboard.",
+        category: "Open & copy",
     },
     Binding {
         intent: Intent::CopyAbsPath,
         name: "copy_abs_path",
         default_keys: &[KeyCode::Char('Y')],
         description: "Copy the selected node's absolute path to the clipboard.",
+        category: "Open & copy",
     },
     Binding {
         intent: Intent::ToggleFocus,
         name: "toggle_focus",
         default_keys: &[KeyCode::Tab],
         description: "Move focus between the tree and content columns.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::ShrinkTree,
         name: "shrink_tree",
         default_keys: &[KeyCode::Char('<')],
         description: "Narrow the tree column.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::GrowTree,
         name: "grow_tree",
         default_keys: &[KeyCode::Char('>')],
         description: "Widen the tree column.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::ToggleWrap,
         name: "toggle_wrap",
         default_keys: &[KeyCode::Char('w')],
         description: "Force content-line wrapping on or off.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::ToggleZoom,
         name: "toggle_zoom",
         default_keys: &[KeyCode::Char('z')],
         description: "Hide the tree so the content pane fills the frame, or restore the split.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::Refresh,
         name: "refresh",
         default_keys: &[KeyCode::Char('r')],
         description: "Re-read git state (status and changed-set) and re-render.",
+        category: "Git & filters",
     },
     Binding {
         intent: Intent::DismissUpdate,
         name: "dismiss_update",
         default_keys: &[KeyCode::Char('u')],
         description: "Dismiss the update-available banner for this session.",
+        category: "Session",
     },
     Binding {
         intent: Intent::SwitchWorktree,
         name: "switch_worktree",
         default_keys: &[KeyCode::Char('W')],
         description: "Open the worktree picker to re-root at another git worktree.",
+        category: "Session",
     },
     Binding {
         intent: Intent::OpenFinder,
         name: "open_finder",
         default_keys: &[KeyCode::Char('f')],
         description: "Open the go-to-file finder to navigate to any file by fuzzy query.",
+        category: "Search & jump",
     },
     Binding {
         intent: Intent::OpenGoToLine,
         name: "open_go_to_line",
         default_keys: &[KeyCode::Char(':')],
         description: "Open the go-to-line prompt to scroll the content pane to a line number.",
+        category: "Search & jump",
     },
     Binding {
         intent: Intent::OpenSearch,
         name: "open_search",
         default_keys: &[KeyCode::Char('/')],
         description: "Open the search prompt at the bottom of the content pane.",
+        category: "Search & jump",
     },
     Binding {
         intent: Intent::NextMatch,
         name: "next_match",
         default_keys: &[KeyCode::Char('n')],
         description: "Advance to the next search match (wraps at the end).",
+        category: "Search & jump",
     },
     Binding {
         intent: Intent::PrevMatch,
         name: "prev_match",
         default_keys: &[KeyCode::Char('N')],
         description: "Retreat to the previous search match (wraps at the start).",
+        category: "Search & jump",
     },
     Binding {
         intent: Intent::TreeScrollLeft,
         name: "tree_scroll_left",
         default_keys: &[KeyCode::Char('H')],
         description: "Scroll the tree pane left.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::TreeScrollRight,
         name: "tree_scroll_right",
         default_keys: &[KeyCode::Char('L')],
         description: "Scroll the tree pane right.",
+        category: "View & layout",
     },
     Binding {
         intent: Intent::ShowHelp,
         name: "show_help",
         default_keys: &[KeyCode::Char('?')],
         description: "Open the in-app help overlay (What's New and About).",
+        category: "Session",
     },
     Binding {
         intent: Intent::Close,
         name: "close",
         default_keys: &[KeyCode::Char('q'), KeyCode::Esc],
         description: "Close the viewer and return to the prior pane.",
+        category: "Session",
     },
 ];
 
@@ -683,6 +733,28 @@ mod tests {
             registry().len(),
             "no two REGISTRY rows may share a name"
         );
+    }
+
+    #[test]
+    fn registry_every_row_has_a_known_category_and_every_category_is_used() {
+        // AC-19 (grouping): every registry row's category is a member of CATEGORY_ORDER, so the
+        // Keybindings overlay can iterate categories in order and lose no action; and every declared
+        // category carries at least one action, so no empty group header renders.
+        let known: HashSet<&str> = CATEGORY_ORDER.iter().copied().collect();
+        for b in registry() {
+            assert!(
+                known.contains(b.category),
+                "'{}' has category '{}' which is not in CATEGORY_ORDER",
+                b.name,
+                b.category
+            );
+        }
+        for cat in CATEGORY_ORDER {
+            assert!(
+                registry().iter().any(|b| b.category == *cat),
+                "category '{cat}' has no actions (would render an empty group header)"
+            );
+        }
     }
 
     #[test]

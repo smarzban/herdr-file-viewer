@@ -298,28 +298,55 @@ pub(crate) fn keybindings_text(
             n = outcome.rejected.len(),
             names = names.join(", "),
         ));
+        lines.push(String::new());
     }
 
-    // One row per registry action, in registry order: effective key(s), description, custom marker.
-    for binding in registry {
-        let keys = bindings.keys_for(binding.intent);
-        let rendered = if keys.is_empty() {
-            "(unbound)".to_owned()
-        } else {
-            keys.iter()
-                .map(|k| crate::input::key_label(*k))
-                .collect::<Vec<_>>()
-                .join(" / ")
-        };
-        let marker = if bindings.is_customized(binding.intent) {
-            " (custom)"
-        } else {
-            ""
-        };
-        lines.push(format!(
-            "{rendered}  {description}{marker}",
-            description = binding.description,
-        ));
+    // Config-var (intent name) column width: the longest name, so the key column aligns down the
+    // whole overlay. Line 1 leads with the `[keys]` config var (the thing you type to remap) and the
+    // effective key(s); line 2 carries the human description under it.
+    let name_width = registry.iter().map(|b| b.name.len()).max().unwrap_or(0);
+
+    // Group the flat registry into the overlay's display sections (AC-19). Walk CATEGORY_ORDER for a
+    // stable section order; within a section keep registry (Intent::ALL) order. A category with no
+    // rows renders nothing (the registry invariant test forbids an empty category anyway).
+    let mut first_group = true;
+    for category in crate::input::CATEGORY_ORDER {
+        let mut rows = registry
+            .iter()
+            .filter(|b| b.category == *category)
+            .peekable();
+        if rows.peek().is_none() {
+            continue;
+        }
+        if !first_group {
+            lines.push(String::new());
+        }
+        first_group = false;
+        lines.push((*category).to_string());
+
+        for binding in rows {
+            let keys = bindings.keys_for(binding.intent);
+            let rendered = if keys.is_empty() {
+                "(unbound)".to_owned()
+            } else {
+                keys.iter()
+                    .map(|k| crate::input::key_label(*k))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            };
+            let marker = if bindings.is_customized(binding.intent) {
+                "  (custom)"
+            } else {
+                ""
+            };
+            // Line 1: the config var (left, padded) then the effective key(s) and any custom marker.
+            lines.push(format!(
+                "  {name:<name_width$}  {rendered}{marker}",
+                name = binding.name,
+            ));
+            // Line 2: the human description, indented under its action.
+            lines.push(format!("    {}", binding.description));
+        }
     }
 
     lines.join("\n")
@@ -858,25 +885,85 @@ mod tests {
             &input::KeyLoadOutcome::default(),
         );
         for binding in input::registry() {
+            // Every action shows its config var (the `[keys]` intent name) AND its description.
+            assert!(
+                text.contains(binding.name),
+                "keybindings_text must show the config var '{}':\n{text}",
+                binding.name
+            );
             assert!(
                 text.contains(binding.description),
                 "keybindings_text must contain a row for '{}' (its description):\n{text}",
                 binding.name
             );
         }
-        // Representative effective key labels appear on their rows: 'r' → refresh, 'Tab' → toggle_focus.
+        // Every display group header renders (grouping, AC-19).
+        for cat in input::CATEGORY_ORDER {
+            assert!(
+                text.lines().any(|l| l == *cat),
+                "the '{cat}' group header must render:\n{text}"
+            );
+        }
+        // Representative effective key appears on the action's line: 'r' → refresh, 'Tab' → toggle_focus.
+        let refresh_row = text
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("refresh"))
+            .expect("keybindings_text must contain the refresh row");
         assert!(
-            text.contains("r  Re-read git state"),
-            "refresh's default key 'r' must render on its row:\n{text}"
+            refresh_row.split_whitespace().any(|t| t == "r"),
+            "refresh's default key 'r' must render on its row:\n{refresh_row}"
         );
+        let focus_row = text
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("toggle_focus"))
+            .expect("keybindings_text must contain the toggle_focus row");
         assert!(
-            text.contains("Tab  Move focus between the tree and content columns."),
-            "toggle_focus's default key 'Tab' must render on its row:\n{text}"
+            focus_row.split_whitespace().any(|t| t == "Tab"),
+            "toggle_focus's default key 'Tab' must render on its row:\n{focus_row}"
         );
         // A clean default outcome carries no ignored-bindings status line.
         assert!(
             !text.contains("ignored (using defaults)"),
             "a clean default outcome must not show an ignored-bindings line:\n{text}"
+        );
+    }
+
+    #[test]
+    fn keybindings_text_groups_actions_under_their_category_header() {
+        // AC-19 (grouping): each action renders under its category header, and the headers appear in
+        // CATEGORY_ORDER (like herdr's grouped keybinds list).
+        let text = keybindings_text(
+            input::registry(),
+            &input::default_bindings(),
+            &input::KeyLoadOutcome::default(),
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let header = |h: &str| lines.iter().position(|l| *l == h);
+        let action = |a: &str| {
+            lines
+                .iter()
+                .position(|l| l.split_whitespace().next() == Some(a))
+        };
+
+        // nav_up renders under the Navigation header and before the next group.
+        let nav = header("Navigation").expect("Navigation header");
+        let view = header("View & layout").expect("View & layout header");
+        let nav_up = action("nav_up").expect("nav_up row");
+        assert!(
+            nav < nav_up && nav_up < view,
+            "nav_up must render under Navigation, before View & layout:\n{text}"
+        );
+
+        // Headers appear in CATEGORY_ORDER.
+        let positions: Vec<usize> = input::CATEGORY_ORDER
+            .iter()
+            .map(|c| header(c).unwrap_or_else(|| panic!("missing header '{c}'")))
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            positions, sorted,
+            "category headers must render in CATEGORY_ORDER:\n{text}"
         );
     }
 
@@ -887,13 +974,13 @@ mod tests {
         let (bindings, outcome) = resolve_one("refresh", "g");
         let text = keybindings_text(input::registry(), &bindings, &outcome);
 
-        // The refresh row now shows 'g' and carries the "(custom)" marker.
+        // The refresh action line (led by its config var) now shows 'g' and the "(custom)" marker.
         let refresh_row = text
             .lines()
-            .find(|l| l.contains("Re-read git state"))
+            .find(|l| l.split_whitespace().next() == Some("refresh"))
             .expect("keybindings_text must contain the refresh row");
         assert!(
-            refresh_row.starts_with("g  "),
+            refresh_row.split_whitespace().any(|t| t == "g"),
             "the refresh row must show its new key 'g':\n{refresh_row}"
         );
         assert!(
@@ -904,7 +991,7 @@ mod tests {
         // An unremapped row (nav_up) must NOT be marked custom.
         let nav_up_row = text
             .lines()
-            .find(|l| l.contains("Move the tree cursor up one row."))
+            .find(|l| l.split_whitespace().next() == Some("nav_up"))
             .expect("keybindings_text must contain the nav_up row");
         assert!(
             !nav_up_row.contains("(custom)"),
@@ -927,10 +1014,10 @@ mod tests {
         let text = keybindings_text(input::registry(), &bindings, &outcome);
         let refresh_row = text
             .lines()
-            .find(|l| l.contains("Re-read git state"))
+            .find(|l| l.split_whitespace().next() == Some("refresh"))
             .expect("keybindings_text must contain the refresh row");
         assert!(
-            refresh_row.starts_with("(unbound)  "),
+            refresh_row.contains("(unbound)"),
             "a keyless customized row must render its key column as '(unbound)':\n{refresh_row}"
         );
         assert!(

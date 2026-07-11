@@ -15,10 +15,11 @@ All notable changes to this project are documented here. The format is based on
   `Ctrl` / `Alt` chords, so terminal combinations still pass through. A `[keys]` value overrides the
   built-in default (`config > default`); a malformed, unknown, or duplicate entry is ignored (its
   default kept) and never crashes, and `Esc` always closes the viewer, so a remap can never lock you
-  out. The `?` help overlay gained a display-only **Keybindings** section listing every action's
-  effective key(s) and description and marking the ones you customized. Under the hood every binding
-  now derives from one in-code registry, so the dispatcher, the overlay, and the README `## Keys`
-  table can no longer drift apart.
+  out. The `?` help overlay gained a display-only **Keybindings** section that groups the actions
+  into sections and, for each, shows its config-var name (the `[keys]` id you type to remap it), its
+  effective key(s), and its description, marking the ones you customized. Under the hood every
+  binding now derives from one in-code registry, so the dispatcher, the overlay, and the README
+  `## Keys` table can no longer drift apart.
 - **Config file — customize the editor, renderers, openers, and a couple of startup toggles.**
   An optional read-only TOML config at `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (herdr-provided) or
   `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml` (standalone fallback) now lets you override the
