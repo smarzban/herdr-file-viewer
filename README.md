@@ -373,10 +373,12 @@ character (`g`, `<`, `?`, and capitals such as `W` are each their own key), plus
 `Ctrl+C` always pass straight through.
 
 **Precedence is `config > default`:** a `[keys]` value replaces the action's built-in keys, and any
-action you don't list keeps its defaults. The load is defensive, like the rest of the config: a
-malformed table, an unknown intent name, an unbindable key, or two actions claiming the same key is
-ignored for the affected entries only (their defaults are kept) and never crashes the viewer.
-Whatever you configure, **`Esc` always closes** the viewer: that floor cannot be rebound away, so
+action you don't list keeps its defaults. The load is defensive and never crashes the viewer: an
+unknown intent name, an unbindable key, or two actions claiming the same key is ignored for those
+entries only (their defaults are kept). Invalid TOML in the config (a syntax error, or a wrong-typed
+value such as `refresh = 42`) is the same whole-file fallback the rest of the config uses: the viewer
+ignores the entire file and falls back to built-in defaults, and the `?` overlay flags that the
+config was malformed. Whatever you configure, **`Esc` always closes** the viewer: that floor cannot be rebound away, so
 you can never strand yourself (you may still move the `q` Close key or any other action). Only the
 global keys are remappable; keys handled inside a modal (the finder query, the `:` / `/` prompt,
 line-select mode) keep their own keys.

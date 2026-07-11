@@ -2607,12 +2607,36 @@ mod tests {
         // After injection: a "Keybindings" section is present.
         ctrl.set_keybindings_display();
         ctrl.open_help();
+        let help = ctrl.help_state().expect("help open");
         assert!(
-            ctrl.help_state()
-                .expect("help open")
-                .section_labels()
-                .contains(&"Keybindings"),
+            help.section_labels().contains(&"Keybindings"),
             "set_keybindings_display must make open_help append a Keybindings section"
+        );
+
+        // ...and its BODY carries the real registry content, not just the label: assert the wiring
+        // (set_keybindings_display -> stored field -> open_help -> section body) preserved a known
+        // action description, so a swapped-argument or wrong-text regression in the glue is caught
+        // here, not only in help.rs's isolated `keybindings_text` tests.
+        let kb = help
+            .sections
+            .iter()
+            .find(|s| s.label == "Keybindings")
+            .expect("Keybindings section present");
+        let body: String = kb
+            .body
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|sp| sp.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("Re-read git state"),
+            "the appended Keybindings section body must carry the registry descriptions, got: {body}"
         );
     }
 }

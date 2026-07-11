@@ -1086,6 +1086,60 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_control_chords_on_a_customized_binding_ac4() {
+        // AC-4 names default AND custom: a control chord must not fire an intent even when the key
+        // came from a `[keys]` remap. The earlier test only exercised `default_bindings()`; this
+        // pins the custom clause by resolving `refresh = "g"` and asserting Ctrl/Alt + g decode to
+        // nothing while the plain custom key still decodes to its remapped intent.
+        let (bindings, out) = resolve_with(&[("refresh", one("g"))]);
+        assert!(out.is_empty(), "refresh = \"g\" is a valid remap");
+
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                &bindings
+            ),
+            None,
+            "Ctrl + a custom-bound key must not decode"
+        );
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
+                &bindings
+            ),
+            None,
+            "Alt + a custom-bound key must not decode"
+        );
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+                &bindings
+            ),
+            Some(Intent::Refresh),
+            "the custom key with no modifier decodes to its remapped intent"
+        );
+    }
+
+    #[test]
+    fn reject_reason_display_carries_key_label_and_token() {
+        // The `RejectReason` Display strings feed the help overlay's ignored-bindings status line
+        // (AC-16). `UnknownIntent` is exercised via `keybindings_text_surfaces_ignored_bindings_ac16`;
+        // the two data-carrying variants embed a key label / token that must not silently blank out.
+        assert_eq!(
+            RejectReason::UnknownIntent.to_string(),
+            "unknown intent name"
+        );
+        assert_eq!(
+            RejectReason::BadKeySpec("Ctrl+x".to_string()).to_string(),
+            "unbindable key \"Ctrl+x\""
+        );
+        assert_eq!(
+            RejectReason::DuplicateKey("g".to_string()).to_string(),
+            "duplicate key \"g\""
+        );
+    }
+
+    #[test]
     fn decode_over_default_bindings_agrees_with_map_key() {
         // Belt-and-suspenders AC-1: the pure decode path over the default bindings returns exactly
         // what map_key returns, across bound, arrow, shifted, chorded, and unbound representatives.
