@@ -88,6 +88,15 @@ pub fn load_config(
     read: impl Fn(&std::path::Path) -> std::io::Result<String>,
 ) -> (Config, LoadOutcome) {
     let path = config_path(get);
+    // The config path is trusted only when ABSOLUTE. With none of `HERDR_PLUGIN_CONFIG_DIR` /
+    // `XDG_CONFIG_HOME` / `HOME` resolvable, `config_path` yields a cwd-relative fallback; reading
+    // it would source a "trusted" config from the (possibly untrusted) working directory — a
+    // browsed repo could plant `.config/herdr-file-viewer/config.toml` and inject `editor` /
+    // `open` / `reveal` commands. Treat a non-absolute path as no config (AC-20 + the viewer's
+    // untrusted-repo posture): never read settings from the CWD.
+    if !path.is_absolute() {
+        return (Config::default(), LoadOutcome::Absent);
+    }
     match read(&path) {
         Ok(contents) => parse_config(&contents),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -335,9 +344,18 @@ mod tests {
         assert_eq!(config.update_check, Some(false));
     }
 
+    /// A `get` that resolves `HERDR_PLUGIN_CONFIG_DIR` to an **absolute** dir (the OS temp dir),
+    /// so `load_config` reaches the injected `read`. `load_config` treats a non-absolute config
+    /// path as "no config" (never reads from the CWD), so these read-outcome tests must anchor to
+    /// an absolute path. Cross-platform: `temp_dir()` is absolute on unix and Windows alike.
+    fn abs_cfg_get(k: &str) -> Option<String> {
+        (k == "HERDR_PLUGIN_CONFIG_DIR")
+            .then(|| std::env::temp_dir().to_string_lossy().into_owned())
+    }
+
     #[test]
     fn missing_file_yields_default_and_absent() {
-        let get = |_: &str| None;
+        let get = abs_cfg_get;
         let read = |_: &std::path::Path| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -350,8 +368,27 @@ mod tests {
     }
 
     #[test]
+    fn cwd_relative_config_path_is_never_read_from_the_working_directory() {
+        // Security (untrusted-repo posture): with none of HERDR_PLUGIN_CONFIG_DIR / XDG_CONFIG_HOME
+        // / HOME set, `config_path` yields a cwd-relative `.config/...` path. `load_config` must
+        // NOT read a config from the (possibly untrusted) working directory — even though this
+        // `read` would happily return a planted config, the outcome is `Absent` + defaults.
+        let get = |_: &str| None; // no env at all → non-absolute (cwd-relative) path
+        let read = |_: &std::path::Path| Ok("editor = \"/evil\"\nopen = \"/evil\"\n".to_string());
+        let (config, outcome) = load_config(get, read);
+        // The planted `editor`/`open` are ignored entirely — defaults, not the CWD file.
+        assert_eq!(config.editor, None, "a cwd-relative config must be ignored");
+        assert_eq!(config.open, None, "a cwd-relative config must be ignored");
+        assert_eq!(
+            outcome,
+            LoadOutcome::Absent,
+            "a non-absolute config path is treated as no config, not Loaded"
+        );
+    }
+
+    #[test]
     fn present_valid_file_loads() {
-        let get = |_: &str| None;
+        let get = abs_cfg_get;
         let read = |_: &std::path::Path| Ok("editor = \"vim\"\n".to_string());
         let (config, outcome) = load_config(get, read);
         assert_eq!(config.editor, Some("vim".to_string()));
@@ -360,7 +397,7 @@ mod tests {
 
     #[test]
     fn present_malformed_file_yields_default_and_malformed() {
-        let get = |_: &str| None;
+        let get = abs_cfg_get;
         let read = |_: &std::path::Path| Ok("bad = = [".to_string());
         let (config, outcome) = load_config(get, read);
         assert_eq!(config.editor, None);
@@ -372,7 +409,7 @@ mod tests {
 
     #[test]
     fn read_error_other_than_not_found_yields_default_and_malformed() {
-        let get = |_: &str| None;
+        let get = abs_cfg_get;
         let read = |_: &std::path::Path| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

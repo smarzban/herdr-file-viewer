@@ -992,6 +992,12 @@ impl Controller {
     /// interactive `.` toggle reads a value already in sync with what it's hiding, rather than
     /// re-applying (or silently undoing) the configured default on the very first press.
     pub fn apply_hide_dotfiles(&mut self, hide: bool) {
+        if hide == self.hide_hidden {
+            // No change from the current (startup) state — `Controller::new`'s initial render
+            // already reflects it, so re-rendering would be redundant. This is the common
+            // no-config case, where `hide` is the default `false`.
+            return;
+        }
         self.hide_hidden = hide;
         self.tree.set_hide_hidden(hide);
         // Hiding dotfiles can shift which node the cursor lands on (e.g. a leading dotfile

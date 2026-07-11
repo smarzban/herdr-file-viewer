@@ -239,6 +239,26 @@ fn apply_hide_dotfiles_sets_the_tree_startup_default_and_mirrors_the_toggle_stat
 }
 
 #[test]
+fn apply_hide_dotfiles_true_then_the_first_interactive_toggle_flips_it_off() {
+    // AC-9 end-to-end: a config default of `hide_dotfiles = true` must survive startup and be
+    // flipped OFF (not back to true) by the very next interactive `.` press — the interaction the
+    // `apply_hide_dotfiles` comment warns about, exercised here rather than only asserted on the
+    // mirror. (The startup default is applied once, then `ToggleHidden` reads/flips the mirror.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".secret"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.apply_hide_dotfiles(true);
+    assert!(ctrl.hide_hidden(), "config default on at startup");
+
+    ctrl.handle(Intent::ToggleHidden);
+    assert!(
+        !ctrl.hide_hidden(),
+        "the first `.` press flips the configured-on default OFF, not back to true"
+    );
+}
+
+#[test]
 fn apply_hide_dotfiles_at_startup_re_renders_so_content_matches_the_new_selection() {
     // Important finding (T-8 review): `Controller::new` dispatches ONE render against the
     // UNFILTERED tree (cursor 0), before `hide_dotfiles` is ever applied — mirroring

@@ -110,7 +110,11 @@ pub fn run() -> io::Result<()> {
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
     // if any, appears on a later draw.
     if crate::config::should_start_update_check(&eff) {
-        controller.set_update(crate::update::start_default());
+        // Gate on the RESOLVED `update_check` (config > env > default) and pass that decision
+        // straight through (disabled = false here, since the gate already applied precedence).
+        // `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let the env
+        // silently override a config `update_check = true` (AC-3/AC-10).
+        controller.set_update(crate::update::start_default_with(false));
     }
     // Inject the herdr query channel + the viewer's own workspace id for the worktree picker's
     // agent-active overlay (AC-3) — the first real use of the host seam. `ctx` is still in
