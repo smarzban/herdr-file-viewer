@@ -117,6 +117,11 @@ pub fn run() -> io::Result<()> {
     let (bindings, key_outcome) =
         crate::input::resolve_bindings(crate::input::registry(), cfg.keys.as_ref());
     controller.set_keybindings(bindings, key_outcome);
+    // Format the Keybindings section body for the `?` overlay (AC-16, AC-19, AC-20): reads the
+    // effective bindings + load outcome just stored above, so the live overlay ships a "Keybindings"
+    // tab listing every action's effective key(s), marking custom bindings, and surfacing any
+    // ignored `[keys]` entries. Pure/read-only (AC-23).
+    controller.set_keybindings_display();
     // Kick off the once-a-day update check (off the UI thread; disabled by
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
     // if any, appears on a later draw.

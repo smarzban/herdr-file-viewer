@@ -95,6 +95,22 @@ impl Controller {
         }
     }
 
+    /// Install the formatted Keybindings section body (AC-16, AC-19, AC-20), so
+    /// [`open_help`](Self::open_help) appends a "Keybindings" section to the `?` overlay. Reads the
+    /// already-stored effective bindings + load outcome (wired by
+    /// [`set_keybindings`](Self::set_keybindings), T-6), so it takes no arguments. Called once by
+    /// `app::run` after construction (mirrors
+    /// [`set_settings_display`](Self::set_settings_display)); a controller that never calls it (most
+    /// tests) keeps the pre-existing overlay unchanged.
+    pub(crate) fn set_keybindings_display(&mut self) {
+        let text = crate::help::keybindings_text(
+            crate::input::registry(),
+            self.bindings(),
+            self.key_load_outcome(),
+        );
+        self.keybindings_display = Some(text);
+    }
+
     /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds two sections:
     ///
     /// - What's New: the embedded CHANGELOG rendered as markdown via `render::render`
@@ -150,6 +166,17 @@ impl Controller {
         if let Some(text) = &self.settings_display {
             sections.push(HelpSectionState {
                 label: "Settings",
+                body: crate::render::to_text(text),
+                scroll: 0,
+            });
+        }
+        // Keybindings (AC-16, AC-19, AC-20): appended LAST — after Settings — so index-based tests
+        // over the earlier sections stay valid. Present only once `app::run` has injected the
+        // formatted text via `set_keybindings_display`; a controller that never calls it (most
+        // tests) keeps its existing overlay.
+        if let Some(text) = &self.keybindings_display {
+            sections.push(HelpSectionState {
+                label: "Keybindings",
                 body: crate::render::to_text(text),
                 scroll: 0,
             });

@@ -260,6 +260,71 @@ pub fn settings_text(
     )
 }
 
+/// Assemble the "Keybindings" pane text (AC-16, AC-19, AC-20): a display-only listing of every
+/// global action with its effective key(s) and description. Pure — no env/FS; all three inputs are
+/// already-resolved values the caller computed once at startup (`app::run`).
+///
+/// - When `outcome` is non-empty (a `[keys]` entry was ignored), a FIRST status line names the
+///   rejected entries and their reasons, so the user knows some bindings were dropped and the
+///   defaults kept (AC-16, the surfacing path). It is a single stable line.
+/// - Then ONE row per `registry` action, in registry order: the effective key(s) for that action
+///   (from [`keys_for`](crate::input::EffectiveBindings::keys_for), rendered via
+///   [`key_label`](crate::input::key_label) and joined by " / "), the action's description, and a
+///   trailing " (custom)" marker when the action's key set came from config (AC-20). An action with
+///   no effective key at all (its only key was `Esc`, taken by the no-lockout floor) renders its key
+///   column as "(unbound)" so the row still reads clearly.
+///
+/// Formatting is kept simple and stable since this feeds a presenter snapshot (like `settings_text`).
+///
+/// Visibility is `pub(crate)` (not `pub`) because its argument types (`Binding`, `EffectiveBindings`,
+/// `KeyLoadOutcome`) are `pub(crate)`; a `pub` signature would leak them and trip `private_interfaces`.
+pub(crate) fn keybindings_text(
+    registry: &[crate::input::Binding],
+    bindings: &crate::input::EffectiveBindings,
+    outcome: &crate::input::KeyLoadOutcome,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // AC-16: surface any ignored `[keys]` entries on a leading status line (name + reason), so the
+    // failure is never silent. One line; the per-entry reasons come from `RejectReason`'s Display.
+    if !outcome.is_empty() {
+        let names: Vec<String> = outcome
+            .rejected
+            .iter()
+            .map(|r| format!("{} ({})", r.name, r.reason))
+            .collect();
+        lines.push(format!(
+            "{n} custom binding(s) ignored (using defaults): {names}",
+            n = outcome.rejected.len(),
+            names = names.join(", "),
+        ));
+    }
+
+    // One row per registry action, in registry order: effective key(s), description, custom marker.
+    for binding in registry {
+        let keys = bindings.keys_for(binding.intent);
+        let rendered = if keys.is_empty() {
+            "(unbound)".to_owned()
+        } else {
+            keys.iter()
+                .map(|k| crate::input::key_label(*k))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        };
+        let marker = if bindings.is_customized(binding.intent) {
+            " (custom)"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{rendered}  {description}{marker}",
+            description = binding.description,
+        ));
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +830,132 @@ mod tests {
         assert!(
             text.contains("using defaults"),
             "an Absent outcome must also indicate defaults are in use:\n{text}"
+        );
+    }
+
+    // --- keybindings_text tests (AC-16, AC-19, AC-20) ---
+
+    use crate::config::KeySpec;
+    use crate::input;
+    use std::collections::BTreeMap;
+
+    /// Resolve the registry against a one-entry `[keys]` table `name = <single key>`.
+    fn resolve_one(name: &str, key: &str) -> (input::EffectiveBindings, input::KeyLoadOutcome) {
+        let mut keys: BTreeMap<String, KeySpec> = BTreeMap::new();
+        keys.insert(name.to_string(), KeySpec::One(key.to_string()));
+        input::resolve_bindings(input::registry(), Some(&keys))
+    }
+
+    // AC-19: the Keybindings section lists EVERY registry action — one row per action showing its
+    // description and effective key(s). We assert the output contains each binding's description
+    // (loop over registry()) and representative effective key labels ('r' for refresh, 'Tab' for
+    // toggle_focus). With no rejected entries there is no ignored-bindings status line.
+    #[test]
+    fn keybindings_text_lists_every_registry_action_ac19() {
+        let text = keybindings_text(
+            input::registry(),
+            &input::default_bindings(),
+            &input::KeyLoadOutcome::default(),
+        );
+        for binding in input::registry() {
+            assert!(
+                text.contains(binding.description),
+                "keybindings_text must contain a row for '{}' (its description):\n{text}",
+                binding.name
+            );
+        }
+        // Representative effective key labels appear on their rows: 'r' → refresh, 'Tab' → toggle_focus.
+        assert!(
+            text.contains("r  Re-read git state"),
+            "refresh's default key 'r' must render on its row:\n{text}"
+        );
+        assert!(
+            text.contains("Tab  Move focus between the tree and content columns."),
+            "toggle_focus's default key 'Tab' must render on its row:\n{text}"
+        );
+        // A clean default outcome carries no ignored-bindings status line.
+        assert!(
+            !text.contains("ignored (using defaults)"),
+            "a clean default outcome must not show an ignored-bindings line:\n{text}"
+        );
+    }
+
+    // AC-20: a custom binding (an action remapped via `[keys]`) is visually marked with "(custom)";
+    // an unremapped action's row is not.
+    #[test]
+    fn keybindings_text_marks_custom_binding_ac20() {
+        let (bindings, outcome) = resolve_one("refresh", "g");
+        let text = keybindings_text(input::registry(), &bindings, &outcome);
+
+        // The refresh row now shows 'g' and carries the "(custom)" marker.
+        let refresh_row = text
+            .lines()
+            .find(|l| l.contains("Re-read git state"))
+            .expect("keybindings_text must contain the refresh row");
+        assert!(
+            refresh_row.starts_with("g  "),
+            "the refresh row must show its new key 'g':\n{refresh_row}"
+        );
+        assert!(
+            refresh_row.contains("(custom)"),
+            "the remapped refresh row must carry the '(custom)' marker (AC-20):\n{refresh_row}"
+        );
+
+        // An unremapped row (nav_up) must NOT be marked custom.
+        let nav_up_row = text
+            .lines()
+            .find(|l| l.contains("Move the tree cursor up one row."))
+            .expect("keybindings_text must contain the nav_up row");
+        assert!(
+            !nav_up_row.contains("(custom)"),
+            "an unremapped nav_up row must not carry the '(custom)' marker (AC-20):\n{nav_up_row}"
+        );
+    }
+
+    // AC-20 edge (reviewer note): an intent can be customized yet have ZERO effective keys — its
+    // only key was `Esc`, which the no-lockout floor reassigns to Close. Its row still reads clearly
+    // via "(unbound)" and stays marked "(custom)".
+    #[test]
+    fn keybindings_text_unbound_row_for_esc_only_custom_binding() {
+        // Rebind `refresh` to Esc only: the Esc floor takes Esc for Close, leaving refresh keyless.
+        let (bindings, outcome) = resolve_one("refresh", "Esc");
+        assert!(outcome.is_empty(), "naming Esc is valid, not rejected");
+        assert!(
+            bindings.keys_for(crate::intent::Intent::Refresh).is_empty(),
+            "refresh has no effective key once Esc is claimed by the floor"
+        );
+        let text = keybindings_text(input::registry(), &bindings, &outcome);
+        let refresh_row = text
+            .lines()
+            .find(|l| l.contains("Re-read git state"))
+            .expect("keybindings_text must contain the refresh row");
+        assert!(
+            refresh_row.starts_with("(unbound)  "),
+            "a keyless customized row must render its key column as '(unbound)':\n{refresh_row}"
+        );
+        assert!(
+            refresh_row.contains("(custom)"),
+            "the row is still a custom binding:\n{refresh_row}"
+        );
+    }
+
+    // AC-16: an outcome carrying a rejected entry surfaces a leading ignored-bindings status line
+    // naming the dropped entry (and its reason), so the failure is not silent.
+    #[test]
+    fn keybindings_text_surfaces_ignored_bindings_ac16() {
+        // An unknown intent name is rejected by the resolver (defaults kept for everything valid).
+        let (bindings, outcome) = resolve_one("bogus_intent", "g");
+        assert!(!outcome.is_empty(), "an unknown intent name is rejected");
+
+        let text = keybindings_text(input::registry(), &bindings, &outcome);
+        let status = text.lines().next().unwrap();
+        assert!(
+            status.contains("ignored (using defaults)"),
+            "AC-16: a rejected entry must surface an ignored-bindings status line:\n{status}"
+        );
+        assert!(
+            status.contains("bogus_intent"),
+            "the ignored entry's name must be surfaced:\n{status}"
         );
     }
 }

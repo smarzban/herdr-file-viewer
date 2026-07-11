@@ -36,9 +36,23 @@ impl EffectiveBindings {
     }
 
     /// Whether `intent`'s effective key set came from user config (a custom binding).
-    #[allow(dead_code)] // read by the T-7 Keybindings overlay; exercised by the resolver tests.
     pub(crate) fn is_customized(&self, intent: Intent) -> bool {
         self.customized.contains(&intent)
+    }
+
+    /// The effective key(s) that decode to `intent`, in a deterministic order (sorted by their
+    /// rendered [`key_label`]), so the Keybindings view-model and its tests are stable. Empty when
+    /// `intent` has no effective key at all: e.g. an intent whose only key was `Esc`, which the
+    /// no-lockout floor reassigns to `Close`. Consumed by the T-7 Keybindings view-model.
+    pub(crate) fn keys_for(&self, intent: Intent) -> Vec<KeyCode> {
+        let mut codes: Vec<KeyCode> = self
+            .map
+            .iter()
+            .filter(|&(_, &i)| i == intent)
+            .map(|(&code, _)| code)
+            .collect();
+        codes.sort_by_key(|&c| key_label(c));
+        codes
     }
 }
 
@@ -101,7 +115,6 @@ pub(crate) struct Binding {
     /// [`default_bindings`].
     pub default_keys: &'static [KeyCode],
     /// A concise, human-readable one-liner describing the action.
-    #[allow(dead_code)] // rendered by the Keybindings help section in T-7.
     pub description: &'static str,
 }
 
@@ -421,9 +434,9 @@ impl KeyLoadOutcome {
     }
 }
 
-/// Render a logical [`KeyCode`] to a short human label (for a rejection reason, and later the
+/// Render a logical [`KeyCode`] to a short human label (for a rejection reason, and the
 /// Keybindings section). Mirrors the [`parse_key_spec`] surface in reverse.
-fn key_label(code: KeyCode) -> String {
+pub(crate) fn key_label(code: KeyCode) -> String {
     match code {
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_string(),

@@ -489,6 +489,11 @@ pub struct Controller {
     /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
     /// test that never calls the setter gets the pre-T-9 two-section overlay unchanged.
     settings_display: Option<String>,
+    /// The pre-formatted Keybindings section body (AC-16, AC-19, AC-20), or `None` before
+    /// [`set_keybindings_display`](Self::set_keybindings_display) is called. Injected
+    /// post-construction (mirrors [`settings_display`](Self::settings_display)) so the controller
+    /// stays hermetic in tests — a test that never calls the setter keeps its overlay unchanged.
+    keybindings_display: Option<String>,
     /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
     /// next launch while still behind.
     update_dismissed: bool,
@@ -651,6 +656,7 @@ impl Controller {
             content_selection: None,
             update_available: None,
             settings_display: None,
+            keybindings_display: None,
             update_dismissed: false,
             update_rx: None,
             status_rx: None,
@@ -1022,9 +1028,8 @@ impl Controller {
         &self.bindings
     }
 
-    /// The `[keys]` resolution outcome (rejected entries), for the T-7 Keybindings overlay to
+    /// The `[keys]` resolution outcome (rejected entries), for the Keybindings overlay to
     /// surface which bindings were ignored (AC-16).
-    #[allow(dead_code)] // consumed by the T-7 Keybindings overlay; exercised by this module's tests.
     pub(crate) fn key_load_outcome(&self) -> &crate::input::KeyLoadOutcome {
         &self.key_load_outcome
     }
@@ -2575,6 +2580,39 @@ mod tests {
         assert!(
             !ctrl.key_load_outcome().is_empty(),
             "the rejected-entry outcome is stored on the controller (AC-16 surfacing path)"
+        );
+    }
+
+    // ---- T-7 Keybindings View-Model (AC-19) --------------------------------------------
+
+    #[test]
+    fn open_help_appends_keybindings_section_only_after_set_keybindings_display() {
+        // T-7/AC-19: with the Keybindings display injected, the `?` overlay gains a "Keybindings"
+        // section (appended LAST). Without it, the overlay has no such section — so existing
+        // count/label-based overlay tests stay green for controllers that never wire it.
+        let mut ctrl = wiring_controller();
+
+        // Before injection: no Keybindings section.
+        ctrl.open_help();
+        assert!(
+            !ctrl
+                .help_state()
+                .expect("help open")
+                .section_labels()
+                .contains(&"Keybindings"),
+            "without set_keybindings_display the overlay must have no Keybindings section"
+        );
+        ctrl.close_help();
+
+        // After injection: a "Keybindings" section is present.
+        ctrl.set_keybindings_display();
+        ctrl.open_help();
+        assert!(
+            ctrl.help_state()
+                .expect("help open")
+                .section_labels()
+                .contains(&"Keybindings"),
+            "set_keybindings_display must make open_help append a Keybindings section"
         );
     }
 }
