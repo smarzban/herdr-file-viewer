@@ -358,14 +358,14 @@ pub(crate) fn keybindings_text(
     // status, so this note stays pure (no path plumbing needed here).
     lines.push(String::new());
     lines.push(
-        "To remap, edit a config file. Copy config.example.toml (bundled in the plugin folder)"
+        "To customize keys, create a config file: copy the bundled config.example.toml to your"
             .to_string(),
     );
     lines.push(
-        "into your config dir, rename it to config.toml, edit, and relaunch. The Settings tab"
+        "config dir and rename it to config.toml, then edit and relaunch. The Settings tab shows"
             .to_string(),
     );
-    lines.push("shows your exact config path and whether a file is loaded.".to_string());
+    lines.push("your exact config path and whether a file is loaded.".to_string());
 
     lines.join("\n")
 }
@@ -1021,6 +1021,10 @@ mod tests {
         assert!(
             text.contains("config.toml"),
             "the note must tell users to rename it to config.toml:\n{text}"
+        );
+        assert!(
+            text.contains("Settings"),
+            "the note must send users to the Settings tab for their exact config path:\n{text}"
         );
     }
 

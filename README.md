@@ -335,9 +335,9 @@ default` chain. Every other key (`markdown`, `diff`, `syntax`, `open`, `reveal`,
 
 editor = "code --wait"      # command to open a file with `e` (overrides $EDITOR)
 
-markdown = "glow -s dark"   # override the markdown / diff / syntax renderer commands
-diff = "delta"              # (default: glow / delta / bat)
-syntax = "bat"
+markdown = "glow -s dark -w 0 -"   # override the markdown / diff / syntax renderers
+diff = "delta"                     # (defaults: glow / delta / bat)
+syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
 
 open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-manager commands
 reveal = "nautilus"
@@ -348,7 +348,11 @@ update_check = true         # false to disable the once-a-day update check
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into
 arguments** the way a shell would for simple cases — whitespace splits, double-quotes group a
-path with spaces — but **no shell is invoked**.
+path with spaces — but **no shell is invoked**. `editor` / `open` / `reveal` get the target
+**path** appended as the final argument; the **renderers** (`markdown` / `diff` / `syntax`)
+instead get the file **content on stdin** and your value **replaces** the whole default command
+(flags aren't merged), so a custom renderer must read stdin (glow and bat need a trailing `-`)
+and set its own flags — the token `{name}` is substituted with the file name.
 
 **Known limitation:** the full-file-diff view derives its line-numbered gutter from the `diff`
 command by appending delta's `--line-numbers` flag; if you point `diff` at a tool that rejects

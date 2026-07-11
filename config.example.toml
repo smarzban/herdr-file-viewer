@@ -14,11 +14,11 @@
 #
 #   2. Uncomment and edit the lines you want, then relaunch the viewer.
 #
-# Every setting below is COMMENTED OUT and shows its built-in default, so copying
-# this file as-is changes nothing until you uncomment a line. The viewer never
-# writes this file: it is read-only input, picked up on relaunch (there is no
-# in-app settings editor). See what is currently in effect any time in the `?`
-# help overlay's Settings and Keybindings tabs.
+# Every setting below is COMMENTED OUT, so copying this file as-is changes nothing.
+# Uncomment and edit a line to change that setting; leave a key unset to keep its
+# built-in default. The viewer never writes this file: it is read-only input,
+# picked up on relaunch (there is no in-app settings editor). See what is currently
+# in effect any time in the `?` help overlay's Settings and Keybindings tabs.
 #
 # Precedence: a config key always wins. Two keys also fall back to an environment
 # variable before the built-in default (`editor` -> $EDITOR, `update_check` ->
@@ -29,21 +29,29 @@
 
 # --- External programs -------------------------------------------------------
 #
-# Command values are split into arguments the way a shell would for simple cases
-# (whitespace splits; double-quotes group a path that contains spaces), but NO
-# shell is invoked. The target file (or, for `reveal`, its containing folder) is
-# appended as the final argument.
+# All command values are split into arguments the way a shell would for simple
+# cases (whitespace splits; double-quotes group a path that contains spaces), but
+# NO shell is invoked. Two different I/O contracts apply:
+#
+#   * editor / open / reveal receive the target PATH appended as the final
+#     argument (for `reveal`, the containing folder).
+#   * markdown / diff / syntax receive the file CONTENT piped on standard input
+#     (never as a path argument). A value you set REPLACES the whole default
+#     command -- flags are NOT merged in -- so your command must read stdin (glow
+#     and bat need a trailing `-`) and set its own color/format flags. The token
+#     `{name}` is substituted with the file name (bat uses it to pick the syntax).
 
 # Editor launched by the `e` key. Precedence: this key > $EDITOR > a platform
 # default. Example:
 #editor = "code --wait"
 
-# Content-pane renderer commands. Defaults: glow (markdown), delta (diff), bat
-# (syntax highlighting). If a renderer is not installed the pane falls back to
-# plain text with a notice.
-#markdown = "glow -s dark"
+# Content-pane renderers. Defaults: glow (markdown), delta (diff), bat (syntax);
+# if one is not installed the pane falls back to plain text with a notice. These
+# examples are working commands equivalent to the defaults (note the stdin `-`);
+# edit them, or leave a key unset to keep the bundled default.
+#markdown = "glow -s dark -w 0 -"
 #diff = "delta"
-#syntax = "bat"
+#syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
 
 # OS hand-off commands: `O` opens the selected entry with an application, `R`
 # reveals it in a file manager. Defaults are the per-OS system openers

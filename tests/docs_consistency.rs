@@ -10,11 +10,26 @@ const README: &str = include_str!("../README.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
 
+/// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading
+/// `#`, reads `key = ...`). Stronger than a bare substring: the key must appear as an actual
+/// (commented) assignment, not merely as a word in prose.
+fn has_commented_assignment(example: &str, key: &str) -> bool {
+    example.lines().any(|l| {
+        l.trim_start()
+            .strip_prefix('#')
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix(key))
+            .map(|after| after.trim_start().starts_with('='))
+            .unwrap_or(false)
+    })
+}
+
 #[test]
 fn config_example_documents_every_config_key() {
-    // Anti-drift: the bundled `config.example.toml` template must mention every config key (and the
-    // `[keys]` remap table), so adding a config field without documenting it in the example fails
-    // the build. Keep this list in lockstep with `Config`'s fields in `src/config.rs`.
+    // Anti-drift: the bundled `config.example.toml` template must carry a commented-out ASSIGNMENT
+    // for every scalar config key and the `[keys]` table header, so adding a `Config` field (or
+    // demoting a key to prose only) without documenting it in the example fails the build. Keep this
+    // list in lockstep with `Config`'s fields in `src/config.rs`.
     for key in [
         "editor",
         "markdown",
@@ -24,16 +39,25 @@ fn config_example_documents_every_config_key() {
         "reveal",
         "hide_dotfiles",
         "update_check",
-        "[keys]",
     ] {
         assert!(
-            CONFIG_EXAMPLE.contains(key),
-            "config.example.toml must document the `{key}` config key"
+            has_commented_assignment(CONFIG_EXAMPLE, key),
+            "config.example.toml must carry a commented-out `{key} = ...` assignment (not just prose)"
         );
     }
-    // It must state where the file goes and that it is renamed to config.toml.
     assert!(
-        CONFIG_EXAMPLE.contains("config.toml"),
+        CONFIG_EXAMPLE.lines().any(|l| l.trim() == "#[keys]"),
+        "config.example.toml must carry the commented-out `[keys]` table header"
+    );
+    // The renderer stdin contract is the load-bearing correctness note (a custom renderer must read
+    // stdin, e.g. glow/bat need a trailing `-`); pin that it is documented.
+    assert!(
+        CONFIG_EXAMPLE.contains("stdin"),
+        "config.example.toml must document that renderers receive content on stdin"
+    );
+    // It must tell users to rename the copy to config.toml.
+    assert!(
+        CONFIG_EXAMPLE.contains("config.toml") && CONFIG_EXAMPLE.to_lowercase().contains("rename"),
         "config.example.toml must tell users to rename it to config.toml"
     );
     // Every setting line is commented out, so copying the file verbatim changes nothing: there must
@@ -61,6 +85,11 @@ fn readme_points_to_the_config_example_template() {
     assert!(
         section.contains("config.example.toml"),
         "README `## Configuration` section must point users at config.example.toml"
+    );
+    // ...and carry the actual instructions, not just the file name: rename to config.toml.
+    assert!(
+        section.contains("config.toml") && section.to_lowercase().contains("rename"),
+        "README `## Configuration` section must tell users to rename the copy to config.toml"
     );
 }
 
