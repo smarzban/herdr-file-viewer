@@ -312,6 +312,11 @@ couple of startup toggles. **Read-only input** — the viewer never writes this 
 your own editor and relaunch to pick up changes (there is no in-app settings editor). You can see
 what's currently in effect any time in the `?` help overlay's **Settings** section.
 
+**Quick start:** a fully-commented [`config.example.toml`](config.example.toml) ships in the plugin
+folder documenting every setting. Copy it to the config path below, **rename it to `config.toml`**,
+uncomment the lines you want, and relaunch — copying it as-is changes nothing (every line is
+commented out).
+
 **File location:** when run under herdr, the config lives at
 `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — herdr provides that directory (on Linux it resolves to
 `~/.config/herdr/plugins/config/herdr-file-viewer/config.toml`). Run standalone (outside herdr),

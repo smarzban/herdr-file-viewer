@@ -353,6 +353,20 @@ pub(crate) fn keybindings_text(
         }
     }
 
+    // Footer: how to actually create a config (the overlay is display-only, NC-3). Points at the
+    // bundled template and the Settings tab, which shows the exact resolved config path + load
+    // status, so this note stays pure (no path plumbing needed here).
+    lines.push(String::new());
+    lines.push(
+        "To remap, edit a config file. Copy config.example.toml (bundled in the plugin folder)"
+            .to_string(),
+    );
+    lines.push(
+        "into your config dir, rename it to config.toml, edit, and relaunch. The Settings tab"
+            .to_string(),
+    );
+    lines.push("shows your exact config path and whether a file is loaded.".to_string());
+
     lines.join("\n")
 }
 
@@ -990,6 +1004,26 @@ mod tests {
 
     // AC-20: a custom binding (an action remapped via `[keys]`) is visually marked with "(custom)";
     // an unremapped action's row is not.
+    #[test]
+    fn keybindings_text_footer_points_to_the_config_template() {
+        // The Keybindings tab ends with a note telling users how to create a config: copy the
+        // bundled config.example.toml, rename to config.toml. Keeps the display-only overlay (NC-3)
+        // discoverable without an in-app editor.
+        let text = keybindings_text(
+            input::registry(),
+            &input::default_bindings(),
+            &input::KeyLoadOutcome::default(),
+        );
+        assert!(
+            text.contains("config.example.toml"),
+            "the Keybindings tab must point users at the bundled config.example.toml:\n{text}"
+        );
+        assert!(
+            text.contains("config.toml"),
+            "the note must tell users to rename it to config.toml:\n{text}"
+        );
+    }
+
     #[test]
     fn keybindings_text_marks_custom_binding_ac20() {
         let (bindings, outcome) = resolve_one("refresh", "g");

@@ -8,6 +8,61 @@
 
 const README: &str = include_str!("../README.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
+
+#[test]
+fn config_example_documents_every_config_key() {
+    // Anti-drift: the bundled `config.example.toml` template must mention every config key (and the
+    // `[keys]` remap table), so adding a config field without documenting it in the example fails
+    // the build. Keep this list in lockstep with `Config`'s fields in `src/config.rs`.
+    for key in [
+        "editor",
+        "markdown",
+        "diff",
+        "syntax",
+        "open",
+        "reveal",
+        "hide_dotfiles",
+        "update_check",
+        "[keys]",
+    ] {
+        assert!(
+            CONFIG_EXAMPLE.contains(key),
+            "config.example.toml must document the `{key}` config key"
+        );
+    }
+    // It must state where the file goes and that it is renamed to config.toml.
+    assert!(
+        CONFIG_EXAMPLE.contains("config.toml"),
+        "config.example.toml must tell users to rename it to config.toml"
+    );
+    // Every setting line is commented out, so copying the file verbatim changes nothing: there must
+    // be no active (uncommented) TOML assignment or table header.
+    for (n, line) in CONFIG_EXAMPLE.lines().enumerate() {
+        let t = line.trim_start();
+        let active = !t.is_empty() && !t.starts_with('#');
+        assert!(
+            !active,
+            "config.example.toml line {} must be commented out (got: {line:?})",
+            n + 1
+        );
+    }
+}
+
+#[test]
+fn readme_points_to_the_config_example_template() {
+    // The README's Configuration section must point users at the bundled template.
+    let start = README
+        .find("## Configuration")
+        .expect("README.md must carry a `## Configuration` section");
+    let rest = &README[start..];
+    let end = rest[1..].find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
+    let section = &rest[..end];
+    assert!(
+        section.contains("config.example.toml"),
+        "README `## Configuration` section must point users at config.example.toml"
+    );
+}
 
 #[test]
 fn readme_documents_line_select_key() {

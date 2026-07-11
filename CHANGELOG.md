@@ -29,7 +29,9 @@ All notable changes to this project are documented here. The format is based on
   default (`config > env > default`); a missing or malformed file safely falls back to defaults.
   The viewer never writes the file — it's read-only input, picked up on relaunch. The `?` help
   overlay gained a third **Settings** section showing the currently effective values and whether
-  the config loaded, was absent, or was malformed — display-only, not an in-app editor.
+  the config loaded, was absent, or was malformed — display-only, not an in-app editor. A
+  fully-commented **`config.example.toml`** ships in the plugin folder documenting every setting
+  (all lines commented out); copy it to your config dir, rename it to `config.toml`, and edit.
 - **`Z` (Shift+`z`) toggles a file full-screen.** The first press opens the selected file like
   `Enter` and zooms the viewer's herdr pane to fill the whole terminal, so the file takes over the
   entire screen instead of just the split; press `Z` again (or `Esc`/`q`, or `z`) to return to the
