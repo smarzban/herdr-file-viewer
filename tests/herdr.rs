@@ -135,6 +135,40 @@ fn run_json_returns_err_on_non_zero_exit() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 2b: `run` (side-effecting host-layout call) drives the same runner and
+// drops stdout — covers the trait default through the REAL LiveHerdr wiring.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn run_issues_the_argv_through_the_runner_and_discards_stdout() {
+    // `HerdrCli::run` powers the `Z` full-screen toggle (`pane zoom --current --on|--off`): the
+    // same program + argv reach the runner as `run_json`, only the JSON stdout is dropped.
+    let record: Arc<Mutex<Option<Recorded>>> = Arc::new(Mutex::new(None));
+    let fake = RecordingRunner::success("{}", Arc::clone(&record));
+    let cli = LiveHerdr::with_runner("herdr-test-bin", fake);
+
+    cli.run(&["pane", "zoom", "--current", "--on"]).unwrap();
+
+    let rec = record
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("runner was never called");
+    assert_eq!(rec.program, std::ffi::OsString::from("herdr-test-bin"));
+    assert_eq!(rec.args, vec!["pane", "zoom", "--current", "--on"]);
+}
+
+#[test]
+fn run_returns_err_on_non_zero_exit() {
+    // A failing host-layout call surfaces as `Err` so callers can stay best-effort (AC-15).
+    let record: Arc<Mutex<Option<Recorded>>> = Arc::new(Mutex::new(None));
+    let fake = RecordingRunner::failure(Arc::clone(&record));
+    let cli = LiveHerdr::with_runner("herdr-test-bin", fake);
+
+    assert!(cli.run(&["pane", "zoom", "--current", "--off"]).is_err());
+}
+
+// ---------------------------------------------------------------------------
 // Test 3: resolve_program — pure helper, testable without touching the env
 // ---------------------------------------------------------------------------
 

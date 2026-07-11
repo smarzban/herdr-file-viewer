@@ -4,8 +4,11 @@
 //! and [`LiveHerdr`] as the real implementation. Tests inject a fake [`CommandRunner`] so
 //! nothing is ever really spawned (hermetic).
 //!
-//! **Read-only:** this seam only runs read-only herdr subcommands. The args are passed by
-//! callers; nothing in this module constructs a mutating command.
+//! **Read-only w.r.t. files and git:** this seam runs herdr *queries* ([`HerdrCli::run_json`])
+//! plus, via [`HerdrCli::run`], the occasional host **layout** command (e.g. `pane zoom`). Neither
+//! touches file or git state — the constitution's read-only invariant is about the filesystem and
+//! the repo, and driving herdr's own layout through its documented CLI is "good plugin citizen".
+//! The args are passed by callers; nothing in this module constructs a file/git mutation.
 
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -23,6 +26,15 @@ use std::process::{Command, Output};
 pub trait HerdrCli {
     /// Run a read-only herdr subcommand expected to emit JSON on stdout.
     fn run_json(&self, args: &[&str]) -> io::Result<String>;
+
+    /// Run a herdr subcommand for its **side effect** — a host layout op such as
+    /// `pane zoom --current --on` — discarding stdout. Still read-only with respect to files and
+    /// git (herdr layout only). Defaults to [`run_json`], so existing implementations (and test
+    /// fakes) get it for free; the default records/executes exactly the same way, it just drops
+    /// the JSON. Callers treat it as best-effort and ignore the `Err`.
+    fn run(&self, args: &[&str]) -> io::Result<()> {
+        self.run_json(args).map(|_| ())
+    }
 }
 
 // ---------------------------------------------------------------------------

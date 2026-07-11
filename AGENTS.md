@@ -92,6 +92,13 @@ These shape every decision; violating one is a design error, not a style nit:
 
 ### herdr integration (verified surface)
 
+- **Check herdr's live docs/CLI before you scope OR build anything that touches the host boundary.**
+  This section is called *verified surface* for a reason: herdr evolves, so never assume a command,
+  flag, or JSON shape from memory. Confirm it against the installed herdr first: `herdr --help`,
+  `herdr <cmd> --help` (e.g. `herdr pane --help`), a read-only probe of the real output (`herdr pane
+  current`, `herdr pane layout --current`), and the `herdr` skill when running inside herdr
+  (`HERDR_ENV=1`). Pin the exact argv you verified in a test comment so a future change can't
+  silently break it.
 - **Manifest** `herdr-plugin.toml`: declare the viewer as a `[[panes]]` entry with
   `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]`, plus an
   `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos"]`,

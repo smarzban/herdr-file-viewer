@@ -1822,6 +1822,214 @@ fn activate_a_file_opens_it_in_zoom_mode() {
     );
 }
 
+/// A recording `HerdrCli` for the `Z` full-screen toggle: accepts any `pane zoom` (returns `{}`)
+/// and records every argv so a test can assert exactly what the viewer issued. `Z` drives the host
+/// zoom off its own `host_zoomed` flag (no state query), so this fake only ever sees
+/// `pane zoom --current --on|--off`.
+struct PaneZoomFake {
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl PaneZoomFake {
+    fn new(calls: Arc<Mutex<Vec<Vec<String>>>>) -> Self {
+        Self { calls }
+    }
+}
+
+impl HerdrCli for PaneZoomFake {
+    fn run_json(&self, args: &[&str]) -> io::Result<String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+        Ok("{}".to_string())
+    }
+}
+
+/// The argv the viewer issues to zoom (`on`) / un-zoom (`!on`) its host pane.
+fn zoom_argv(on: bool) -> Vec<String> {
+    [
+        "pane",
+        "zoom",
+        "--current",
+        if on { "--on" } else { "--off" },
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[test]
+fn open_fullscreen_on_a_file_zooms_and_asks_herdr_to_zoom_the_pane() {
+    // `Z` (OpenFullscreen) on a file, when the pane is NOT already full-screen, opens it exactly
+    // like Enter (in-plugin zoom, content focused) AND issues `pane zoom --current --on` so the
+    // file fills the whole terminal, not just the plugin's split. The argv is entirely static (no
+    // pane id interpolated) → no option-injection surface; no state query is made (one call).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, opened) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    assert!(!ctrl.zoomed());
+    let fx = ctrl.handle(Intent::OpenFullscreen); // cursor on the file
+    assert!(fx.redraw, "opening full-screen redraws");
+    assert!(ctrl.zoomed(), "Z on a file opens it in the in-plugin zoom");
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Content,
+        "the content pane is focused, as with Enter"
+    );
+    assert!(
+        opened.lock().unwrap().is_empty(),
+        "Z does NOT open the editor"
+    );
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true)],
+        "Z issues exactly one call: `pane zoom --current --on` (no state query)"
+    );
+}
+
+#[test]
+fn open_fullscreen_again_unzooms_the_pane_and_restores_the_split() {
+    // The toggle's reverse, as a real round-trip on one controller: `Z` full-screens, a second `Z`
+    // un-zooms (`pane zoom --current --off`) and restores the two-column split (tree visible, focus
+    // back on the tree) — you are returned to browsing.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    ctrl.handle(Intent::OpenFullscreen); // Z: zoom on
+    assert!(ctrl.zoomed());
+    let fx = ctrl.handle(Intent::OpenFullscreen); // Z again: toggle back
+    assert!(fx.redraw, "un-zooming redraws");
+    assert!(!ctrl.zoomed(), "a second Z restores the split");
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Tree,
+        "restoring the split returns focus to the tree"
+    );
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true), zoom_argv(false)],
+        "Z then Z issues `--on` then `--off`"
+    );
+}
+
+#[test]
+fn open_fullscreen_on_a_directory_only_activates_and_never_zooms_the_pane() {
+    // `Z` on a directory (pane not full-screen) behaves like Enter (expand/collapse). There is no
+    // file to read full-screen, so NO herdr call is issued at all.
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    // The cursor starts on the only top-level node — the `sub/` folder.
+    ctrl.handle(Intent::OpenFullscreen);
+    assert!(!ctrl.zoomed(), "Z on a folder never zooms");
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "Z on a folder issues no herdr call"
+    );
+}
+
+#[test]
+fn open_fullscreen_without_herdr_toggles_the_in_plugin_zoom() {
+    // With no herdr injected `Z` still works as a toggle: the first press opens the file in the
+    // in-plugin zoom, a second press restores the split. The host pane zoom silently no-ops; the
+    // toggle rides the viewer's own `host_zoomed` flag, so it never gets stuck (and never panics).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    // NOTE: no `set_host` — herdr is absent.
+
+    ctrl.handle(Intent::OpenFullscreen);
+    assert!(ctrl.zoomed(), "Z zooms in-plugin even with herdr absent");
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    ctrl.handle(Intent::OpenFullscreen);
+    assert!(
+        !ctrl.zoomed(),
+        "a second Z toggles back even with herdr absent"
+    );
+    assert_eq!(ctrl.focus(), Focus::Tree);
+}
+
+#[test]
+fn close_releases_the_host_pane_zoom() {
+    // Backing out with `Esc`/`q` from a `Z` full-screen releases the host pane zoom the viewer
+    // opened (issues `--off`) as it restores the split — the pane is never left full-screen behind
+    // a two-column layout.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    ctrl.handle(Intent::OpenFullscreen); // Z: zoom on
+    ctrl.handle(Intent::Close); // Esc/q: back to the split
+    assert!(!ctrl.zoomed());
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true), zoom_argv(false)],
+        "Close releases the host pane zoom the viewer opened"
+    );
+}
+
+#[test]
+fn toggle_zoom_releases_the_host_pane_zoom() {
+    // The `z`/`Z` desync fix: pressing `z` (in-plugin zoom toggle) while the host pane is
+    // full-screen via `Z` releases the host zoom too, so the two-column split never reappears
+    // inside a still-full-screen pane.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    ctrl.handle(Intent::OpenFullscreen); // Z: host + in-plugin zoom on
+    ctrl.handle(Intent::ToggleZoom); // z: exit full-screen → releases the host pane
+    assert!(!ctrl.zoomed());
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true), zoom_argv(false)],
+        "pressing z while host-full-screen releases the host pane (no desync)"
+    );
+}
+
+#[test]
+fn re_root_releases_the_host_pane_zoom() {
+    // Switching worktree (re-root) while `Z` full-screen returns to the split AND releases the host
+    // pane zoom, so the pane does not stay full-screen while the plugin resets to two columns.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+
+    ctrl.handle(Intent::OpenFullscreen); // Z: zoom on
+    let other = TempDir::new();
+    ctrl.re_root(other.path()); // switch worktree → back to split
+    assert!(!ctrl.zoomed());
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true), zoom_argv(false)],
+        "re-rooting releases the host pane zoom"
+    );
+}
+
 #[test]
 fn wheel_scrolls_the_pane_under_the_cursor() {
     let dir = TempDir::new();
