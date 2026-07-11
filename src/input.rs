@@ -7,52 +7,84 @@
 
 use crate::intent::Intent;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
-/// Decode a key event into an [`Intent`], or `None` if the key is unbound.
+/// The resolved key-to-[`Intent`] decode map plus the set of intents whose key set came from
+/// user config (a **custom binding**).
 ///
-/// Control-style chords (Ctrl/Alt/Super/…) never fire an intent so reserved combos (e.g.
-/// Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
-/// typing — not a chord — and some terminals report them with the Shift bit set.
-pub fn map_key(key: KeyEvent) -> Option<Intent> {
+/// Built once from the [`REGISTRY`] (defaults) or, later, the registry layered with a user's
+/// `[keys]` config. The [dispatcher](decode) only ever reads it — it never sees the raw registry
+/// or config. Fields are private; callers use the accessors. `customized` is empty for the default
+/// build; the T-5 bindings resolver populates it from a user's config.
+pub(crate) struct EffectiveBindings {
+    /// Which [`Intent`] each logical key decodes to.
+    map: HashMap<KeyCode, Intent>,
+    /// Intents whose effective key set came from user config; empty under the defaults. Read only
+    /// via [`EffectiveBindings::is_customized`]; populated by the T-5 resolver / T-7 overlay.
+    #[allow(dead_code)]
+    customized: HashSet<Intent>,
+}
+
+impl EffectiveBindings {
+    /// The [`Intent`] this logical key decodes to, or `None` if the key is unbound.
+    pub(crate) fn intent_for(&self, code: KeyCode) -> Option<Intent> {
+        self.map.get(&code).copied()
+    }
+
+    /// Whether `intent`'s effective key set came from user config (a custom binding).
+    #[allow(dead_code)] // consumed by the T-5 resolver / T-7 Keybindings overlay.
+    pub(crate) fn is_customized(&self, intent: Intent) -> bool {
+        self.customized.contains(&intent)
+    }
+}
+
+/// Fold the [`REGISTRY`] into the default [`EffectiveBindings`]: every default key of every row
+/// decodes to that row's intent, with no key customized.
+///
+/// Pure — no config, env, or I/O (AC-24). Because the registry's default keys are collision-free
+/// (test-enforced, AC-3), the resulting map reproduces today's `map_key` bindings verbatim (AC-1).
+pub(crate) fn default_bindings() -> EffectiveBindings {
+    let mut map = HashMap::new();
+    for binding in registry() {
+        for &code in binding.default_keys {
+            map.insert(code, binding.intent);
+        }
+    }
+    EffectiveBindings {
+        map,
+        customized: HashSet::new(),
+    }
+}
+
+/// Decode a key event into an [`Intent`] against a set of effective bindings, or `None` if the
+/// key is unbound.
+///
+/// Pure (AC-24). Control-style chords (Ctrl/Alt/Super/…) never fire an intent so reserved combos
+/// (e.g. Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
+/// typing — not a chord — and some terminals report them with the Shift bit set. `key.code` is the
+/// already-normalized lookup key: a shifted char carries its case in `key.code`, and a named key
+/// reports its base [`KeyCode`] with Shift in the modifiers (stripped by the guard below).
+pub(crate) fn decode(key: KeyEvent, bindings: &EffectiveBindings) -> Option<Intent> {
     if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
-    match key.code {
-        KeyCode::Up | KeyCode::Char('k') => Some(Intent::NavUp),
-        KeyCode::Down | KeyCode::Char('j') => Some(Intent::NavDown),
-        KeyCode::Right | KeyCode::Char('l') => Some(Intent::Expand),
-        KeyCode::Left | KeyCode::Char('h') => Some(Intent::Collapse),
-        KeyCode::Enter => Some(Intent::Activate),
-        KeyCode::Char('Z') => Some(Intent::OpenFullscreen),
-        KeyCode::Char('i') => Some(Intent::ToggleIgnore),
-        KeyCode::Char('.') => Some(Intent::ToggleHidden),
-        KeyCode::Char('c') => Some(Intent::ToggleChangedOnly),
-        KeyCode::Char('b') => Some(Intent::ToggleBaseline),
-        KeyCode::Char('v') => Some(Intent::CycleView),
-        KeyCode::Char('e') => Some(Intent::OpenInEditor),
-        KeyCode::Char('f') => Some(Intent::OpenFinder),
-        KeyCode::Char(':') => Some(Intent::OpenGoToLine),
-        KeyCode::Char('/') => Some(Intent::OpenSearch),
-        KeyCode::Char('n') => Some(Intent::NextMatch),
-        KeyCode::Char('N') => Some(Intent::PrevMatch),
-        KeyCode::Char('H') => Some(Intent::TreeScrollLeft),
-        KeyCode::Char('L') => Some(Intent::TreeScrollRight),
-        KeyCode::Char('O') => Some(Intent::OpenWithApp),
-        KeyCode::Char('R') => Some(Intent::RevealInFileManager),
-        KeyCode::Char('y') => Some(Intent::CopyRepoPath),
-        KeyCode::Char('Y') => Some(Intent::CopyAbsPath),
-        KeyCode::Char('W') => Some(Intent::SwitchWorktree),
-        KeyCode::Tab => Some(Intent::ToggleFocus),
-        KeyCode::Char('<') => Some(Intent::ShrinkTree),
-        KeyCode::Char('>') => Some(Intent::GrowTree),
-        KeyCode::Char('w') => Some(Intent::ToggleWrap),
-        KeyCode::Char('z') => Some(Intent::ToggleZoom),
-        KeyCode::Char('r') => Some(Intent::Refresh),
-        KeyCode::Char('u') => Some(Intent::DismissUpdate),
-        KeyCode::Char('?') => Some(Intent::ShowHelp),
-        KeyCode::Char('q') | KeyCode::Esc => Some(Intent::Close),
-        _ => None,
-    }
+    bindings.intent_for(key.code)
+}
+
+/// Borrow the process-lifetime default [`EffectiveBindings`], built once from the [`REGISTRY`].
+fn default_bindings_static() -> &'static EffectiveBindings {
+    static DEFAULT_BINDINGS: OnceLock<EffectiveBindings> = OnceLock::new();
+    DEFAULT_BINDINGS.get_or_init(default_bindings)
+}
+
+/// Decode a key event into an [`Intent`] under the **default** bindings, or `None` if unbound.
+///
+/// Thin wrapper over [`decode`] against the registry-derived [`default_bindings`]; the single call
+/// site and the existing dispatcher tests exercise this to prove the default map is unchanged
+/// (AC-1). The run loop switches to the effective bindings in T-6.
+pub fn map_key(key: KeyEvent) -> Option<Intent> {
+    decode(key, default_bindings_static())
 }
 
 /// One row of the [keybinding registry](REGISTRY): a single [`Intent`] paired with its stable
@@ -62,15 +94,18 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
 /// the help overlay, and the README docs-consistency check all derive from it, so a key, its
 /// config name, and its description live in exactly one place. `default_keys` reproduces the
 /// current [`map_key`] bindings verbatim; `name` is the public `[keys]` config key.
-#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
 pub(crate) struct Binding {
-    /// The global action this row binds.
+    /// The global action this row binds. Consumed by [`default_bindings`].
     pub intent: Intent,
     /// The stable snake_case identifier, used as the `[keys]` config key (e.g. `nav_up`).
+    #[allow(dead_code)]
+    // public `[keys]` config key; wired into the resolver/overlay in T-5/T-7.
     pub name: &'static str,
-    /// The default key(s) that decode to `intent` absent any user config. Non-empty.
+    /// The default key(s) that decode to `intent` absent any user config. Non-empty. Consumed by
+    /// [`default_bindings`].
     pub default_keys: &'static [KeyCode],
     /// A concise, human-readable one-liner describing the action.
+    #[allow(dead_code)] // rendered by the Keybindings help section in T-7.
     pub description: &'static str,
 }
 
@@ -79,7 +114,6 @@ pub(crate) struct Binding {
 /// The `default_keys` mirror [`map_key`] exactly (behavior-preserving foundation). Invariants,
 /// all test-enforced rather than at runtime: every `Intent::ALL` member appears exactly once
 /// (AC-2), no two rows share a `name` (AC-5), and no [`KeyCode`] is a default of two rows (AC-3).
-#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
 pub(crate) const REGISTRY: &[Binding] = &[
     Binding {
         intent: Intent::NavUp,
@@ -283,7 +317,6 @@ pub(crate) const REGISTRY: &[Binding] = &[
 
 /// Borrow the [keybinding registry](REGISTRY) rows: the single source of truth for each global
 /// action's default key(s), snake_case name, and description.
-#[allow(dead_code)] // T-1 foundation: consumed by tests here; the dispatcher/overlay wire it in T-2+.
 pub(crate) fn registry() -> &'static [Binding] {
     REGISTRY
 }
@@ -671,5 +704,82 @@ mod tests {
         // Lowercase `o` stays unbound; `r` stays Refresh (no collision).
         assert_eq!(map_key(k(KeyCode::Char('o'))), None);
         assert_eq!(map_key(k(KeyCode::Char('r'))), Some(Intent::Refresh));
+    }
+
+    #[test]
+    fn decode_rejects_control_chords_but_shift_and_none_still_decode() {
+        // AC-4: the pure decode path yields no intent for a control chord (Ctrl/Alt) on a bound
+        // key, while the same key with Shift-only or no modifier still decodes to its intent.
+        let bindings = default_bindings();
+
+        // Bound keys carrying a control chord decode to nothing.
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                &bindings
+            ),
+            None,
+            "Ctrl+r must not decode"
+        );
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+                &bindings
+            ),
+            None,
+            "Alt+e must not decode"
+        );
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                &bindings
+            ),
+            None,
+            "Ctrl+q must not decode"
+        );
+
+        // The same keys with no modifier still decode to their intents.
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+                &bindings
+            ),
+            Some(Intent::Refresh)
+        );
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                &bindings
+            ),
+            Some(Intent::Close)
+        );
+        // A shifted character (Shift-only) is ordinary typing, not a control chord — it decodes.
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT),
+                &bindings
+            ),
+            Some(Intent::ShrinkTree)
+        );
+    }
+
+    #[test]
+    fn decode_over_default_bindings_agrees_with_map_key() {
+        // Belt-and-suspenders AC-1: the pure decode path over the default bindings returns exactly
+        // what map_key returns, across bound, arrow, shifted, chorded, and unbound representatives.
+        let bindings = default_bindings();
+        let cases = [
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        ];
+        for key in cases {
+            assert_eq!(decode(key, &bindings), map_key(key), "{key:?}");
+        }
     }
 }
