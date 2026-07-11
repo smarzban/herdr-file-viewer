@@ -173,7 +173,7 @@ PowerShell launcher scripts.
 | `Y` | Copy the selected file's **absolute** path to the clipboard |
 | `Tab` | Move focus between the tree and content columns |
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
-| `w` | Toggle line wrapping for the content pane |
+| `w` | Toggle line wrapping for the content pane. For rendered markdown this switches between the fit-to-pane view (wide tables sized to fit, over-long cells shown as `…`) and a wide view that renders tables at full width and scrolls horizontally (`←`/`→`) so you can read every cell |
 | `z` | Zoom: hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
 | `r` | Refresh git state: pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `W` (Shift+`w`) | **Switch worktree**: open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels |
@@ -184,8 +184,10 @@ PowerShell launcher scripts.
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
 plain text); diffs and code keep their original lines so columns stay aligned. Scroll
-sideways with `←`/`→`, or press `w` to wrap them instead. The layout reflows automatically
-when the pane is resized.
+sideways with `←`/`→`, or press `w` to wrap them instead. Rendered markdown fits the pane by
+default (wide tables sized to fit, over-long cells shown as `…`); press `w` for a wide view that
+renders tables at full width and scrolls sideways so you can read every cell. The layout reflows
+automatically when the pane is resized.
 
 **Git state stays current.** The viewer re-reads git status when the pane **regains focus**, so
 changes you make outside it (a merge, pull, or commit in another pane) show up automatically; `r`

@@ -560,6 +560,15 @@ mod tests {
     }
 
     #[test]
+    fn with_wrap_width_appends_the_value_when_w_is_the_trailing_arg() {
+        // `-w` present but with no value after it (the `out.get_mut(i + 1)` is `None` branch): the
+        // width is appended rather than replacing a following token.
+        let base: Vec<String> = ["glow", "-w"].iter().map(|s| s.to_string()).collect();
+        let got = with_wrap_width(&base, 70);
+        assert_eq!(got, ["glow", "-w", "70"]);
+    }
+
+    #[test]
     fn small_text_file_is_returned_in_full() {
         let p = tmp("small.txt", b"hello\nworld\n");
         match classify(&std::env::temp_dir(), &p) {

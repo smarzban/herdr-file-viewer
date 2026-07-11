@@ -289,4 +289,33 @@ impl Controller {
             current,
         });
     }
+
+    /// Re-run a COMMITTED search (the prompt is closed, so [`refresh_search`] — which reads the live
+    /// prompt buffer — does not apply) against the freshly-rendered content, keeping the selected
+    /// match ordinal where it still exists. Called by `poll` after a width reflow re-renders the
+    /// same markdown file: match line indices are computed against the *rendered* lines, which shift
+    /// when glow re-lays-out a table at the new width, so stale highlights are recomputed rather than
+    /// dropped — a resize must not silently clear an active search. Unlike `refresh_search`, it does
+    /// NOT scroll (the reflow preserves the user's position). A no-op when no search is active or the
+    /// stored query is empty.
+    ///
+    /// [`refresh_search`]: Self::refresh_search
+    pub(super) fn recompute_committed_search(&mut self) {
+        let Some(prev) = self.search.take() else {
+            return;
+        };
+        if prev.query.is_empty() {
+            return;
+        }
+        let plain = self.content_plain_lines();
+        let matches = crate::search::find_matches(&prev.query, &plain);
+        // Keep the same ordinal where possible; clamp if the reflow reduced the match count (an
+        // empty result leaves `current` at 0 with no matches — the status line reads "no matches").
+        let current = prev.current.min(matches.len().saturating_sub(1));
+        self.search = Some(SearchState {
+            query: prev.query,
+            matches,
+            current,
+        });
+    }
 }

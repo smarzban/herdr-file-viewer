@@ -7,6 +7,7 @@
 use herdr_file_viewer::render::{Prepared, Renderers, render};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn cat() -> Renderers {
@@ -322,5 +323,84 @@ fn truncation_notice_is_preserved_through_rendering() {
     assert!(
         notice.unwrap().contains("truncated-preview"),
         "AC-13 notice survives"
+    );
+}
+
+/// Whether a real `glow` is installed — the wrap-width behavioral test below needs the actual
+/// renderer (its table layout / line padding is glow's own behavior, not something we mock), so it
+/// skips cleanly when glow is absent (e.g. a CI image without the runtime renderers).
+fn glow_available() -> bool {
+    Command::new("glow")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// The table fix, end-to-end through the REAL markdown delegate: with glow pointed at the bundled
+/// (margin-0) style and `-w <width>`, every rendered line is `<= width`. That is the property the
+/// content pane relies on — the Presenter's `Paragraph::wrap` becomes a no-op (no line overflows to
+/// a blank "gap" row), and a table wider than the pane at natural `-w 0` layout is instead sized to
+/// fit with its borders intact rather than shattered by the re-wrap. Skips if glow is not installed.
+#[test]
+fn glow_markdown_wrapped_to_width_never_exceeds_it() {
+    if !glow_available() {
+        eprintln!("skipping glow_markdown_wrapped_to_width_never_exceeds_it: glow not installed");
+        return;
+    }
+    let style = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/markdown-style.json");
+    let width: u16 = 74;
+    let renderers = Renderers {
+        // The real default markdown command shape, pinned to the bundled style and this wrap width
+        // (what `LiveContent::render_at_width` builds for a markdown render at a known pane width).
+        markdown: vec![
+            "glow".into(),
+            "-s".into(),
+            style.into(),
+            "-w".into(),
+            width.to_string(),
+            "-".into(),
+        ],
+        diff: vec!["cat".into()],
+        full_diff: vec!["cat".into()],
+        syntax: vec!["cat".into()],
+        timeout: Duration::from_secs(5),
+    };
+    // A table far wider than `width` at natural layout, plus a long prose paragraph — both must be
+    // brought within `width` by glow.
+    let md = "\
+| Model | Roles | Raised | Notes |\n\
+|---|---|---|---|\n\
+| gpt-5.5 | holistic, lens-security | 5 | The security sniper: sole catch of the grid-resize DoS, unbounded dims to OOM, nobody else saw it. |\n\
+| opus-4-8 | holistic, lens-contracts | 7 | Co-caught the scrollback HIGH; a strong advisory set spanning cold-start and snapshot perms. |\n\
+\n\
+This is a long prose paragraph that at its natural width would be wider than the pane and so must be wrapped by glow to fit within the requested width without ever overflowing it.\n";
+    let prepared = Prepared::Full { text: md.into() };
+    let (text, _) = render(
+        &renderers,
+        &prepared,
+        ViewMode::RenderedMarkdown,
+        None,
+        None,
+    );
+    for line in &text.lines {
+        assert!(
+            line.width() as u16 <= width,
+            "rendered line exceeds the wrap width {width} (would force a Presenter re-wrap / gap): \
+             width={} content={:?}",
+            line.width(),
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        );
+    }
+    // A table WAS rendered (box-drawing borders survived), not degraded to bare pipes.
+    let flat = flatten(&text);
+    assert!(
+        flat.contains('│') || flat.contains('┼') || flat.contains('─'),
+        "table borders present in the rendered output: {flat:?}"
     );
 }

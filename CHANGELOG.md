@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Wide tables in the rendered-markdown view no longer shatter.** A table is now laid out to fit
+  the content pane (columns sized to the pane width, over-long cells ellipsized with `…`) instead
+  of overflowing at its natural width and being broken across the border rows by the pane's
+  line-wrapping. Resizing the pane (or dragging the split bar) reflows the table, preserving your
+  scroll position and any active search. Press `w` to switch to a wide, horizontally-scrollable
+  view that renders the table at full natural width with every cell intact (`←`/`→` or the
+  scrollbar to pan); press `w` again to return. (`w` remains a uniform wrap on/off preference, so
+  it never springs an unexpected wrap on a code file.)
+
 ## [1.11.0] - 2026-07-09
 
 Mouse-driven text selection in the content pane, plus content copy in line-select mode.

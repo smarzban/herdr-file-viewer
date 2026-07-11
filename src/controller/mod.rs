@@ -111,6 +111,26 @@ pub struct RenderResult {
 /// worker thread (AC-23). Behind a trait so tests stub it instead of spawning glow/delta/bat.
 pub trait ContentProvider: Send {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult;
+
+    /// Render honoring the content pane's drawable text `width` (columns), so a width-sensitive
+    /// delegate (glow, for markdown) can lay out and wrap tables to fit the pane rather than
+    /// overflow it. `None` (or `0`) means "unknown / no bound" — behave exactly as [`render`].
+    ///
+    /// Defaulted to call [`render`], so a test double (which never spawns a real width-sensitive
+    /// renderer) need not implement it; only the live [`LiveContent`] overrides it to thread the
+    /// width into glow's `-w`.
+    ///
+    /// [`render`]: ContentProvider::render
+    fn render_at_width(
+        &self,
+        path: &Path,
+        mode: ViewMode,
+        raw_diff: Option<&str>,
+        width: Option<u16>,
+    ) -> RenderResult {
+        let _ = width;
+        self.render(path, mode, raw_diff)
+    }
 }
 
 /// The outcome of an editor hand-off (AC-19). Distinguishing the failure modes lets the
@@ -238,6 +258,11 @@ struct RenderJob {
     mode: ViewMode,
     baseline: Baseline,
     is_git: bool,
+    /// The content pane's drawable text width (columns) at dispatch, or `None` when unknown
+    /// (e.g. the very first render before the first draw measured the pane). Only the markdown
+    /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
+    /// instead of overflowing and being shattered by the Presenter's re-wrap.
+    wrap_width: Option<u16>,
 }
 
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
@@ -365,9 +390,12 @@ pub struct Controller {
     /// The tree column's share of the width, as a percentage (the rest is the content pane).
     /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002).
     split_pct: u16,
-    /// User override forcing content wrap on regardless of view mode (the `w` toggle), so long
-    /// lines in code/diffs can be wrapped on demand. `false` ⇒ the per-mode default applies.
-    wrap_override: bool,
+    /// User override of the per-mode wrap default (the `w` toggle). `None` ⇒ the per-mode default
+    /// applies (prose wraps, code/diffs don't); `Some(true)` ⇒ force wrap on everywhere (read long
+    /// code/diff lines); `Some(false)` ⇒ force wrap off everywhere — which, for rendered markdown,
+    /// switches glow to natural-width layout so a wide table renders in full and the pane scrolls
+    /// horizontally to reveal it (instead of the fit-to-pane view that ellipsizes over-long cells).
+    wrap_override: Option<bool>,
     /// Hide the tree so the content pane fills the frame (the `z` zoom toggle). Pure layout
     /// state — the selection and rendered content are unchanged.
     zoomed: bool,
@@ -415,6 +443,14 @@ pub struct Controller {
     job_tx: mpsc::Sender<RenderJob>,
     result_rx: mpsc::Receiver<(u64, RenderResult)>,
     latest_seq: u64,
+    /// The `seq` of an in-flight markdown re-render triggered by a content-pane *resize*
+    /// ([`rerender_markdown_for_width`]), as opposed to a selection change. When [`poll`] applies a
+    /// result whose seq matches, it preserves the current scroll and recomputes an active search
+    /// (a resize must not jump to the top or drop the search), instead of the from-scratch reset a
+    /// selection-change render gets. `None` when no resize re-render is pending.
+    ///
+    /// [`rerender_markdown_for_width`]: Controller::rerender_markdown_for_width
+    reflow_seq: Option<u64>,
     /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
     /// event can be mapped to a tree row / the content pane / the divider.
     geom: PaneGeometry,
@@ -557,7 +593,7 @@ impl Controller {
             content_width: 0,
             content_height: 0,
             split_pct: SPLIT_DEFAULT,
-            wrap_override: false,
+            wrap_override: None,
             zoomed: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
@@ -575,6 +611,7 @@ impl Controller {
             job_tx,
             result_rx,
             latest_seq: 0,
+            reflow_seq: None,
             geom: PaneGeometry::default(),
             last_click: None,
             drag: None,
@@ -635,7 +672,12 @@ impl Controller {
                         } else {
                             None
                         };
-                    content.render(&job.path, job.mode, raw_diff.as_deref())
+                    content.render_at_width(
+                        &job.path,
+                        job.mode,
+                        raw_diff.as_deref(),
+                        job.wrap_width,
+                    )
                 }))
                 .unwrap_or_else(|_| RenderResult {
                     content: Text::raw("[content unavailable: renderer error]"),
@@ -812,9 +854,11 @@ impl Controller {
     pub fn split_pct(&self) -> u16 {
         self.split_pct
     }
-    /// Whether the `w` content-wrap override is on (carried across a re-root, AC-12).
+    /// Whether the `w` override is currently forcing wrap ON (carried across a re-root, AC-12).
+    /// `Some(false)` (force wrap off / horizontal-scroll) and `None` (per-mode default) both read
+    /// as `false` here — the getter reports the force-on state the tests assert after toggling.
     pub fn wrap_override(&self) -> bool {
-        self.wrap_override
+        self.wrap_override == Some(true)
     }
     pub fn tree(&self) -> &TreeModel {
         &self.tree
@@ -910,12 +954,21 @@ impl Controller {
         if width == self.content_width && height == self.content_height {
             return; // unchanged — avoid recomputing the clamp on every (mostly idle) draw
         }
+        let width_changed = width != self.content_width;
         self.content_width = width;
         self.content_height = height;
         // A smaller viewport shrinks the max offset, so an existing scroll could now point past
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+        // When markdown is fit-to-pane (wrapped), glow lays the table out to the pane width, so a
+        // width change (terminal resize or split-bar drag) must reflow it, preserving scroll and
+        // search (unlike a selection-change render). When unwrapped (the `w` horizontal-scroll view)
+        // glow's natural-width output is width-independent — the pane just re-clamps h-scroll, no
+        // re-render. A height-only change never affects glow's layout either.
+        if width_changed && self.effective_wrap() {
+            self.rerender_markdown_reflow();
+        }
     }
 
     /// Receive the hit-test geometry the Presenter drew this frame (fed back from the draw
@@ -1149,21 +1202,20 @@ impl Controller {
         Some(line)
     }
 
-    /// Whether the content pane wraps for `node`: forced on by the `w` override, else the
-    /// per-mode default — prose (rendered markdown / plain text) wraps; diffs and code stay
-    /// unwrapped so their columns align. Takes the node so the draw path needn't re-walk.
+    /// Whether the content pane wraps for `node`: the `w` override when set (`Some(true)` forces
+    /// wrap on, `Some(false)` forces it off), else the per-mode default — prose (rendered markdown /
+    /// plain text) wraps; diffs and code stay unwrapped so their columns align. Takes the node so
+    /// the draw path needn't re-walk.
     fn wrap_for(&self, node: Option<&Node>) -> bool {
-        if self.wrap_override {
-            return true;
-        }
-        match node {
+        let default = match node {
             Some(n) if n.kind == NodeKind::File => {
-                // Only prose wraps; diffs (compact and full-context) and code keep their lines
-                // so columns and the line-number gutter stay aligned.
+                // Only prose wraps by default; diffs (compact and full-context) and code keep their
+                // lines so columns and the line-number gutter stay aligned.
                 matches!(self.effective_mode(&n.path), ViewMode::RenderedMarkdown)
             }
             _ => false,
-        }
+        };
+        self.wrap_override.unwrap_or(default)
     }
 
     // ---- intent handling ---------------------------------------------------------------
@@ -1721,14 +1773,22 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Flip the content-wrap override. Pure layout state — the content text is unchanged, only
-    /// how the Presenter lays it out; the scroll clamp recomputes from the new wrap.
+    /// Flip the content-wrap state (the `w` key): force it to the opposite of what the current
+    /// selection shows now, so a single press always visibly toggles. The override is a session
+    /// preference applied uniformly — `Some(true)` wraps everywhere, `Some(false)` unwraps
+    /// everywhere — so switching files doesn't spring a surprise wrap on the next one.
+    ///
+    /// For code/diffs this is pure layout (the delegate output is unchanged, only how the Presenter
+    /// lays it out). For rendered markdown the wrap state changes glow's `-w` (fit-to-pane vs.
+    /// natural width for horizontal scroll), so the content itself is re-rendered — preserving
+    /// scroll and search, like a resize reflow. The scroll clamp recomputes from the new layout.
     fn toggle_wrap(&mut self) -> Effects {
-        self.wrap_override = !self.wrap_override;
-        // Wrapping changes the content's layout, so re-clamp both offsets: vertical to the new
-        // line count, and horizontal to zero while wrapped (no line overflows the pane).
+        self.wrap_override = Some(!self.effective_wrap());
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
+        // Markdown must re-render at the new wrap width (fit vs. natural); a no-op for other modes,
+        // which only need the re-clamp above.
+        self.rerender_markdown_reflow();
         Effects::redraw()
     }
 
@@ -1858,6 +1918,51 @@ impl Controller {
 
     // ---- content coordination ----------------------------------------------------------
 
+    /// The wrap width to hand a markdown render job: the content pane's drawable text width when
+    /// markdown is effectively **wrapped** (the fit-to-pane default) so glow lays the table out to
+    /// fit; `None` when unwrapped (the `w` horizontal-scroll view) so glow keeps its base `-w 0`
+    /// natural-width layout and the pane scrolls to reveal the whole table, and `None` before the
+    /// first draw has measured the pane (`content_width == 0`). Only the markdown delegate uses it.
+    fn md_wrap_width(&self) -> Option<u16> {
+        (self.content_width > 0 && self.effective_wrap()).then_some(self.content_width)
+    }
+
+    /// Re-render the current markdown selection **without** the view-state reset [`dispatch_render`]
+    /// performs — the triggers are a content-pane resize and the `w` wrap toggle, neither of which is
+    /// a selection change, so scroll position and any active search must survive. Only rendered
+    /// markdown is re-rendered: glow's layout is tied to the wrap width we pass it (fit-to-pane vs.
+    /// natural width), so a resize-while-fit or a wrap toggle must re-run glow; every other mode is
+    /// width-independent here (diffs/code re-wrap in the Presenter alone), so this is a no-op for
+    /// them. The current content stays on screen until the new render lands (no `Rendering…`
+    /// placeholder), so a live split-drag doesn't flash; the worker collapses the backlog so only the
+    /// final state renders. [`poll`] applies the result by `seq` and, seeing it flagged in
+    /// `reflow_seq`, keeps the scroll and recomputes an active search.
+    fn rerender_markdown_reflow(&mut self) {
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        if node.kind != NodeKind::File
+            || self.effective_mode(&node.path) != ViewMode::RenderedMarkdown
+        {
+            return;
+        }
+        self.latest_seq += 1;
+        let seq = self.latest_seq;
+        self.reflow_seq = Some(seq);
+        let rel = self.rel(&node.path);
+        // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
+        // never receive a result for this seq, which is fine (nothing was cleared).
+        let _ = self.job_tx.send(RenderJob {
+            seq,
+            path: node.path,
+            rel,
+            mode: ViewMode::RenderedMarkdown,
+            baseline: self.baseline,
+            is_git: self.is_git_repo,
+            wrap_width: self.md_wrap_width(),
+        });
+    }
+
     /// Dispatch a render of the current selection to the worker thread (AC-23) — never
     /// blocking and doing **no git or rendering work on the input thread**: the worker reads
     /// the diff and delegates to the external renderer. A directory or empty selection clears
@@ -1923,6 +2028,7 @@ impl Controller {
                 mode,
                 baseline: self.baseline,
                 is_git: self.is_git_repo,
+                wrap_width: self.md_wrap_width(),
             })
             .is_ok()
         {
@@ -1955,13 +2061,28 @@ impl Controller {
         let mut applied = false;
         while let Ok((seq, result)) = self.result_rx.try_recv() {
             if seq == self.latest_seq {
+                // A width-reflow re-render (a resize, not a selection change): its content replaces
+                // the current body, but scroll and search must survive — the user did not navigate.
+                // Cleared unconditionally so a later selection-change render is never mistaken for a
+                // reflow (its seq won't match a stale value anyway, but keep the flag tight).
+                let is_reflow = self.reflow_seq == Some(seq);
+                self.reflow_seq = None;
                 self.content = result.content;
                 // Covers the placeholder→land window: a selection dragged over "Rendering…" after
                 // dispatch_render's clear must not carry its stale coordinates onto the new body.
+                // (Also dropped on a reflow: an ambient selection's line/col coords are against the
+                // pre-reflow rendered lines, so they no longer point at the same text.)
                 self.content_selection = None;
                 self.content_notices = result.notices;
                 self.content_source = result.source; // in lockstep with `content` (copy fidelity)
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
+                // A reflow keeps the user's scroll position, but the reflowed body may have a
+                // different rendered-row count (a table re-lays-out at the new width), so re-clamp
+                // the offset to the new content. A selection-change render already reset scroll to 0
+                // in dispatch_render, so this is gated to the reflow path.
+                if is_reflow {
+                    self.content_scroll = self.content_scroll.min(self.max_content_scroll());
+                }
                 // the body has landed — now switch the title to match it. The latest
                 // dispatched render always corresponds to the current tree selection (every
                 // selection change calls `dispatch_render`), so the applied result's file is the
@@ -2002,9 +2123,13 @@ impl Controller {
                 // A render that was in flight when a search was opened/committed lands here and
                 // swaps self.content; matches computed against the OLD content are now stale.
                 // Mirror dispatch_render's AC-20 clear: recompute an open Search prompt against
-                // the new content, else drop a committed search.
+                // the new content, else drop a committed search — UNLESS this was a width reflow,
+                // where a committed search must be recomputed (not dropped), so a resize does not
+                // silently clear the user's active highlighting.
                 if self.modal.prompt().map(|p| p.mode) == Some(crate::infile::PromptMode::Search) {
                     self.refresh_search();
+                } else if is_reflow {
+                    self.recompute_committed_search();
                 } else {
                     self.search = None;
                 }
