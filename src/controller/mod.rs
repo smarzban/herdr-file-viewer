@@ -964,8 +964,9 @@ impl Controller {
         &mut self,
         eff: &crate::config::EffectiveSettings,
         outcome: &crate::config::LoadOutcome,
+        config_path: &std::path::Path,
     ) {
-        self.settings_display = Some(crate::help::settings_text(eff, outcome));
+        self.settings_display = Some(crate::help::settings_text(eff, outcome, config_path));
     }
 
     /// Inject the host query channel + the viewer's own workspace id (mirrors [`set_update`]).

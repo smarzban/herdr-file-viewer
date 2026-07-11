@@ -211,14 +211,21 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
 pub fn settings_text(
     eff: &crate::config::EffectiveSettings,
     outcome: &crate::config::LoadOutcome,
+    config_path: &std::path::Path,
 ) -> String {
     let status_line = match outcome {
         crate::config::LoadOutcome::Loaded => "Config: loaded.".to_owned(),
-        crate::config::LoadOutcome::Absent => "Config: no config file — using defaults.".to_owned(),
+        crate::config::LoadOutcome::Absent => "Config: no file found, using defaults.".to_owned(),
         crate::config::LoadOutcome::Malformed(reason) => {
-            format!("Config: ignored — using defaults ({reason}).")
+            // `reason` is the toml crate's error, which is MULTI-LINE (it appends a source
+            // snippet and a `^` caret pointer). Keep only its first line so the status stays a
+            // single readable line instead of spilling the caret art across the overlay rows.
+            let summary = reason.lines().next().unwrap_or("parse error").trim();
+            format!("Config: invalid, using defaults ({summary}).")
         }
     };
+    // Always show where the file is (or would be) so the user knows what to fix or create.
+    let location_line = format!("Location: {}", config_path.display());
 
     let opt_os = |v: &Option<std::ffi::OsString>| -> String {
         v.as_ref()
@@ -233,6 +240,7 @@ pub fn settings_text(
 
     format!(
         "{status_line}\n\
+         {location_line}\n\
          editor        = {editor}\n\
          markdown      = {markdown}\n\
          diff          = {diff}\n\
@@ -633,7 +641,11 @@ mod tests {
     #[test]
     fn settings_text_lists_every_setting_row() {
         let eff = sample_eff();
-        let text = settings_text(&eff, &LoadOutcome::Loaded);
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+        );
 
         for key in [
             "editor",
@@ -674,7 +686,11 @@ mod tests {
     #[test]
     fn settings_text_loaded_outcome_reflects_success() {
         let eff = sample_eff();
-        let text = settings_text(&eff, &LoadOutcome::Loaded);
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+        );
         assert!(
             text.starts_with("Config: loaded."),
             "the Loaded outcome must be reflected on the first line:\n{text}"
@@ -685,7 +701,11 @@ mod tests {
     #[test]
     fn settings_text_malformed_outcome_shows_using_defaults_and_reason() {
         let eff = sample_eff();
-        let text = settings_text(&eff, &LoadOutcome::Malformed("bad toml".to_string()));
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Malformed("bad toml".to_string()),
+            std::path::Path::new("/cfg/config.toml"),
+        );
         assert!(
             text.contains("using defaults"),
             "AC-15: a Malformed outcome must contain a 'using defaults' indicator:\n{text}"
@@ -697,9 +717,51 @@ mod tests {
     }
 
     #[test]
+    fn settings_text_malformed_reason_is_collapsed_to_a_single_status_line() {
+        // Regression: the real toml error is MULTI-LINE (a source snippet + a `^` caret). The
+        // status line must show only its first line, not spill the caret art across the overlay.
+        let eff = sample_eff();
+        let multiline =
+            "TOML parse error at line 1, column 5\n  |\n1 | x = = [\n  |     ^\nexpected value";
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Malformed(multiline.to_string()),
+            std::path::Path::new("/cfg/config.toml"),
+        );
+        let status = text.lines().next().unwrap();
+        assert!(
+            status.contains("using defaults") && status.contains("line 1, column 5"),
+            "status keeps a one-line locator:\n{status}"
+        );
+        assert!(
+            !text.contains('^') && !text.contains("expected value"),
+            "the multi-line caret/snippet must not leak into the overlay:\n{text}"
+        );
+    }
+
+    #[test]
+    fn settings_text_shows_the_config_location() {
+        // The resolved config path is surfaced so the user knows what to fix/create.
+        let eff = sample_eff();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/home/u/.config/herdr-file-viewer/config.toml"),
+        );
+        assert!(
+            text.contains("/home/u/.config/herdr-file-viewer/config.toml"),
+            "the config-file location must be shown:\n{text}"
+        );
+    }
+
+    #[test]
     fn settings_text_absent_outcome_shows_using_defaults() {
         let eff = sample_eff();
-        let text = settings_text(&eff, &LoadOutcome::Absent);
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+        );
         assert!(
             text.contains("using defaults"),
             "an Absent outcome must also indicate defaults are in use:\n{text}"

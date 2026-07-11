@@ -104,8 +104,9 @@ pub fn run() -> io::Result<()> {
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
-    // outcome plus every effective setting, so a user can see what's actually in effect.
-    controller.set_settings_display(&eff, &load_outcome);
+    // outcome plus every effective setting, so a user can see what's actually in effect, and the
+    // resolved config-file location so they know what to fix or create.
+    controller.set_settings_display(&eff, &load_outcome, &crate::config::config_path_from_env());
     // Kick off the once-a-day update check (off the UI thread; disabled by
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
     // if any, appears on a later draw.

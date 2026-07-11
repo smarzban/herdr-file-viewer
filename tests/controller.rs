@@ -9132,7 +9132,11 @@ fn open_help_appends_settings_section_when_display_is_set() {
         hide_dotfiles: false,
         update_check: true,
     };
-    ctrl.set_settings_display(&eff, &LoadOutcome::Absent);
+    ctrl.set_settings_display(
+        &eff,
+        &LoadOutcome::Absent,
+        std::path::Path::new("/cfg/config.toml"),
+    );
 
     ctrl.handle(Intent::ShowHelp);
     let state = ctrl
