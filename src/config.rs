@@ -7,6 +7,19 @@
 
 use serde::Deserialize;
 
+/// A `[keys]` entry's value: the key(s) an intent binds to, written **either** as a single string
+/// (`refresh = "g"`) **or** as a TOML array of strings (`nav_up = ["w", "Up"]`). `#[serde(untagged)]`
+/// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
+/// `One` and an array to `Many` (order verified by `specs/keybinding-registry/probe-keyspec-untagged.txt`).
+/// Semantic validation (bindable-key check, replace-semantics, clashes) happens later in the
+/// Bindings Resolver (T-5); this type is deserialization-shape only.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum KeySpec {
+    One(String),
+    Many(Vec<String>),
+}
+
 /// The shape of the plugin's TOML config file. Every field is optional so a partial config
 /// loads only the fields it recognizes; unknown keys are ignored by default (no
 /// `deny_unknown_fields`), so a forward-looking or partially-understood config file still
@@ -21,6 +34,12 @@ pub struct Config {
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
     pub update_check: Option<bool>,
+    /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
+    /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
+    /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
+    /// table degrades the whole config to defaults via the existing `Malformed` path (AC-13), and a
+    /// non-absolute config path is never read (AC-17).
+    pub keys: Option<std::collections::BTreeMap<String, KeySpec>>,
 }
 
 /// How a config load went.
@@ -342,6 +361,64 @@ mod tests {
         let (config, _outcome) = parse_config("hide_dotfiles = true\nupdate_check = false\n");
         assert_eq!(config.hide_dotfiles, Some(true));
         assert_eq!(config.update_check, Some(false));
+    }
+
+    // --- [keys] table (T-4, AC-9, AC-13, AC-17) ---
+
+    #[test]
+    fn keys_table_parses_string_and_array_specs() {
+        // AC-9: a single string binds one key (One), a TOML array binds several (Many). Mirrors the
+        // kept probe `specs/keybinding-registry/probe-keyspec-untagged.txt`.
+        let (config, outcome) = parse_config("[keys]\nrefresh = \"g\"\nnav_up = [\"w\", \"Up\"]\n");
+        assert_eq!(outcome, LoadOutcome::Loaded);
+        let keys = config.keys.expect("[keys] table should be present");
+        assert_eq!(keys.get("refresh"), Some(&KeySpec::One("g".to_string())));
+        assert_eq!(
+            keys.get("nav_up"),
+            Some(&KeySpec::Many(vec!["w".to_string(), "Up".to_string()])),
+        );
+    }
+
+    #[test]
+    fn keys_wrong_typed_value_yields_default_and_malformed() {
+        // AC-13: an integer where a key spec is expected fails the whole parse -> defaults + Malformed.
+        let (config, outcome) = parse_config("[keys]\nrefresh = 42\n");
+        assert_eq!(config.keys, None);
+        match outcome {
+            LoadOutcome::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keys_invalid_toml_yields_default_and_malformed() {
+        // AC-13: invalid TOML in the [keys] section degrades to defaults without panicking.
+        let (config, outcome) = parse_config("[keys]\nx = = [");
+        assert_eq!(config.keys, None);
+        match outcome {
+            LoadOutcome::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cwd_relative_config_with_keys_table_is_never_read() {
+        // AC-17 (untrusted-repo posture): with none of HERDR_PLUGIN_CONFIG_DIR / XDG_CONFIG_HOME /
+        // HOME set, `config_path` yields a cwd-relative path. Even though this `read` would return a
+        // planted `[keys]` table, `load_config` must treat a non-absolute path as no config, so the
+        // planted bindings are never sourced from the (possibly untrusted) working directory.
+        let get = |_: &str| None; // no env at all -> non-absolute (cwd-relative) path
+        let read = |_: &std::path::Path| Ok("[keys]\nrefresh = \"/evil\"\n".to_string());
+        let (config, outcome) = load_config(get, read);
+        assert_eq!(
+            config.keys, None,
+            "a cwd-relative config's [keys] must be ignored"
+        );
+        assert_eq!(
+            outcome,
+            LoadOutcome::Absent,
+            "a non-absolute config path is treated as no config, not Loaded"
+        );
     }
 
     /// A `get` that resolves `HERDR_PLUGIN_CONFIG_DIR` to an **absolute** dir (the OS temp dir),
