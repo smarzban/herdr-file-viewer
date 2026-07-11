@@ -489,6 +489,11 @@ pub struct Controller {
     /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
     /// test that never calls the setter gets the pre-T-9 two-section overlay unchanged.
     settings_display: Option<String>,
+    /// The pre-formatted Keybindings section body (AC-16, AC-19, AC-20), or `None` before
+    /// [`set_keybindings_display`](Self::set_keybindings_display) is called. Injected
+    /// post-construction (mirrors [`settings_display`](Self::settings_display)) so the controller
+    /// stays hermetic in tests — a test that never calls the setter keeps its overlay unchanged.
+    keybindings_display: Option<String>,
     /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
     /// next launch while still behind.
     update_dismissed: bool,
@@ -554,6 +559,18 @@ pub struct Controller {
     /// manager). Injected post-construction via [`set_opener`](Self::set_opener) (like
     /// [`herdr`](Self::herdr)) so the controller stays hermetic in tests. `None` until then.
     opener: Option<Box<dyn crate::opener::Opener>>,
+    /// The effective key -> intent bindings the run loop decodes against (Slice B, T-6): the
+    /// keybinding registry resolved with the config's `[keys]` overrides (config > default).
+    /// Initialized to [`default_bindings`](crate::input::default_bindings) so a controller always
+    /// holds a valid map (including in tests that never wire config); `app::run` replaces it via
+    /// [`set_keybindings`](Self::set_keybindings). Read-only input, never persisted (AC-23).
+    bindings: crate::input::EffectiveBindings,
+    /// The outcome of resolving the config's `[keys]` table — every rejected entry and why — kept so
+    /// the T-7 Keybindings overlay can surface which bindings were ignored (AC-16). Empty until
+    /// [`set_keybindings`](Self::set_keybindings) forwards the resolver's outcome.
+    #[allow(dead_code)]
+    // consumed by the T-7 Keybindings overlay; exercised by this module's tests.
+    key_load_outcome: crate::input::KeyLoadOutcome,
 }
 
 impl Controller {
@@ -639,6 +656,7 @@ impl Controller {
             content_selection: None,
             update_available: None,
             settings_display: None,
+            keybindings_display: None,
             update_dismissed: false,
             update_rx: None,
             status_rx: None,
@@ -652,6 +670,10 @@ impl Controller {
             base_branch,
             current_branch,
             opener: None,
+            // Valid default bindings so the run loop can decode before (and if) `app::run` wires the
+            // config's `[keys]` overrides via `set_keybindings`; tests inherit these unchanged.
+            bindings: crate::input::default_bindings(),
+            key_load_outcome: crate::input::KeyLoadOutcome::default(),
         };
         ctrl.refresh_git_state();
         ctrl.dispatch_render();
@@ -985,6 +1007,31 @@ impl Controller {
     /// stays hermetic in tests — a test injects a fake; production injects the live opener (AC-13).
     pub fn set_opener(&mut self, opener: Box<dyn crate::opener::Opener>) {
         self.opener = Some(opener);
+    }
+
+    /// Install the effective key bindings resolved from the registry + the config's `[keys]` table,
+    /// plus the resolver's [`KeyLoadOutcome`](crate::input::KeyLoadOutcome) (Slice B, T-6). Called
+    /// once by `app::run` after construction (mirrors [`set_settings_display`](Self::set_settings_display));
+    /// a test that never calls it keeps the [`default_bindings`](crate::input::default_bindings) set
+    /// from `Controller::new`. Read-only wiring: it only stores in-memory state, never writes (AC-23).
+    pub(crate) fn set_keybindings(
+        &mut self,
+        bindings: crate::input::EffectiveBindings,
+        outcome: crate::input::KeyLoadOutcome,
+    ) {
+        self.bindings = bindings;
+        self.key_load_outcome = outcome;
+    }
+
+    /// The effective key bindings the run loop decodes each key event against (Slice B, T-6).
+    pub(crate) fn bindings(&self) -> &crate::input::EffectiveBindings {
+        &self.bindings
+    }
+
+    /// The `[keys]` resolution outcome (rejected entries), for the Keybindings overlay to
+    /// surface which bindings were ignored (AC-16).
+    pub(crate) fn key_load_outcome(&self) -> &crate::input::KeyLoadOutcome {
+        &self.key_load_outcome
     }
 
     /// Apply the startup hide-dotfiles default from config (AC-9). Called once by `app::run`
@@ -2401,6 +2448,195 @@ mod tests {
         assert!(
             HELP_RENDER_TIMEOUT <= std::time::Duration::from_millis(300),
             "HELP_RENDER_TIMEOUT ({HELP_RENDER_TIMEOUT:?}) must stay within the 300ms AC-22 budget"
+        );
+    }
+
+    // ---- T-6 Bindings Wiring (AC-16, AC-23) --------------------------------------------
+    //
+    // These exercise the wiring end-to-end: a `[keys]` remap resolved via `input::resolve_bindings`
+    // and stored through `set_keybindings` must reach the run loop's decode source
+    // (`controller.bindings()`), and the resolver's `KeyLoadOutcome` must be forwarded/stored so the
+    // T-7 Keybindings overlay can surface rejected entries. AC-23 (read-only) is reviewer-checked:
+    // the whole binding path here only *reads* the already-loaded config and builds in-memory state
+    // (`resolve_bindings` is pure; `set_keybindings` just stores) — no filesystem or git write is
+    // reached, so there is nothing for a test to assert beyond that (the empanel gate confirms it).
+
+    // `super::*` re-exports everything mod.rs has in scope, incl. the injected-component traits, the
+    // `Controller` internals, `Resolved`/`Baseline`/`Status`, and the crossterm key types + `Intent`
+    // + `BTreeMap`/`Arc` its own `use`s pulled in — so only the names mod.rs does NOT already import
+    // are added below (`KeySpec` and the `input` module path).
+    use super::*;
+    use crate::config::KeySpec;
+    use crate::input;
+
+    /// A no-op Git Service stub (`is_git_repo = false` below means it is never actually queried).
+    struct StubGit;
+    impl GitService for StubGit {
+        fn status(&self) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+        fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+        fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
+            String::new()
+        }
+    }
+
+    /// A Content Renderer stub returning empty text — the wiring tests never inspect the pane.
+    struct StubContent;
+    impl ContentProvider for StubContent {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: Text::raw(""),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+
+    struct StubEditor;
+    impl EditorHandoff for StubEditor {
+        fn open(&mut self, _file: &Path) -> EditorOutcome {
+            EditorOutcome::NoTakeover
+        }
+    }
+
+    struct StubClipboard;
+    impl Clipboard for StubClipboard {
+        fn copy(&mut self, _text: &str) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a minimal controller over an empty (non-repo) temp dir with fully stubbed components,
+    /// so the wiring tests can call `set_keybindings` / `bindings()` without a real git/renderer.
+    fn wiring_controller() -> Controller {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-kbwire-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        let resolved = Resolved {
+            repo_root: None,
+            root,
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(StubContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        Controller::new(resolved, Baseline::Head, components)
+    }
+
+    #[test]
+    fn remap_takes_effect_through_the_controller_bindings() {
+        // AC-16 end-to-end: a `[keys]` remap of `refresh` to `g`, resolved and stored on the
+        // controller, makes `g` decode to Refresh through `controller.bindings()` (the run loop's
+        // decode source) while the displaced default `r` no longer decodes — replace-semantics
+        // reached the run loop, so the run loop now decodes against config-derived bindings.
+        let mut ctrl = wiring_controller();
+        let mut keys: BTreeMap<String, KeySpec> = BTreeMap::new();
+        keys.insert("refresh".into(), KeySpec::One("g".into()));
+
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        ctrl.set_keybindings(bindings, outcome);
+
+        let g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(
+            input::decode(g, ctrl.bindings()),
+            Some(Intent::Refresh),
+            "'g' decodes to Refresh through the controller's config-derived bindings"
+        );
+        assert_eq!(
+            input::decode(r, ctrl.bindings()),
+            None,
+            "the displaced default 'r' no longer decodes to Refresh"
+        );
+    }
+
+    #[test]
+    fn rejected_entry_outcome_is_stored_on_the_controller() {
+        // AC-16 surfacing: a rejected `[keys]` entry (an unknown intent name) is forwarded through
+        // `set_keybindings` and stored, so the outcome the T-7 overlay reads is non-empty.
+        let mut ctrl = wiring_controller();
+        let mut keys: BTreeMap<String, KeySpec> = BTreeMap::new();
+        keys.insert("bogus_intent".into(), KeySpec::One("g".into()));
+
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        assert!(!outcome.is_empty(), "an unknown intent name is rejected");
+        ctrl.set_keybindings(bindings, outcome);
+
+        assert!(
+            !ctrl.key_load_outcome().is_empty(),
+            "the rejected-entry outcome is stored on the controller (AC-16 surfacing path)"
+        );
+    }
+
+    // ---- T-7 Keybindings View-Model (AC-19) --------------------------------------------
+
+    #[test]
+    fn open_help_appends_keybindings_section_only_after_set_keybindings_display() {
+        // T-7/AC-19: with the Keybindings display injected, the `?` overlay gains a "Keybindings"
+        // section (appended LAST). Without it, the overlay has no such section — so existing
+        // count/label-based overlay tests stay green for controllers that never wire it.
+        let mut ctrl = wiring_controller();
+
+        // Before injection: no Keybindings section.
+        ctrl.open_help();
+        assert!(
+            !ctrl
+                .help_state()
+                .expect("help open")
+                .section_labels()
+                .contains(&"Keybindings"),
+            "without set_keybindings_display the overlay must have no Keybindings section"
+        );
+        ctrl.close_help();
+
+        // After injection: a "Keybindings" section is present.
+        ctrl.set_keybindings_display();
+        ctrl.open_help();
+        let help = ctrl.help_state().expect("help open");
+        assert!(
+            help.section_labels().contains(&"Keybindings"),
+            "set_keybindings_display must make open_help append a Keybindings section"
+        );
+
+        // ...and its BODY carries the real registry content, not just the label: assert the wiring
+        // (set_keybindings_display -> stored field -> open_help -> section body) preserved a known
+        // action description, so a swapped-argument or wrong-text regression in the glue is caught
+        // here, not only in help.rs's isolated `keybindings_text` tests.
+        let kb = help
+            .sections
+            .iter()
+            .find(|s| s.label == "Keybindings")
+            .expect("Keybindings section present");
+        let body: String = kb
+            .body
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|sp| sp.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("Re-read git state"),
+            "the appended Keybindings section body must carry the registry descriptions, got: {body}"
         );
     }
 }

@@ -8,6 +8,90 @@
 
 const README: &str = include_str!("../README.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
+
+/// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading
+/// `#`, reads `key = ...`). Stronger than a bare substring: the key must appear as an actual
+/// (commented) assignment, not merely as a word in prose.
+fn has_commented_assignment(example: &str, key: &str) -> bool {
+    example.lines().any(|l| {
+        l.trim_start()
+            .strip_prefix('#')
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix(key))
+            .map(|after| after.trim_start().starts_with('='))
+            .unwrap_or(false)
+    })
+}
+
+#[test]
+fn config_example_documents_every_config_key() {
+    // Anti-drift: the bundled `config.example.toml` template must carry a commented-out ASSIGNMENT
+    // for every scalar config key and the `[keys]` table header, so adding a `Config` field (or
+    // demoting a key to prose only) without documenting it in the example fails the build. Keep this
+    // list in lockstep with `Config`'s fields in `src/config.rs`.
+    for key in [
+        "editor",
+        "markdown",
+        "diff",
+        "syntax",
+        "open",
+        "reveal",
+        "hide_dotfiles",
+        "update_check",
+    ] {
+        assert!(
+            has_commented_assignment(CONFIG_EXAMPLE, key),
+            "config.example.toml must carry a commented-out `{key} = ...` assignment (not just prose)"
+        );
+    }
+    assert!(
+        CONFIG_EXAMPLE.lines().any(|l| l.trim() == "#[keys]"),
+        "config.example.toml must carry the commented-out `[keys]` table header"
+    );
+    // The renderer stdin contract is the load-bearing correctness note (a custom renderer must read
+    // stdin, e.g. glow/bat need a trailing `-`); pin that it is documented.
+    assert!(
+        CONFIG_EXAMPLE.contains("stdin"),
+        "config.example.toml must document that renderers receive content on stdin"
+    );
+    // It must tell users to rename the copy to config.toml.
+    assert!(
+        CONFIG_EXAMPLE.contains("config.toml") && CONFIG_EXAMPLE.to_lowercase().contains("rename"),
+        "config.example.toml must tell users to rename it to config.toml"
+    );
+    // Every setting line is commented out, so copying the file verbatim changes nothing: there must
+    // be no active (uncommented) TOML assignment or table header.
+    for (n, line) in CONFIG_EXAMPLE.lines().enumerate() {
+        let t = line.trim_start();
+        let active = !t.is_empty() && !t.starts_with('#');
+        assert!(
+            !active,
+            "config.example.toml line {} must be commented out (got: {line:?})",
+            n + 1
+        );
+    }
+}
+
+#[test]
+fn readme_points_to_the_config_example_template() {
+    // The README's Configuration section must point users at the bundled template.
+    let start = README
+        .find("## Configuration")
+        .expect("README.md must carry a `## Configuration` section");
+    let rest = &README[start..];
+    let end = rest[1..].find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
+    let section = &rest[..end];
+    assert!(
+        section.contains("config.example.toml"),
+        "README `## Configuration` section must point users at config.example.toml"
+    );
+    // ...and carry the actual instructions, not just the file name: rename to config.toml.
+    assert!(
+        section.contains("config.toml") && section.to_lowercase().contains("rename"),
+        "README `## Configuration` section must tell users to rename the copy to config.toml"
+    );
+}
 
 #[test]
 fn readme_documents_line_select_key() {
@@ -91,6 +175,47 @@ fn readme_documents_config_file() {
             "README `## Configuration` section must document the `{key}` key"
         );
     }
+}
+
+#[test]
+fn readme_documents_keys_remapping() {
+    // AC-22: the README `## Configuration` section must document the `[keys]` remapping surface --
+    // that a binding is written `intent_name = <key spec>` (a string AND an array example), that
+    // only modifier-free keys are bindable (no Ctrl/Alt), and that a `[keys]` value replaces the
+    // action's default keys. Scope every assertion to the `## Configuration` section (heading to
+    // the next `## ` heading), the same way `readme_documents_config_file` does, so a mention
+    // elsewhere in the README cannot satisfy the check.
+    let start = README
+        .find("## Configuration")
+        .expect("README.md must carry a `## Configuration` section");
+    let rest = &README[start + "## Configuration".len()..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    let section = &rest[..end];
+
+    assert!(
+        section.contains("[keys]"),
+        "README `## Configuration` section must name the `[keys]` remapping table"
+    );
+    // The `intent_name = <key spec>` form, shown by example in BOTH the string and the array shape.
+    assert!(
+        section.contains("refresh = \"g\""),
+        "README `## Configuration` section must show a single-string key spec (refresh = \"g\")"
+    );
+    assert!(
+        section.contains("nav_up = [\"w\", \"Up\"]"),
+        "README `## Configuration` section must show an array key spec (nav_up = [\"w\", \"Up\"])"
+    );
+    // Only modifier-free keys are bindable: no Ctrl / Alt chords.
+    assert!(
+        section.contains("Ctrl") && section.contains("Alt"),
+        "README `## Configuration` section must state that Ctrl/Alt chords are not bindable"
+    );
+    // Precedence: a `[keys]` value replaces/overrides the action's default keys.
+    let lower = section.to_lowercase();
+    assert!(
+        lower.contains("replace"),
+        "README `## Configuration` section must state a `[keys]` value replaces the default keys"
+    );
 }
 
 #[test]

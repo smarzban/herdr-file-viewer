@@ -64,6 +64,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
   changelog entries, rendered as markdown) and About (version, repo, license, and update status).
   Keyboard and mouse; `Esc` or `q` closes it. A `? help` hint rides the content pane's bottom
   border so the overlay is discoverable without already knowing the key.
+- **Make the keys yours**: remap any global key with a `[keys]` table in the
+  [config file](#configuration), keyed by intent name (a single key or a list); the `?` overlay's
+  **Keybindings** section is a live reference of every action's effective keys. `Esc` always
+  closes, so a remap can never lock you out.
 - **Git woven in**: per-file status markers (`M`/`A`/`D`/`?`), and a `●` on a directory that
   contains any change; **colored** so changes read at a glance (changed files and dirty folders
   are red, new files green), with the glyph as a non-color cue so it survives a colorblind palette
@@ -181,6 +185,9 @@ PowerShell launcher scripts.
 | `?` (Shift+`/`) | Open the **help overlay**: What's New (latest changelog, rendered markdown) + About (version, repo, license, update status); `Esc` / `q` closes it |
 | `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
+
+These are the **default** keys. Remap any of them with a `[keys]` table in the
+[config file](#configuration) (see [Keybindings](#keybindings) below).
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
@@ -305,6 +312,11 @@ couple of startup toggles. **Read-only input** — the viewer never writes this 
 your own editor and relaunch to pick up changes (there is no in-app settings editor). You can see
 what's currently in effect any time in the `?` help overlay's **Settings** section.
 
+**Quick start:** a fully-commented [`config.example.toml`](config.example.toml) ships in the plugin
+folder documenting every setting. Copy it to the config path below, **rename it to `config.toml`**,
+uncomment the lines you want, and relaunch — copying it as-is changes nothing (every line is
+commented out).
+
 **File location:** when run under herdr, the config lives at
 `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — herdr provides that directory (on Linux it resolves to
 `~/.config/herdr/plugins/config/herdr-file-viewer/config.toml`). Run standalone (outside herdr),
@@ -323,9 +335,9 @@ default` chain. Every other key (`markdown`, `diff`, `syntax`, `open`, `reveal`,
 
 editor = "code --wait"      # command to open a file with `e` (overrides $EDITOR)
 
-markdown = "glow -s dark"   # override the markdown / diff / syntax renderer commands
-diff = "delta"              # (default: glow / delta / bat)
-syntax = "bat"
+markdown = "glow -s dark -w 0 -"   # override the markdown / diff / syntax renderers
+diff = "delta"                     # (defaults: glow / delta / bat)
+syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
 
 open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-manager commands
 reveal = "nautilus"
@@ -336,13 +348,53 @@ update_check = true         # false to disable the once-a-day update check
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into
 arguments** the way a shell would for simple cases — whitespace splits, double-quotes group a
-path with spaces — but **no shell is invoked**.
+path with spaces — but **no shell is invoked**. `editor` / `open` / `reveal` get the target
+**path** appended as the final argument; the **renderers** (`markdown` / `diff` / `syntax`)
+instead get the file **content on stdin** and your value **replaces** the whole default command
+(flags aren't merged), so a custom renderer must read stdin (glow and bat need a trailing `-`)
+and set its own flags — the token `{name}` is substituted with the file name.
 
 **Known limitation:** the full-file-diff view derives its line-numbered gutter from the `diff`
 command by appending delta's `--line-numbers` flag; if you point `diff` at a tool that rejects
 that flag (nonzero exit or spawn failure), the full-file-diff view falls all the way back to
 plain, unrendered diff text (with a notice), not just a missing gutter. Renderer timeouts and
 other limits aren't configurable.
+
+### Keybindings
+
+A `[keys]` table remaps the viewer's global keys, keyed by **intent name** (the stable snake_case
+id of an action, e.g. `refresh`, `nav_up`, `switch_worktree`). Each value is a **key spec**: a
+single string, or an array of strings, naming the key(s) that action should answer to. An entry
+**replaces** that action's default key set, so list every key you want it to keep.
+
+```toml
+[keys]
+refresh = "g"               # a single key: `g` refreshes, and the default `r` no longer does
+nav_up = ["w", "Up"]        # an array: bind several keys at once (the default `k` is dropped)
+switch_worktree = "F2"      # a named key
+```
+
+**Bindable keys** are the modifier-free surface the viewer already uses: any printable or shifted
+character (`g`, `<`, `?`, and capitals such as `W` are each their own key), plus the named keys
+`Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Backspace`,
+`Delete`, `Insert`, and `F1` through `F12` (named keys are matched case-insensitively). There are
+**no `Ctrl` / `Alt` chords**: a chord never fires a viewer action, so terminal combinations like
+`Ctrl+C` always pass straight through.
+
+**Precedence is `config > default`:** a `[keys]` value replaces the action's built-in keys, and any
+action you don't list keeps its defaults. The load is defensive and never crashes the viewer: an
+unknown intent name, an unbindable key, or two actions claiming the same key is ignored for those
+entries only (their defaults are kept). Invalid TOML in the config (a syntax error, or a wrong-typed
+value such as `refresh = 42`) is the same whole-file fallback the rest of the config uses: the viewer
+ignores the entire file and falls back to built-in defaults, and the `?` overlay flags that the
+config was malformed. Whatever you configure, **`Esc` always closes** the viewer: that floor cannot be rebound away, so
+you can never strand yourself (you may still move the `q` Close key or any other action). Only the
+global keys are remappable; keys handled inside a modal (the finder query, the `:` / `/` prompt,
+line-select mode) keep their own keys.
+
+See your bindings in effect any time in the `?` help overlay's new **Keybindings** section. It
+groups the actions into sections and shows, for each, its config-var name (the `[keys]` id you type
+to remap it), its effective key(s), and its description, marking the ones you have customized.
 
 ## Documentation
 
@@ -356,7 +408,7 @@ other limits aren't configurable.
 
 A few things on the way:
 
-- **Keymaps, themes, and layout** — the [config file](#configuration) already covers the editor, renderer, and opener commands plus a couple of startup toggles; customizable keybindings, a theme, and the default split/layout are still on the way.
+- **Themes and layout**: the [config file](#configuration) already covers the editor, renderer, and opener commands, a couple of startup toggles, and now [customizable keybindings](#keybindings); a theme and the default split/layout are still on the way.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues). Bug reports and feature requests are very welcome.
 

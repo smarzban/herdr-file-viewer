@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Customizable keybindings: remap any global key with a `[keys]` table in `config.toml`.** A new
+  `[keys]` section keyed by intent name (`refresh`, `nav_up`, `switch_worktree`, and the rest) lets
+  you replace an action's default key(s) with your own, written as a single string (`refresh = "g"`)
+  or an array (`nav_up = ["w", "Up"]`). Only modifier-free keys are bindable: printable and shifted
+  characters, plus named keys like `Tab` / `Enter` / the arrows / `F1`..`F12`; there are no
+  `Ctrl` / `Alt` chords, so terminal combinations still pass through. A `[keys]` value overrides the
+  built-in default (`config > default`); a malformed, unknown, or duplicate entry is ignored (its
+  default kept) and never crashes, and `Esc` always closes the viewer, so a remap can never lock you
+  out. The `?` help overlay gained a display-only **Keybindings** section that groups the actions
+  into sections and, for each, shows its config-var name (the `[keys]` id you type to remap it), its
+  effective key(s), and its description, marking the ones you customized. Under the hood every
+  binding now derives from one in-code registry, so the dispatcher, the overlay, and the README
+  `## Keys` table can no longer drift apart.
 - **Config file — customize the editor, renderers, openers, and a couple of startup toggles.**
   An optional read-only TOML config at `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (herdr-provided) or
   `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml` (standalone fallback) now lets you override the
@@ -16,7 +29,9 @@ All notable changes to this project are documented here. The format is based on
   default (`config > env > default`); a missing or malformed file safely falls back to defaults.
   The viewer never writes the file — it's read-only input, picked up on relaunch. The `?` help
   overlay gained a third **Settings** section showing the currently effective values and whether
-  the config loaded, was absent, or was malformed — display-only, not an in-app editor.
+  the config loaded, was absent, or was malformed — display-only, not an in-app editor. A
+  fully-commented **`config.example.toml`** ships in the plugin folder documenting every setting
+  (all lines commented out); copy it to your config dir, rename it to `config.toml`, and edit.
 - **`Z` (Shift+`z`) toggles a file full-screen.** The first press opens the selected file like
   `Enter` and zooms the viewer's herdr pane to fill the whole terminal, so the file takes over the
   entire screen instead of just the split; press `Z` again (or `Esc`/`q`, or `z`) to return to the

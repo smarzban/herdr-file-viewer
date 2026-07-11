@@ -107,6 +107,21 @@ pub fn run() -> io::Result<()> {
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.
     controller.set_settings_display(&eff, &load_outcome, &crate::config::config_path_from_env());
+    // Resolve the effective key bindings from the registry + the config's `[keys]` table (Slice B,
+    // T-6): `config > default`, defensively (a rejected entry reverts to its default key set). This
+    // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
+    // state, never touching the filesystem or git. The run loop's key arm below decodes against
+    // these instead of the hardwired default map; the `KeyLoadOutcome` is stored for the T-7
+    // Keybindings overlay to surface any ignored entries (AC-16). Consuming both here avoids an
+    // unused-variable warning.
+    let (bindings, key_outcome) =
+        crate::input::resolve_bindings(crate::input::registry(), cfg.keys.as_ref());
+    controller.set_keybindings(bindings, key_outcome);
+    // Format the Keybindings section body for the `?` overlay (AC-16, AC-19, AC-20): reads the
+    // effective bindings + load outcome just stored above, so the live overlay ships a "Keybindings"
+    // tab listing every action's effective key(s), marking custom bindings, and surfacing any
+    // ignored `[keys]` entries. Pure/read-only (AC-23).
+    controller.set_keybindings_display();
     // Kick off the once-a-day update check (off the UI thread; disabled by
     // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
     // if any, appears on a later draw.
@@ -246,7 +261,7 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
-                        && let Some(intent) = input::map_key(key) =>
+                        && let Some(intent) = input::decode(key, controller.bindings()) =>
                 {
                     let fx = controller.handle(intent);
                     if fx.clear {

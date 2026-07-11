@@ -94,6 +94,19 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   into argv by the same quote-aware tokenizer used for `$EDITOR`; no shell is invoked.
 - **Settings section**: the display-only section of the help overlay that lists the
   **effective setting**s; it shows configuration, it does not edit it.
+- **keybinding registry**: the single data-driven table binding each global viewer action
+  to its default key(s) and a human description; the source of truth the input dispatcher
+  decodes from and the help overlay and README both derive from.
+- **intent name**: the stable snake_case identifier of a global action, used as the key of
+  a `[keys]` **config file** entry (e.g. `refresh`, `nav_up`).
+- **key spec**: the string, or array of strings, a user writes to name the key(s) an action
+  binds to (e.g. `"g"`, `["w", "Up"]`); limited to the modifier-free key surface (no
+  `Ctrl`/`Alt`).
+- **custom binding**: an **effective setting** style binding that came from a user's
+  `[keys]` entry rather than the default **keybinding registry**; marked as such in the
+  **Keybindings section**.
+- **Keybindings section**: the display-only section of the help overlay listing every
+  action with its effective key(s) and description (a sibling of the **Settings section**).
 
 ## herdr terms (host platform)
 

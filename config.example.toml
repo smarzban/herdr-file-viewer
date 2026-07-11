@@ -1,0 +1,97 @@
+# herdr-file-viewer example configuration
+# =============================================================================
+#
+# HOW TO USE THIS FILE
+#
+#   1. Copy it into your config directory and RENAME it to `config.toml`:
+#
+#        Under herdr (herdr provides the directory as $HERDR_PLUGIN_CONFIG_DIR):
+#          ~/.config/herdr/plugins/config/herdr-file-viewer/config.toml
+#
+#        Standalone, outside herdr:
+#          ~/.config/herdr-file-viewer/config.toml
+#          (or $XDG_CONFIG_HOME/herdr-file-viewer/config.toml when that is set)
+#
+#   2. Uncomment and edit the lines you want, then relaunch the viewer.
+#
+# Every setting below is COMMENTED OUT, so copying this file as-is changes nothing.
+# Uncomment and edit a line to change that setting; leave a key unset to keep its
+# built-in default. The viewer never writes this file: it is read-only input,
+# picked up on relaunch (there is no in-app settings editor). See what is currently
+# in effect any time in the `?` help overlay's Settings and Keybindings tabs.
+#
+# Precedence: a config key always wins. Two keys also fall back to an environment
+# variable before the built-in default (`editor` -> $EDITOR, `update_check` ->
+# $HERDR_FILE_VIEWER_NO_UPDATE_CHECK); every other key is config-or-default only.
+# A missing file is the normal case. A malformed file (bad TOML or a wrong-typed
+# value) is ignored whole and every key falls back to its default, flagged in the
+# Settings tab.
+
+# --- External programs -------------------------------------------------------
+#
+# All command values are split into arguments the way a shell would for simple
+# cases (whitespace splits; double-quotes group a path that contains spaces), but
+# NO shell is invoked. Two different I/O contracts apply:
+#
+#   * editor / open / reveal receive the target PATH appended as the final
+#     argument (for `reveal`, the containing folder).
+#   * markdown / diff / syntax receive the file CONTENT piped on standard input
+#     (never as a path argument). A value you set REPLACES the whole default
+#     command -- flags are NOT merged in -- so your command must read stdin (glow
+#     and bat need a trailing `-`) and set its own color/format flags. The token
+#     `{name}` is substituted with the file name (bat uses it to pick the syntax).
+
+# Editor launched by the `e` key. Precedence: this key > $EDITOR > a platform
+# default. Example:
+#editor = "code --wait"
+
+# Content-pane renderers. Defaults: glow (markdown), delta (diff), bat (syntax);
+# if one is not installed the pane falls back to plain text with a notice. These
+# examples are working commands equivalent to the defaults (note the stdin `-`);
+# edit them, or leave a key unset to keep the bundled default.
+#markdown = "glow -s dark -w 0 -"
+#diff = "delta"
+#syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
+
+# OS hand-off commands: `O` opens the selected entry with an application, `R`
+# reveals it in a file manager. Defaults are the per-OS system openers
+# (e.g. xdg-open on Linux, `open` on macOS, explorer on Windows).
+#open = "xdg-open"
+#reveal = "nautilus"
+
+# --- Startup toggles ---------------------------------------------------------
+
+# Hide dot-prefixed (hidden) files and folders at startup. The `.` key still
+# toggles this at runtime. Default:
+#hide_dotfiles = false
+
+# Once-a-day check for a newer release. Set false to disable (or set the
+# $HERDR_FILE_VIEWER_NO_UPDATE_CHECK environment variable). Default:
+#update_check = true
+
+# --- Keybindings -------------------------------------------------------------
+#
+# Remap any global key. Key each entry by its INTENT NAME: the stable snake_case
+# id of an action, shown next to every action in the `?` help overlay's
+# Keybindings tab (e.g. refresh, nav_up, switch_worktree). A value is a KEY SPEC:
+# a single string, or an array of strings. An entry REPLACES that action's
+# default key(s), so list every key you want it to answer to.
+#
+# Bindable keys: any single printable or shifted character (`g`, `<`, `?`, and
+# capitals such as `W` are each their own key), plus the named keys Tab, Enter,
+# Esc, the four arrows, Home, End, PageUp, PageDown, Space, Backspace, Delete,
+# Insert, and F1 through F12 (named keys are case-insensitive). There are NO
+# Ctrl / Alt chords: a chord never fires an action, so combinations like Ctrl+C
+# always pass straight through the terminal.
+#
+# Safety: `Esc` always closes the viewer and cannot be rebound away, so a remap
+# can never lock you out. An unknown intent name, an unbindable key, or two
+# actions claiming the same key is ignored for those entries only (their defaults
+# are kept) and surfaced in the Keybindings tab. Only global keys are remappable;
+# keys handled inside a modal (the finder query, the `:` / `/` prompt, line-select
+# mode) keep their own keys.
+#
+#[keys]
+#refresh = "g"              # `g` refreshes; the default `r` no longer does
+#nav_up = ["w", "Up"]       # bind several keys at once (the default `k` is dropped)
+#switch_worktree = "F2"     # a named key
