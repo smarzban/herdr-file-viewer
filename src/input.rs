@@ -5,6 +5,7 @@
 //! terminal interrupt) never trips an intent. No key yields an editing action — the closed
 //! [`Intent`] set has none (AC-N3).
 
+use crate::config::KeySpec;
 use crate::intent::Intent;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::{HashMap, HashSet};
@@ -20,9 +21,11 @@ use std::sync::OnceLock;
 pub(crate) struct EffectiveBindings {
     /// Which [`Intent`] each logical key decodes to.
     map: HashMap<KeyCode, Intent>,
-    /// Intents whose effective key set came from user config; empty under the defaults. Read only
-    /// via [`EffectiveBindings::is_customized`]; populated by the T-5 resolver / T-7 overlay.
+    /// Intents whose effective key set came from a user `[keys]` entry; empty under the defaults.
+    /// Populated by [`resolve_bindings`]; read via [`EffectiveBindings::is_customized`] (wired into
+    /// the T-7 Keybindings overlay, exercised by this module's resolver tests).
     #[allow(dead_code)]
+    // read only in is_customized (test + T-7 overlay), not yet on the hot path.
     customized: HashSet<Intent>,
 }
 
@@ -33,7 +36,7 @@ impl EffectiveBindings {
     }
 
     /// Whether `intent`'s effective key set came from user config (a custom binding).
-    #[allow(dead_code)] // consumed by the T-5 resolver / T-7 Keybindings overlay.
+    #[allow(dead_code)] // read by the T-7 Keybindings overlay; exercised by the resolver tests.
     pub(crate) fn is_customized(&self, intent: Intent) -> bool {
         self.customized.contains(&intent)
     }
@@ -42,19 +45,13 @@ impl EffectiveBindings {
 /// Fold the [`REGISTRY`] into the default [`EffectiveBindings`]: every default key of every row
 /// decodes to that row's intent, with no key customized.
 ///
-/// Pure — no config, env, or I/O (AC-24). Because the registry's default keys are collision-free
-/// (test-enforced, AC-3), the resulting map reproduces today's `map_key` bindings verbatim (AC-1).
+/// Pure — no config, env, or I/O (AC-24). Delegates to [`resolve_bindings`] with **no** `[keys]`
+/// config so the default and configured paths share one code path (the resolver with an empty
+/// override is the identity over the registry). Because the registry's default keys are
+/// collision-free (test-enforced, AC-3), the resulting map reproduces today's `map_key` bindings
+/// verbatim (AC-1).
 pub(crate) fn default_bindings() -> EffectiveBindings {
-    let mut map = HashMap::new();
-    for binding in registry() {
-        for &code in binding.default_keys {
-            map.insert(code, binding.intent);
-        }
-    }
-    EffectiveBindings {
-        map,
-        customized: HashSet::new(),
-    }
+    resolve_bindings(registry(), None).0
 }
 
 /// Decode a key event into an [`Intent`] against a set of effective bindings, or `None` if the
@@ -97,9 +94,8 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
 pub(crate) struct Binding {
     /// The global action this row binds. Consumed by [`default_bindings`].
     pub intent: Intent,
-    /// The stable snake_case identifier, used as the `[keys]` config key (e.g. `nav_up`).
-    #[allow(dead_code)]
-    // public `[keys]` config key; wired into the resolver/overlay in T-5/T-7.
+    /// The stable snake_case identifier, used as the `[keys]` config key (e.g. `nav_up`) and the
+    /// name [`resolve_bindings`] matches a config entry against.
     pub name: &'static str,
     /// The default key(s) that decode to `intent` absent any user config. Non-empty. Consumed by
     /// [`default_bindings`].
@@ -336,7 +332,6 @@ pub(crate) fn registry() -> &'static [Binding] {
 ///   expressible (NC-1).
 ///
 /// Pure, total, and never panics (AC-24).
-#[allow(dead_code)] // consumed by the T-5 Bindings Resolver.
 pub(crate) fn parse_key_spec(s: &str) -> Option<KeyCode> {
     // A token of exactly one Unicode character is that character key, case-sensitive.
     if s.chars().count() == 1 {
@@ -367,6 +362,227 @@ pub(crate) fn parse_key_spec(s: &str) -> Option<KeyCode> {
             (1..=12).contains(&n).then_some(KeyCode::F(n))
         }
     }
+}
+
+/// Why a `[keys]` entry was rejected during binding resolution. Renders to a short human string
+/// (via [`std::fmt::Display`]) so the T-7 Keybindings help section can surface which bindings were
+/// ignored rather than dropping them silently (AC-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // variants/payloads read by the T-7 overlay; exercised in this module's tests.
+pub(crate) enum RejectReason {
+    /// The entry's key is not a recognized registry [intent name](Binding::name) (AC-14).
+    UnknownIntent,
+    /// The spec named a non-[bindable key](parse_key_spec), or named no key at all (AC-12); carries
+    /// the offending token, or the sentinel `"empty"` when the spec listed nothing.
+    BadKeySpec(String),
+    /// The entry shares a key with another valid entry — a duplicate-key clash (AC-15); carries the
+    /// rendered key label.
+    DuplicateKey(String),
+}
+
+impl std::fmt::Display for RejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RejectReason::UnknownIntent => write!(f, "unknown intent name"),
+            RejectReason::BadKeySpec(token) => write!(f, "unbindable key \"{token}\""),
+            RejectReason::DuplicateKey(key) => write!(f, "duplicate key \"{key}\""),
+        }
+    }
+}
+
+/// One rejected `[keys]` entry: the intent name the user wrote and why it was dropped. Recorded so
+/// T-7 can tell the user which bindings were ignored (the surfacing path, AC-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // fields read by the T-6 wiring / T-7 overlay; exercised in this module's tests.
+pub(crate) struct RejectedBinding {
+    /// The `[keys]` config key (intent name) as the user wrote it.
+    pub name: String,
+    /// Why this entry was rejected and reverted to its default key set.
+    pub reason: RejectReason,
+}
+
+/// The outcome of resolving a user's `[keys]` config: the entries that were rejected (each reverting
+/// to its default key set). Empty when every entry was valid, or when the config had no `[keys]`
+/// table. The resolved bindings themselves ride the sibling [`EffectiveBindings`]; this records only
+/// what was dropped, for the surfacing path (AC-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by the T-6 wiring / T-7 overlay; exercised in this module's tests.
+pub(crate) struct KeyLoadOutcome {
+    pub rejected: Vec<RejectedBinding>,
+}
+
+impl KeyLoadOutcome {
+    /// Whether every `[keys]` entry resolved cleanly (no rejected entries).
+    #[allow(dead_code)] // consumed by the T-6 wiring / T-7 overlay; used in this module's tests.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rejected.is_empty()
+    }
+}
+
+/// Render a logical [`KeyCode`] to a short human label (for a rejection reason, and later the
+/// Keybindings section). Mirrors the [`parse_key_spec`] surface in reverse.
+fn key_label(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PageUp".to_string(),
+        KeyCode::PageDown => "PageDown".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Insert => "Insert".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Resolve a user's `[keys]` config against the [registry](REGISTRY) into the effective
+/// key -> intent map plus a [`KeyLoadOutcome`] recording every rejected entry.
+///
+/// Pure, total, never panics (AC-24): a function of (registry + parsed `[keys]`) only, reading no
+/// env, filesystem, or global state and spawning no process. Resolution is deterministic and
+/// defensive, in exactly this order:
+///
+/// 1. An entry whose key is not a registry [name](Binding::name) is rejected
+///    ([`RejectReason::UnknownIntent`], AC-14).
+/// 2. An entry whose spec names a non-[bindable key](parse_key_spec) is rejected **whole**
+///    ([`RejectReason::BadKeySpec`], AC-12); a key repeated within one spec collapses to one, and a
+///    spec that lists no key at all is likewise rejected so no listed intent ends up keyless.
+/// 3. Two surviving entries that claim the same key are a duplicate-key clash: **both** are rejected
+///    ([`RejectReason::DuplicateKey`], AC-15) and revert to their defaults.
+/// 4. Surviving valid entries' keys are assigned first (replace-semantics: an un-relisted default
+///    stops decoding, AC-7; an explicit key beats another intent's default, AC-10). Each intent with
+///    no valid entry then keeps its default keys except those an explicit binding already claimed
+///    (AC-8). Finally `Esc -> Close` is forced unconditionally — the no-lockout floor, which wins
+///    over any explicit `Esc` claim (AC-18).
+///
+/// An intent set by a valid entry is marked customized (AC-20). With `keys = None`/empty the result
+/// is exactly [`default_bindings`] (AC-1, AC-6, AC-8).
+pub(crate) fn resolve_bindings(
+    registry: &[Binding],
+    keys: Option<&std::collections::BTreeMap<String, KeySpec>>,
+) -> (EffectiveBindings, KeyLoadOutcome) {
+    // 1. name -> &Binding lookup.
+    let lookup: HashMap<&str, &Binding> = registry.iter().map(|b| (b.name, b)).collect();
+
+    let mut rejected: Vec<RejectedBinding> = Vec::new();
+    // Candidate valid entries: (intent, config name, deduped key set), in the config's order.
+    let mut candidates: Vec<(Intent, String, Vec<KeyCode>)> = Vec::new();
+
+    // 2. Parse & validate each config entry, in the map's deterministic (BTreeMap) order.
+    if let Some(keys) = keys {
+        for (name, spec) in keys {
+            let Some(binding) = lookup.get(name.as_str()).copied() else {
+                rejected.push(RejectedBinding {
+                    name: name.clone(),
+                    reason: RejectReason::UnknownIntent,
+                });
+                continue;
+            };
+            let raw: &[String] = match spec {
+                KeySpec::One(s) => std::slice::from_ref(s),
+                KeySpec::Many(v) => v.as_slice(),
+            };
+            // Parse every token; any single failure rejects the whole entry. Dedupe within the spec.
+            let mut codes: Vec<KeyCode> = Vec::new();
+            let mut bad: Option<String> = None;
+            for token in raw {
+                match parse_key_spec(token) {
+                    Some(code) if !codes.contains(&code) => codes.push(code),
+                    Some(_) => {} // key listed twice in one spec — harmless, keep it once.
+                    None => {
+                        bad = Some(token.clone());
+                        break;
+                    }
+                }
+            }
+            if let Some(token) = bad {
+                rejected.push(RejectedBinding {
+                    name: name.clone(),
+                    reason: RejectReason::BadKeySpec(token),
+                });
+                continue;
+            }
+            if codes.is_empty() {
+                // e.g. `nav_up = []`: an entry that lists no key would strand its intent keyless.
+                rejected.push(RejectedBinding {
+                    name: name.clone(),
+                    reason: RejectReason::BadKeySpec("empty".to_string()),
+                });
+                continue;
+            }
+            candidates.push((binding.intent, name.clone(), codes));
+        }
+    }
+
+    // 3. Duplicate-key clash: any key claimed by two DIFFERENT candidate entries rejects all of them.
+    let mut claims: HashMap<KeyCode, Vec<usize>> = HashMap::new();
+    for (i, (_, _, codes)) in candidates.iter().enumerate() {
+        for &code in codes {
+            claims.entry(code).or_default().push(i);
+        }
+    }
+    let clashed: HashSet<usize> = claims
+        .values()
+        .filter(|owners| owners.len() > 1)
+        .flatten()
+        .copied()
+        .collect();
+
+    let mut valid: Vec<(Intent, Vec<KeyCode>)> = Vec::new();
+    for (i, (intent, name, codes)) in candidates.into_iter().enumerate() {
+        if clashed.contains(&i) {
+            // Report the first key of this entry that participates in a clash (deterministic).
+            let key = codes
+                .iter()
+                .copied()
+                .find(|c| claims.get(c).is_some_and(|owners| owners.len() > 1))
+                .unwrap_or(codes[0]);
+            rejected.push(RejectedBinding {
+                name,
+                reason: RejectReason::DuplicateKey(key_label(key)),
+            });
+        } else {
+            valid.push((intent, codes));
+        }
+    }
+
+    // 4. Build the effective map + customized set.
+    let mut map: HashMap<KeyCode, Intent> = HashMap::new();
+    let mut customized: HashSet<Intent> = HashSet::new();
+    // 4a. Explicit (valid) entries first, so an explicit key beats a colliding default (AC-10).
+    for (intent, codes) in &valid {
+        for &code in codes {
+            map.insert(code, *intent);
+        }
+        customized.insert(*intent);
+    }
+    // 4b. Defaults for every intent NOT set by a valid entry, skipping keys already claimed (AC-8);
+    //     an overridden intent's defaults are dropped entirely (replace-semantics, AC-7).
+    for binding in registry {
+        if customized.contains(&binding.intent) {
+            continue;
+        }
+        for &code in binding.default_keys {
+            map.entry(code).or_insert(binding.intent);
+        }
+    }
+    // 4c. Esc floor — last and unconditional: Esc always closes, even if `close` was remapped away
+    //     or another entry claimed Esc (AC-18).
+    map.insert(KeyCode::Esc, Intent::Close);
+
+    (
+        EffectiveBindings { map, customized },
+        KeyLoadOutcome { rejected },
+    )
 }
 
 #[cfg(test)]
@@ -872,5 +1088,175 @@ mod tests {
         for key in cases {
             assert_eq!(decode(key, &bindings), map_key(key), "{key:?}");
         }
+    }
+
+    // --- T-5 Bindings Resolver (AC-6, AC-7, AC-8, AC-10, AC-14, AC-15, AC-18, AC-20) ---
+
+    use crate::config::KeySpec;
+    use std::collections::BTreeMap;
+
+    /// A single-key `[keys]` spec.
+    fn one(s: &str) -> KeySpec {
+        KeySpec::One(s.to_string())
+    }
+
+    /// A multi-key `[keys]` spec.
+    fn many(v: &[&str]) -> KeySpec {
+        KeySpec::Many(v.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Resolve the registry against a `[keys]` table built from `(name, spec)` pairs.
+    fn resolve_with(pairs: &[(&str, KeySpec)]) -> (EffectiveBindings, KeyLoadOutcome) {
+        let map: BTreeMap<String, KeySpec> = pairs
+            .iter()
+            .map(|(n, s)| (n.to_string(), s.clone()))
+            .collect();
+        resolve_bindings(registry(), Some(&map))
+    }
+
+    /// Decode a bare key (no modifier) against resolved bindings.
+    fn dec(b: &EffectiveBindings, code: KeyCode) -> Option<Intent> {
+        decode(KeyEvent::new(code, KeyModifiers::NONE), b)
+    }
+
+    #[test]
+    fn resolve_valid_entry_rebinds_key_ac6() {
+        // AC-6: a valid entry makes exactly the key its spec names decode to that action.
+        let (b, out) = resolve_with(&[("refresh", one("g"))]);
+        assert!(out.is_empty(), "a valid entry produces no rejects");
+        assert_eq!(dec(&b, KeyCode::Char('g')), Some(Intent::Refresh));
+    }
+
+    #[test]
+    fn resolve_replaces_default_key_ac7() {
+        // AC-7: replace-semantics — a default the spec does not re-list stops decoding.
+        let (b, _) = resolve_with(&[("refresh", one("g"))]);
+        assert_eq!(dec(&b, KeyCode::Char('g')), Some(Intent::Refresh));
+        assert_eq!(
+            dec(&b, KeyCode::Char('r')),
+            None,
+            "the displaced default 'r' no longer decodes to Refresh"
+        );
+    }
+
+    #[test]
+    fn resolve_unlisted_intent_keeps_defaults_ac8() {
+        // AC-8: an intent with no `[keys]` entry keeps its full default key set.
+        let (b, _) = resolve_with(&[("refresh", one("g"))]);
+        assert_eq!(dec(&b, KeyCode::Char('j')), Some(Intent::NavDown));
+        assert_eq!(dec(&b, KeyCode::Down), Some(Intent::NavDown));
+    }
+
+    #[test]
+    fn resolve_array_spec_binds_all_and_replaces_ac9_ac7() {
+        // AC-9 + replace-semantics: an array binds every listed key; the un-relisted default drops.
+        let (b, out) = resolve_with(&[("nav_up", many(&["w", "Up"]))]);
+        assert!(out.is_empty());
+        assert_eq!(dec(&b, KeyCode::Char('w')), Some(Intent::NavUp));
+        assert_eq!(dec(&b, KeyCode::Up), Some(Intent::NavUp));
+        assert_eq!(
+            dec(&b, KeyCode::Char('k')),
+            None,
+            "nav_up's default 'k' is not re-listed, so it drops"
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_beats_default_ac10() {
+        // AC-10: binding refresh to 'j' (nav_down's default) routes 'j' to Refresh; nav_down keeps
+        // its other default (Down) but loses 'j'.
+        let (b, _) = resolve_with(&[("refresh", one("j"))]);
+        assert_eq!(dec(&b, KeyCode::Char('j')), Some(Intent::Refresh));
+        assert_ne!(dec(&b, KeyCode::Char('j')), Some(Intent::NavDown));
+        assert_eq!(dec(&b, KeyCode::Down), Some(Intent::NavDown));
+    }
+
+    #[test]
+    fn resolve_unknown_intent_rejected_siblings_apply_ac14() {
+        // AC-14: an unknown name is rejected while a sibling valid entry still applies; no panic.
+        let (b, out) = resolve_with(&[("bogus", one("g")), ("refresh", one("p"))]);
+        assert!(
+            out.rejected
+                .iter()
+                .any(|r| r.name == "bogus" && r.reason == RejectReason::UnknownIntent),
+            "the unknown name is rejected as UnknownIntent"
+        );
+        assert_eq!(dec(&b, KeyCode::Char('p')), Some(Intent::Refresh));
+    }
+
+    #[test]
+    fn resolve_duplicate_key_clash_rejects_both_ac15() {
+        // AC-15: two entries claiming one key both revert to their defaults.
+        let (b, out) = resolve_with(&[("refresh", one("g")), ("open_finder", one("g"))]);
+        assert_eq!(out.rejected.len(), 2, "both clashing entries are rejected");
+        assert_eq!(dec(&b, KeyCode::Char('r')), Some(Intent::Refresh));
+        assert_eq!(dec(&b, KeyCode::Char('f')), Some(Intent::OpenFinder));
+        assert_eq!(
+            dec(&b, KeyCode::Char('g')),
+            None,
+            "the clashed key 'g' decodes to nothing"
+        );
+    }
+
+    #[test]
+    fn resolve_bad_key_token_rejects_whole_entry_ac12() {
+        // AC-12: any unparseable token in a spec rejects the whole entry (the intent keeps defaults).
+        let (b, out) = resolve_with(&[("refresh", many(&["g", "Ctrl+x"]))]);
+        assert!(
+            out.rejected
+                .iter()
+                .any(|r| r.name == "refresh" && matches!(r.reason, RejectReason::BadKeySpec(_))),
+        );
+        assert_eq!(
+            dec(&b, KeyCode::Char('g')),
+            None,
+            "the whole entry is rejected, so its parseable key 'g' is not bound"
+        );
+        assert_eq!(dec(&b, KeyCode::Char('r')), Some(Intent::Refresh));
+    }
+
+    #[test]
+    fn resolve_empty_array_spec_rejected_ac12() {
+        // AC-12: a spec that lists no key is rejected so the intent is not stranded keyless.
+        let (b, out) = resolve_with(&[("refresh", many(&[]))]);
+        assert!(
+            out.rejected
+                .iter()
+                .any(|r| r.name == "refresh" && matches!(r.reason, RejectReason::BadKeySpec(_))),
+        );
+        assert_eq!(
+            dec(&b, KeyCode::Char('r')),
+            Some(Intent::Refresh),
+            "refresh keeps its default"
+        );
+    }
+
+    #[test]
+    fn resolve_esc_floor_holds_across_configs_ac18() {
+        // AC-18(a): with no `[keys]`, or omitting `close`, Esc still closes.
+        let (b_none, _) = resolve_bindings(registry(), None);
+        assert_eq!(dec(&b_none, KeyCode::Esc), Some(Intent::Close));
+        let (b_omit, _) = resolve_with(&[("refresh", one("g"))]);
+        assert_eq!(dec(&b_omit, KeyCode::Esc), Some(Intent::Close));
+
+        // AC-18(b): rebinding `close` to 'x' keeps 'x' AND Esc closing; the dropped 'q' decodes to
+        // nothing.
+        let (b_rebound, _) = resolve_with(&[("close", one("x"))]);
+        assert_eq!(dec(&b_rebound, KeyCode::Char('x')), Some(Intent::Close));
+        assert_eq!(dec(&b_rebound, KeyCode::Esc), Some(Intent::Close));
+        assert_eq!(dec(&b_rebound, KeyCode::Char('q')), None);
+
+        // AC-18(c): the Esc floor beats an explicit Esc claim by another intent (not a rejection).
+        let (b_claim, out) = resolve_with(&[("refresh", one("Esc"))]);
+        assert!(out.is_empty(), "naming Esc is valid, not rejected");
+        assert_eq!(dec(&b_claim, KeyCode::Esc), Some(Intent::Close));
+    }
+
+    #[test]
+    fn resolve_marks_customized_ac20() {
+        // AC-20: an intent set by a valid entry is marked customized; an unlisted one is not.
+        let (b, _) = resolve_with(&[("refresh", one("g"))]);
+        assert!(b.is_customized(Intent::Refresh));
+        assert!(!b.is_customized(Intent::NavDown));
     }
 }
