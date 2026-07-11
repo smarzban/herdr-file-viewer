@@ -399,6 +399,21 @@ pub struct Controller {
     /// Hide the tree so the content pane fills the frame (the `z` zoom toggle). Pure layout
     /// state — the selection and rendered content are unchanged.
     zoomed: bool,
+    /// Whether **this viewer** currently holds the pane in full-screen via `Z`
+    /// ([`Intent::OpenFullscreen`]). Owned intent, not a herdr query: it drives the `Z` toggle and,
+    /// crucially, lets every exit path (a second `Z`, `Esc`/`q`, `z`, a re-root, quit) release the
+    /// host pane zoom. Only ever set through [`host_zoom`](Self::host_zoom), so it stays paired with
+    /// the actual `pane zoom --on`/`--off` calls, and only ever in response to the user pressing
+    /// `Z` — never on its own.
+    ///
+    /// One consequence of tracking intent rather than querying herdr: pressing `Z` while the pane
+    /// is *already* full-screen (because the user zoomed it with herdr's own pane-zoom key) makes
+    /// the viewer **adopt** that full-screen — the `--on` is a harmless no-op, but a later `Z` /
+    /// `Esc` / `z` then issues `--off` and returns to the split. That is the deliberate trade-off
+    /// for a toggle that works with no live herdr; the alternative (a `pane layout` query on every
+    /// `Z`) is heavier and still can't tell "the user's zoom" from "ours". `Z` is only ever a no-op
+    /// on the host when there is nothing to change.
+    host_zoomed: bool,
     tree: TreeModel,
     /// Changed-set vs the active baseline, cached; recomputed on a baseline toggle (AC-16).
     changed: BTreeMap<PathBuf, Status>,
@@ -595,6 +610,7 @@ impl Controller {
             split_pct: SPLIT_DEFAULT,
             wrap_override: None,
             zoomed: false,
+            host_zoomed: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
             content: Text::raw(""),
@@ -763,6 +779,10 @@ impl Controller {
         // is closed"); `herdr`/`our_workspace_id` are session-level and deliberately left intact.
         self.focus = Focus::Tree;
         self.zoomed = false;
+        // Re-rooting returns to the two-column split, so release the viewer's own host pane zoom
+        // too (no-op if `Z` was never used); otherwise the pane would stay full-screen while the
+        // plugin resets to the split (`herdr` is session-level and survives the re-root).
+        self.leave_host_zoom();
         self.content_scroll = 0;
         self.content_hscroll = 0;
         self.tree_hscroll = 0;
@@ -1519,17 +1539,19 @@ impl Controller {
     /// terminal, not just the plugin's split. When the pane IS full-screen, reverse it: un-zoom the
     /// pane and restore the two-column split, back to browsing.
     ///
-    /// The current zoom state is read from herdr ([`host_pane_zoomed`](Self::host_pane_zoomed))
-    /// rather than a local flag, so the toggle stays correct even when the pane was zoomed or
-    /// un-zoomed with herdr's own pane-zoom key. Read-only w.r.t. files/git (herdr layout only) and
-    /// best-effort: with herdr absent the state reads as "not zoomed", so `Z` still opens the file
-    /// in the in-plugin zoom. A directory (only reachable when not full-screen) just
-    /// expands/collapses. The file kind is read — and the tree borrow dropped — *before* `activate`
-    /// so the borrow checker is satisfied.
+    /// The toggle keys off [`host_zoomed`](Self::host_zoomed) — the viewer's own record of whether
+    /// it opened the host zoom — so it works with **or without** a live herdr (with herdr absent the
+    /// flag still flips and the in-plugin zoom toggles). Because it is owned state, every other exit
+    /// path releases it too: `Esc`/`q` ([`close_or_unzoom`](Self::close_or_unzoom)), `z`
+    /// ([`toggle_zoom`](Self::toggle_zoom)), and a re-root ([`re_root`](Self::re_root)) all call
+    /// [`leave_host_zoom`](Self::leave_host_zoom), so the host pane never lingers zoomed after the
+    /// viewer returns to the split. Read-only w.r.t. files/git (herdr layout only). A directory
+    /// (only reachable when not full-screen) just expands/collapses. The file kind is read — and the
+    /// tree borrow dropped — *before* `activate` so the borrow checker is satisfied.
     fn open_fullscreen(&mut self) -> Effects {
-        if self.host_pane_zoomed() == Some(true) {
-            // Already full-screen → Z brings it back to the split.
-            self.host_zoom(false);
+        if self.host_zoomed {
+            // Full-screen is on (the viewer opened it) → a second `Z` returns to the split.
+            self.leave_host_zoom();
             self.zoomed = false;
             self.focus = Focus::Tree;
             return Effects::redraw();
@@ -1543,29 +1565,29 @@ impl Controller {
         effects
     }
 
-    /// Whether herdr currently reports THIS pane as zoomed, read from
-    /// `herdr pane layout --current` (`result.layout.zoomed`). `None` when there is no herdr seam
-    /// or its output can't be parsed — [`open_fullscreen`](Self::open_fullscreen) treats that as
-    /// "not zoomed" and falls back to the in-plugin zoom. Read-only (a herdr query).
-    fn host_pane_zoomed(&self) -> Option<bool> {
-        let json = self
-            .herdr
-            .as_ref()?
-            .run_json(&["pane", "layout", "--current"])
-            .ok()?;
-        let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-        v.get("result")?.get("layout")?.get("zoomed")?.as_bool()
-    }
-
     /// Zoom this pane to full-screen (`on`) or restore it (`!on`) via
-    /// `herdr pane zoom --current --on|--off`. `--current` resolves to the focused pane, always the
+    /// `herdr pane zoom --current --on|--off`, and record the viewer's intent in
+    /// [`host_zoomed`](Self::host_zoomed). `--current` resolves to the focused pane, always the
     /// viewer while it is processing a keystroke. The argv is entirely static — no pane id is
     /// interpolated — so there is no option-injection surface. Best-effort and read-only w.r.t.
-    /// files/git (a herdr layout op): a missing or failing herdr is swallowed.
-    fn host_zoom(&self, on: bool) {
+    /// files/git (a herdr layout op): a missing or failing herdr is swallowed, and the flag still
+    /// tracks intent so `Z` stays a toggle (and teardown still fires) even with no herdr present.
+    fn host_zoom(&mut self, on: bool) {
+        self.host_zoomed = on;
         if let Some(herdr) = self.herdr.as_ref() {
             let flag = if on { "--on" } else { "--off" };
             let _ = herdr.run(&["pane", "zoom", "--current", flag]);
+        }
+    }
+
+    /// Release the viewer's own host pane zoom if it holds one — the single teardown hook called
+    /// from every path that leaves full-screen (a second `Z`, `Esc`/`q`, `z`, a re-root, quit), so
+    /// the host pane never stays zoomed after the viewer has returned to (or left) the split. A
+    /// no-op when the viewer did not zoom the pane, so an ordinary `Esc`/`z`/`W` never spawns a
+    /// stray `pane zoom` call.
+    fn leave_host_zoom(&mut self) {
+        if self.host_zoomed {
+            self.host_zoom(false);
         }
     }
 
@@ -1788,11 +1810,14 @@ impl Controller {
     /// and rendered content are unchanged, so no re-render is dispatched.
     fn toggle_zoom(&mut self) -> Effects {
         self.zoomed = !self.zoomed;
-        self.focus = if self.zoomed {
-            Focus::Content
+        if self.zoomed {
+            self.focus = Focus::Content;
         } else {
-            Focus::Tree
-        };
+            self.focus = Focus::Tree;
+            // `z` fully exits full-screen: if the viewer had host-zoomed the pane (via `Z`), release
+            // it too, so the two-column split never reappears inside a still-full-screen host pane.
+            self.leave_host_zoom();
+        }
         Effects::redraw()
     }
 
@@ -1814,8 +1839,13 @@ impl Controller {
         if self.zoomed {
             self.zoomed = false;
             self.focus = Focus::Tree;
+            // Returning to the split also releases the viewer's own host pane zoom (no-op if `Z`
+            // was never used), so `Esc`/`q` never leaves the host pane full-screen behind a split.
+            self.leave_host_zoom();
             return Effects::redraw();
         }
+        // Quitting: release any host pane zoom the viewer opened so it does not outlive the viewer.
+        self.leave_host_zoom();
         Effects {
             quit: true,
             ..Default::default()

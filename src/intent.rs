@@ -25,11 +25,13 @@ pub enum Intent {
     /// [`Intent::Activate`] on a file) AND zoom this pane in herdr (`pane zoom --current --on`), so
     /// the file takes over the whole terminal, not just the plugin's split. When the pane is
     /// already full-screen, reverse it: un-zoom the pane (`--off`) and restore the two-column split.
-    /// The current zoom state is read from herdr, so the toggle stays in sync with herdr's own
-    /// pane-zoom key. On a **directory** (only reachable when not full-screen) it behaves like
-    /// [`Intent::Activate`] (expand/collapse). Read-only: the herdr pane zoom is a host **layout**
-    /// op, never a file/git mutation (AC-N1/N3), and best-effort — it degrades to the in-plugin zoom
-    /// when herdr is absent. Bound to `Z` (Shift+`z`) only — no event hook.
+    /// The toggle is driven by the viewer's own record of whether it opened the host zoom, so it
+    /// works with or without a live herdr, and every other exit path (`Esc`/`q`, the `z` zoom
+    /// toggle, a worktree re-root, quit) releases the host zoom too — the pane never lingers
+    /// full-screen behind the split. On a **directory** (only reachable when not full-screen) it
+    /// behaves like [`Intent::Activate`] (expand/collapse). Read-only: the herdr pane zoom is a host
+    /// **layout** op, never a file/git mutation (AC-N1/N3), and best-effort — it degrades to the
+    /// in-plugin zoom when herdr is absent. Bound to `Z` (Shift+`z`) only — no event hook.
     OpenFullscreen,
     /// Reveal/hide gitignored files (AC-5).
     ToggleIgnore,
