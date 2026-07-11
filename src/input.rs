@@ -405,7 +405,9 @@ pub(crate) struct RejectedBinding {
 /// to its default key set). Empty when every entry was valid, or when the config had no `[keys]`
 /// table. The resolved bindings themselves ride the sibling [`EffectiveBindings`]; this records only
 /// what was dropped, for the surfacing path (AC-16).
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Default` (an empty outcome: no rejected entries) is the controller's initial value before the
+// T-6 wiring resolves the real bindings, so a controller always holds a valid outcome in tests.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[allow(dead_code)] // consumed by the T-6 wiring / T-7 overlay; exercised in this module's tests.
 pub(crate) struct KeyLoadOutcome {
     pub rejected: Vec<RejectedBinding>,
