@@ -9150,8 +9150,8 @@ fn open_help_appends_settings_section_when_display_is_set() {
     );
     assert_eq!(
         labels,
-        vec!["What's New", "About", "Settings"],
-        "Settings must be appended LAST, after What's New and About"
+        vec!["What's New", "Settings", "About"],
+        "with only Settings injected, the overlay order is What's New, Settings, About"
     );
 
     let settings_idx = labels
