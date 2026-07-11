@@ -325,6 +325,17 @@ struct LiveContent {
 
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
+        // The width-less entry point: no pane width known, so glow keeps its `-w 0` (no wrap).
+        self.render_at_width(path, mode, raw_diff, None)
+    }
+
+    fn render_at_width(
+        &self,
+        path: &Path,
+        mode: ViewMode,
+        raw_diff: Option<&str>,
+        width: Option<u16>,
+    ) -> RenderResult {
         // Both diff modes render from git's diff text, not the file bytes — so a deleted or
         // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
         // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
@@ -346,7 +357,23 @@ impl ContentProvider for LiveContent {
             }
             _ => None,
         };
-        let (content, notice) = render::render(&self.renderers, &prepared, mode, raw_diff, name);
+        // For rendered markdown at a known pane width, point glow's `-w` at that width so it lays
+        // out and wraps tables to fit the pane (columns sized, cells ellipsized, borders intact),
+        // and pads every line to exactly that width — the Presenter's re-wrap is then a no-op
+        // rather than shattering a natural-width `-w 0` table across the border rows. The bundled
+        // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide. Every
+        // other mode is width-independent here (delta/bat manage their own width; they h-scroll,
+        // never re-wrap), so they use the base renderers unchanged.
+        let (content, notice) = match (mode, width.filter(|w| *w > 0)) {
+            (ViewMode::RenderedMarkdown, Some(w)) => {
+                let wrapped = Renderers {
+                    markdown: render::with_wrap_width(&self.renderers.markdown, w),
+                    ..self.renderers.clone()
+                };
+                render::render(&wrapped, &prepared, mode, raw_diff, name)
+            }
+            _ => render::render(&self.renderers, &prepared, mode, raw_diff, name),
+        };
         RenderResult {
             content,
             notices: notice.into_iter().collect(),
@@ -778,6 +805,90 @@ mod tests {
             r.syntax.iter().any(|a| a == "--style=numbers"),
             "bat line numbers: {:?}",
             r.syntax
+        );
+    }
+
+    /// A `LiveContent` whose markdown delegate echoes back the `-w` value it was actually invoked
+    /// with (as `W=<n>`), so a test can prove the pane width was threaded into glow's `-w`. The
+    /// base `-w` is `0` (matching the real default), so an unknown/zero width reads back `W=0`.
+    #[cfg(unix)]
+    fn echoing_md_content(root: &Path) -> LiveContent {
+        LiveContent {
+            root: root.to_path_buf(),
+            renderers: Renderers {
+                // `sh -c SCRIPT sh -w 0 -`: inside SCRIPT, `$2` is the token after `-w`, which
+                // `render_at_width` rewrites (via `with_wrap_width`) to the requested width.
+                // `cat >/dev/null` drains the piped (untrusted) stdin so the writer never hits a
+                // broken pipe.
+                markdown: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf 'W=%s' \"$2\"; cat >/dev/null".into(),
+                    "sh".into(),
+                    "-w".into(),
+                    "0".into(),
+                    "-".into(),
+                ],
+                diff: vec!["cat".into()],
+                full_diff: vec!["cat".into()],
+                syntax: vec!["cat".into()],
+                timeout: Duration::from_secs(5),
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    fn flatten_content(r: &RenderResult) -> String {
+        r.content
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    /// The table fix: rendered markdown at a known pane width hands glow `-w <width>` so it lays
+    /// out (and wraps) tables to fit the pane, instead of overflowing at natural `-w 0` width and
+    /// being shattered by the Presenter's re-wrap.
+    #[cfg(unix)]
+    #[test]
+    fn render_at_width_points_markdown_wrap_at_the_pane_width() {
+        let root = tmp("md-wrap-width");
+        let md = root.join("doc.md");
+        std::fs::write(&md, "| a | b |\n|---|---|\n| 1 | 2 |\n").unwrap();
+        let content = echoing_md_content(&root);
+        let out = content.render_at_width(&md, ViewMode::RenderedMarkdown, None, Some(80));
+        assert!(
+            flatten_content(&out).contains("W=80"),
+            "the pane width must reach glow's -w: {:?}",
+            flatten_content(&out)
+        );
+    }
+
+    /// No width known yet (the first render, before the first draw has measured the pane) — glow
+    /// keeps its `-w 0` (no wrap). The width-less `render` entry point delegates to the same path
+    /// with `None`, so it too leaves `-w 0`.
+    #[cfg(unix)]
+    #[test]
+    fn render_at_width_leaves_wrap_unbounded_without_a_pane_width() {
+        let root = tmp("md-wrap-none");
+        let md = root.join("doc.md");
+        std::fs::write(&md, "# Title\n").unwrap();
+        let content = echoing_md_content(&root);
+        // Explicit None, an inert zero width, and the width-less `render` all keep the base `-w 0`.
+        for w in [None, Some(0)] {
+            let out = content.render_at_width(&md, ViewMode::RenderedMarkdown, None, w);
+            assert!(
+                flatten_content(&out).contains("W=0"),
+                "width {w:?} must leave -w at 0: {:?}",
+                flatten_content(&out)
+            );
+        }
+        let via_render = content.render(&md, ViewMode::RenderedMarkdown, None);
+        assert!(
+            flatten_content(&via_render).contains("W=0"),
+            "the width-less render() must keep -w 0: {:?}",
+            flatten_content(&via_render)
         );
     }
 

@@ -20,6 +20,19 @@ pub enum Intent {
     /// a file in zoom mode (content pane full-screen). Never an edit — the editor hand-off
     /// stays on [`Intent::OpenInEditor`] (AC-N3).
     Activate,
+    /// Toggle full-screen reading of the selected **file**. When the pane is not full-screen, open
+    /// the file in the in-plugin zoom (content pane fills the frame, focused — like
+    /// [`Intent::Activate`] on a file) AND zoom this pane in herdr (`pane zoom --current --on`), so
+    /// the file takes over the whole terminal, not just the plugin's split. When the pane is
+    /// already full-screen, reverse it: un-zoom the pane (`--off`) and restore the two-column split.
+    /// The toggle is driven by the viewer's own record of whether it opened the host zoom, so it
+    /// works with or without a live herdr, and every other exit path (`Esc`/`q`, the `z` zoom
+    /// toggle, a worktree re-root, quit) releases the host zoom too — the pane never lingers
+    /// full-screen behind the split. On a **directory** (only reachable when not full-screen) it
+    /// behaves like [`Intent::Activate`] (expand/collapse). Read-only: the herdr pane zoom is a host
+    /// **layout** op, never a file/git mutation (AC-N1/N3), and best-effort — it degrades to the
+    /// in-plugin zoom when herdr is absent. Bound to `Z` (Shift+`z`) only — no event hook.
+    OpenFullscreen,
     /// Reveal/hide gitignored files (AC-5).
     ToggleIgnore,
     /// Hide/reveal dot-prefixed ("hidden") files and folders (#46) — a tree filter, independent
@@ -115,12 +128,13 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 32] = [
+    pub const ALL: [Intent; 33] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
         Intent::Collapse,
         Intent::Activate,
+        Intent::OpenFullscreen,
         Intent::ToggleIgnore,
         Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
@@ -169,6 +183,7 @@ mod tests {
                 | Intent::Expand
                 | Intent::Collapse
                 | Intent::Activate
+                | Intent::OpenFullscreen
                 | Intent::ToggleIgnore
                 | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
@@ -263,11 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_32() {
+    fn all_length_is_33() {
         assert_eq!(
             Intent::ALL.len(),
-            32,
-            "Intent::ALL must have exactly 32 variants after adding OpenWithApp/RevealInFileManager"
+            33,
+            "Intent::ALL must have exactly 33 variants after adding OpenFullscreen"
+        );
+    }
+
+    #[test]
+    fn open_fullscreen_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::OpenFullscreen),
+            "Intent::ALL must contain OpenFullscreen"
         );
     }
 

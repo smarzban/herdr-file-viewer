@@ -3285,13 +3285,13 @@ fn content_pane_shows_help_hint_even_when_a_file_is_loaded() {
 
 #[test]
 fn selecting_a_directory_shows_empty_state_guidance_not_a_blank_pane() {
-    // a directory selection shows "Directory — select a file to view" in the content
+    // a directory selection shows "Directory: select a file to view" in the content
     // pane, instead of a blank void. Built directly in the Presenter (the controller's
     // clear_content sets this copy).
     let mut state = sample_state();
     // Select the directory row (index 0 = /r/src).
     state.selected = 0;
-    state.content = to_text("Directory — select a file to view");
+    state.content = to_text("Directory: select a file to view");
     state.notices.clear();
     // a directory selection has no displayed file content, so the title falls back to
     // the selected node's name (the directory). Mirrors the controller's `clear_content`.
@@ -3299,7 +3299,7 @@ fn selecting_a_directory_shows_empty_state_guidance_not_a_blank_pane() {
     state.content_rendering = false;
     let out = render(&state, 100, 24);
     assert!(
-        out.contains("Directory — select a file to view"),
+        out.contains("Directory: select a file to view"),
         "a directory selection shows guidance, not a blank pane\n{out}"
     );
 }
@@ -3328,7 +3328,7 @@ fn empty_state_directory_snapshot() {
     // Snapshot the directory-selected empty state so the layout + the guidance are locked.
     let mut state = sample_state();
     state.selected = 0; // the /r/src directory
-    state.content = to_text("Directory — select a file to view");
+    state.content = to_text("Directory: select a file to view");
     state.notices.clear();
     // directory selected → no file content → title falls back to the directory's name.
     state.content_title = None;

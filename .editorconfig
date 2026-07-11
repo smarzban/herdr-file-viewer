@@ -1,0 +1,10 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# The baseline above suffices as-is. Add per-language overrides here only if your
+# stack needs them, e.g. [*.py] indent_size = 4.

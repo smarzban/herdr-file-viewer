@@ -23,6 +23,7 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
         KeyCode::Right | KeyCode::Char('l') => Some(Intent::Expand),
         KeyCode::Left | KeyCode::Char('h') => Some(Intent::Collapse),
         KeyCode::Enter => Some(Intent::Activate),
+        KeyCode::Char('Z') => Some(Intent::OpenFullscreen),
         KeyCode::Char('i') => Some(Intent::ToggleIgnore),
         KeyCode::Char('.') => Some(Intent::ToggleHidden),
         KeyCode::Char('c') => Some(Intent::ToggleChangedOnly),
@@ -74,6 +75,7 @@ mod tests {
         (KeyCode::Left, Intent::Collapse),
         (KeyCode::Char('h'), Intent::Collapse),
         (KeyCode::Enter, Intent::Activate),
+        (KeyCode::Char('Z'), Intent::OpenFullscreen),
         (KeyCode::Char('i'), Intent::ToggleIgnore),
         (KeyCode::Char('.'), Intent::ToggleHidden),
         (KeyCode::Char('c'), Intent::ToggleChangedOnly),
@@ -333,6 +335,25 @@ mod tests {
         // Lowercase h/l stay Collapse/Expand (no collision).
         assert_eq!(map_key(k(KeyCode::Char('h'))), Some(Intent::Collapse));
         assert_eq!(map_key(k(KeyCode::Char('l'))), Some(Intent::Expand));
+    }
+
+    #[test]
+    fn shift_z_maps_to_open_fullscreen_and_lowercase_z_stays_toggle_zoom() {
+        // `Z` (Shift+`z`, reported as `Char('Z')` with or without the Shift bit) opens the
+        // selected file full-screen (in-plugin zoom + herdr pane zoom). Lowercase `z` stays the
+        // in-plugin-only zoom toggle — no collision. A Ctrl chord on `Z` must fire nothing.
+        assert_eq!(map_key(k(KeyCode::Char('Z'))), Some(Intent::OpenFullscreen));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT)),
+            Some(Intent::OpenFullscreen),
+            "Z with the SHIFT bit set still maps to OpenFullscreen"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-Z must not fire an intent"
+        );
+        assert_eq!(map_key(k(KeyCode::Char('z'))), Some(Intent::ToggleZoom));
     }
 
     #[test]
