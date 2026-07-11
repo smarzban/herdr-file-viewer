@@ -260,19 +260,23 @@ pub fn settings_text(
     )
 }
 
-/// Assemble the "Keybindings" pane text (AC-16, AC-19, AC-20): a display-only listing of every
-/// global action with its effective key(s) and description. Pure — no env/FS; all three inputs are
-/// already-resolved values the caller computed once at startup (`app::run`).
+/// Assemble the "Keybindings" pane text (AC-16, AC-19, AC-20): a display-only, grouped listing of
+/// every global action with its config var, effective key(s), and description. Pure — no env/FS; all
+/// three inputs are already-resolved values the caller computed once at startup (`app::run`).
 ///
 /// - When `outcome` is non-empty (a `[keys]` entry was ignored), a FIRST status line names the
 ///   rejected entries and their reasons, so the user knows some bindings were dropped and the
-///   defaults kept (AC-16, the surfacing path). It is a single stable line.
-/// - Then ONE row per `registry` action, in registry order: the effective key(s) for that action
-///   (from [`keys_for`](crate::input::EffectiveBindings::keys_for), rendered via
-///   [`key_label`](crate::input::key_label) and joined by " / "), the action's description, and a
-///   trailing " (custom)" marker when the action's key set came from config (AC-20). An action with
-///   no effective key at all (its only key was `Esc`, taken by the no-lockout floor) renders its key
-///   column as "(unbound)" so the row still reads clearly.
+///   defaults kept (AC-16, the surfacing path). It is a single stable line, followed by a blank line.
+/// - Then the actions, GROUPED under their [`category`](crate::input::Binding::category) header and
+///   rendered in [`CATEGORY_ORDER`](crate::input::CATEGORY_ORDER); within a group they keep registry
+///   (Intent::ALL) order, and groups are separated by a blank line. Each action is TWO lines:
+///   - line 1: the config var (the [`name`](crate::input::Binding::name), left-aligned to the widest
+///     name so the key column lines up), then its effective key(s) (from
+///     [`keys_for`](crate::input::EffectiveBindings::keys_for), rendered via
+///     [`key_label`](crate::input::key_label) and joined by " / "), then a trailing "  (custom)"
+///     marker when the key set came from config (AC-20). An action with no effective key at all (its
+///     only key was `Esc`, taken by the no-lockout floor) renders its key column as "(unbound)".
+///   - line 2: the action's description, indented under it.
 ///
 /// Formatting is kept simple and stable since this feeds a presenter snapshot (like `settings_text`).
 ///
@@ -945,15 +949,6 @@ mod tests {
                 .position(|l| l.split_whitespace().next() == Some(a))
         };
 
-        // nav_up renders under the Navigation header and before the next group.
-        let nav = header("Navigation").expect("Navigation header");
-        let view = header("View & layout").expect("View & layout header");
-        let nav_up = action("nav_up").expect("nav_up row");
-        assert!(
-            nav < nav_up && nav_up < view,
-            "nav_up must render under Navigation, before View & layout:\n{text}"
-        );
-
         // Headers appear in CATEGORY_ORDER.
         let positions: Vec<usize> = input::CATEGORY_ORDER
             .iter()
@@ -965,6 +960,32 @@ mod tests {
             positions, sorted,
             "category headers must render in CATEGORY_ORDER:\n{text}"
         );
+
+        // Pin the grouping CONTRACT, not just that grouping happens: a representative action from
+        // every category must render within THAT category's span (its header .. the next header),
+        // so miscategorising an action, or reordering/renaming CATEGORY_ORDER out of sync with the
+        // registry's `category` values, fails here instead of passing silently.
+        let span = |cat: &str| {
+            let start = header(cat).unwrap_or_else(|| panic!("missing header '{cat}'"));
+            let next = positions.iter().filter(|&&p| p > start).min().copied();
+            (start, next.unwrap_or(lines.len()))
+        };
+        for (name, cat) in [
+            ("nav_up", "Navigation"),
+            ("activate", "Navigation"),
+            ("toggle_wrap", "View & layout"),
+            ("refresh", "Git & filters"),
+            ("open_with_app", "Open & copy"),
+            ("open_finder", "Search & jump"),
+            ("close", "Session"),
+        ] {
+            let at = action(name).unwrap_or_else(|| panic!("missing action '{name}'"));
+            let (start, end) = span(cat);
+            assert!(
+                start < at && at < end,
+                "action '{name}' must render under the '{cat}' header (rows {start}..{end}), got row {at}:\n{text}"
+            );
+        }
     }
 
     // AC-20: a custom binding (an action remapped via `[keys]`) is visually marked with "(custom)";
