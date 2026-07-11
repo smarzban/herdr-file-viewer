@@ -9,9 +9,56 @@ use herdr_file_viewer::root::Resolved;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, SystemTime};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+static SWEEP: Once = Once::new();
+
+/// Prefix every [`TempDir`] path shares, so the leak sweep can recognize its own orphans.
+const TEMP_PREFIX: &str = "herdr-fv-test-";
+
+/// Best-effort removal of `herdr-fv-test-*` dirs in `base` whose mtime predates `cutoff`.
+///
+/// Split out of [`sweep_stale_once`] with an injectable `base` + `cutoff` so it is testable
+/// without backdating a directory's mtime. Every step is best-effort: an unreadable base, a
+/// racing sweeper from a concurrent run, or a dir that vanishes mid-loop is simply skipped.
+pub fn sweep_stale_in(base: &Path, cutoff: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(TEMP_PREFIX) {
+            continue;
+        }
+        // Only sweep dirs old enough that no live run (including a concurrent one) could own
+        // them; a dir whose mtime we can't read is left alone rather than risk a live removal.
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|mtime| mtime < cutoff)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// One-time, best-effort sweep of temp dirs leaked by previous, *killed* test runs.
+///
+/// [`TempDir`] removes itself on `Drop`, but `Drop` never runs when a test process is killed
+/// (a timeout, `SIGKILL`, Ctrl-C, `panic = "abort"`): those orphans then pile up in the system
+/// temp dir and can exhaust a small `/tmp` tmpfs. Reclaim them once per process, at first
+/// `TempDir::new()`, taking only entries older than an hour so no live run's dirs are touched.
+fn sweep_stale_once() {
+    SWEEP.call_once(|| {
+        if let Some(cutoff) = SystemTime::now().checked_sub(Duration::from_secs(3600)) {
+            sweep_stale_in(&std::env::temp_dir(), cutoff);
+        }
+    });
+}
 
 /// A unique temporary directory removed on drop.
 pub struct TempDir {
@@ -20,13 +67,14 @@ pub struct TempDir {
 
 impl TempDir {
     pub fn new() -> Self {
+        sweep_stale_once();
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "herdr-fv-test-{}-{}-{}",
+            "{TEMP_PREFIX}{}-{}-{}",
             std::process::id(),
             nanos,
             n
