@@ -321,6 +321,54 @@ pub(crate) fn registry() -> &'static [Binding] {
     REGISTRY
 }
 
+/// Translate one user **key spec** token into the logical [`KeyCode`] it names, or `None` for any
+/// token outside the modifier-free **bindable key** surface (AC-11, AC-12; enforces NC-1/NC-5).
+///
+/// Rules:
+/// - A token that is exactly one Unicode character is that character key, **case-sensitive** — so
+///   `"V"` and `"v"` differ, and shifted punctuation (`"<"`, `"?"`) is its own key.
+/// - Otherwise the token is matched **case-insensitively** against the pinned named-key table:
+///   `Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space` (the
+///   space character), `Backspace`, `Delete`, `Insert`, and `F1`..`F12`.
+/// - Everything else returns `None`: the empty string, any other multi-character token (`"abc"`,
+///   `"PgDn"`), an F-key out of the `1..=12` range (`"F0"`, `"F13"`), and — by construction, since
+///   the whitelist admits no `+` chord — any `Ctrl+`/`Alt+` token. No control-chord binding is even
+///   expressible (NC-1).
+///
+/// Pure, total, and never panics (AC-24).
+#[allow(dead_code)] // consumed by the T-5 Bindings Resolver.
+pub(crate) fn parse_key_spec(s: &str) -> Option<KeyCode> {
+    // A token of exactly one Unicode character is that character key, case-sensitive.
+    if s.chars().count() == 1 {
+        return Some(KeyCode::Char(s.chars().next().unwrap()));
+    }
+    // Named keys match case-insensitively (all ASCII).
+    let lower = s.to_ascii_lowercase();
+    match lower.as_str() {
+        "tab" => Some(KeyCode::Tab),
+        "enter" => Some(KeyCode::Enter),
+        "esc" => Some(KeyCode::Esc),
+        "up" => Some(KeyCode::Up),
+        "down" => Some(KeyCode::Down),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        "home" => Some(KeyCode::Home),
+        "end" => Some(KeyCode::End),
+        "pageup" => Some(KeyCode::PageUp),
+        "pagedown" => Some(KeyCode::PageDown),
+        "space" => Some(KeyCode::Char(' ')),
+        "backspace" => Some(KeyCode::Backspace),
+        "delete" => Some(KeyCode::Delete),
+        "insert" => Some(KeyCode::Insert),
+        // "f1".."f12": parse the number after "f", accepting only 1..=12 (rejects "f0", "f13",
+        // "f1x", and — as a two-plus-char token that never reaches here — a bare "f").
+        _ => {
+            let n: u8 = lower.strip_prefix('f')?.parse().ok()?;
+            (1..=12).contains(&n).then_some(KeyCode::F(n))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +501,49 @@ mod tests {
         assert_eq!(map_key(k(KeyCode::Char('x'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);
+    }
+
+    #[test]
+    fn parse_key_spec_accepts_every_bindable_class() {
+        // AC-11: a representative of every bindable-key class parses to its KeyCode.
+        // Printable single chars are case-SENSITIVE (a shifted char is its own key).
+        assert_eq!(parse_key_spec("g"), Some(KeyCode::Char('g')));
+        assert_eq!(parse_key_spec("V"), Some(KeyCode::Char('V')));
+        assert_eq!(parse_key_spec("<"), Some(KeyCode::Char('<')));
+        assert_eq!(parse_key_spec("?"), Some(KeyCode::Char('?')));
+        // Named keys are matched case-INSENSITIVELY ("Tab" and "tab" both parse).
+        assert_eq!(parse_key_spec("Tab"), Some(KeyCode::Tab));
+        assert_eq!(parse_key_spec("tab"), Some(KeyCode::Tab));
+        assert_eq!(parse_key_spec("Enter"), Some(KeyCode::Enter));
+        assert_eq!(parse_key_spec("Esc"), Some(KeyCode::Esc));
+        assert_eq!(parse_key_spec("Up"), Some(KeyCode::Up));
+        assert_eq!(parse_key_spec("Down"), Some(KeyCode::Down));
+        assert_eq!(parse_key_spec("Left"), Some(KeyCode::Left));
+        assert_eq!(parse_key_spec("Right"), Some(KeyCode::Right));
+        assert_eq!(parse_key_spec("Home"), Some(KeyCode::Home));
+        assert_eq!(parse_key_spec("End"), Some(KeyCode::End));
+        assert_eq!(parse_key_spec("PageUp"), Some(KeyCode::PageUp));
+        assert_eq!(parse_key_spec("PageDown"), Some(KeyCode::PageDown));
+        assert_eq!(parse_key_spec("Space"), Some(KeyCode::Char(' ')));
+        assert_eq!(parse_key_spec("Backspace"), Some(KeyCode::Backspace));
+        assert_eq!(parse_key_spec("Delete"), Some(KeyCode::Delete));
+        assert_eq!(parse_key_spec("Insert"), Some(KeyCode::Insert));
+        assert_eq!(parse_key_spec("F1"), Some(KeyCode::F(1)));
+        assert_eq!(parse_key_spec("F5"), Some(KeyCode::F(5)));
+        assert_eq!(parse_key_spec("F12"), Some(KeyCode::F(12)));
+    }
+
+    #[test]
+    fn parse_key_spec_rejects_chords_and_garbage() {
+        // AC-12 / NC-1: a modifier chord or an otherwise-unparseable token is rejected, so no
+        // Ctrl/Alt binding is ever produced and garbage falls through to the default key set.
+        assert_eq!(parse_key_spec("Ctrl+r"), None, "Ctrl chord is not bindable");
+        assert_eq!(parse_key_spec("Alt+x"), None, "Alt chord is not bindable");
+        assert_eq!(parse_key_spec(""), None, "empty token");
+        assert_eq!(parse_key_spec("abc"), None, "multi-char garbage");
+        assert_eq!(parse_key_spec("F13"), None, "F-key above range");
+        assert_eq!(parse_key_spec("F0"), None, "F-key below range");
+        assert_eq!(parse_key_spec("PgDn"), None, "unknown named key");
     }
 
     #[test]
