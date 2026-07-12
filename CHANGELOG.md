@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Configurable tree/content layout via `tree_width`, `tree_position`, and `tree_max_cols` keys in
+  `config.toml`.** `tree_width` sets the directory tree column's share of the viewer pane (a percent
+  from `20` to `80`; the content pane takes the rest), `tree_position` puts the tree on the `"left"`
+  (default) or `"right"` of the content pane, and `tree_max_cols` caps the tree at a maximum number
+  of **columns** so it does not balloon on a very wide pane — the tree is drawn at
+  `min(tree_width% of the pane, tree_max_cols)`. These seed the **startup** split inside the viewer's
+  own pane (not the size of the herdr pane, which the host decides); you can still resize the split
+  live with the grow/shrink keys or by dragging the divider, and "grow" always widens the tree
+  whichever side it is on. `config > default`, no environment variable; an out-of-range width clamps
+  into `20..=80`, an unrecognized position falls back to `"left"`, and the column cap clamps into
+  `10..=1000` (set it high to disable). All three effective values are shown in the `?` overlay's
+  Settings section.
 - **Configurable mouse-wheel scroll speed via a `scroll_lines` key in `config.toml`.** Sets how many
   lines each wheel event advances the content pane (and how many items it moves in the file-search
   list, and lines in the `?` help overlay); the directory tree still moves one row per event.
@@ -46,6 +58,15 @@ All notable changes to this project are documented here. The format is based on
   Read-only: the pane zoom is a host layout op, never a file or git change, and it degrades to the
   in-pane zoom when the host isn't herdr. Lowercase `z` still toggles the in-pane zoom only; on a
   directory, `Z` just expands/collapses like `Enter`.
+
+### Changed
+- **The default tree/content split is now 30% tree (was 40%),** giving the content pane a little more
+  room out of the box. Set `tree_width` in `config.toml` to pick your own, or resize it live as
+  before.
+- **The tree is now capped at 30 columns by default** (`tree_max_cols`), so on a full-terminal tab or
+  a wide window it stays compact instead of growing into a mostly-blank column. Panes under ~100
+  columns are unaffected (the percentage governs), and dragging the divider or the grow/shrink keys
+  lifts the cap; raise `tree_max_cols` to disable it.
 
 ### Fixed
 - **Wide tables in the rendered-markdown view no longer shatter.** A table is now laid out to fit

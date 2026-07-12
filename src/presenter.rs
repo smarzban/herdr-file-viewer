@@ -77,6 +77,18 @@ pub struct ViewState {
     /// The tree column's share of the width, as a percentage (the content pane takes the
     /// rest). Adjustable from the keyboard; used only in the wide two-column layout.
     pub split_pct: u16,
+    /// Which side of the content pane the tree is drawn on (the `tree_position` config key).
+    /// Used only in the wide two-column layout; the narrow single-column layout ignores it.
+    pub tree_position: crate::config::TreePosition,
+    /// The maximum tree width in character columns (the `tree_max_cols` config key). The tree is
+    /// drawn at `min(split_pct% of the pane, tree_max_cols)`, so on a very wide pane it stops
+    /// growing instead of over-allocating. Used only in the wide two-column layout.
+    pub tree_max_cols: u16,
+    /// Whether the user has resized the split by hand this session (a divider drag or the
+    /// grow/shrink keys). While `false`, `tree_max_cols` caps the tree; once `true` the cap is
+    /// lifted so an explicit resize is honoured exactly (otherwise the resize would look frozen on a
+    /// wide, capped pane).
+    pub split_manual: bool,
     /// Hide the tree and let the content pane fill the whole frame (the `z` zoom toggle).
     /// Overrides the split — and the narrow-layout focus rule — to draw content only.
     pub zoomed: bool,
@@ -922,6 +934,23 @@ fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
 /// Below this pane width the viewer drops to a single, focused column (AC-21).
 const NARROW_SPLIT: u16 = 80;
 
+/// The smallest tree column the split may render, as a percentage of `pane_width` — the percentage
+/// that yields at least [`crate::config::MIN_TREE_MAX_COLS`] columns. Pane-aware on purpose: a fixed
+/// percentage floor is wrong in absolute terms on a very wide pane (10% of a 1000-column pane is 100
+/// columns), so a manually-narrowed or `tree_max_cols`-capped tree could not be represented and would
+/// jump up to that floor. Expressing the floor as "≥ N columns" lets the tree stay narrow on any pane
+/// width while never collapsing on a small one. Shared by [`columns`] (render) and the controller's
+/// interactive resize so the two agree on how narrow the tree can get.
+pub fn min_tree_split_pct(pane_width: u16) -> u16 {
+    if pane_width == 0 {
+        return crate::config::MIN_TREE_MAX_COLS;
+    }
+    let pct = (crate::config::MIN_TREE_MAX_COLS as u32 * 100).div_ceil(pane_width as u32) as u16;
+    // Never 0 (a tree needs some width); capped well below the 90% upper bound so a small pane can't
+    // force a floor that would crowd out the content pane.
+    pct.clamp(1, 40)
+}
+
 /// The column split for the current frame: `(tree_area, content_area, divider_x)`. A column
 /// is `None` when not drawn (narrow layout shows only the focused one). Shared by [`draw`] and
 /// [`geometry`] so the drawn layout and the hit-test geometry can never disagree.
@@ -937,15 +966,40 @@ fn columns(area: Rect, state: &ViewState) -> (Option<Rect>, Option<Rect>, Option
             Focus::Content => (None, Some(area), None),
         };
     }
-    let tree_pct = state.split_pct.clamp(10, 90);
-    let cols = Layout::horizontal([
-        Constraint::Percentage(tree_pct),
-        Constraint::Percentage(100 - tree_pct),
-    ])
-    .split(area);
-    // The divider is the boundary column where the tree's right border meets the content's
-    // left border (the two bordered blocks abut here).
-    (Some(cols[0]), Some(cols[1]), Some(cols[1].x))
+    let tree_pct = state.split_pct.clamp(min_tree_split_pct(area.width), 90);
+    // The tree is `min(tree_pct% of the pane, tree_max_cols)`: the percentage governs normal panes,
+    // and the column cap reins the tree in on a very wide pane (a full tab, a big monitor) so it
+    // doesn't over-allocate blank space past the filenames. The cap is a *default* ceiling only:
+    // once the user has resized the split by hand (`split_manual` — a divider drag or the grow/shrink
+    // keys), it is lifted so the tree honours exactly what they dragged to, otherwise the resize
+    // would look frozen. Only when the cap actually bites do we switch to a fixed `Length(cap)`
+    // column; otherwise keep the exact `Percentage` layout (so nothing shifts when it doesn't). The
+    // tree keeps this width whichever side it sits on; only the column ORDER flips. `cols[1]` is
+    // always the right-hand column, so the divider — the boundary where the two bordered blocks abut
+    // — is `cols[1].x` in either layout (the hit-test and drag geometry both derive from this, so
+    // neither needs to know the side).
+    let pct_cols = (area.width as u32 * tree_pct as u32 / 100) as u16;
+    let cap_bites = !state.split_manual && pct_cols > state.tree_max_cols;
+    let (tree_c, content_c) = if cap_bites {
+        // Cap bites: fix the tree at the cap and give the content pane the rest.
+        (Constraint::Length(state.tree_max_cols), Constraint::Min(0))
+    } else {
+        (
+            Constraint::Percentage(tree_pct),
+            Constraint::Percentage(100 - tree_pct),
+        )
+    };
+    match state.tree_position {
+        crate::config::TreePosition::Left => {
+            let cols = Layout::horizontal([tree_c, content_c]).split(area);
+            (Some(cols[0]), Some(cols[1]), Some(cols[1].x))
+        }
+        crate::config::TreePosition::Right => {
+            let cols = Layout::horizontal([content_c, tree_c]).split(area);
+            // content = cols[0] (left), tree = cols[1] (right); divider at their boundary.
+            (Some(cols[1]), Some(cols[0]), Some(cols[1].x))
+        }
+    }
 }
 
 /// Hit-test geometry for mouse input, derived from the same split [`draw`] renders.

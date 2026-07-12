@@ -18,6 +18,57 @@ pub const DEFAULT_SCROLL_LINES: u16 = 3;
 /// instead of page-jumping. The effective range is therefore `1..=MAX_SCROLL_LINES`.
 pub const MAX_SCROLL_LINES: u16 = 10;
 
+/// The built-in **tree width**: the directory tree column's share of the viewer pane (percent) at
+/// startup, when the config supplies no valid `tree_width`. Also the controller's initial
+/// `split_pct`. Owner-set to 30 (was 40) so the content pane gets more room out of the box.
+pub const DEFAULT_TREE_WIDTH: u16 = 30;
+/// The narrowest accepted **tree width**, in percent — the same floor the live keyboard/drag resize
+/// enforces, so the tree column can never collapse. A configured value below this clamps up to it.
+pub const MIN_TREE_WIDTH: u16 = 20;
+/// The widest accepted **tree width**, in percent — the same ceiling the live resize enforces, so
+/// the content column can never collapse. A configured value above this clamps down to it. The
+/// effective range is therefore `MIN_TREE_WIDTH..=MAX_TREE_WIDTH`.
+pub const MAX_TREE_WIDTH: u16 = 80;
+
+/// The built-in **tree column cap**: the maximum width, in character columns, the directory tree may
+/// occupy regardless of [`DEFAULT_TREE_WIDTH`]. On a wide pane (a full tab, a big monitor)
+/// `tree_width` percent would over-allocate — a 50+-column tree that is mostly blank space after the
+/// filenames — so the tree is `min(tree_width% of the pane, tree_max_cols)`. Owner-set to 30: a
+/// compact tree that fits typical filenames, so the extra width of a wide pane goes to the content
+/// pane. Bites once the pane is wider than ~`tree_max_cols * 100 / tree_width%` columns (~100 at the
+/// defaults); below that the percentage governs. A hand resize (drag / grow key) lifts the cap.
+pub const DEFAULT_TREE_MAX_COLS: u16 = 30;
+/// The narrowest accepted **tree column cap**: a configured value below this clamps up to it, so the
+/// tree can never be capped to an unreadable sliver.
+pub const MIN_TREE_MAX_COLS: u16 = 10;
+/// The widest accepted **tree column cap**. A value this large never bites on any real terminal, so
+/// it is the escape hatch for "no cap"; larger values clamp down to it. The effective range is
+/// `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS`.
+pub const MAX_TREE_MAX_COLS: u16 = 1000;
+
+/// Which side of the content pane the directory tree is drawn on (`tree_position` config key). A
+/// pure display preference; the config value is a lenient `Option<String>` resolved into this by
+/// [`resolve`] (case-insensitive, trimmed), so this enum is never deserialized directly. `Left` is
+/// the default (today's layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreePosition {
+    /// Tree on the left of the content pane (the default, today's layout).
+    #[default]
+    Left,
+    /// Tree on the right of the content pane.
+    Right,
+}
+
+impl TreePosition {
+    /// The lowercase label shown in the read-only Settings overlay (`left` / `right`).
+    pub fn label(self) -> &'static str {
+        match self {
+            TreePosition::Left => "left",
+            TreePosition::Right => "right",
+        }
+    }
+}
+
 /// A `[keys]` entry's value: the key(s) an intent binds to, written **either** as a single string
 /// (`refresh = "g"`) **or** as a TOML array of strings (`nav_up = ["w", "Up"]`). `#[serde(untagged)]`
 /// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
@@ -52,6 +103,22 @@ pub struct Config {
     /// number still clamps into range instead of tripping the parse; only a negative / non-integer /
     /// astronomically large value fails to parse and degrades the whole config to defaults.
     pub scroll_lines: Option<u32>,
+    /// The **tree width**: the directory tree column's share of the viewer pane, in percent, at
+    /// startup. `None` falls back to [`DEFAULT_TREE_WIDTH`]; the resolver clamps any present value
+    /// into `MIN_TREE_WIDTH..=MAX_TREE_WIDTH`. Held as `u32` (like `scroll_lines`) so an
+    /// out-of-`u16` number still clamps into range instead of tripping the parse; only a negative /
+    /// non-integer value fails to parse and degrades the whole config to defaults.
+    pub tree_width: Option<u32>,
+    /// The **tree position**: which side the directory tree is drawn on. A lenient string
+    /// (`"left"` / `"right"`, case-insensitive, trimmed) resolved into a [`TreePosition`] by
+    /// [`resolve`]; `None` or an unrecognized value falls back to [`TreePosition::Left`].
+    pub tree_position: Option<String>,
+    /// The **tree column cap**: the maximum tree width in character columns (see
+    /// [`DEFAULT_TREE_MAX_COLS`]). `None` falls back to that default; the resolver clamps any present
+    /// value into `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS`. Held as `u32` (like `tree_width`) so an
+    /// out-of-`u16` number clamps into range instead of tripping the parse; only a negative /
+    /// non-integer value fails to parse and degrades the whole config to defaults.
+    pub tree_max_cols: Option<u32>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
@@ -167,6 +234,17 @@ pub struct EffectiveSettings {
     /// `1..=`[`MAX_SCROLL_LINES`] when present, else [`DEFAULT_SCROLL_LINES`]. No environment
     /// variable participates — this is a config-or-default UI preference.
     pub scroll_lines: u16,
+    /// The effective **tree width**: the config `tree_width` clamped to
+    /// `MIN_TREE_WIDTH..=MAX_TREE_WIDTH` when present, else [`DEFAULT_TREE_WIDTH`]. Seeds the
+    /// controller's startup split percent. Config-or-default (no env var).
+    pub tree_width: u16,
+    /// The effective **tree position**: the config `tree_position` mapped to `Left`/`Right`, else
+    /// [`TreePosition::Left`]. Config-or-default (no env var).
+    pub tree_position: TreePosition,
+    /// The effective **tree column cap**: the config `tree_max_cols` clamped to
+    /// `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS` when present, else [`DEFAULT_TREE_MAX_COLS`]. The tree
+    /// is drawn at `min(tree_width% of the pane, tree_max_cols)`. Config-or-default (no env var).
+    pub tree_max_cols: u16,
 }
 
 /// Pure resolver: `Config` + injected env getter -> `EffectiveSettings` (AC-3, AC-4, AC-5,
@@ -215,6 +293,37 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .map(|n| n.clamp(1, MAX_SCROLL_LINES as u32) as u16)
         .unwrap_or(DEFAULT_SCROLL_LINES);
 
+    // Config > default; no env var. Clamp to `MIN_TREE_WIDTH..=MAX_TREE_WIDTH` — the same range the
+    // live keyboard/drag resize enforces — so neither column can collapse (AC-3). A value that isn't
+    // a representable non-negative integer never reaches here: it failed the parse and arrived as
+    // `None` on a defaulted `Config` (AC-4).
+    let tree_width = config
+        .tree_width
+        .map(|n| n.clamp(MIN_TREE_WIDTH as u32, MAX_TREE_WIDTH as u32) as u16)
+        .unwrap_or(DEFAULT_TREE_WIDTH);
+
+    // Config > default; no env var. Lenient string match (trimmed, case-insensitive): only `right`
+    // selects the non-default side; anything else — absent, unrecognized, differently-typed — keeps
+    // the default `Left` so a fat-fingered value loses the customization without crashing (AC-5..7).
+    let tree_position = match config
+        .tree_position
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("right") => TreePosition::Right,
+        _ => TreePosition::Left,
+    };
+
+    // Config > default; no env var. Clamp to `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS` so the cap can
+    // never shrink the tree to an unreadable sliver, and a huge value just becomes the effective
+    // "no cap" (it never bites on a real terminal). A non-representable value degraded the whole
+    // config to defaults and arrived as `None`.
+    let tree_max_cols = config
+        .tree_max_cols
+        .map(|n| n.clamp(MIN_TREE_MAX_COLS as u32, MAX_TREE_MAX_COLS as u32) as u16)
+        .unwrap_or(DEFAULT_TREE_MAX_COLS);
+
     EffectiveSettings {
         editor,
         markdown,
@@ -225,6 +334,9 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         hide_dotfiles,
         update_check,
         scroll_lines,
+        tree_width,
+        tree_position,
+        tree_max_cols,
     }
 }
 
@@ -774,6 +886,202 @@ mod tests {
         }
         let effective = resolve(&config, |_| None);
         assert_eq!(effective.scroll_lines, 3);
+    }
+
+    #[test]
+    fn resolve_tree_width_config_value_wins() {
+        // AC-1: a valid config value (in range) is the effective tree width (config > default).
+        let config = Config {
+            tree_width: Some(25),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&config, |_| None).tree_width, 25);
+    }
+
+    #[test]
+    fn resolve_tree_width_defaults_when_absent() {
+        // AC-2: omitted -> the built-in default (DEFAULT_TREE_WIDTH = 30).
+        let effective = resolve(&Config::default(), |_| None);
+        assert_eq!(effective.tree_width, DEFAULT_TREE_WIDTH);
+        assert_eq!(effective.tree_width, 30);
+    }
+
+    #[test]
+    fn resolve_tree_width_clamps_to_range() {
+        // AC-3: a value below the floor clamps up to MIN_TREE_WIDTH, above the ceiling clamps down to
+        // MAX_TREE_WIDTH — the same range the live resize enforces, so neither column can collapse.
+        // Values beyond u16 are accepted (the field is u32) and clamped, not degraded.
+        assert_eq!((MIN_TREE_WIDTH, MAX_TREE_WIDTH), (20, 80));
+        for (input, want) in [
+            (0u32, 20u16),
+            (5, 20),
+            (19, 20),
+            (81, 80),
+            (95, 80),
+            (u32::MAX, 80),
+        ] {
+            let cfg = Config {
+                tree_width: Some(input),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).tree_width,
+                want,
+                "value {input} must clamp to {want}"
+            );
+        }
+        // The boundary values pass through unchanged.
+        for edge in [MIN_TREE_WIDTH, MAX_TREE_WIDTH] {
+            let cfg = Config {
+                tree_width: Some(edge as u32),
+                ..Default::default()
+            };
+            assert_eq!(resolve(&cfg, |_| None).tree_width, edge);
+        }
+    }
+
+    #[test]
+    fn tree_width_non_representable_degrades_to_default() {
+        // AC-4: a non-representable value fails the parse, so the whole config degrades to defaults
+        // (Malformed); the resolver then yields the default width (30). AC-4 names both a negative
+        // and a string, so cover both — a `u32` field rejects each (an over-large-but-representable
+        // value clamps instead — see resolve_tree_width_clamps_to_range).
+        // Each fixture also carries a VALID key (`hide_dotfiles = true`) to prove the malformed value
+        // defaults the WHOLE config, not just its own field (the valid key is dropped too).
+        for src in [
+            "tree_width = -1\nhide_dotfiles = true\n",
+            "tree_width = \"wide\"\nhide_dotfiles = true\n",
+        ] {
+            let (config, outcome) = parse_config(src);
+            assert_eq!(
+                config.tree_width, None,
+                "{src:?} must not populate tree_width"
+            );
+            assert_eq!(
+                config.hide_dotfiles, None,
+                "{src:?} must default the WHOLE config (the valid hide_dotfiles is dropped too)"
+            );
+            match outcome {
+                LoadOutcome::Malformed(_) => {}
+                other => panic!("expected Malformed for {src:?}, got {other:?}"),
+            }
+            assert_eq!(
+                resolve(&config, |_| None).tree_width,
+                30,
+                "{src:?} → default 30"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_tree_position_config_value_wins() {
+        // AC-5: "right" -> Right, "left" -> Left (config > default).
+        for (value, want) in [("right", TreePosition::Right), ("left", TreePosition::Left)] {
+            let cfg = Config {
+                tree_position: Some(value.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(resolve(&cfg, |_| None).tree_position, want);
+        }
+    }
+
+    #[test]
+    fn resolve_tree_position_defaults_when_absent() {
+        // AC-6: omitted -> the default side (Left, today's layout).
+        assert_eq!(
+            resolve(&Config::default(), |_| None).tree_position,
+            TreePosition::Left
+        );
+    }
+
+    #[test]
+    fn resolve_tree_position_lenient_and_case_insensitive() {
+        // AC-7: an unrecognized value degrades to the default Left without panicking, and a valid
+        // value is matched case-insensitively after trimming.
+        for (value, want) in [
+            ("sideways", TreePosition::Left),
+            ("", TreePosition::Left),
+            (" RIGHT ", TreePosition::Right),
+            ("Left", TreePosition::Left),
+            ("RiGhT", TreePosition::Right),
+        ] {
+            let cfg = Config {
+                tree_position: Some(value.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).tree_position,
+                want,
+                "{value:?} must resolve to {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_tree_max_cols_config_value_wins() {
+        // A valid config value (in range) is the effective tree column cap (config > default).
+        let cfg = Config {
+            tree_max_cols: Some(60),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&cfg, |_| None).tree_max_cols, 60);
+    }
+
+    #[test]
+    fn resolve_tree_max_cols_defaults_when_absent() {
+        // Omitted -> the built-in default (DEFAULT_TREE_MAX_COLS = 30).
+        let effective = resolve(&Config::default(), |_| None);
+        assert_eq!(effective.tree_max_cols, DEFAULT_TREE_MAX_COLS);
+        assert_eq!(effective.tree_max_cols, 30);
+    }
+
+    #[test]
+    fn resolve_tree_max_cols_clamps_to_range() {
+        // Below the floor clamps up (never an unreadable sliver); above the ceiling clamps down (a
+        // huge value is the "no cap" escape hatch). Values beyond u16 are accepted (u32 field) and
+        // clamped, not degraded.
+        assert_eq!((MIN_TREE_MAX_COLS, MAX_TREE_MAX_COLS), (10, 1000));
+        for (input, want) in [(0u32, 10u16), (5, 10), (1001, 1000), (u32::MAX, 1000)] {
+            let cfg = Config {
+                tree_max_cols: Some(input),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).tree_max_cols,
+                want,
+                "value {input} must clamp to {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_max_cols_non_representable_degrades_to_default() {
+        // A non-representable value fails the parse, degrading the whole config to defaults; the
+        // resolver then yields the default cap (30).
+        // A valid key rides alongside to prove the whole config defaults, not just this field.
+        for src in [
+            "tree_max_cols = -1\nhide_dotfiles = true\n",
+            "tree_max_cols = \"wide\"\nhide_dotfiles = true\n",
+        ] {
+            let (config, outcome) = parse_config(src);
+            assert_eq!(
+                config.tree_max_cols, None,
+                "{src:?} must not populate the field"
+            );
+            assert_eq!(
+                config.hide_dotfiles, None,
+                "{src:?} must default the WHOLE config (valid hide_dotfiles dropped too)"
+            );
+            match outcome {
+                LoadOutcome::Malformed(_) => {}
+                other => panic!("expected Malformed for {src:?}, got {other:?}"),
+            }
+            assert_eq!(
+                resolve(&config, |_| None).tree_max_cols,
+                30,
+                "{src:?} → default 30"
+            );
+        }
     }
 
     // --- Settings Applier: effective_editor / effective_renderers / should_start_update_check

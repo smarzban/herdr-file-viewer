@@ -1427,8 +1427,9 @@ fn resize_intents_move_the_tree_content_divider_and_clamp() {
     }
     let min = ctrl.view_state().split_pct;
     assert!(
-        (20..=80).contains(&min) && min < max,
-        "split clamps to a minimum ({min})"
+        min == 10 && min < max,
+        "split clamps to the interactive minimum of 10% (below the 20% startup floor so a hand \
+         resize can pull the tree narrower than a capped default) ({min})"
     );
     ctrl.handle(Intent::ShrinkTree);
     assert_eq!(
@@ -2205,6 +2206,136 @@ fn wheel_over_the_tree_moves_the_selection() {
 }
 
 #[test]
+fn apply_tree_width_seeds_the_startup_split() {
+    // AC-11: apply_tree_width sets the controller's startup split ratio (split_pct).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 1);
+    ctrl.apply_tree_width(25);
+    assert_eq!(
+        ctrl.view_state().split_pct,
+        25,
+        "the startup split follows tree_width"
+    );
+}
+
+#[test]
+fn apply_tree_width_clamps_to_the_split_range() {
+    // AC-11 (defensive clamp, mirrors AC-3): an out-of-range value clamps so neither column can
+    // collapse — the same 20..=80 range the resolver and the live resize enforce.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 1);
+    ctrl.apply_tree_width(5);
+    assert_eq!(
+        ctrl.view_state().split_pct,
+        20,
+        "below the floor clamps to 20"
+    );
+    ctrl.apply_tree_width(95);
+    assert_eq!(
+        ctrl.view_state().split_pct,
+        80,
+        "above the ceiling clamps to 80"
+    );
+}
+
+#[test]
+fn apply_tree_width_then_live_resize_still_adjusts() {
+    // AC-11 / NC-6: config only SEEDS the startup split; the live grow/shrink keys still adjust it
+    // within the session (the resize controls are not disabled by the applier).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 1);
+    ctrl.apply_tree_width(50);
+    let seeded = ctrl.view_state().split_pct;
+    assert_eq!(seeded, 50);
+    ctrl.handle(Intent::GrowTree);
+    let grown = ctrl.view_state().split_pct;
+    assert!(
+        grown > seeded,
+        "GrowTree still grows the tree after the applier"
+    );
+    ctrl.handle(Intent::ShrinkTree);
+    assert!(
+        ctrl.view_state().split_pct < grown,
+        "ShrinkTree still shrinks the tree after the applier"
+    );
+}
+
+#[test]
+fn apply_tree_position_sets_the_side() {
+    // AC-11 (position half): the default side is Left; the applier sets it to Right.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 1);
+    assert_eq!(
+        ctrl.view_state().tree_position,
+        herdr_file_viewer::config::TreePosition::Left,
+        "the default tree side is left"
+    );
+    ctrl.apply_tree_position(herdr_file_viewer::config::TreePosition::Right);
+    assert_eq!(
+        ctrl.view_state().tree_position,
+        herdr_file_viewer::config::TreePosition::Right,
+        "the applier sets the tree side to right"
+    );
+}
+
+#[test]
+fn resizing_the_split_engages_manual_mode_and_lifts_the_cap() {
+    // The tree_max_cols cap is a default ceiling only: an explicit resize (grow/shrink key or a
+    // divider drag) marks the split manual, which lifts the cap so the resize is honoured instead of
+    // looking frozen on a wide, capped pane.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+
+    // Grow key engages manual mode.
+    let mut bykey = controller_with_lines(dir.path(), 1);
+    assert!(
+        !bykey.view_state().split_manual,
+        "starts non-manual (cap active)"
+    );
+    bykey.handle(Intent::GrowTree);
+    assert!(
+        bykey.view_state().split_manual,
+        "a grow key marks the split manual (lifts the cap)"
+    );
+
+    // A divider drag engages manual mode too.
+    let (mut bydrag, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    bydrag.set_pane_geometry(wide_geometry());
+    assert!(!bydrag.view_state().split_manual);
+    bydrag.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0));
+    bydrag.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 55, 0));
+    assert!(
+        bydrag.view_state().split_manual,
+        "a divider drag marks the split manual (lifts the cap)"
+    );
+}
+
+#[test]
+fn apply_tree_max_cols_sets_and_floors_the_cap() {
+    // The applier seeds the tree column cap; a below-floor value is clamped to MIN_TREE_MAX_COLS (10)
+    // so the tree can never be capped to an unreadable sliver.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 1);
+    ctrl.apply_tree_max_cols(60);
+    assert_eq!(
+        ctrl.view_state().tree_max_cols,
+        60,
+        "the applier sets the cap"
+    );
+    ctrl.apply_tree_max_cols(3);
+    assert_eq!(
+        ctrl.view_state().tree_max_cols,
+        10,
+        "a below-floor cap is clamped up to MIN_TREE_MAX_COLS"
+    );
+}
+
+#[test]
 fn apply_scroll_lines_sets_the_content_wheel_step() {
     // AC-5: the effective scroll step (config `scroll_lines`) is the number of lines a wheel event
     // advances the content pane. apply_scroll_lines(1) → one notch scrolls exactly 1 line (the
@@ -2370,7 +2501,11 @@ fn dragging_the_divider_resizes_the_split() {
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
     ctrl.set_pane_geometry(wide_geometry()); // divider at col 40, pane x=0 width=100
 
-    assert_eq!(ctrl.view_state().split_pct, 40, "default split");
+    assert_eq!(
+        ctrl.view_state().split_pct,
+        30,
+        "default split (DEFAULT_TREE_WIDTH)"
+    );
     ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0)); // grab the divider
     ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 0)); // drag right
     assert_eq!(
@@ -2386,6 +2521,39 @@ fn dragging_the_divider_resizes_the_split() {
         ctrl.view_state().split_pct,
         60,
         "no drag in progress → no resize"
+    );
+}
+
+#[test]
+fn dragging_the_divider_grows_the_tree_on_each_side() {
+    // AC-10: a divider drag toward the content pane grows the TREE regardless of which side the tree
+    // sits on — measured from the left edge when the tree is on the left, from the right edge when
+    // it is on the right. The pane is x=0 width=100 with the divider fixture at col 40.
+    let dir = TempDir::new();
+
+    // Tree on the LEFT: dragging the divider right (toward content) grows the tree to 60%.
+    let (mut left, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    left.set_pane_geometry(wide_geometry());
+    left.apply_tree_position(herdr_file_viewer::config::TreePosition::Left);
+    left.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0)); // grab the divider
+    left.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 0)); // drag right
+    assert_eq!(
+        left.view_state().split_pct,
+        60,
+        "left tree: dragging right toward content grows the tree to 60%"
+    );
+
+    // Tree on the RIGHT: dragging the divider left (toward content) grows the tree. The width is
+    // taken from the right edge, so a drag to col 25 gives 100 - 25 = 75% tree.
+    let (mut right, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    right.set_pane_geometry(wide_geometry());
+    right.apply_tree_position(herdr_file_viewer::config::TreePosition::Right);
+    right.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 40, 0)); // grab the divider
+    right.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 25, 0)); // drag left
+    assert_eq!(
+        right.view_state().split_pct,
+        75,
+        "right tree: dragging left toward content grows the tree to 75%"
     );
 }
 
@@ -9292,6 +9460,9 @@ fn open_help_appends_settings_section_when_display_is_set() {
         hide_dotfiles: false,
         update_check: true,
         scroll_lines: 3,
+        tree_width: 30,
+        tree_position: herdr_file_viewer::config::TreePosition::Left,
+        tree_max_cols: 45,
     };
     ctrl.set_settings_display(
         &eff,

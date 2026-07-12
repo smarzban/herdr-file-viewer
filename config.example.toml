@@ -76,6 +76,27 @@
 # effective speed is this times that. Default:
 #scroll_lines = 3
 
+# --- Layout ------------------------------------------------------------------
+
+# The tree/content split INSIDE the viewer's pane (not the size of the herdr
+# pane itself, which the host decides). `tree_width` is the directory tree
+# column's share of the pane, as a percent from 20 to 80; the content pane takes
+# the rest. You can still resize the split live with the grow/shrink keys or by
+# dragging the divider — this only sets the startup value. Default:
+#tree_width = 30
+
+# Which side of the content pane the tree is drawn on: "left" (default) or
+# "right". An unrecognized value falls back to "left". Default:
+#tree_position = "left"
+
+# Maximum tree width in CHARACTER COLUMNS (not a percent). The tree is drawn at
+# min(tree_width% of the pane, tree_max_cols), so on a wide pane (a full tab, a
+# big monitor) it stays compact instead of ballooning into a mostly-blank
+# column. Bites once the pane is wider than ~100 columns; below that the
+# percentage governs. Dragging the divider or the grow/shrink keys lifts the cap
+# (an explicit resize wins). Set it high (up to 1000) to disable. Default:
+#tree_max_cols = 30
+
 # --- Keybindings -------------------------------------------------------------
 #
 # Remap any global key. Key each entry by its INTENT NAME: the stable snake_case

@@ -249,7 +249,10 @@ pub fn settings_text(
          reveal        = {reveal}\n\
          hide_dotfiles = {hide_dotfiles}\n\
          update_check  = {update_check}\n\
-         scroll_lines  = {scroll_lines}",
+         scroll_lines  = {scroll_lines}\n\
+         tree_width    = {tree_width}\n\
+         tree_position = {tree_position}\n\
+         tree_max_cols = {tree_max_cols}",
         editor = opt_os(&eff.editor),
         markdown = opt_argv(&eff.markdown),
         diff = opt_argv(&eff.diff),
@@ -259,6 +262,9 @@ pub fn settings_text(
         hide_dotfiles = eff.hide_dotfiles,
         update_check = if eff.update_check { "on" } else { "off" },
         scroll_lines = eff.scroll_lines,
+        tree_width = eff.tree_width,
+        tree_position = eff.tree_position.label(),
+        tree_max_cols = eff.tree_max_cols,
     )
 }
 
@@ -747,6 +753,9 @@ mod tests {
             hide_dotfiles: true,
             update_check: false,
             scroll_lines: 7,
+            tree_width: 25,
+            tree_position: crate::config::TreePosition::Right,
+            tree_max_cols: 50,
         }
     }
 
@@ -770,6 +779,9 @@ mod tests {
             "hide_dotfiles",
             "update_check",
             "scroll_lines",
+            "tree_width",
+            "tree_position",
+            "tree_max_cols",
         ] {
             assert!(
                 text.contains(key),
@@ -781,6 +793,22 @@ mod tests {
             text.lines()
                 .any(|l| l.trim_start().starts_with("scroll_lines") && l.contains('7')),
             "settings_text must show the effective scroll_lines value (7):\n{text}"
+        );
+        // AC-12: the effective tree width (25) and tree position (right) each appear as their own row.
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("tree_width") && l.contains("25")),
+            "settings_text must show the effective tree_width value (25):\n{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("tree_position") && l.contains("right")),
+            "settings_text must show the effective tree_position (right):\n{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("tree_max_cols") && l.contains("50")),
+            "settings_text must show the effective tree_max_cols value (50):\n{text}"
         );
         assert!(text.contains("nano"), "editor value must appear:\n{text}");
         assert!(

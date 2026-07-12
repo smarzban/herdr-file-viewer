@@ -40,6 +40,9 @@ fn config_example_documents_every_config_key() {
         "hide_dotfiles",
         "update_check",
         "scroll_lines",
+        "tree_width",
+        "tree_position",
+        "tree_max_cols",
     ] {
         assert!(
             has_commented_assignment(CONFIG_EXAMPLE, key),
@@ -86,6 +89,22 @@ fn readme_and_example_document_scroll_lines() {
         CONFIG_EXAMPLE.contains("scroll_lines"),
         "config.example.toml must document the `scroll_lines` config key"
     );
+}
+
+#[test]
+fn readme_and_example_document_tree_layout() {
+    // AC-13: the tree layout config keys must be documented in BOTH the README and the bundled
+    // config.example.toml, so the feature ships with discoverable, copy-pasteable settings.
+    for key in ["tree_width", "tree_position", "tree_max_cols"] {
+        assert!(
+            README.contains(key),
+            "README.md must document the `{key}` config key"
+        );
+        assert!(
+            CONFIG_EXAMPLE.contains(key),
+            "config.example.toml must document the `{key}` config key"
+        );
+    }
 }
 
 #[test]

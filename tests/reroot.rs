@@ -186,6 +186,9 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     ctrl.handle(Intent::ToggleHidden); // hide-hidden on (#46)
     ctrl.handle(Intent::ToggleBaseline); // baseline Head → Base
 
+    ctrl.apply_tree_position(herdr_file_viewer::config::TreePosition::Right); // tree side → Right
+    ctrl.apply_tree_max_cols(55); // tree column cap → 55 (off its default)
+
     let split_pref = ctrl.split_pct();
     assert_ne!(split_pref, split_default, "GrowTree should move the split");
     assert!(ctrl.wrap_override(), "wrap toggled on");
@@ -233,6 +236,12 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
 
     // Preferences are CARRIED (AC-12) — none reset. (Accessor-based, mode-independent.)
     assert_eq!(ctrl.split_pct(), split_pref, "split_pct carried");
+    assert_eq!(
+        ctrl.view_state().tree_position,
+        herdr_file_viewer::config::TreePosition::Right,
+        "tree_position carried"
+    );
+    assert_eq!(ctrl.view_state().tree_max_cols, 55, "tree_max_cols carried");
     assert!(ctrl.wrap_override(), "wrap_override carried");
     assert!(ctrl.changed_only(), "changed_only carried");
     assert!(ctrl.show_ignored(), "show_ignored carried");

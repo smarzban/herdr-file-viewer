@@ -58,11 +58,21 @@ use std::time::{Duration, Instant};
 
 /// Tree-column width as a percentage of the pane: its default and the bounds the resize keys
 /// clamp to, so neither column can be squeezed to nothing.
-const SPLIT_DEFAULT: u16 = 40;
-const SPLIT_MIN: u16 = 20;
-const SPLIT_MAX: u16 = 80;
+// The split range is owned by `crate::config` (the single source of truth), so the config-value
+// clamp (`resolve`) and this live keyboard/drag-resize clamp can never drift. `SPLIT_DEFAULT` seeds
+// the initial `split_pct` before any `apply_tree_width` from the effective config.
+const SPLIT_DEFAULT: u16 = crate::config::DEFAULT_TREE_WIDTH;
+const SPLIT_MIN: u16 = crate::config::MIN_TREE_WIDTH;
+const SPLIT_MAX: u16 = crate::config::MAX_TREE_WIDTH;
 /// How many percentage points one resize keypress moves the divider.
 const SPLIT_STEP: u16 = 5;
+// The floor for an INTERACTIVE resize (grow/shrink keys, divider drag), below the config/startup
+// floor `SPLIT_MIN`. A hand resize may pull the tree narrower than the startup minimum — down to the
+// same 10% the Presenter's `columns()` renders at — so on a wide pane the tree can be shrunk below a
+// `tree_max_cols`-capped default (which can sit below `SPLIT_MIN`, leaving "shrink" nowhere to go
+// otherwise). `SPLIT_MIN` still bounds the config-seeded startup value; this only widens the
+// interactive range.
+const SPLIT_DRAG_MIN: u16 = 10;
 /// How many columns one horizontal-scroll keypress moves the content pane.
 const HSCROLL_STEP: u16 = 8;
 /// Wall-clock bound for the synchronous What's New markdown render in `open_help`. The render runs
@@ -393,8 +403,24 @@ pub struct Controller {
     /// the finder list, and the help overlay.
     wheel_step: isize,
     /// The tree column's share of the width, as a percentage (the rest is the content pane).
-    /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002).
+    /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002). Seeded at
+    /// startup from the effective config via [`apply_tree_width`](Self::apply_tree_width).
     split_pct: u16,
+    /// Which side of the content pane the tree is drawn on. Seeded at startup from the effective
+    /// config via [`apply_tree_position`](Self::apply_tree_position); a session preference carried
+    /// across a re-root (like `split_pct`). The Presenter reads it through the view state.
+    tree_position: crate::config::TreePosition,
+    /// The maximum tree width in character columns (`tree_max_cols`): the tree is drawn at
+    /// `min(split_pct% of the pane, tree_max_cols)` so it never over-allocates on a very wide pane.
+    /// Seeded at startup via [`apply_tree_max_cols`](Self::apply_tree_max_cols); read by the
+    /// Presenter through the view state. Carried across a re-root (like `split_pct`).
+    tree_max_cols: u16,
+    /// Whether the user has resized the split by hand this session (grow/shrink keys or a divider
+    /// drag). `tree_max_cols` caps the tree only while this is `false`; the first manual resize seeds
+    /// `split_pct` from the currently-displayed width and lifts the cap, so the resize is honoured
+    /// exactly instead of looking frozen on a wide, capped pane. Carried across a re-root (like
+    /// `split_pct`).
+    split_manual: bool,
     /// User override of the per-mode wrap default (the `w` toggle). `None` ⇒ the per-mode default
     /// applies (prose wraps, code/diffs don't); `Some(true)` ⇒ force wrap on everywhere (read long
     /// code/diff lines); `Some(false)` ⇒ force wrap off everywhere — which, for rendered markdown,
@@ -636,6 +662,9 @@ impl Controller {
             content_height: 0,
             wheel_step: crate::config::DEFAULT_SCROLL_LINES as isize,
             split_pct: SPLIT_DEFAULT,
+            tree_position: crate::config::TreePosition::Left,
+            tree_max_cols: crate::config::DEFAULT_TREE_MAX_COLS,
+            split_manual: false,
             wrap_override: None,
             zoomed: false,
             host_zoomed: false,
@@ -836,7 +865,7 @@ impl Controller {
         self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
-        // changed_only, split_pct, wrap_override, baseline keep their current values. The fresh
+        // changed_only, split_pct, tree_position, tree_max_cols, split_manual, wrap_override, baseline keep their current values. The fresh
         // TreeModel starts with default filter flags. `show_ignored` and `hide_hidden` are
         // git-independent, so apply them now. The changed-only *filter* is NOT applied here: it
         // must be applied against the REAL changed-set, which `dispatch_status_refresh` computes
@@ -1073,6 +1102,32 @@ impl Controller {
         self.wheel_step = lines.max(1) as isize;
     }
 
+    /// Seed the startup split ratio from the effective config (`tree_width`). Called once at
+    /// startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The live keyboard/drag
+    /// resize adjusts `split_pct` afterward within the session; this only sets its initial value.
+    pub fn apply_tree_width(&mut self, pct: u16) {
+        // Defensive clamp at the public boundary: the resolver already clamps to
+        // `SPLIT_MIN..=SPLIT_MAX`, but guard locally so a direct/out-of-range caller can never
+        // collapse a column (matches the live-resize clamp).
+        self.split_pct = pct.clamp(SPLIT_MIN, SPLIT_MAX);
+    }
+
+    /// Seed the startup tree side from the effective config (`tree_position`). Called once at
+    /// startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). Pure layout state read
+    /// by the Presenter through the view state — no re-render needed (the content is unchanged).
+    pub fn apply_tree_position(&mut self, position: crate::config::TreePosition) {
+        self.tree_position = position;
+    }
+
+    /// Seed the startup tree column cap from the effective config (`tree_max_cols`). Called once at
+    /// startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). Pure layout state read
+    /// by the Presenter through the view state — no re-render needed (the content is unchanged).
+    pub fn apply_tree_max_cols(&mut self, cols: u16) {
+        // Defensive floor at the public boundary: the resolver already clamps to >= MIN_TREE_MAX_COLS,
+        // but guard locally so a direct/out-of-range caller can never cap the tree to nothing.
+        self.tree_max_cols = cols.max(crate::config::MIN_TREE_MAX_COLS);
+    }
+
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
     pub fn set_content_viewport(&mut self, width: u16, height: u16) {
@@ -1181,6 +1236,9 @@ impl Controller {
             wrap,
             content_pad_left,
             split_pct: self.split_pct,
+            tree_position: self.tree_position,
+            tree_max_cols: self.tree_max_cols,
+            split_manual: self.split_manual,
             zoomed: self.zoomed,
             update_banner: self.update_banner(),
             picker: self.picker_view(),
@@ -1960,9 +2018,47 @@ impl Controller {
     /// Move the tree/content divider by `delta` percentage points, clamped so neither column
     /// can collapse. Pure layout state — no re-render is needed (the content is unchanged).
     fn resize_split(&mut self, delta: i16) -> Effects {
-        let next = (self.split_pct as i16 + delta).clamp(SPLIT_MIN as i16, SPLIT_MAX as i16);
+        self.engage_manual_split();
+        let next =
+            (self.split_pct as i16 + delta).clamp(self.split_floor_pct() as i16, SPLIT_MAX as i16);
         self.split_pct = next as u16;
         Effects::redraw()
+    }
+
+    /// First-manual-resize seam: mark the split user-controlled (which lifts the `tree_max_cols`
+    /// cap) and, so the tree doesn't jump on that first keypress/drag, seed `split_pct` from the
+    /// width the tree is *currently displayed* at (which may be capped below `split_pct`%). A no-op
+    /// after the first call, and when no frame has been drawn yet (no geometry to read).
+    fn engage_manual_split(&mut self) {
+        if self.split_manual {
+            return;
+        }
+        // Convert the displayed tree column to a percentage of the drawn body width, so the resize
+        // continues from what's on screen rather than snapping to the uncapped `split_pct`%.
+        // `tree_inner` is the tree's TEXT rect: reconstruct the outer column as interior + its two
+        // block borders + the 2-cell scrollbar gutter the Presenter reserves when a tree vbar is drawn.
+        if let Some(tree) = self.geom.tree_inner
+            && self.geom.area_width > 0
+        {
+            let gutter = if self.geom.tree_vbar.is_some() { 2 } else { 0 };
+            let tree_outer = tree.width.saturating_add(2).saturating_add(gutter);
+            let pct = (tree_outer as u32 * 100 / self.geom.area_width as u32) as u16;
+            self.split_pct = pct.clamp(self.split_floor_pct(), SPLIT_MAX);
+        }
+        self.split_manual = true;
+    }
+
+    /// The lowest split percentage an interactive resize may reach on the current frame: the
+    /// pane-aware "≥ [`MIN_TREE_MAX_COLS`](crate::config::MIN_TREE_MAX_COLS) columns" floor, so a hand
+    /// resize can pull the tree as narrow as the cap allows on any pane width (a fixed percentage
+    /// floor would be far more than the cap's minimum on a very wide pane). Falls back to
+    /// [`SPLIT_DRAG_MIN`] before the first frame is drawn (no geometry width yet).
+    fn split_floor_pct(&self) -> u16 {
+        if self.geom.area_width > 0 {
+            crate::presenter::min_tree_split_pct(self.geom.area_width)
+        } else {
+            SPLIT_DRAG_MIN
+        }
     }
 
     /// Flip the content-wrap state (the `w` key): force it to the opposite of what the current

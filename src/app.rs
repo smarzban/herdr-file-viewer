@@ -106,6 +106,12 @@ pub fn run() -> io::Result<()> {
     // Apply the config-driven mouse-wheel scroll step (`scroll_lines`); already clamped to >= 1 by
     // the resolver, so the wheel always advances at least one line/item.
     controller.apply_scroll_lines(eff.scroll_lines);
+    // Apply the config-driven startup layout: the tree/content split ratio (`tree_width`, already
+    // clamped to the split range) and the tree side (`tree_position`). The live grow/shrink keys and
+    // divider drag still adjust the split within the session.
+    controller.apply_tree_width(eff.tree_width);
+    controller.apply_tree_position(eff.tree_position);
+    controller.apply_tree_max_cols(eff.tree_max_cols);
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.

@@ -77,6 +77,11 @@ fn sample_state() -> ViewState {
         wrap: false,
         content_pad_left: false,
         split_pct: 40,
+        tree_position: herdr_file_viewer::config::TreePosition::Left,
+        // A high cap so the percentage governs in these fixtures (the cap only bites on very wide
+        // panes; the cap's own behaviour is covered by dedicated tests).
+        tree_max_cols: 1000,
+        split_manual: false,
         zoomed: false,
         update_banner: None,
         picker: None,
@@ -1177,6 +1182,243 @@ fn geometry_matches_the_wide_two_column_layout() {
         "a wide layout has a draggable divider"
     );
     assert_eq!((g.area_x, g.area_width), (0, 100));
+}
+
+#[test]
+fn geometry_left_position_puts_the_tree_on_the_left() {
+    // AC-8: with tree_position = Left (the default), the tree column is drawn to the left of the
+    // content column — today's layout, unchanged.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut s = sample_state();
+    s.tree_position = herdr_file_viewer::config::TreePosition::Left;
+    let g = geometry(area, &s);
+    let t = g.tree_inner.expect("tree interior");
+    let c = g.content_inner.expect("content interior");
+    assert!(t.x < c.x, "tree is left of content ({} < {})", t.x, c.x);
+}
+
+#[test]
+fn geometry_right_position_puts_the_tree_on_the_right() {
+    // AC-9: with tree_position = Right, the tree column is drawn to the right of the content column,
+    // and the tree still occupies tree_width percent of the pane (only the side flips; the width is
+    // unchanged).
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut left = sample_state();
+    left.tree_position = herdr_file_viewer::config::TreePosition::Left;
+    left.split_pct = 30;
+    let mut right = sample_state();
+    right.tree_position = herdr_file_viewer::config::TreePosition::Right;
+    right.split_pct = 30;
+
+    let gr = geometry(area, &right);
+    let t = gr.tree_inner.expect("tree interior");
+    let c = gr.content_inner.expect("content interior");
+    assert!(t.x > c.x, "tree is right of content ({} > {})", t.x, c.x);
+    // The tree keeps the SAME width whichever side it sits on (30% of the pane here).
+    let tree_w_left = geometry(area, &left).tree_inner.unwrap().width;
+    assert_eq!(
+        t.width, tree_w_left,
+        "the tree width is unchanged by the side flip"
+    );
+    // AC-9: the tree occupies tree_width percent of the pane, within one column of rounding. The
+    // tree COLUMN is 30% of 100 = 30 cols; its interior is that minus the two block borders (~28).
+    // Asserting the absolute share (not just "narrower than content") catches a layout that used
+    // the wrong percentage on both sides.
+    let tree_outer = t.width + 2; // interior + left/right border
+    assert!(
+        tree_outer.abs_diff(30) <= 1,
+        "the right tree column is ~30% of the 100-col pane (outer width {tree_outer}, want ~30)"
+    );
+    // 30% tree vs 70% content: the tree is the narrower column.
+    assert!(
+        t.width < c.width,
+        "the 30% tree column ({}) is narrower than the content ({})",
+        t.width,
+        c.width
+    );
+}
+
+#[test]
+fn geometry_caps_the_tree_at_tree_max_cols_on_a_wide_pane() {
+    // On a very wide pane, tree_width% would over-allocate a mostly-blank tree; tree_max_cols reins
+    // it in to a fixed column count. On a normal pane where the percentage is under the cap, the
+    // percentage still governs and nothing changes.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 24,
+    };
+    let narrow = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let mut capped = sample_state();
+    capped.split_pct = 30;
+    capped.tree_max_cols = 45;
+    let mut uncapped = sample_state();
+    uncapped.split_pct = 30;
+    uncapped.tree_max_cols = 1000;
+
+    // Wide pane: 30% of 200 = 60 cols would be the tree; the cap holds it to ~45 (outer).
+    let t_capped = geometry(wide, &capped).tree_inner.unwrap().width;
+    let t_uncapped = geometry(wide, &uncapped).tree_inner.unwrap().width;
+    assert!(
+        t_capped < t_uncapped,
+        "the cap makes the wide-pane tree narrower ({t_capped} < {t_uncapped})"
+    );
+    assert!(
+        (t_capped + 2).abs_diff(45) <= 1,
+        "the capped tree column is ~45 cols (outer {})",
+        t_capped + 2
+    );
+    assert!(
+        (t_uncapped + 2).abs_diff(60) <= 1,
+        "the uncapped tree column is ~60 cols (30% of 200; outer {})",
+        t_uncapped + 2
+    );
+
+    // Normal pane: 30% of 100 = 30 cols < 45, so the cap does NOT bite — the capped and uncapped
+    // layouts are identical and the percentage governs.
+    let t_narrow_capped = geometry(narrow, &capped).tree_inner.unwrap().width;
+    let t_narrow_uncapped = geometry(narrow, &uncapped).tree_inner.unwrap().width;
+    assert_eq!(
+        t_narrow_capped, t_narrow_uncapped,
+        "on a normal pane the cap does not bite; the percentage governs"
+    );
+}
+
+#[test]
+fn geometry_ignores_the_cap_after_a_manual_resize() {
+    // The cap is a DEFAULT ceiling only: once the user has resized by hand (split_manual), the tree
+    // honours split_pct% exactly, even past tree_max_cols — otherwise a divider drag / grow key would
+    // look frozen on a wide, capped pane.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 24,
+    };
+    let mut capped = sample_state();
+    capped.split_pct = 40;
+    capped.tree_max_cols = 45;
+    capped.split_manual = false;
+    let mut manual = sample_state();
+    manual.split_pct = 40;
+    manual.tree_max_cols = 45;
+    manual.split_manual = true;
+
+    let t_capped = geometry(wide, &capped).tree_inner.unwrap().width;
+    let t_manual = geometry(wide, &manual).tree_inner.unwrap().width;
+    assert!(
+        (t_capped + 2).abs_diff(45) <= 1,
+        "before a manual resize the tree is capped at ~45 (outer {})",
+        t_capped + 2
+    );
+    // 40% of 200 = 80 cols: after a manual resize the cap is lifted and the percentage governs.
+    assert!(
+        (t_manual + 2).abs_diff(80) <= 1,
+        "after a manual resize the tree follows split_pct% (~80 cols; outer {})",
+        t_manual + 2
+    );
+    assert!(
+        t_manual > t_capped,
+        "the manual resize widened the tree past the cap"
+    );
+}
+
+#[test]
+fn min_tree_split_pct_yields_at_least_the_min_columns() {
+    // The interactive/render floor is the % that gives >= MIN_TREE_MAX_COLS (10) columns, so it is
+    // small on a wide pane (a narrow tree is representable) and larger on a narrow one (no collapse).
+    use herdr_file_viewer::presenter::min_tree_split_pct;
+    for w in [80u16, 100, 170, 200, 1000] {
+        let pct = min_tree_split_pct(w);
+        assert!(
+            (pct as u32 * w as u32 / 100) >= 10,
+            "floor {pct}% of {w} cols must be >= 10 columns"
+        );
+    }
+    // Wider pane -> smaller floor.
+    assert!(min_tree_split_pct(1000) < min_tree_split_pct(100));
+    assert_eq!(
+        min_tree_split_pct(1000),
+        1,
+        "10 cols of a 1000-col pane is 1%"
+    );
+}
+
+#[test]
+fn geometry_allows_a_narrow_manual_tree_on_a_very_wide_pane() {
+    // Medium-fix: on an ultrawide pane the tree floor is pane-aware, so a manually-narrowed (or
+    // capped) tree is representable instead of jumping up to a fixed 10% of the pane (100 cols here).
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 24,
+    };
+    let mut s = sample_state();
+    s.split_manual = true;
+    s.tree_max_cols = 1000; // no cap
+    s.split_pct = 3; // 3% of 1000 = ~30 cols; a fixed 10% floor would force >= 100
+    let t = geometry(wide, &s).tree_inner.unwrap().width;
+    assert!(
+        (t + 2).abs_diff(30) <= 2,
+        "a 3% tree on a 1000-col pane stays ~30 cols (outer {}), not floored to 10% (100 cols)",
+        t + 2
+    );
+}
+
+#[test]
+fn geometry_caps_the_tree_on_the_right_side_too() {
+    // The capped layout arm must also work with the tree on the RIGHT (content = Min(0), tree =
+    // Length(cap)): tree on the right, capped to ~cap columns, content takes the larger remainder.
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 24,
+    };
+    let mut s = sample_state();
+    s.tree_position = herdr_file_viewer::config::TreePosition::Right;
+    s.split_pct = 30; // 30% of 200 = 60 cols would be the tree...
+    s.tree_max_cols = 45; // ...capped to 45
+    s.split_manual = false;
+    let g = geometry(wide, &s);
+    let t = g.tree_inner.unwrap();
+    let c = g.content_inner.unwrap();
+    assert!(t.x > c.x, "tree is on the right ({} > {})", t.x, c.x);
+    assert!(
+        (t.width + 2).abs_diff(45) <= 1,
+        "the right tree is capped to ~45 cols (outer {})",
+        t.width + 2
+    );
+    assert!(c.width > t.width, "content takes the larger remainder");
 }
 
 #[test]
