@@ -65,8 +65,6 @@ const SPLIT_MAX: u16 = 80;
 const SPLIT_STEP: u16 = 5;
 /// How many columns one horizontal-scroll keypress moves the content pane.
 const HSCROLL_STEP: u16 = 8;
-/// How many content lines one mouse-wheel notch scrolls (matches herdr's default).
-const WHEEL_STEP: isize = 3;
 /// Wall-clock bound for the synchronous What's New markdown render in `open_help`. The render runs
 /// on the input thread (the design settled on prerender-at-open), so it must be bounded well within
 /// the AC-22 responsiveness budget — far tighter than the shared 5s content `RENDER_TIMEOUT`, which
@@ -387,6 +385,13 @@ pub struct Controller {
     /// `content_scroll` so the user cannot scroll past the last screenful.
     content_width: u16,
     content_height: u16,
+    /// How many lines (or finder list items, or help-overlay lines) one mouse-wheel event advances
+    /// — the effective **scroll step** (config `scroll_lines`, else [`crate::config::DEFAULT_SCROLL_LINES`]).
+    /// Set once at startup via [`apply_scroll_lines`](Self::apply_scroll_lines). Held as `isize`
+    /// because the wheel handlers negate it for wheel-up. The directory tree ignores the magnitude
+    /// (it advances one row per event via the delta's sign), so this only affects the content pane,
+    /// the finder list, and the help overlay.
+    wheel_step: isize,
     /// The tree column's share of the width, as a percentage (the rest is the content pane).
     /// Adjustable from the keyboard since the viewer owns both columns (ADR-0002).
     split_pct: u16,
@@ -629,6 +634,7 @@ impl Controller {
             content_hscroll: 0,
             content_width: 0,
             content_height: 0,
+            wheel_step: crate::config::DEFAULT_SCROLL_LINES as isize,
             split_pct: SPLIT_DEFAULT,
             wrap_override: None,
             zoomed: false,
@@ -1053,6 +1059,15 @@ impl Controller {
         // selection — mirrors toggle_hidden's own post-filter re-render, and supersedes
         // `Controller::new`'s single unfiltered render dispatched just before this runs.
         self.dispatch_render();
+    }
+
+    /// Set the mouse-wheel **scroll step** from the effective config (`scroll_lines`). Called once
+    /// at startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The resolver has
+    /// already clamped the value to ≥ 1, so a wheel event always advances at least one line/item;
+    /// storing it as `isize` lets the wheel handlers negate it for wheel-up. Affects the content
+    /// pane, the finder list, and the help overlay (not the tree, which is sign-only).
+    pub fn apply_scroll_lines(&mut self, lines: u16) {
+        self.wheel_step = lines as isize;
     }
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
