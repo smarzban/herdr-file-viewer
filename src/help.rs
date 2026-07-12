@@ -248,7 +248,8 @@ pub fn settings_text(
          open          = {open}\n\
          reveal        = {reveal}\n\
          hide_dotfiles = {hide_dotfiles}\n\
-         update_check  = {update_check}",
+         update_check  = {update_check}\n\
+         scroll_lines  = {scroll_lines}",
         editor = opt_os(&eff.editor),
         markdown = opt_argv(&eff.markdown),
         diff = opt_argv(&eff.diff),
@@ -257,6 +258,7 @@ pub fn settings_text(
         reveal = opt_argv(&eff.reveal),
         hide_dotfiles = eff.hide_dotfiles,
         update_check = if eff.update_check { "on" } else { "off" },
+        scroll_lines = eff.scroll_lines,
     )
 }
 
@@ -767,12 +769,19 @@ mod tests {
             "reveal",
             "hide_dotfiles",
             "update_check",
+            "scroll_lines",
         ] {
             assert!(
                 text.contains(key),
                 "settings_text must contain a row for '{key}':\n{text}"
             );
         }
+        // AC-9: the effective scroll step is shown as its own row with its value (7 in the fixture).
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("scroll_lines") && l.contains('7')),
+            "settings_text must show the effective scroll_lines value (7):\n{text}"
+        );
         assert!(text.contains("nano"), "editor value must appear:\n{text}");
         assert!(
             text.contains("glow -w 80"),
