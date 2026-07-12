@@ -12,6 +12,12 @@ use serde::Deserialize;
 /// the single source of truth for both the resolver's default and the controller's initial value.
 pub const DEFAULT_SCROLL_LINES: u16 = 3;
 
+/// The largest accepted `scroll_lines`. Past ~this many lines per event the wheel just jumps to the
+/// pane edge (the content/finder/help views clamp to their bounds), so a larger configured value is
+/// clamped down to this rather than taken literally — keeping the setting to sane line-scrolling
+/// instead of page-jumping. The effective range is therefore `1..=MAX_SCROLL_LINES`.
+pub const MAX_SCROLL_LINES: u16 = 10;
+
 /// A `[keys]` entry's value: the key(s) an intent binds to, written **either** as a single string
 /// (`refresh = "g"`) **or** as a TOML array of strings (`nav_up = ["w", "Up"]`). `#[serde(untagged)]`
 /// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
@@ -40,9 +46,10 @@ pub struct Config {
     pub hide_dotfiles: Option<bool>,
     pub update_check: Option<bool>,
     /// The mouse-wheel **scroll step**: how many lines/items each wheel event advances. `None`
-    /// falls back to [`DEFAULT_SCROLL_LINES`]; a value of `0` is clamped up to `1` by the resolver
-    /// (a `0` step would freeze scrolling). A non-representable value (negative / non-integer) fails
-    /// the parse and degrades the whole config to defaults via the existing `Malformed` path.
+    /// falls back to [`DEFAULT_SCROLL_LINES`]; the resolver clamps a present value to
+    /// `1..=`[`MAX_SCROLL_LINES`] (`0` would freeze scrolling; an over-large value just page-jumps).
+    /// A non-representable value (negative / non-integer / above `u16`) fails the parse and degrades
+    /// the whole config to defaults via the existing `Malformed` path.
     pub scroll_lines: Option<u16>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
@@ -155,9 +162,9 @@ pub struct EffectiveSettings {
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
     pub update_check: bool,
-    /// The effective mouse-wheel **scroll step** (always ≥ 1): the config `scroll_lines` clamped to
-    /// a floor of 1 when present, else [`DEFAULT_SCROLL_LINES`]. No environment variable
-    /// participates — this is a config-or-default UI preference.
+    /// The effective mouse-wheel **scroll step**: the config `scroll_lines` clamped to
+    /// `1..=`[`MAX_SCROLL_LINES`] when present, else [`DEFAULT_SCROLL_LINES`]. No environment
+    /// variable participates — this is a config-or-default UI preference.
     pub scroll_lines: u16,
 }
 
@@ -198,12 +205,13 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         None => get_env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK").is_none(),
     };
 
-    // Config > default; no env var. Clamp the floor to 1 so a configured `0` can never freeze
-    // scrolling (AC-3). A non-representable value never reaches here — it failed the parse and
-    // arrived as `None` on a defaulted `Config` (AC-4).
+    // Config > default; no env var. Clamp to `1..=MAX_SCROLL_LINES`: a configured `0` can never
+    // freeze scrolling and an over-large value is capped to a sane line step rather than page-jumping
+    // (AC-3). A value that isn't a representable non-negative integer never reaches here — it failed
+    // the parse and arrived as `None` on a defaulted `Config` (AC-4).
     let scroll_lines = config
         .scroll_lines
-        .map(|n| n.max(1))
+        .map(|n| n.clamp(1, MAX_SCROLL_LINES))
         .unwrap_or(DEFAULT_SCROLL_LINES);
 
     EffectiveSettings {
@@ -724,6 +732,23 @@ mod tests {
         };
         let effective = resolve(&config, |_| None);
         assert_eq!(effective.scroll_lines, 1);
+    }
+
+    #[test]
+    fn resolve_scroll_lines_clamps_to_max() {
+        // AC-3: an over-large value is capped to MAX_SCROLL_LINES (page-jumping is pointless — the
+        // views clamp to their bounds), and the boundary value passes through unchanged.
+        let over = Config {
+            scroll_lines: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&over, |_| None).scroll_lines, MAX_SCROLL_LINES);
+        assert_eq!(MAX_SCROLL_LINES, 10);
+        let at_max = Config {
+            scroll_lines: Some(MAX_SCROLL_LINES),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&at_max, |_| None).scroll_lines, MAX_SCROLL_LINES);
     }
 
     #[test]
