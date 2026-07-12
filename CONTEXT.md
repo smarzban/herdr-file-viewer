@@ -98,6 +98,20 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   lines) the mouse wheel advances per wheel event. Set by the `scroll_lines` **config file**
   key (config > default; default 3, clamped to the range 1 to 10). The directory tree is
   unaffected: it always advances one row per wheel event.
+- **tree width**: the directory tree column's share of the viewer pane, as a percent (the
+  content pane takes the rest). Set by the `tree_width` **config file** key (config > default;
+  default 30, clamped to the range 20 to 80). Seeds the startup split; the live grow/shrink keys
+  and the divider drag still adjust it within a session. This is the split INSIDE the viewer's
+  pane, distinct from the size of the herdr **pane** itself (the host decides that).
+- **tree position**: which side of the content pane the directory tree is drawn on — `left`
+  (default, today's layout) or `right`. Set by the `tree_position` **config file** key
+  (config > default). An unrecognized value falls back to `left`.
+- **tree column cap**: the maximum tree width in character columns (not a percent). The tree is
+  drawn at `min(`**tree width**`% of the pane, tree_max_cols)`, so a wide pane (a full tab, a big
+  monitor) keeps the tree compact instead of over-allocating blank space. Set by the `tree_max_cols`
+  **config file** key (config > default; default 30, clamped to the range 10 to 1000; a large value
+  effectively disables the cap). A default ceiling only: a hand resize (divider drag or the
+  grow/shrink keys) lifts it for the session.
 - **keybinding registry**: the single data-driven table binding each global viewer action
   to its default key(s) and a human description; the source of truth the input dispatcher
   decodes from and the help overlay and README both derive from.

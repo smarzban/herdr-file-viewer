@@ -420,14 +420,27 @@ impl Controller {
     }
 
     /// During a divider drag, set the split so the divider tracks the cursor column — clamped
-    /// like the keyboard resize so neither column can collapse.
+    /// like the keyboard resize so neither column can collapse. The tree width is measured from
+    /// whichever edge the tree hugs, so a drag toward the content pane always *grows* the tree
+    /// regardless of the side: from the left edge when the tree is on the left, and from the right
+    /// edge when it is on the right.
     fn resize_split_to_col(&mut self, col: u16) -> Effects {
         if self.geom.area_width == 0 {
             return Effects::noop();
         }
-        let tree_w = col.saturating_sub(self.geom.area_x) as i32;
-        let pct =
-            (tree_w * 100 / self.geom.area_width as i32).clamp(SPLIT_MIN as i32, SPLIT_MAX as i32);
+        // A drag is an explicit resize: lift the `tree_max_cols` cap (the drag below sets `split_pct`
+        // straight from the cursor, so there is no jump — the divider is grabbed at its drawn,
+        // possibly-capped, position).
+        self.engage_manual_split();
+        let tree_w = match self.tree_position {
+            crate::config::TreePosition::Left => col.saturating_sub(self.geom.area_x) as i32,
+            crate::config::TreePosition::Right => {
+                let right_edge = self.geom.area_x as i32 + self.geom.area_width as i32;
+                (right_edge - col as i32).max(0)
+            }
+        };
+        let pct = (tree_w * 100 / self.geom.area_width as i32)
+            .clamp(self.split_floor_pct() as i32, SPLIT_MAX as i32);
         self.split_pct = pct as u16;
         Effects::redraw()
     }

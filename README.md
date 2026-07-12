@@ -328,8 +328,8 @@ normal case — every key falls back to its default.
 fallback tier below the config key and above the built-in default — `editor` (`$EDITOR`) and
 `update_check` (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env >
 default` chain. Every other key (`markdown`, `diff`, `syntax`, `open`, `reveal`,
-`hide_dotfiles`, `scroll_lines`) has no applicable environment variable; for those it's
-`config > default` only.
+`hide_dotfiles`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`) has no applicable
+environment variable; for those it's `config > default` only.
 
 ```toml
 # ~/.config/herdr-file-viewer/config.toml (or the herdr-provided path above)
@@ -346,7 +346,18 @@ reveal = "nautilus"
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 update_check = true         # false to disable the once-a-day update check
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
+tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
+tree_position = "left"      # which side the directory tree sits on: "left" (default) or "right"
+tree_max_cols = 30          # cap the tree at this many columns so it stays compact on a wide pane
 ```
+
+`tree_width` / `tree_position` set the **startup** tree/content split inside the viewer's own pane
+(not the size of the herdr pane, which the host decides). You can still resize the split live with
+the grow/shrink keys or by dragging the divider; the config just seeds the initial value.
+`tree_max_cols` is a **column** ceiling (not a percent): the tree is drawn at
+`min(tree_width% of the pane, tree_max_cols)`, so a full-terminal tab gives the extra width to the
+content pane instead of a mostly-blank tree. It only bites past ~100 columns, and dragging the
+divider or the grow/shrink keys lifts it (an explicit resize wins); set it high to disable.
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into
 arguments** the way a shell would for simple cases — whitespace splits, double-quotes group a
@@ -410,7 +421,7 @@ to remap it), its effective key(s), and its description, marking the ones you ha
 
 A few things on the way:
 
-- **Themes and layout**: the [config file](#configuration) already covers the editor, renderer, and opener commands, a couple of startup toggles, and now [customizable keybindings](#keybindings); a theme and the default split/layout are still on the way.
+- **Themes and layout**: the [config file](#configuration) already covers the editor, renderer, and opener commands, a couple of startup toggles, the default tree/content split and side (`tree_width` / `tree_position`), and [customizable keybindings](#keybindings); a theme is still on the way.
 
 **Hit a bug, or want a feature?** Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues). Bug reports and feature requests are very welcome.
 
