@@ -1067,7 +1067,10 @@ impl Controller {
     /// storing it as `isize` lets the wheel handlers negate it for wheel-up. Affects the content
     /// pane, the finder list, and the help overlay (not the tree, which is sign-only).
     pub fn apply_scroll_lines(&mut self, lines: u16) {
-        self.wheel_step = lines as isize;
+        // Defensive floor at the public boundary: the resolver already clamps to >= 1, but a `0`
+        // reaching here (a future caller, a direct test) would freeze wheel scrolling — guard it
+        // locally so the invariant holds regardless of how the value arrives.
+        self.wheel_step = lines.max(1) as isize;
     }
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content

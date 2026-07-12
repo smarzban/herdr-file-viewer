@@ -2288,6 +2288,83 @@ fn apply_scroll_lines_does_not_change_the_tree_wheel_step() {
 }
 
 #[test]
+fn config_scroll_lines_flows_through_resolve_to_the_content_wheel_step() {
+    // Integration: config text → parse → resolve → apply_scroll_lines is exactly the composition
+    // app::run performs at startup (config resolution reaching the controller). Exercise that whole
+    // chain end-to-end to a real wheel event, closing the gap between resolution and application
+    // (the literal one-line app::run call mirrors the pre-existing apply_hide_dotfiles seam and is
+    // additionally live-verified).
+    use herdr_file_viewer::config::{parse_config, resolve};
+    let (cfg, _outcome) = parse_config("scroll_lines = 2\n");
+    let eff = resolve(&cfg, |_| None);
+    assert_eq!(
+        eff.scroll_lines, 2,
+        "config value resolves to the effective step"
+    );
+
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(eff.scroll_lines);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "the resolved config scroll_lines reaches the content wheel step"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_zero_is_floored_to_one() {
+    // Defense-in-depth: a `0` at the public setter (a future caller / direct test) must not freeze
+    // scrolling — the step floors to 1 rather than 0.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(0);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a 0 step is floored to 1 so the wheel never freezes"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_is_symmetric_up_and_handles_large_values() {
+    // ScrollUp applies the same step (negated), and an extreme step (u16::MAX) clamps to the pane
+    // bounds without overflow or panic.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll 40
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(u16::MAX);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        40,
+        "a huge step clamps to the last screenful (no overflow)"
+    );
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        0,
+        "wheel-up applies the step symmetrically, clamped at the top"
+    );
+}
+
+#[test]
 fn dragging_the_divider_resizes_the_split() {
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);

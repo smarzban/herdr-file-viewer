@@ -688,6 +688,15 @@ mod tests {
     // --- scroll_lines: the effective scroll step (AC-1..AC-4) ---
 
     #[test]
+    fn scroll_lines_valid_value_parses() {
+        // Happy-path deserialize: a valid integer lands in `Config.scroll_lines` as `Some(n)` and
+        // the load succeeds (the malformed path is covered by `scroll_lines_non_representable_*`).
+        let (config, outcome) = parse_config("scroll_lines = 5\n");
+        assert_eq!(config.scroll_lines, Some(5));
+        assert_eq!(outcome, LoadOutcome::Loaded);
+    }
+
+    #[test]
     fn resolve_scroll_lines_config_value_wins() {
         // AC-1: a valid config value (>= 1) is the effective scroll step (config > default).
         let config = Config {
