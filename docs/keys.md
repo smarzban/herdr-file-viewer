@@ -126,16 +126,27 @@ The mouse-wheel step is configurable — see [`scroll_lines`](configuration.md).
 
 ## Opening in an editor
 
-`e` hands the selected file to the editor named by the **`$EDITOR`** environment variable
-(e.g. `vim`, or `"code --wait"` for editors that fork). The viewer suspends, runs the editor,
-and resumes when it exits. If `$EDITOR` is unset, a notice is shown. The viewer never edits a
-file itself.
+`e` opens the selected file in an external editor; the viewer suspends, runs the editor, and resumes
+when it exits. The viewer never edits a file itself. Choose the editor two ways — the config key is
+the reliable one:
 
-**`e` does nothing, or says "no editor configured"?** The viewer reads `$EDITOR` from the
-**herdr server's** environment (the server spawns every pane), *not* from the shell you happen to
-be attached from. So if `$EDITOR` is set in your interactive shell but the server was started
-without it (common with `mosh`, `systemd`, or any login manager that doesn't source your shell
-startup files), the viewer won't see it. To fix it:
+- **Recommended: set `editor` in [config.toml](configuration.md)** (e.g. `editor = "code --wait"`,
+  or `"vim"`). It takes precedence over `$EDITOR` and sidesteps the server-environment gotcha below
+  entirely — no shell-rc edits, no server restart.
+- **Fallback: `$EDITOR`.** With no `editor` configured, `e` uses the `$EDITOR` environment variable
+  (e.g. `vim`, or `"code --wait"` for editors that fork). Zero config if it's already set.
+
+If `e` says "no editor configured," neither source is set: add `editor` to your config (simplest),
+or export `$EDITOR` where the herdr server can see it (expand below).
+
+<details>
+<summary><strong>Why <code>$EDITOR</code> sometimes isn't seen (and how to fix it)</strong></summary>
+
+The viewer reads `$EDITOR` from the **herdr server's** environment (the server spawns every pane),
+*not* from the shell you happen to be attached from. So if `$EDITOR` is set in your interactive
+shell but the server was started without it (common with `mosh`, `systemd`, or any login manager
+that doesn't source your shell startup files), the viewer won't see it. Setting `editor` in the
+[config file](configuration.md) sidesteps all of this; to make `$EDITOR` itself work:
 
 1. **Export `$EDITOR` in the startup file your server's launch actually reads.** Pick the line(s)
    that match how herdr starts on your machine:
@@ -165,5 +176,6 @@ startup files), the viewer won't see it. To fix it:
    ```
 
 3. **Verify:** open any shell pane *inside* herdr and run `echo $EDITOR`. Once that prints your
-   editor (it was empty before), `e` will open it. (Or set `editor` directly in the
-   [config file](configuration.md), which overrides `$EDITOR` — no server env fiddling needed.)
+   editor (it was empty before), `e` will open it.
+
+</details>

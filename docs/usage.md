@@ -107,9 +107,9 @@ behavior, the OSC 52 caveat — are in the [keys reference](keys.md#copy-a-line-
 
 The viewer is read-only; to *act* on a file it hands off to another tool:
 
-- **Edit** (`e`): open the selected file in your `$EDITOR` (or the configured `editor`). The viewer
-  suspends, runs the editor, and resumes when it exits. If nothing happens, see the
-  [`$EDITOR` troubleshooting](keys.md#opening-in-an-editor).
+- **Edit** (`e`): open the selected file in the editor you set as `editor` in
+  [config.toml](configuration.md) (or, with none set, your `$EDITOR`). The viewer suspends, runs the
+  editor, and resumes when it exits. See [opening in an editor](keys.md#opening-in-an-editor).
 - **Open with default app** (`O`): hand the file or directory to the OS default application (an
   image opens in the system viewer, and so on). Non-blocking — the viewer keeps running.
 - **Reveal in file manager** (`R`): open Finder / Explorer / a Linux file manager with the entry

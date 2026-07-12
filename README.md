@@ -46,7 +46,7 @@ A taste of what the keys do — the [full key & mouse reference](docs/keys.md) h
 | `W` | Switch to another git worktree, in place |
 | `L` | Copy a `path:line` reference (or the selected lines) to your clipboard |
 | `Z` | Full-screen the current file |
-| `e` / `O` / `R` | Hand off: open in `$EDITOR` / the OS default app / the file manager |
+| `e` / `O` / `R` | Hand off: open in your editor / the OS default app / the file manager |
 | `?` | Help overlay: keys, what's new, settings, about |
 
 ## Quick start
