@@ -1,6 +1,7 @@
 # Install & updating
 
-Requirements: **herdr 0.7.0+**, on **Linux** or **macOS**. **Git** must be on `PATH` at
+Requirements: **herdr 0.7.0+**, on **Linux** or **macOS** (native Windows
+`x86_64-pc-windows-msvc` is a [preview](windows.md)). **Git** must be on `PATH` at
 runtime. The viewer shells out to the system `git` CLI (read-only subcommands) for the
 git-aware tree (status markers, changed-only filter, baseline toggle) and the diff view.
 Without git the viewer still opens, but those features are degraded (no status colors, no
@@ -8,7 +9,8 @@ diffs). The optional renderers (`glow` / `delta` / `bat`) are separate. See
 [external renderers](renderers.md).
 
 > **No Rust toolchain needed when a prebuilt exists.** `herdr plugin install smarzban/herdr-file-viewer`
-> downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64).
+> downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64,
+> Windows x86_64 preview).
 > The prebuilt is matched by **version**, so you get it even when `main` is ahead of the latest tag.
 > You'll receive the most recent released binary (a note tells you when newer, unreleased changes
 > aren't in it yet). It builds from source with `cargo` (Rust 1.96+) only when there's no matching
@@ -44,7 +46,7 @@ herdr's install output is intentionally terse (`Installed …` / `Config: …`) 
 so two quick steps remain:
 
 1. **Bind a key** to summon the viewer. See [Quick start](../README.md#quick-start) (or
-   [Summoning & keybindings](usage.md) for split-vs-tab and the `--remote` caveat). No key bound
+   [Summoning the viewer](summoning.md) for split-vs-tab and the `--remote` caveat). No key bound
    yet? Open it once from the CLI:
    `herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer`.
 2. **(Optional) install the renderers** (`glow` / `delta` / `bat`) so markdown, diffs, and code are

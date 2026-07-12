@@ -1401,24 +1401,24 @@ mod tests {
         assert!(!b.is_customized(Intent::NavDown));
     }
 
-    // --- T-8 docs consistency: the README `## Keys` table stays in sync with the registry (AC-21) ---
+    // --- T-8 docs consistency: the keys reference `## Keys` table stays in sync with the registry (AC-21) ---
 
-    /// The README source, compiled in so a drift between the registry and the front-door `## Keys`
-    /// table fails the build. This assertion lives here, not in `tests/docs_consistency.rs`,
-    /// because it reads the `pub(crate)` [`registry`] / [`key_label`], which an integration test
-    /// cannot see.
-    const README: &str = include_str!("../README.md");
+    /// The keys-reference source (`docs/keys.md`), compiled in so a drift between the registry and
+    /// the `## Keys` table fails the build. This assertion lives here, not in
+    /// `tests/docs_consistency.rs`, because it reads the `pub(crate)` [`registry`] / [`key_label`],
+    /// which an integration test cannot see.
+    const KEYS_DOC: &str = include_str!("../docs/keys.md");
 
     #[test]
-    fn readme_keys_table_documents_every_registry_action_ac21() {
-        // AC-21: the README `## Keys` table must document every global action in the registry so
-        // the table can never silently drift from the bindings. Scope the check to the `## Keys`
-        // section (its heading to the next `## ` heading) so a stray backtick elsewhere in the
-        // README cannot satisfy it.
-        let start = README
+    fn keys_doc_table_documents_every_registry_action_ac21() {
+        // AC-21: the `docs/keys.md` `## Keys` table must document every global action in the
+        // registry so the table can never silently drift from the bindings. Scope the check to the
+        // `## Keys` section (its heading to the next `## ` heading) so a stray backtick elsewhere in
+        // the doc cannot satisfy it.
+        let start = KEYS_DOC
             .find("## Keys")
-            .expect("README.md must carry a `## Keys` section");
-        let rest = &README[start + "## Keys".len()..];
+            .expect("docs/keys.md must carry a `## Keys` section");
+        let rest = &KEYS_DOC[start + "## Keys".len()..];
         let end = rest.find("\n## ").unwrap_or(rest.len());
         let keys_section = &rest[..end];
 
@@ -1436,7 +1436,7 @@ mod tests {
                 .any(|&code| keys_section.contains(&format!("`{}`", key_label(code))));
             assert!(
                 documented,
-                "the README `## Keys` table documents no key for `{}` (intent {:?}); expected a \
+                "the docs/keys.md `## Keys` table documents no key for `{}` (intent {:?}); expected a \
                  backtick-wrapped label for one of {:?}",
                 binding.name,
                 binding.intent,
@@ -1445,6 +1445,28 @@ mod tests {
                     .iter()
                     .map(|&c| key_label(c))
                     .collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// The configuration-reference source (`docs/configuration.md`), compiled in so the
+    /// remappable-actions table can't drift from the registry. Every `[keys]` intent name is a
+    /// stable config identifier, so the doc must list them all.
+    const CONFIG_DOC: &str = include_str!("../docs/configuration.md");
+
+    #[test]
+    fn configuration_doc_lists_every_remappable_intent() {
+        // Every registry intent name must appear (backtick-wrapped) in docs/configuration.md's
+        // "Every remappable action" table, so the full `[keys]` surface is documented and can't
+        // drift: adding a new Intent to the registry without listing its name fails the build.
+        // Backtick-wrapping avoids matching a bare word that also appears in prose.
+        for binding in registry() {
+            let needle = format!("`{}`", binding.name);
+            assert!(
+                CONFIG_DOC.contains(&needle),
+                "docs/configuration.md must list the remappable intent `{}` (backtick-wrapped) in \
+                 the keybindings table",
+                binding.name,
             );
         }
     }

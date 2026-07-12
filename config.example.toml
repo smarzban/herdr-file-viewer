@@ -103,7 +103,9 @@
 # id of an action, shown next to every action in the `?` help overlay's
 # Keybindings tab (e.g. refresh, nav_up, switch_worktree). A value is a KEY SPEC:
 # a single string, or an array of strings. An entry REPLACES that action's
-# default key(s), so list every key you want it to answer to.
+# default key(s), so list every key you want it to answer to. The full list of
+# intent names (all 33 actions) is in docs/configuration.md (Keybindings) and the
+# `?` overlay's Keybindings tab.
 #
 # Bindable keys: any single printable or shifted character (`g`, `<`, `?`, and
 # capitals such as `W` are each their own key), plus the named keys Tab, Enter,

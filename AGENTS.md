@@ -29,6 +29,11 @@ Companion docs:
 
 - **`CONTEXT.md`**: the glossary (canonical vocabulary).
 - **`constitution.md`**: the standing principles (the source for "Load-bearing constraints").
+- **`ARCHITECTURE.md`**: the committed module map (keep it current when components change).
+- **`docs/`** (index: `docs/README.md`): the user-facing docs — `keys.md` (the full key/mouse
+  reference), `configuration.md` (the `config.toml` + `[keys]` reference), `usage.md` (per-feature
+  guide), plus `install.md` / `summoning.md` / `renderers.md` / `windows.md`. The root `README.md` is
+  a lean front door that links into these; reference detail lives in `docs/`, never the README.
 
 ### What this is
 
@@ -101,10 +106,16 @@ These shape every decision; violating one is a design error, not a style nit:
   silently break it.
 - **Manifest** `herdr-plugin.toml`: declare the viewer as a `[[panes]]` entry with
   `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]`, plus an
-  `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos"]`,
-  `[[build]] command = ["cargo","build","--release"]`. **No `[[events]]`** (AC-N4).
-- **Runtime** (editor hand-off): via `$HERDR_BIN_PATH`: `pane split <id> --direction right
-  --no-focus` → parse `result.pane.pane_id` from the JSON → `pane run <new_id> "<editor> <file>"`.
+  `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos","windows"]`
+  (Windows is preview, with per-item launcher entries), and **platform-gated `[[build]]` steps**
+  (`["/bin/sh","scripts/fetch-or-build.sh"]` on unix, `powershell … scripts/fetch-or-build.ps1` on
+  Windows) that download the verified prebuilt binary and fall back to `cargo build --release`.
+  **No `[[events]]`** (AC-N4).
+- **Runtime host ops** via the herdr CLI (`$HERDR_BIN_PATH`, the `HerdrCli::run` / `run_json` seam in
+  `src/herdr.rs`): read-only layout/query commands only — e.g. `pane zoom` (the `Z` full-screen), the
+  worktree picker's queries, and the tab/split launcher scripts. The **editor hand-off is NOT a herdr
+  pane**: `e` runs the editor *in-process* (the viewer suspends and resumes around `$EDITOR` / the
+  config `editor`), so the viewer never spawns a pane for it.
 - External renderers (glow/delta/bat) are **runtime, install-time** dependencies, not Cargo deps;
   the Content Renderer falls back to plain text + a notice when one is absent (AC-24/25).
 - Make external commands (renderers, editor, herdr CLI) **injected parameters** so tests stay
@@ -135,11 +146,39 @@ cargo audit
 - **The spec is the contract.** To change scope/criteria/design/stack, edit the artifact at the
   **owning stage** and **re-run the readiness check**, don't ad-hoc-edit downstream specs.
 - **Definition of done for a user-facing feature:** the feature isn't done until the docs match it,
-  IN the same PR: `CHANGELOG.md` entry, README `## Keys` table + feature list (and the Shift-keys
-  note for a capital-letter key), and `ARCHITECTURE.md`'s module table if components changed.
+  IN the same PR: `CHANGELOG.md` entry, the relevant `docs/` page (`docs/keys.md` for a key + the
+  Shift-keys note for a capital-letter key, `docs/usage.md` for the feature, `docs/configuration.md`
+  for a config key), and `ARCHITECTURE.md`'s module table if components changed. The root `README.md`
+  is a lean front door (a taste of keys + links to `docs/`), NOT the full reference: keep detail in
+  `docs/`, not the README.
 - **Verify the branch base before a PR.** Worktrees here are often branched off a feature commit,
   not `main`; always `git log main..HEAD` before committing/opening a PR, or strays get swept in.
 - Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic.
+
+### Adding a keybinding or a config key (touchpoints + drift guards)
+
+Both surfaces are single-source-of-truth in code, with a build-failing test guarding the docs, so you
+never wire them in two places or let the docs drift.
+
+**A new keybinding / action.** `REGISTRY` in `src/input.rs` is the source of truth: the dispatcher,
+the `?` overlay's Keybindings section, and `[keys]` remapping all derive from it.
+1. Add the variant to the `Intent` enum in `src/intent.rs` (it lives in `Intent::ALL`, 33 today).
+2. Add a `Binding { intent, name, default_keys, description, category }` row to `REGISTRY`
+   (`category` must be one of `CATEGORY_ORDER`).
+3. Handle the intent in the session controller (`src/controller/`).
+4. **Docs (same PR):** add the key row to the `## Keys` table in **`docs/keys.md`** and the
+   intent-name row to the "Every remappable action" table in **`docs/configuration.md`**, plus a
+   `CHANGELOG.md` entry. The `?` overlay updates itself — no manual edit. Two `src/input.rs` tests
+   fail the build if you skip a doc: `keys_doc_table_documents_every_registry_action_ac21` (every
+   registry key is in `docs/keys.md`) and `configuration_doc_lists_every_remappable_intent` (every
+   registry name is in `docs/configuration.md`).
+
+**A new config key.** `src/config.rs` owns it: add the field to `Config`, resolve it in `resolve`
+into `EffectiveSettings`, and apply it at wiring time. **Docs (same PR):** document it in
+**`docs/configuration.md`**, add a commented `key = ...` line to **`config.example.toml`**, surface
+the effective value in the `?` Settings section, and add a `CHANGELOG.md` entry. The
+`config_example_documents_every_config_key` test (`tests/docs_consistency.rs`) requires a commented
+assignment for every scalar `Config` field — keep its key list in lockstep with `Config`.
 
 ### Releasing a version (owner-gated, confirm first)
 
@@ -149,13 +188,22 @@ cargo audit
    `herdr-plugin.toml`. Versioning: **minor per additive feature**, major only on a breaking change
    or a flagship feature.
 2. Add the `## [X.Y.Z] - DATE` `CHANGELOG.md` entry (Keep-a-Changelog `Added`/`Changed`/`Fixed`,
-   omit empty sections). Show the owner the release notes before posting.
+   omit empty sections; keep bullets terse and credit external contributors `Thanks @user (#NN)`).
+   **The CHANGELOG section IS the release notes** (single source of truth) — never author them
+   separately, or the two drift. Show the owner the section before posting.
 3. Protected `main` → bump via a **`release/vX.Y.Z` PR** → green CI → merge.
 4. **Tag `vX.Y.Z` AT the merge commit** (`git tag -a vX.Y.Z <merge-sha>` → push) so a bare
    `herdr plugin install`'s tagless-clone `HEAD` matches the published `COMMIT` asset. The tag push
-   triggers `release.yml` (builds 3 binaries + `SHA256SUMS` + `COMMIT`, `--generate-notes`).
-5. **Replace the auto-notes** with the approved body: `gh release edit vX.Y.Z --notes-file <f>`.
-6. **Verify**: `gh release view vX.Y.Z` shows 5 assets, not draft/prerelease.
+   triggers `release.yml` (builds **4 binaries** — Linux musl, macOS arm64 + x86_64, Windows `.exe` —
+   plus `SHA256SUMS` + `COMMIT`, `--generate-notes`).
+5. **Set the release body FROM the CHANGELOG section** (single source of truth, so the notes can't
+   drift from the changelog): extract this tag's `## [X.Y.Z]` block, drop the trailing `→ [docs]`
+   pointers (a release note is a self-contained, pinned artifact), append a
+   `**Full changelog:** <repo>/compare/vPREV...vX.Y.Z` line, then
+   `gh release edit vX.Y.Z --notes-file <f>`. Extract with e.g.
+   `awk '/^## \[X.Y.Z\]/{f=1;next} f&&/^## \[/{exit} f' CHANGELOG.md`.
+6. **Verify**: `gh release view vX.Y.Z` shows **6 assets** (4 binaries + `SHA256SUMS` + `COMMIT`),
+   not draft/prerelease.
 
 **Install gate (current, since PR #50):** the prebuilt binary is used by **declared version match**,
 not commit-exact; main being ahead of the tag no longer forces a source build. So features can
