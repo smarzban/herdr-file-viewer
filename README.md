@@ -345,7 +345,7 @@ reveal = "nautilus"
 
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 update_check = true         # false to disable the once-a-day update check
-scroll_lines = 3            # lines per mouse-wheel step, 1 to 10 — content pane, file search, help
+scroll_lines = 3            # mouse-wheel step (content/search/help): 1 slow · 3 medium · 6 fast · 10 max
 ```
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into
