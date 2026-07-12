@@ -1,12 +1,20 @@
-//! Docs definition-of-done checks for the copy-line-reference feature (T-10).
+//! Docs definition-of-done checks: the user-facing docs actually carry the surface they document.
 //!
-//! Cheap, hermetic assertions that the user-facing docs actually carry the line-select surface:
-//! the README `## Keys` table documents the `L` line-select key, and the CHANGELOG has a
-//! `### Added` entry for it under the release that introduced it (`[1.9.0]`). These guard the
-//! "docs match the feature in the same PR" rule so a future edit can't silently drop the key from
-//! the front-door docs.
+//! Cheap, hermetic assertions that the canonical docs stay in sync with the code/config:
+//! `docs/keys.md` documents the key surface (e.g. the `L` line-select and `O`/`R` hand-off keys),
+//! `docs/configuration.md` documents the config file + `[keys]` remapping, the bundled
+//! `config.example.toml` carries a commented assignment for every config key, the front-door README
+//! links out to the reference docs, and the CHANGELOG has the release entry for line-select. These
+//! guard the "docs match the feature in the same PR" rule so a future edit can't silently drop the
+//! surface from the docs.
+//!
+//! (The `docs/keys.md` `## Keys` table is *additionally* checked against the keybinding registry in
+//! a `src/input.rs` unit test — `keys_doc_table_documents_every_registry_action_ac21` — which can
+//! see the `pub(crate)` registry an integration test cannot.)
 
 const README: &str = include_str!("../README.md");
+const KEYS_DOC: &str = include_str!("../docs/keys.md");
+const CONFIG_DOC: &str = include_str!("../docs/configuration.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
 
@@ -78,12 +86,13 @@ fn config_example_documents_every_config_key() {
 }
 
 #[test]
-fn readme_and_example_document_scroll_lines() {
-    // AC-10: the mouse-wheel scroll-speed key must be documented in BOTH the README and the bundled
-    // config.example.toml, so the feature ships with a discoverable, copy-pasteable setting.
+fn configuration_doc_and_example_document_scroll_lines() {
+    // AC-10: the mouse-wheel scroll-speed key must be documented in BOTH the configuration reference
+    // and the bundled config.example.toml, so the feature ships with a discoverable, copy-pasteable
+    // setting.
     assert!(
-        README.contains("scroll_lines"),
-        "README.md must document the `scroll_lines` config key"
+        CONFIG_DOC.contains("scroll_lines"),
+        "docs/configuration.md must document the `scroll_lines` config key"
     );
     assert!(
         CONFIG_EXAMPLE.contains("scroll_lines"),
@@ -92,13 +101,14 @@ fn readme_and_example_document_scroll_lines() {
 }
 
 #[test]
-fn readme_and_example_document_tree_layout() {
-    // AC-13: the tree layout config keys must be documented in BOTH the README and the bundled
-    // config.example.toml, so the feature ships with discoverable, copy-pasteable settings.
+fn configuration_doc_and_example_document_tree_layout() {
+    // AC-13: the tree layout config keys must be documented in BOTH the configuration reference and
+    // the bundled config.example.toml, so the feature ships with discoverable, copy-pasteable
+    // settings.
     for key in ["tree_width", "tree_position", "tree_max_cols"] {
         assert!(
-            README.contains(key),
-            "README.md must document the `{key}` config key"
+            CONFIG_DOC.contains(key),
+            "docs/configuration.md must document the `{key}` config key"
         );
         assert!(
             CONFIG_EXAMPLE.contains(key),
@@ -108,91 +118,72 @@ fn readme_and_example_document_tree_layout() {
 }
 
 #[test]
-fn readme_points_to_the_config_example_template() {
-    // The README's Configuration section must point users at the bundled template.
-    let start = README
-        .find("## Configuration")
-        .expect("README.md must carry a `## Configuration` section");
-    let rest = &README[start..];
-    let end = rest[1..].find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
-    let section = &rest[..end];
+fn configuration_doc_points_to_the_config_example_template() {
+    // The configuration reference must point users at the bundled template and tell them to rename
+    // the copy to config.toml.
     assert!(
-        section.contains("config.example.toml"),
-        "README `## Configuration` section must point users at config.example.toml"
+        CONFIG_DOC.contains("config.example.toml"),
+        "docs/configuration.md must point users at config.example.toml"
     );
-    // ...and carry the actual instructions, not just the file name: rename to config.toml.
     assert!(
-        section.contains("config.toml") && section.to_lowercase().contains("rename"),
-        "README `## Configuration` section must tell users to rename the copy to config.toml"
+        CONFIG_DOC.contains("config.toml") && CONFIG_DOC.to_lowercase().contains("rename"),
+        "docs/configuration.md must tell users to rename the copy to config.toml"
     );
 }
 
 #[test]
-fn readme_documents_line_select_key() {
+fn keys_doc_documents_line_select_key() {
     assert!(
-        README.contains("line-select"),
-        "README.md must document the `L` line-select mode"
+        KEYS_DOC.contains("line-select"),
+        "docs/keys.md must document the `L` line-select mode"
     );
     assert!(
-        README.contains("`L`"),
-        "README.md must mention the `L` key for line-select"
+        KEYS_DOC.contains("`L`"),
+        "docs/keys.md must mention the `L` key for line-select"
     );
 }
 
 #[test]
-fn readme_documents_reveal_open_keys() {
+fn keys_doc_documents_reveal_open_keys() {
     assert!(
-        README.contains("`O`"),
-        "README.md must document the `O` open-with-default-app key"
+        KEYS_DOC.contains("`O`"),
+        "docs/keys.md must document the `O` open-with-default-app key"
     );
     assert!(
-        README.contains("`R`"),
-        "README.md must document the `R` reveal-in-file-manager key"
+        KEYS_DOC.contains("`R`"),
+        "docs/keys.md must document the `R` reveal-in-file-manager key"
     );
-    let lower = README.to_lowercase();
+    let lower = KEYS_DOC.to_lowercase();
     assert!(
         lower.contains("open with default app"),
-        "README.md `## Keys` must describe the `O` key as 'open with default app'"
+        "docs/keys.md `## Keys` must describe the `O` key as 'open with default app'"
     );
     assert!(
         lower.contains("reveal"),
-        "README.md must describe the `R` key as 'reveal'"
+        "docs/keys.md must describe the `R` key as 'reveal'"
     );
     assert!(
         lower.contains("file manager"),
-        "README.md must describe the `R` key as revealing in the OS 'file manager'"
+        "docs/keys.md must describe the `R` key as revealing in the OS 'file manager'"
     );
 }
 
 #[test]
-fn readme_documents_config_file() {
-    // README must document the config file: its path (herdr-provided + XDG fallback) and every
-    // key. Scope every assertion to the `## Configuration` section itself (heading to the next
-    // `## ` heading) rather than the whole README -- several of these bare words (e.g. `editor`,
-    // `markdown`, `diff`, `open`, `reveal`) also appear elsewhere (the Keys table, the `e`/`O`/`R`
-    // key descriptions, the roadmap), so an unscoped `README.contains` would still pass even if
-    // the Configuration section were deleted outright. Slicing on the heading keeps this a real
-    // regression guard, the same way `changelog_documents_line_reference_release` slices the
-    // CHANGELOG on its release heading.
-    let start = README
-        .find("## Configuration")
-        .expect("README.md must carry a `## Configuration` section");
-    let rest = &README[start + "## Configuration".len()..];
-    let end = rest.find("\n## ").unwrap_or(rest.len());
-    let section = &rest[..end];
-
+fn configuration_doc_documents_config_file() {
+    // The configuration reference must document the config file: its path (herdr-provided + XDG
+    // fallback) and every key.
     assert!(
-        section.contains("config.toml"),
-        "README `## Configuration` section must name the config file config.toml"
+        CONFIG_DOC.contains("config.toml"),
+        "docs/configuration.md must name the config file config.toml"
     );
     assert!(
-        section.contains("HERDR_PLUGIN_CONFIG_DIR"),
-        "README `## Configuration` section must name the herdr config-dir env var"
+        CONFIG_DOC.contains("HERDR_PLUGIN_CONFIG_DIR"),
+        "docs/configuration.md must name the herdr config-dir env var"
     );
     // XDG fallback location:
     assert!(
-        section.contains(".config/herdr-file-viewer") || section.contains("XDG_CONFIG_HOME"),
-        "README `## Configuration` section must document the XDG fallback location"
+        CONFIG_DOC.contains(".config/herdr-file-viewer") || CONFIG_DOC.contains("XDG_CONFIG_HOME"),
+        "docs/configuration.md must document the XDG fallback location"
     );
     for key in [
         "editor",
@@ -205,51 +196,58 @@ fn readme_documents_config_file() {
         "update_check",
     ] {
         assert!(
-            section.contains(key),
-            "README `## Configuration` section must document the `{key}` key"
+            CONFIG_DOC.contains(key),
+            "docs/configuration.md must document the `{key}` key"
         );
     }
 }
 
 #[test]
-fn readme_documents_keys_remapping() {
-    // AC-22: the README `## Configuration` section must document the `[keys]` remapping surface --
-    // that a binding is written `intent_name = <key spec>` (a string AND an array example), that
-    // only modifier-free keys are bindable (no Ctrl/Alt), and that a `[keys]` value replaces the
-    // action's default keys. Scope every assertion to the `## Configuration` section (heading to
-    // the next `## ` heading), the same way `readme_documents_config_file` does, so a mention
-    // elsewhere in the README cannot satisfy the check.
-    let start = README
-        .find("## Configuration")
-        .expect("README.md must carry a `## Configuration` section");
-    let rest = &README[start + "## Configuration".len()..];
-    let end = rest.find("\n## ").unwrap_or(rest.len());
-    let section = &rest[..end];
-
+fn configuration_doc_documents_keys_remapping() {
+    // AC-22: the configuration reference must document the `[keys]` remapping surface -- that a
+    // binding is written `intent_name = <key spec>` (a string AND an array example), that only
+    // modifier-free keys are bindable (no Ctrl/Alt), and that a `[keys]` value replaces the action's
+    // default keys.
     assert!(
-        section.contains("[keys]"),
-        "README `## Configuration` section must name the `[keys]` remapping table"
+        CONFIG_DOC.contains("[keys]"),
+        "docs/configuration.md must name the `[keys]` remapping table"
     );
     // The `intent_name = <key spec>` form, shown by example in BOTH the string and the array shape.
     assert!(
-        section.contains("refresh = \"g\""),
-        "README `## Configuration` section must show a single-string key spec (refresh = \"g\")"
+        CONFIG_DOC.contains("refresh = \"g\""),
+        "docs/configuration.md must show a single-string key spec (refresh = \"g\")"
     );
     assert!(
-        section.contains("nav_up = [\"w\", \"Up\"]"),
-        "README `## Configuration` section must show an array key spec (nav_up = [\"w\", \"Up\"])"
+        CONFIG_DOC.contains("nav_up = [\"w\", \"Up\"]"),
+        "docs/configuration.md must show an array key spec (nav_up = [\"w\", \"Up\"])"
     );
     // Only modifier-free keys are bindable: no Ctrl / Alt chords.
     assert!(
-        section.contains("Ctrl") && section.contains("Alt"),
-        "README `## Configuration` section must state that Ctrl/Alt chords are not bindable"
+        CONFIG_DOC.contains("Ctrl") && CONFIG_DOC.contains("Alt"),
+        "docs/configuration.md must state that Ctrl/Alt chords are not bindable"
     );
     // Precedence: a `[keys]` value replaces/overrides the action's default keys.
-    let lower = section.to_lowercase();
     assert!(
-        lower.contains("replace"),
-        "README `## Configuration` section must state a `[keys]` value replaces the default keys"
+        CONFIG_DOC.to_lowercase().contains("replace"),
+        "docs/configuration.md must state a `[keys]` value replaces the default keys"
     );
+}
+
+#[test]
+fn readme_links_to_the_reference_docs() {
+    // The slimmed front-door README must route readers to the moved reference pages, so the detail
+    // that used to live inline is still one click away (and the link check keeps those targets real).
+    for target in [
+        "docs/keys.md",
+        "docs/configuration.md",
+        "docs/usage.md",
+        "docs/README.md",
+    ] {
+        assert!(
+            README.contains(target),
+            "README.md must link to `{target}` so the reference docs are discoverable"
+        );
+    }
 }
 
 #[test]

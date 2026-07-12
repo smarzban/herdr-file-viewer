@@ -1,8 +1,17 @@
-<!-- repo-setup:seed, skeleton awaiting real content; fill, then remove this line -->
 ## Summary
 
-<placeholder: owner-decided PR template body>
+<!-- What does this change do, and why? -->
+
+## Changes
+
+-
 
 ## Test plan
 
-<placeholder>
+- [ ] `cargo test` is green
+- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit` pass
+- [ ] Docs updated in this PR (CHANGELOG + the relevant `docs/` page) for any user-facing change
+
+## Related
+
+<!-- e.g. Closes #123 -->

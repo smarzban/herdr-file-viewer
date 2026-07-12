@@ -135,8 +135,11 @@ cargo audit
 - **The spec is the contract.** To change scope/criteria/design/stack, edit the artifact at the
   **owning stage** and **re-run the readiness check**, don't ad-hoc-edit downstream specs.
 - **Definition of done for a user-facing feature:** the feature isn't done until the docs match it,
-  IN the same PR: `CHANGELOG.md` entry, README `## Keys` table + feature list (and the Shift-keys
-  note for a capital-letter key), and `ARCHITECTURE.md`'s module table if components changed.
+  IN the same PR: `CHANGELOG.md` entry, the relevant `docs/` page (`docs/keys.md` for a key + the
+  Shift-keys note for a capital-letter key, `docs/usage.md` for the feature, `docs/configuration.md`
+  for a config key), and `ARCHITECTURE.md`'s module table if components changed. The root `README.md`
+  is a lean front door (a taste of keys + links to `docs/`), NOT the full reference: keep detail in
+  `docs/`, not the README.
 - **Verify the branch base before a PR.** Worktrees here are often branched off a feature commit,
   not `main`; always `git log main..HEAD` before committing/opening a PR, or strays get swept in.
 - Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic.

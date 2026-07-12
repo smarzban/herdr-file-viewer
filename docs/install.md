@@ -44,7 +44,7 @@ herdr's install output is intentionally terse (`Installed …` / `Config: …`) 
 so two quick steps remain:
 
 1. **Bind a key** to summon the viewer. See [Quick start](../README.md#quick-start) (or
-   [Summoning & keybindings](usage.md) for split-vs-tab and the `--remote` caveat). No key bound
+   [Summoning the viewer](summoning.md) for split-vs-tab and the `--remote` caveat). No key bound
    yet? Open it once from the CLI:
    `herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer`.
 2. **(Optional) install the renderers** (`glow` / `delta` / `bat`) so markdown, diffs, and code are

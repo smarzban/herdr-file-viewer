@@ -37,8 +37,8 @@ All notable changes to this project are documented here. The format is based on
   out. The `?` help overlay gained a display-only **Keybindings** section that groups the actions
   into sections and, for each, shows its config-var name (the `[keys]` id you type to remap it), its
   effective key(s), and its description, marking the ones you customized. Under the hood every
-  binding now derives from one in-code registry, so the dispatcher, the overlay, and the README
-  `## Keys` table can no longer drift apart.
+  binding now derives from one in-code registry, so the dispatcher, the overlay, and the keys
+  reference table can no longer drift apart.
 - **Config file — customize the editor, renderers, openers, and a couple of startup toggles.**
   An optional read-only TOML config at `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (herdr-provided) or
   `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml` (standalone fallback) now lets you override the
@@ -67,6 +67,12 @@ All notable changes to this project are documented here. The format is based on
   a wide window it stays compact instead of growing into a mostly-blank column. Panes under ~100
   columns are unaffected (the percentage governs), and dragging the divider or the grow/shrink keys
   lifts the cap; raise `tree_max_cols` to disable it.
+- **Documentation reorganized around a leaner README.** The README is now a short front door (what
+  it is, a quickstart, a taste of the keys, and links); the full reference moved into focused
+  [`docs/`](docs/README.md) pages — a complete [keys & mouse](docs/keys.md) reference, a
+  [configuration](docs/configuration.md) reference, a feature-by-feature [usage guide](docs/usage.md),
+  and dedicated [summoning](docs/summoning.md) and [Windows](docs/windows.md) pages — behind a docs
+  index. Adds a `CONTRIBUTING.md` guide and GitHub issue / pull-request templates. No behavior change.
 
 ### Fixed
 - **Wide tables in the rendered-markdown view no longer shatter.** A table is now laid out to fit
