@@ -186,13 +186,20 @@ assignment for every scalar `Config` field — keep its key list in lockstep wit
    `herdr-plugin.toml`. Versioning: **minor per additive feature**, major only on a breaking change
    or a flagship feature.
 2. Add the `## [X.Y.Z] - DATE` `CHANGELOG.md` entry (Keep-a-Changelog `Added`/`Changed`/`Fixed`,
-   omit empty sections). Show the owner the release notes before posting.
+   omit empty sections; keep bullets terse and credit external contributors `Thanks @user (#NN)`).
+   **The CHANGELOG section IS the release notes** (single source of truth) — never author them
+   separately, or the two drift. Show the owner the section before posting.
 3. Protected `main` → bump via a **`release/vX.Y.Z` PR** → green CI → merge.
 4. **Tag `vX.Y.Z` AT the merge commit** (`git tag -a vX.Y.Z <merge-sha>` → push) so a bare
    `herdr plugin install`'s tagless-clone `HEAD` matches the published `COMMIT` asset. The tag push
    triggers `release.yml` (builds **4 binaries** — Linux musl, macOS arm64 + x86_64, Windows `.exe` —
    plus `SHA256SUMS` + `COMMIT`, `--generate-notes`).
-5. **Replace the auto-notes** with the approved body: `gh release edit vX.Y.Z --notes-file <f>`.
+5. **Set the release body FROM the CHANGELOG section** (single source of truth, so the notes can't
+   drift from the changelog): extract this tag's `## [X.Y.Z]` block, drop the trailing `→ [docs]`
+   pointers (a release note is a self-contained, pinned artifact), append a
+   `**Full changelog:** <repo>/compare/vPREV...vX.Y.Z` line, then
+   `gh release edit vX.Y.Z --notes-file <f>`. Extract with e.g.
+   `awk '/^## \[X.Y.Z\]/{f=1;next} f&&/^## \[/{exit} f' CHANGELOG.md`.
 6. **Verify**: `gh release view vX.Y.Z` shows **6 assets** (4 binaries + `SHA256SUMS` + `COMMIT`),
    not draft/prerelease.
 
