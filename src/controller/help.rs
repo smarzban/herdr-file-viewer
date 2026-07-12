@@ -35,7 +35,7 @@ impl Controller {
     /// open and never leaks events to the tree/content beneath (AC-21) — mirroring
     /// [`handle_finder_mouse`](Self::handle_finder_mouse).
     ///
-    /// - `ScrollDown`/`ScrollUp` → `scroll_by(±WHEEL_STEP)` on the active section (AC-8 via mouse).
+    /// - `ScrollDown`/`ScrollUp` → `scroll_by(±self.wheel_step)` on the active section (AC-8 via mouse).
     ///   No clamp here: [`set_pane_geometry`](Self::set_pane_geometry) re-clamps the stored scroll to
     ///   the live measured body height after the next draw (the same split the keyboard path uses).
     /// - `Down(Left)` whose `(col,row)` lands on a section-tab rect → `select(that index)` (AC-10).
@@ -48,8 +48,8 @@ impl Controller {
             return Effects::noop();
         }
         match ev.kind {
-            MouseEventKind::ScrollDown => self.help_scroll(WHEEL_STEP),
-            MouseEventKind::ScrollUp => self.help_scroll(-WHEEL_STEP),
+            MouseEventKind::ScrollDown => self.help_scroll(self.wheel_step),
+            MouseEventKind::ScrollUp => self.help_scroll(-self.wheel_step),
             // A left press on a section tab switches sections (AC-10). Hit-test against the tab rects
             // the Presenter fed back (`geom.help_tabs`), so the click maps to the tab actually drawn.
             MouseEventKind::Down(MouseButton::Left) => {

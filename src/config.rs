@@ -7,6 +7,17 @@
 
 use serde::Deserialize;
 
+/// The built-in **scroll step**: how many lines (or finder list items, or help-overlay lines) the
+/// mouse wheel advances per wheel event when the config supplies no valid `scroll_lines`. This is
+/// the single source of truth for both the resolver's default and the controller's initial value.
+pub const DEFAULT_SCROLL_LINES: u16 = 3;
+
+/// The largest accepted `scroll_lines`. Past ~this many lines per event the wheel just jumps to the
+/// pane edge (the content/finder/help views clamp to their bounds), so a larger configured value is
+/// clamped down to this rather than taken literally — keeping the setting to sane line-scrolling
+/// instead of page-jumping. The effective range is therefore `1..=MAX_SCROLL_LINES`.
+pub const MAX_SCROLL_LINES: u16 = 10;
+
 /// A `[keys]` entry's value: the key(s) an intent binds to, written **either** as a single string
 /// (`refresh = "g"`) **or** as a TOML array of strings (`nav_up = ["w", "Up"]`). `#[serde(untagged)]`
 /// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
@@ -34,6 +45,13 @@ pub struct Config {
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
     pub update_check: Option<bool>,
+    /// The mouse-wheel **scroll step**: how many lines/items each wheel event advances. `None`
+    /// falls back to [`DEFAULT_SCROLL_LINES`]; the resolver clamps any present value into
+    /// `1..=`[`MAX_SCROLL_LINES`] (`0` would freeze scrolling; a larger value just page-jumps, so it
+    /// caps at the max rather than being taken literally). Held as `u32` so even an out-of-`u16`
+    /// number still clamps into range instead of tripping the parse; only a negative / non-integer /
+    /// astronomically large value fails to parse and degrades the whole config to defaults.
+    pub scroll_lines: Option<u32>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
@@ -145,6 +163,10 @@ pub struct EffectiveSettings {
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
     pub update_check: bool,
+    /// The effective mouse-wheel **scroll step**: the config `scroll_lines` clamped to
+    /// `1..=`[`MAX_SCROLL_LINES`] when present, else [`DEFAULT_SCROLL_LINES`]. No environment
+    /// variable participates — this is a config-or-default UI preference.
+    pub scroll_lines: u16,
 }
 
 /// Pure resolver: `Config` + injected env getter -> `EffectiveSettings` (AC-3, AC-4, AC-5,
@@ -184,6 +206,15 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         None => get_env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK").is_none(),
     };
 
+    // Config > default; no env var. Clamp to `1..=MAX_SCROLL_LINES`: a configured `0` can never
+    // freeze scrolling and an over-large value is capped to a sane line step rather than page-jumping
+    // (AC-3). A value that isn't a representable non-negative integer never reaches here — it failed
+    // the parse and arrived as `None` on a defaulted `Config` (AC-4).
+    let scroll_lines = config
+        .scroll_lines
+        .map(|n| n.clamp(1, MAX_SCROLL_LINES as u32) as u16)
+        .unwrap_or(DEFAULT_SCROLL_LINES);
+
     EffectiveSettings {
         editor,
         markdown,
@@ -193,6 +224,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         reveal,
         hide_dotfiles,
         update_check,
+        scroll_lines,
     }
 }
 
@@ -319,6 +351,7 @@ mod tests {
         assert_eq!(config.reveal, None);
         assert_eq!(config.hide_dotfiles, None);
         assert_eq!(config.update_check, None);
+        assert_eq!(config.scroll_lines, None);
         assert_eq!(outcome, LoadOutcome::Loaded);
     }
 
@@ -353,6 +386,7 @@ mod tests {
         assert_eq!(config.reveal, None);
         assert_eq!(config.hide_dotfiles, None);
         assert_eq!(config.update_check, None);
+        assert_eq!(config.scroll_lines, None);
         assert_eq!(outcome, LoadOutcome::Loaded);
     }
 
@@ -594,6 +628,7 @@ mod tests {
         assert_eq!(effective.syntax, None);
         assert_eq!(effective.open, None);
         assert_eq!(effective.reveal, None);
+        assert_eq!(effective.scroll_lines, 3);
     }
 
     // --- resolve: AC-16 partial config -- unset fields fall to their own default ---
@@ -613,6 +648,7 @@ mod tests {
         assert_eq!(effective.syntax, None);
         assert_eq!(effective.open, None);
         assert_eq!(effective.reveal, None);
+        assert_eq!(effective.scroll_lines, 3);
     }
 
     // --- resolve: AC-12 tokenized argv, no shell ---
@@ -656,6 +692,88 @@ mod tests {
         };
         let effective = resolve(&config, get_env);
         assert_eq!(effective.editor, None);
+    }
+
+    // --- scroll_lines: the effective scroll step (AC-1..AC-4) ---
+
+    #[test]
+    fn scroll_lines_valid_value_parses() {
+        // Happy-path deserialize: a valid integer lands in `Config.scroll_lines` as `Some(n)` and
+        // the load succeeds (the malformed path is covered by `scroll_lines_non_representable_*`).
+        let (config, outcome) = parse_config("scroll_lines = 5\n");
+        assert_eq!(config.scroll_lines, Some(5));
+        assert_eq!(outcome, LoadOutcome::Loaded);
+    }
+
+    #[test]
+    fn resolve_scroll_lines_config_value_wins() {
+        // AC-1: a valid config value (>= 1) is the effective scroll step (config > default).
+        let config = Config {
+            scroll_lines: Some(5),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(effective.scroll_lines, 5);
+    }
+
+    #[test]
+    fn resolve_scroll_lines_defaults_when_absent() {
+        // AC-2: omitted -> the built-in default (DEFAULT_SCROLL_LINES = 3).
+        let effective = resolve(&Config::default(), |_| None);
+        assert_eq!(effective.scroll_lines, DEFAULT_SCROLL_LINES);
+        assert_eq!(effective.scroll_lines, 3);
+    }
+
+    #[test]
+    fn resolve_scroll_lines_zero_clamps_to_one() {
+        // AC-3: 0 would freeze scrolling -> clamp to the floor of 1.
+        let config = Config {
+            scroll_lines: Some(0),
+            ..Default::default()
+        };
+        let effective = resolve(&config, |_| None);
+        assert_eq!(effective.scroll_lines, 1);
+    }
+
+    #[test]
+    fn resolve_scroll_lines_clamps_to_max() {
+        // AC-3: any over-large value is capped to MAX_SCROLL_LINES (page-jumping is pointless — the
+        // views clamp to their bounds), INCLUDING values beyond u16, which are accepted (the field
+        // is u32) and clamped rather than degrading the whole config to defaults.
+        assert_eq!(MAX_SCROLL_LINES, 10);
+        for over in [11u32, 1000, 100_000, u32::MAX] {
+            let cfg = Config {
+                scroll_lines: Some(over),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).scroll_lines,
+                MAX_SCROLL_LINES,
+                "value {over} must clamp to the max"
+            );
+        }
+        // The boundary value passes through unchanged.
+        let at_max = Config {
+            scroll_lines: Some(MAX_SCROLL_LINES as u32),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&at_max, |_| None).scroll_lines, MAX_SCROLL_LINES);
+    }
+
+    #[test]
+    fn scroll_lines_non_representable_degrades_to_default() {
+        // AC-4: a value that isn't a representable non-negative integer (here, negative) fails the
+        // parse, so the whole config degrades to defaults (Malformed); the resolver then yields the
+        // default step (3). (An over-large-but-representable value clamps instead — see
+        // resolve_scroll_lines_clamps_to_max.)
+        let (config, outcome) = parse_config("scroll_lines = -1\n");
+        assert_eq!(config.scroll_lines, None);
+        match outcome {
+            LoadOutcome::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+        let effective = resolve(&config, |_| None);
+        assert_eq!(effective.scroll_lines, 3);
     }
 
     // --- Settings Applier: effective_editor / effective_renderers / should_start_update_check

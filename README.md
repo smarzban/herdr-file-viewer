@@ -328,7 +328,8 @@ normal case — every key falls back to its default.
 fallback tier below the config key and above the built-in default — `editor` (`$EDITOR`) and
 `update_check` (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env >
 default` chain. Every other key (`markdown`, `diff`, `syntax`, `open`, `reveal`,
-`hide_dotfiles`) has no applicable environment variable; for those it's `config > default` only.
+`hide_dotfiles`, `scroll_lines`) has no applicable environment variable; for those it's
+`config > default` only.
 
 ```toml
 # ~/.config/herdr-file-viewer/config.toml (or the herdr-provided path above)
@@ -344,6 +345,7 @@ reveal = "nautilus"
 
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 update_check = true         # false to disable the once-a-day update check
+scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
 ```
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into

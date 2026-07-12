@@ -27,7 +27,7 @@ impl Controller {
     /// Handle a mouse event while the go-to-file finder is open (the finder is mouse-interactive;
     /// it owns all mouse while open and never leaks events to the tree/content beneath).
     ///
-    /// - `ScrollDown`/`ScrollUp` → move the finder selection by `WHEEL_STEP`, clamped.
+    /// - `ScrollDown`/`ScrollUp` → move the finder selection by `self.wheel_step`, clamped.
     ///   Position-independent (the finder is the active modal).
     /// - `Up(Left)` → click on a result row (select; double-click confirms).
     /// - `Down`/`Drag`/other → inert no-op (no drag in the finder).
@@ -39,8 +39,8 @@ impl Controller {
             return Effects::noop();
         }
         match ev.kind {
-            MouseEventKind::ScrollDown => self.finder_move_selection(WHEEL_STEP),
-            MouseEventKind::ScrollUp => self.finder_move_selection(-WHEEL_STEP),
+            MouseEventKind::ScrollDown => self.finder_move_selection(self.wheel_step),
+            MouseEventKind::ScrollUp => self.finder_move_selection(-self.wheel_step),
             // Horizontal wheel: scroll the result rows sideways, mirroring the vertical-wheel
             // handling above. Additive to the keyboard ←/→ scroll (AC-18 keyboard-first).
             MouseEventKind::ScrollRight => {

@@ -2167,7 +2167,7 @@ fn wheel_scrolls_the_pane_under_the_cursor() {
     ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll = 40
     ctrl.set_pane_geometry(wide_geometry());
 
-    // Over the content column → scrolls the content by WHEEL_STEP (3) per notch.
+    // Over the content column → scrolls the content by the default scroll step (3) per notch.
     assert_eq!(ctrl.content_scroll(), 0);
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
     assert_eq!(
@@ -2202,6 +2202,166 @@ fn wheel_over_the_tree_moves_the_selection() {
     );
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 5));
     assert_eq!(ctrl.tree().cursor(), 0, "wheel-up moves it back up");
+}
+
+#[test]
+fn apply_scroll_lines_sets_the_content_wheel_step() {
+    // AC-5: the effective scroll step (config `scroll_lines`) is the number of lines a wheel event
+    // advances the content pane. apply_scroll_lines(1) → one notch scrolls exactly 1 line (the
+    // default step is 3, asserted by `wheel_scrolls_the_pane_under_the_cursor`).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(1);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "the content wheel step follows scroll_lines (1)"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_sets_the_finder_wheel_step() {
+    // AC-6: the effective scroll step is the number of items a wheel event advances the finder
+    // selection. apply_scroll_lines(1) → one notch moves the selection by exactly 1 (default is 3).
+    let (_dir, mut ctrl) = finder_dir();
+    ctrl.handle_finder_key(key(KeyCode::Char('a'))); // ≥2 matches (alpha, beta, gamma)
+    let n = ctrl.finder_matches().len();
+    assert!(n >= 2, "need ≥2 matches for this test; got {n}");
+    ctrl.set_pane_geometry(finder_geometry_with_rows());
+    ctrl.apply_scroll_lines(1);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert_eq!(
+        ctrl.finder_cursor(),
+        1,
+        "the finder wheel step follows scroll_lines (1)"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_sets_the_help_wheel_step() {
+    // AC-7: the effective scroll step is the number of lines a wheel event advances the help
+    // overlay. apply_scroll_lines(2) → one notch scrolls the active section by exactly 2.
+    let mut ctrl = open_help_ctrl();
+    ctrl.apply_scroll_lines(2);
+    let raw_lines = ctrl.help_state().unwrap().active_body().lines.len() as u16;
+    let geom = PaneGeometry {
+        help_body_height: 5,
+        help_body_rows: raw_lines + 200, // plenty of room so the bottom clamp does not pin scroll
+        ..wide_geometry()
+    };
+    ctrl.set_pane_geometry(geom);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3));
+    assert_eq!(
+        ctrl.help_state().unwrap().sections[0].scroll,
+        2,
+        "the help wheel step follows scroll_lines (2)"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_does_not_change_the_tree_wheel_step() {
+    // AC-8: the tree advances by exactly one row per wheel event REGARDLESS of the effective scroll
+    // step — it uses the wheel delta's sign, not its magnitude.
+    let dir = TempDir::new();
+    for i in 0..20 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(10);
+    assert_eq!(ctrl.tree().cursor(), 0);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5));
+    assert_eq!(
+        ctrl.tree().cursor(),
+        1,
+        "the tree wheel is one row per event regardless of scroll_lines"
+    );
+}
+
+#[test]
+fn config_scroll_lines_flows_through_resolve_to_the_content_wheel_step() {
+    // Integration: config text → parse → resolve → apply_scroll_lines is exactly the composition
+    // app::run performs at startup (config resolution reaching the controller). Exercise that whole
+    // chain end-to-end to a real wheel event, closing the gap between resolution and application
+    // (the literal one-line app::run call mirrors the pre-existing apply_hide_dotfiles seam and is
+    // additionally live-verified).
+    use herdr_file_viewer::config::{parse_config, resolve};
+    let (cfg, _outcome) = parse_config("scroll_lines = 2\n");
+    let eff = resolve(&cfg, |_| None);
+    assert_eq!(
+        eff.scroll_lines, 2,
+        "config value resolves to the effective step"
+    );
+
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(eff.scroll_lines);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2,
+        "the resolved config scroll_lines reaches the content wheel step"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_zero_is_floored_to_one() {
+    // Defense-in-depth: a `0` at the public setter (a future caller / direct test) must not freeze
+    // scrolling — the step floors to 1 rather than 0.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(0);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        1,
+        "a 0 step is floored to 1 so the wheel never freezes"
+    );
+}
+
+#[test]
+fn apply_scroll_lines_is_symmetric_up_and_handles_large_values() {
+    // ScrollUp applies the same step (negated), and an extreme step (u16::MAX) clamps to the pane
+    // bounds without overflow or panic.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll 40
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.apply_scroll_lines(u16::MAX);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        40,
+        "a huge step clamps to the last screenful (no overflow)"
+    );
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        0,
+        "wheel-up applies the step symmetrically, clamped at the top"
+    );
 }
 
 #[test]
@@ -4782,7 +4942,7 @@ fn mouse_is_inert_while_the_finder_is_open_outside_overlay() {
 
 #[test]
 fn finder_wheel_moves_selection() {
-    // ScrollDown/ScrollUp while the finder is open moves the finder selection by WHEEL_STEP (3),
+    // ScrollDown/ScrollUp while the finder is open moves the finder selection by the default scroll step (3),
     // clamped at both ends. Position-independent (the finder owns all wheel events while open).
     let (_dir, mut ctrl) = finder_dir();
     ctrl.handle_finder_key(key(KeyCode::Char('a'))); // produces ≥1 matches (alpha, beta, gamma)
@@ -4794,14 +4954,14 @@ fn finder_wheel_moves_selection() {
     // Starting cursor is 0.
     assert_eq!(ctrl.finder_cursor(), 0, "cursor starts at 0");
 
-    // ScrollDown → moves down by WHEEL_STEP (3) or to the last match if fewer.
+    // ScrollDown → moves down by the default scroll step (3) or to the last match if fewer.
     let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 6, 3)); // position: tree area (irrelevant)
     assert!(fx.redraw, "ScrollDown redraws");
     let expected_after_down = 3_usize.min(n - 1);
     assert_eq!(
         ctrl.finder_cursor(),
         expected_after_down,
-        "ScrollDown moves the finder selection down by WHEEL_STEP"
+        "ScrollDown moves the finder selection down by the default scroll step"
     );
 
     // ScrollUp → moves back up.
@@ -9131,6 +9291,7 @@ fn open_help_appends_settings_section_when_display_is_set() {
         reveal: None,
         hide_dotfiles: false,
         update_check: true,
+        scroll_lines: 3,
     };
     ctrl.set_settings_display(
         &eff,

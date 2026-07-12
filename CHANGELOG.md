@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Configurable mouse-wheel scroll speed via a `scroll_lines` key in `config.toml`.** Sets how many
+  lines each wheel event advances the content pane (and how many items it moves in the file-search
+  list, and lines in the `?` help overlay); the directory tree still moves one row per event.
+  Defaults to `3` (unchanged behaviour) and is clamped to the range `1..=10`. Lower it (e.g.
+  `scroll_lines = 1`) for finer, slower scrolling when reading large files or browsing search
+  results. `config > default`, no environment variable; the effective value is shown in the `?`
+  overlay's Settings section. (GitHub #93)
 - **Customizable keybindings: remap any global key with a `[keys]` table in `config.toml`.** A new
   `[keys]` section keyed by intent name (`refresh`, `nav_up`, `switch_worktree`, and the rest) lets
   you replace an action's default key(s) with your own, written as a single string (`refresh = "g"`)

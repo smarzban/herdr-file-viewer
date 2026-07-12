@@ -116,8 +116,8 @@ impl Controller {
         }
         let (col, row) = (ev.column, ev.row);
         match ev.kind {
-            MouseEventKind::ScrollDown => self.scroll_at(col, row, WHEEL_STEP),
-            MouseEventKind::ScrollUp => self.scroll_at(col, row, -WHEEL_STEP),
+            MouseEventKind::ScrollDown => self.scroll_at(col, row, self.wheel_step),
+            MouseEventKind::ScrollUp => self.scroll_at(col, row, -self.wheel_step),
             MouseEventKind::ScrollRight => self.hscroll_at(col, row, HSCROLL_STEP as i32),
             MouseEventKind::ScrollLeft => self.hscroll_at(col, row, -(HSCROLL_STEP as i32)),
             MouseEventKind::Down(MouseButton::Left) => {

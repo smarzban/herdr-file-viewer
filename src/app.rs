@@ -103,6 +103,9 @@ pub fn run() -> io::Result<()> {
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Apply the config-driven mouse-wheel scroll step (`scroll_lines`); already clamped to >= 1 by
+    // the resolver, so the wheel always advances at least one line/item.
+    controller.apply_scroll_lines(eff.scroll_lines);
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.
