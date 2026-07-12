@@ -107,7 +107,9 @@ These shape every decision; violating one is a design error, not a style nit:
 - **Manifest** `herdr-plugin.toml`: declare the viewer as a `[[panes]]` entry with
   `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]`, plus an
   `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos","windows"]`
-  (Windows is preview, with per-item launcher entries), `[[build]] command = ["cargo","build","--release"]`.
+  (Windows is preview, with per-item launcher entries), and **platform-gated `[[build]]` steps**
+  (`["/bin/sh","scripts/fetch-or-build.sh"]` on unix, `powershell … scripts/fetch-or-build.ps1` on
+  Windows) that download the verified prebuilt binary and fall back to `cargo build --release`.
   **No `[[events]]`** (AC-N4).
 - **Runtime host ops** via the herdr CLI (`$HERDR_BIN_PATH`, the `HerdrCli::run` / `run_json` seam in
   `src/herdr.rs`): read-only layout/query commands only — e.g. `pane zoom` (the `Z` full-screen), the
