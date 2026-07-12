@@ -744,6 +744,7 @@ mod tests {
             reveal: None,
             hide_dotfiles: true,
             update_check: false,
+            scroll_lines: 7,
         }
     }
 

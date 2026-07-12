@@ -9131,6 +9131,7 @@ fn open_help_appends_settings_section_when_display_is_set() {
         reveal: None,
         hide_dotfiles: false,
         update_check: true,
+        scroll_lines: 3,
     };
     ctrl.set_settings_display(
         &eff,
