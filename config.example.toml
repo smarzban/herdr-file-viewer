@@ -69,6 +69,12 @@
 # $HERDR_FILE_VIEWER_NO_UPDATE_CHECK environment variable). Default:
 #update_check = true
 
+# How many lines the mouse wheel scrolls per event (also how many items it moves
+# in the file-search list, and lines in the `?` help overlay). Minimum 1; lower
+# it for finer, slower scrolling. Note: some terminals emit several wheel events
+# per physical notch, so the effective speed is this times that. Default:
+#scroll_lines = 3
+
 # --- Keybindings -------------------------------------------------------------
 #
 # Remap any global key. Key each entry by its INTENT NAME: the stable snake_case

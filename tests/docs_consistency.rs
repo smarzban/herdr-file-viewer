@@ -39,6 +39,7 @@ fn config_example_documents_every_config_key() {
         "reveal",
         "hide_dotfiles",
         "update_check",
+        "scroll_lines",
     ] {
         assert!(
             has_commented_assignment(CONFIG_EXAMPLE, key),
@@ -71,6 +72,20 @@ fn config_example_documents_every_config_key() {
             n + 1
         );
     }
+}
+
+#[test]
+fn readme_and_example_document_scroll_lines() {
+    // AC-10: the mouse-wheel scroll-speed key must be documented in BOTH the README and the bundled
+    // config.example.toml, so the feature ships with a discoverable, copy-pasteable setting.
+    assert!(
+        README.contains("scroll_lines"),
+        "README.md must document the `scroll_lines` config key"
+    );
+    assert!(
+        CONFIG_EXAMPLE.contains("scroll_lines"),
+        "config.example.toml must document the `scroll_lines` config key"
+    );
 }
 
 #[test]

@@ -94,6 +94,10 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   into argv by the same quote-aware tokenizer used for `$EDITOR`; no shell is invoked.
 - **Settings section**: the display-only section of the help overlay that lists the
   **effective setting**s; it shows configuration, it does not edit it.
+- **scroll step**: how many content lines (or **file finder** list items, or help-overlay
+  lines) the mouse wheel advances per wheel event. Set by the `scroll_lines` **config file**
+  key (config > default; default 3, floor 1). The directory tree is unaffected: it always
+  advances one row per wheel event.
 - **keybinding registry**: the single data-driven table binding each global viewer action
   to its default key(s) and a human description; the source of truth the input dispatcher
   decodes from and the help overlay and README both derive from.
