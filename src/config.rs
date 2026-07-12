@@ -46,11 +46,12 @@ pub struct Config {
     pub hide_dotfiles: Option<bool>,
     pub update_check: Option<bool>,
     /// The mouse-wheel **scroll step**: how many lines/items each wheel event advances. `None`
-    /// falls back to [`DEFAULT_SCROLL_LINES`]; the resolver clamps a present value to
-    /// `1..=`[`MAX_SCROLL_LINES`] (`0` would freeze scrolling; an over-large value just page-jumps).
-    /// A non-representable value (negative / non-integer / above `u16`) fails the parse and degrades
-    /// the whole config to defaults via the existing `Malformed` path.
-    pub scroll_lines: Option<u16>,
+    /// falls back to [`DEFAULT_SCROLL_LINES`]; the resolver clamps any present value into
+    /// `1..=`[`MAX_SCROLL_LINES`] (`0` would freeze scrolling; a larger value just page-jumps, so it
+    /// caps at the max rather than being taken literally). Held as `u32` so even an out-of-`u16`
+    /// number still clamps into range instead of tripping the parse; only a negative / non-integer /
+    /// astronomically large value fails to parse and degrades the whole config to defaults.
+    pub scroll_lines: Option<u32>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
@@ -211,7 +212,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     // the parse and arrived as `None` on a defaulted `Config` (AC-4).
     let scroll_lines = config
         .scroll_lines
-        .map(|n| n.clamp(1, MAX_SCROLL_LINES))
+        .map(|n| n.clamp(1, MAX_SCROLL_LINES as u32) as u16)
         .unwrap_or(DEFAULT_SCROLL_LINES);
 
     EffectiveSettings {
@@ -736,16 +737,24 @@ mod tests {
 
     #[test]
     fn resolve_scroll_lines_clamps_to_max() {
-        // AC-3: an over-large value is capped to MAX_SCROLL_LINES (page-jumping is pointless — the
-        // views clamp to their bounds), and the boundary value passes through unchanged.
-        let over = Config {
-            scroll_lines: Some(1000),
-            ..Default::default()
-        };
-        assert_eq!(resolve(&over, |_| None).scroll_lines, MAX_SCROLL_LINES);
+        // AC-3: any over-large value is capped to MAX_SCROLL_LINES (page-jumping is pointless — the
+        // views clamp to their bounds), INCLUDING values beyond u16, which are accepted (the field
+        // is u32) and clamped rather than degrading the whole config to defaults.
         assert_eq!(MAX_SCROLL_LINES, 10);
+        for over in [11u32, 1000, 100_000, u32::MAX] {
+            let cfg = Config {
+                scroll_lines: Some(over),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).scroll_lines,
+                MAX_SCROLL_LINES,
+                "value {over} must clamp to the max"
+            );
+        }
+        // The boundary value passes through unchanged.
         let at_max = Config {
-            scroll_lines: Some(MAX_SCROLL_LINES),
+            scroll_lines: Some(MAX_SCROLL_LINES as u32),
             ..Default::default()
         };
         assert_eq!(resolve(&at_max, |_| None).scroll_lines, MAX_SCROLL_LINES);
@@ -753,8 +762,10 @@ mod tests {
 
     #[test]
     fn scroll_lines_non_representable_degrades_to_default() {
-        // AC-4: a non-representable value (negative) fails the u16 parse, so the whole config
-        // degrades to defaults (Malformed); the resolver then yields the default step (3).
+        // AC-4: a value that isn't a representable non-negative integer (here, negative) fails the
+        // parse, so the whole config degrades to defaults (Malformed); the resolver then yields the
+        // default step (3). (An over-large-but-representable value clamps instead — see
+        // resolve_scroll_lines_clamps_to_max.)
         let (config, outcome) = parse_config("scroll_lines = -1\n");
         assert_eq!(config.scroll_lines, None);
         match outcome {
