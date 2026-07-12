@@ -89,6 +89,52 @@ nav_up = ["w", "Up"]        # an array: bind several keys at once (the default `
 switch_worktree = "F2"      # a named key
 ```
 
+### Every remappable action
+
+These are all the actions you can put in `[keys]`, keyed by intent name, with their default key(s).
+The `?` help overlay's **Keybindings** section shows the same list live (and marks the ones you have
+customized).
+
+| Group | Intent name (`[keys]` id) | Default key(s) | Action |
+| --- | --- | --- | --- |
+| **Navigation** | `nav_up` | `Up`, `k` | Move the tree cursor up one row |
+| | `nav_down` | `Down`, `j` | Move the tree cursor down one row |
+| | `expand` | `Right`, `l` | Expand the selected directory |
+| | `collapse` | `Left`, `h` | Collapse the selected directory |
+| | `activate` | `Enter` | Activate the selection: expand/collapse a directory, or open a file |
+| **View & layout** | `open_fullscreen` | `Z` | Toggle full-screen reading of the selected file |
+| | `cycle_view` | `v` | Cycle the content pane's view mode |
+| | `toggle_focus` | `Tab` | Move focus between the tree and content columns |
+| | `shrink_tree` | `<` | Narrow the tree column |
+| | `grow_tree` | `>` | Widen the tree column |
+| | `toggle_wrap` | `w` | Force content-line wrapping on or off |
+| | `toggle_zoom` | `z` | Hide the tree so content fills the frame, or restore the split |
+| | `tree_scroll_left` | `H` | Scroll the tree pane left |
+| | `tree_scroll_right` | `L` | Scroll the tree pane right |
+| **Git & filters** | `toggle_ignore` | `i` | Reveal or hide gitignored files |
+| | `toggle_hidden` | `.` | Hide or reveal dot-prefixed (hidden) files and folders |
+| | `toggle_changed_only` | `c` | Restrict the tree to changed files, or restore the full tree |
+| | `toggle_baseline` | `b` | Switch the diff baseline between base-branch and `HEAD` |
+| | `refresh` | `r` | Re-read git state and re-render |
+| **Open & copy** | `open_in_editor` | `e` | Hand the selected file off to an external editor |
+| | `open_with_app` | `O` | Open the selected entry with the OS default application |
+| | `reveal_in_file_manager` | `R` | Reveal the selected entry in the OS file manager |
+| | `copy_repo_path` | `y` | Copy the selected node's repo-relative path to the clipboard |
+| | `copy_abs_path` | `Y` | Copy the selected node's absolute path to the clipboard |
+| **Search & jump** | `open_finder` | `f` | Open the go-to-file fuzzy finder |
+| | `open_go_to_line` | `:` | Open the go-to-line prompt |
+| | `open_search` | `/` | Open the in-file search prompt |
+| | `next_match` | `n` | Jump to the next search match (wraps) |
+| | `prev_match` | `N` | Jump to the previous search match (wraps) |
+| **Session** | `dismiss_update` | `u` | Dismiss the update-available banner for this session |
+| | `switch_worktree` | `W` | Open the worktree picker to re-root at another git worktree |
+| | `show_help` | `?` | Open the in-app help overlay (What's New and About) |
+| | `close` | `q`, `Esc` | Close the viewer and return to the prior pane |
+
+`Esc` always closes the viewer even if you rebind `close` — that floor can't be rebound away (see
+below). Keys handled inside a modal (the finder query, the `:` / `/` prompt, line-select mode) are
+fixed and not remappable.
+
 **Bindable keys** are the modifier-free surface the viewer already uses: any printable or shifted
 character (`g`, `<`, `?`, and capitals such as `W` are each their own key), plus the named keys
 `Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Backspace`,

@@ -1448,4 +1448,26 @@ mod tests {
             );
         }
     }
+
+    /// The configuration-reference source (`docs/configuration.md`), compiled in so the
+    /// remappable-actions table can't drift from the registry. Every `[keys]` intent name is a
+    /// stable config identifier, so the doc must list them all.
+    const CONFIG_DOC: &str = include_str!("../docs/configuration.md");
+
+    #[test]
+    fn configuration_doc_lists_every_remappable_intent() {
+        // Every registry intent name must appear (backtick-wrapped) in docs/configuration.md's
+        // "Every remappable action" table, so the full `[keys]` surface is documented and can't
+        // drift: adding a new Intent to the registry without listing its name fails the build.
+        // Backtick-wrapping avoids matching a bare word that also appears in prose.
+        for binding in registry() {
+            let needle = format!("`{}`", binding.name);
+            assert!(
+                CONFIG_DOC.contains(&needle),
+                "docs/configuration.md must list the remappable intent `{}` (backtick-wrapped) in \
+                 the keybindings table",
+                binding.name,
+            );
+        }
+    }
 }
