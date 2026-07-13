@@ -26,8 +26,9 @@ filename itself is never read.
 ## File location
 
 When run under herdr, the config lives at `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — herdr provides
-that directory (on Linux it resolves to
-`~/.config/herdr/plugins/config/herdr-file-viewer/config.toml`). Run standalone (outside herdr), it
+that directory (on Linux it is
+`~/.config/herdr/plugins/config/herdr-file-viewer/`, so the file is that path plus `config.toml`).
+Run standalone (outside herdr), it
 falls back to `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, defaulting to
 `~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. A missing file is the
 normal case — every key falls back to its default.
