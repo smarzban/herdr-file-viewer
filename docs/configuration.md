@@ -59,17 +59,19 @@ hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key stil
 update_check = true         # false to disable the once-a-day update check
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
+tree_max_cols = 30          # HARD CAP in columns; the SMALLER of this and tree_width% wins (raise both to widen)
 tree_position = "left"      # which side the directory tree sits on: "left" (default) or "right"
-tree_max_cols = 30          # cap the tree at this many columns so it stays compact on a wide pane
 ```
 
-`tree_width` / `tree_position` set the **startup** tree/content split inside the viewer's own pane
-(not the size of the herdr pane, which the host decides). You can still resize the split live with
-the grow/shrink keys or by dragging the divider; the config just seeds the initial value.
-`tree_max_cols` is a **column** ceiling (not a percent): the tree is drawn at
-`min(tree_width% of the pane, tree_max_cols)`, so a full-terminal tab gives the extra width to the
-content pane instead of a mostly-blank tree. It only bites past ~100 columns, and dragging the
-divider or the grow/shrink keys lifts it (an explicit resize wins); set it high to disable.
+`tree_width` and `tree_max_cols` **together** decide the tree's startup width, and the **smaller of
+the two wins**: the tree is drawn at `min(tree_width% of the pane, tree_max_cols)`. So if you set
+`tree_width = 50` and nothing changes, `tree_max_cols` (default 30 columns) is capping it: raise
+`tree_max_cols` too, or set it high to switch the cap off. The cap is a **column** count, not a
+percent; it exists so a full-terminal tab or a wide monitor gives the extra room to the content pane
+instead of a mostly-blank tree (it only bites past ~100 columns). `tree_position` puts the tree on
+the `left` (default) or `right`. All three set the **startup** split inside the viewer's own pane
+(not the herdr pane, which the host decides); you can still resize live with the grow/shrink keys or
+by dragging the divider, and an explicit resize lifts the cap.
 
 ## Command values
 
