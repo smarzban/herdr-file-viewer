@@ -5,7 +5,10 @@
 #
 #   1. Copy it into your config directory and RENAME it to `config.toml`:
 #
-#        Under herdr (herdr provides the directory as $HERDR_PLUGIN_CONFIG_DIR):
+#        Under herdr, run `herdr plugin config-dir herdr-file-viewer` to print the
+#        directory it belongs in. On Linux that directory is
+#          ~/.config/herdr/plugins/config/herdr-file-viewer/
+#        (provided as $HERDR_PLUGIN_CONFIG_DIR), so your config file becomes:
 #          ~/.config/herdr/plugins/config/herdr-file-viewer/config.toml
 #
 #        Standalone, outside herdr:
@@ -78,24 +81,33 @@
 
 # --- Layout ------------------------------------------------------------------
 
-# The tree/content split INSIDE the viewer's pane (not the size of the herdr
-# pane itself, which the host decides). `tree_width` is the directory tree
-# column's share of the pane, as a percent from 20 to 80; the content pane takes
-# the rest. You can still resize the split live with the grow/shrink keys or by
-# dragging the divider — this only sets the startup value. Default:
+# TWO keys size the directory tree, and the SMALLER of the two wins:
+#
+#     tree width shown = min( tree_width% of the pane , tree_max_cols columns )
+#
+# >>> Gotcha: if you raise `tree_width` (say to 50) and the tree does NOT get
+#     wider, `tree_max_cols` is the limit capping it. Raise `tree_max_cols` too,
+#     or set it high to switch the cap off. They work together, so tune both. <<<
+#
+# Both size the split INSIDE the viewer's pane, not the herdr pane itself (the
+# host decides that). You can always resize live with the grow/shrink keys or by
+# dragging the divider; these keys only set the STARTUP value.
+
+# tree_width: the tree column's share of the pane, as a percent from 20 to 80
+# (the content pane takes the rest). Default:
 #tree_width = 30
 
-# Which side of the content pane the tree is drawn on: "left" (default) or
-# "right". An unrecognized value falls back to "left". Default:
-#tree_position = "left"
-
-# Maximum tree width in CHARACTER COLUMNS (not a percent). The tree is drawn at
-# min(tree_width% of the pane, tree_max_cols), so on a wide pane (a full tab, a
-# big monitor) it stays compact instead of ballooning into a mostly-blank
-# column. Bites once the pane is wider than ~100 columns; below that the
-# percentage governs. Dragging the divider or the grow/shrink keys lifts the cap
-# (an explicit resize wins). Set it high (up to 1000) to disable. Default:
+# tree_max_cols: a HARD CAP on the tree width, in CHARACTER COLUMNS (not a
+# percent). Because the smaller value wins (see above), on a wide pane this is
+# usually what actually governs: at the default 30 the tree never grows past 30
+# columns even when `tree_width` would give it more, so it stays compact instead
+# of a mostly-blank column. Raise it (up to 1000, or just set it high) to let
+# `tree_width` take over. Default:
 #tree_max_cols = 30
+
+# tree_position: which side the tree sits on, "left" (default) or "right". An
+# unrecognized value falls back to "left". Default:
+#tree_position = "left"
 
 # --- Keybindings -------------------------------------------------------------
 #

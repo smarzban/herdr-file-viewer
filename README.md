@@ -18,6 +18,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ![herdr-file-viewer rendering a markdown file: colored headings and styled inline code on the right, the git-status tree on the left](assets/Markdown-view.png)
 
+*…and running full-screen, the same tree + content, filling the terminal:*
+
+![herdr-file-viewer running full-screen](assets/File-Viewer-FS.png)
+
 ## Why you'd want it
 
 - **The right view, automatically.** Stop `cat`-ing files and squinting at raw diffs. A changed
@@ -86,8 +90,8 @@ Deeper detail lives in the docs: [install & updating](docs/install.md),
 
 An optional, **read-only** TOML config file lets you override the editor, the renderer/opener
 commands, a couple of startup toggles, the tree layout, and the keybindings. A fully-commented
-[`config.example.toml`](config.example.toml) ships in the plugin folder — copy it to the config
-path, rename it to `config.toml`, and uncomment what you want.
+[`config.example.toml`](config.example.toml) ships in the plugin folder; copy it as `config.toml`
+into the directory `herdr plugin config-dir herdr-file-viewer` prints, then uncomment what you want.
 
 The full reference — file location, precedence, every key, and `[keys]` remapping — is in
 **[docs/configuration.md](docs/configuration.md)**. See your effective settings any time in the `?`
