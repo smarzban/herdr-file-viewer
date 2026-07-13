@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
-## [Unreleased]
+## [1.12.0] - 2026-07-13
 
 ### Added
 - Configurable tree layout: `tree_width` (split %, 20–80), `tree_position` (`left`/`right`), and `tree_max_cols` (column cap). → [configuration](docs/configuration.md)
@@ -149,7 +149,7 @@ First public release: a git-aware, read-only file viewer that runs as a herdr pl
 ### Security
 - Read-only by construction; untrusted content is escape-neutralized and fed to renderers on stdin; every `git` invocation is hardened for untrusted repos. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/smarzban/herdr-file-viewer/compare/v1.11.0...HEAD
+[1.12.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.12.0
 [1.11.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.11.0
 [1.10.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.10.0
 [1.9.0]: https://github.com/smarzban/herdr-file-viewer/releases/tag/v1.9.0
