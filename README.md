@@ -18,6 +18,10 @@ right into the tree. It opens beside whatever you're doing and never touches you
 
 ![herdr-file-viewer rendering a markdown file: colored headings and styled inline code on the right, the git-status tree on the left](assets/Markdown-view.png)
 
+*…and running full-screen, the same tree + content, filling the terminal:*
+
+![herdr-file-viewer running full-screen](assets/File-Viewer-FS.png)
+
 ## Why you'd want it
 
 - **The right view, automatically.** Stop `cat`-ing files and squinting at raw diffs. A changed
