@@ -5,8 +5,9 @@
 #
 #   1. Copy it into your config directory and RENAME it to `config.toml`:
 #
-#        Under herdr (herdr provides the directory as $HERDR_PLUGIN_CONFIG_DIR):
-#          ~/.config/herdr/plugins/config/herdr-file-viewer/config.toml
+#        Under herdr, run `herdr plugin config-dir herdr-file-viewer` to print the directory
+#        (herdr provides it as $HERDR_PLUGIN_CONFIG_DIR; on Linux it resolves to
+#          ~/.config/herdr/plugins/config/herdr-file-viewer/config.toml):
 #
 #        Standalone, outside herdr:
 #          ~/.config/herdr-file-viewer/config.toml

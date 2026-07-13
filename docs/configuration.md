@@ -6,10 +6,22 @@ writes this file; edit it in your own editor and relaunch to pick up changes (th
 settings editor). You can see what's currently in effect any time in the `?` help overlay's
 **Settings** section.
 
-**Quick start:** a fully-commented [`config.example.toml`](../config.example.toml) ships in the
-plugin folder documenting every setting. Copy it to the config path below, **rename it to
-`config.toml`**, uncomment the lines you want, and relaunch — copying it as-is changes nothing
-(every line is commented out).
+**Quick start.** A fully-commented [`config.example.toml`](../config.example.toml) ships in the
+plugin folder, documenting every setting. You never have to guess where the live file goes: under
+herdr, `herdr plugin config-dir herdr-file-viewer` prints the exact directory herdr keeps it in.
+Copy the example there as `config.toml` in one line:
+
+```bash
+cp "$(herdr plugin list --json | jq -r '.result.plugins[]|select(.plugin_id=="herdr-file-viewer").plugin_root')/config.example.toml" \
+   "$(herdr plugin config-dir herdr-file-viewer)/config.toml"
+```
+
+No `jq`? Run `herdr plugin list` to see the plugin folder (shown in brackets) and copy from there:
+`cp <plugin-folder>/config.example.toml "$(herdr plugin config-dir herdr-file-viewer)/config.toml"`.
+
+Then uncomment the lines you want and relaunch. Copying it as-is changes nothing (every line is
+commented out). However you copy it, **rename the copy to `config.toml`**: the `config.example.toml`
+filename itself is never read.
 
 ## File location
 

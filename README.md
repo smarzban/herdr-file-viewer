@@ -90,8 +90,8 @@ Deeper detail lives in the docs: [install & updating](docs/install.md),
 
 An optional, **read-only** TOML config file lets you override the editor, the renderer/opener
 commands, a couple of startup toggles, the tree layout, and the keybindings. A fully-commented
-[`config.example.toml`](config.example.toml) ships in the plugin folder — copy it to the config
-path, rename it to `config.toml`, and uncomment what you want.
+[`config.example.toml`](config.example.toml) ships in the plugin folder; copy it as `config.toml`
+into the directory `herdr plugin config-dir herdr-file-viewer` prints, then uncomment what you want.
 
 The full reference — file location, precedence, every key, and `[keys]` remapping — is in
 **[docs/configuration.md](docs/configuration.md)**. See your effective settings any time in the `?`
