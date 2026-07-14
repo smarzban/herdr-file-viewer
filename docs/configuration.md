@@ -86,6 +86,10 @@ also bounds how much is ever read from disk, so a giant or hostile file is never
 either to view bigger files (`preview_max_lines` up to `100000`, `preview_max_kib` up to `65536` =
 64 MB); both clamp into range, and a very large value can make the pane slower to render.
 
+One caveat for **diffs**: a diff is additionally bounded at ~4 MB by the git-capture step, independent
+of `preview_max_kib`. So raising `preview_max_kib` above ~4 MB widens how much *file content* is shown
+but not how much of a very large *diff* is (a diff past that bound is shown up to ~4 MB).
+
 ## Command values
 
 Command values (`editor`, `markdown`, `diff`, `syntax`, `open`, `reveal`) are **split into

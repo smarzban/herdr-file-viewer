@@ -61,6 +61,23 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Truncate `s` in place to at most `max_bytes` bytes, cutting on a UTF-8 char boundary so a
+/// multi-byte character is never split. Shared by [`classify`] and [`cap_preview`] so the byte cap
+/// bounds the *displayed* preview, not only the disk read: `from_utf8_lossy` can expand invalid
+/// bytes (each becomes a 3-byte U+FFFD), so a line-bounded-only preview of a hostile file could
+/// otherwise exceed the cap by up to ~3× before rendering.
+fn truncate_to_bytes(s: &mut String, max_bytes: u64) {
+    let max = max_bytes.min(s.len() as u64) as usize;
+    if max == s.len() {
+        return; // already within the cap — no allocation, no scan
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+}
+
 /// The guarded result of reading a file's content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Prepared {
@@ -125,11 +142,14 @@ pub fn classify(root: &Path, path: &Path, caps: Caps) -> Prepared {
     let line_count = text.lines().count();
     let over_lines = line_count >= caps.max_lines;
     if over_bytes || over_lines {
-        let preview: String = text
+        let mut preview: String = text
             .lines()
             .take(caps.max_lines)
             .collect::<Vec<_>>()
             .join("\n");
+        // Byte-bound the (possibly lossy-expanded) preview so the byte cap bounds what is *shown*,
+        // not only the disk read — matching cap_preview's guarantee for diffs.
+        truncate_to_bytes(&mut preview, caps.max_bytes);
         let cap = if over_bytes {
             format!("{} size", human_bytes(caps.max_bytes))
         } else {
@@ -276,15 +296,7 @@ fn cap_preview(text: &str, caps: Caps) -> (String, Option<String>) {
         .take(caps.max_lines)
         .collect::<Vec<_>>()
         .join("\n");
-    if preview.len() as u64 > caps.max_bytes {
-        let end = preview
-            .char_indices()
-            .take_while(|(i, _)| (*i as u64) < caps.max_bytes)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        preview.truncate(end);
-    }
+    truncate_to_bytes(&mut preview, caps.max_bytes);
     (
         preview,
         Some("⚠ Truncated diff preview: diff exceeds the size cap.".into()),
@@ -647,6 +659,11 @@ mod tests {
                     text.len() as u64 <= caps.max_bytes,
                     "AC-13: preview is bounded"
                 );
+                // Exercises human_bytes' MB branch on the default 1 MiB cap (the common path).
+                assert!(
+                    notice.contains("1 MB"),
+                    "notice names the default 1 MB size cap: {notice}"
+                );
             }
             other => panic!("expected Truncated, got {other:?}"),
         }
@@ -720,6 +737,66 @@ mod tests {
             other => panic!("expected Truncated at a 64 KiB cap, got {other:?}"),
         }
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn classify_byte_bounds_a_lossy_expanded_single_line_preview() {
+        // A hostile over-cap file that is ONE long line of INVALID UTF-8: the line cap never trips
+        // (1 line), and from_utf8_lossy expands each 0xFF into a 3-byte U+FFFD — so a line-bounded-only
+        // preview would balloon past the cap. The byte-bound must hold the shown preview at <= the cap.
+        let cap = 64 * 1024u64;
+        let raw = vec![0xFFu8; (cap as usize) + 4096]; // over the cap, no NUL, no newline
+        let p = tmp("lossy.bin", &raw);
+        let caps = Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: cap,
+        };
+        match classify(&std::env::temp_dir(), &p, caps) {
+            Prepared::Truncated { text, .. } => {
+                assert!(
+                    text.len() as u64 <= cap,
+                    "lossy-expanded preview must still honor the byte cap: {} > {cap}",
+                    text.len()
+                );
+            }
+            other => panic!("expected Truncated, got {other:?}"),
+        }
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn truncate_to_bytes_respects_char_boundaries_and_the_cap() {
+        // Never split a multi-byte char, always land <= cap, and be a no-op under the cap.
+        let mut s = "aé…z".to_string(); // 'a'(1) 'é'(2) '…'(3) 'z'(1) = 7 bytes
+        truncate_to_bytes(&mut s, 4); // cap lands mid-'…' (bytes 3..6) → must cut back to "aé"
+        assert_eq!(s, "aé");
+        let mut whole = "hello".to_string();
+        truncate_to_bytes(&mut whole, 100); // over-cap: unchanged
+        assert_eq!(whole, "hello");
+        let mut empty = "hello".to_string();
+        truncate_to_bytes(&mut empty, 0); // zero cap: empty, no panic
+        assert_eq!(empty, "");
+    }
+
+    #[test]
+    fn cap_preview_byte_bounds_a_long_line_diff_under_the_line_cap() {
+        // A diff of few lines but many BYTES trips cap_preview's byte cap (not its line cap): the
+        // returned preview must be byte-bounded and carry a notice.
+        let caps = Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: 8 * 1024,
+        };
+        let long_line = "+".to_string() + &"x".repeat(32 * 1024); // one line, > 8 KiB
+        let (preview, notice) = cap_preview(&long_line, caps);
+        assert!(
+            preview.len() as u64 <= caps.max_bytes,
+            "cap_preview must byte-bound a long-line diff: {}",
+            preview.len()
+        );
+        assert!(
+            notice.unwrap().to_lowercase().contains("truncated"),
+            "a byte-over diff gets a truncation notice"
+        );
     }
 
     #[test]

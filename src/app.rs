@@ -875,6 +875,38 @@ mod tests {
         }
     }
 
+    /// End-to-end wiring: a NON-default cap on `LiveContent` must reach `classify` and truncate,
+    /// guarding the `eff.preview_caps()` → `LiveContent.caps` → `render::classify(.., self.caps)`
+    /// thread that the config/render unit tests each cover only on their own side.
+    #[cfg(unix)]
+    #[test]
+    fn livecontent_threads_a_configured_cap_into_classify() {
+        let root = tmp("cfg-cap-wiring");
+        let file = root.join("many.txt");
+        std::fs::write(&file, "line\n".repeat(200)).unwrap(); // 200 lines, well under the default cap
+        let content = LiveContent {
+            root: root.clone(),
+            renderers: Renderers {
+                markdown: vec!["cat".into()],
+                diff: vec!["cat".into()],
+                full_diff: vec!["cat".into()],
+                syntax: vec!["cat".into()],
+                timeout: Duration::from_secs(5),
+            },
+            // A 50-line cap the default would never apply — proves the injected cap is what bites.
+            caps: Caps {
+                max_lines: 50,
+                max_bytes: 1024 * 1024,
+            },
+        };
+        let out = content.render_at_width(&file, ViewMode::SyntaxContent, None, None);
+        assert!(
+            out.notices.iter().any(|n| n.contains("50-line")),
+            "the configured 50-line cap must reach classify through LiveContent: {:?}",
+            out.notices
+        );
+    }
+
     #[cfg(unix)]
     fn flatten_content(r: &RenderResult) -> String {
         r.content
