@@ -109,6 +109,24 @@
 # unrecognized value falls back to "left". Default:
 #tree_position = "left"
 
+# --- Content preview ---------------------------------------------------------
+#
+# A file is shown in FULL until it exceeds one of two caps, then the content pane
+# shows a truncated preview plus a "⚠ Truncated preview" notice. The caps trigger
+# on whichever is hit FIRST, and they also apply to a large diff. For typical
+# source code the LINE cap bites first; the SIZE cap mainly guards minified or
+# generated files (bundles, big JSON, logs) and also bounds how much is ever read
+# from disk. Raise them to view bigger files; very large values can make the pane
+# slower to render.
+
+# preview_max_lines: show at most this many lines before truncating. From 100 to
+# 100000. Default:
+#preview_max_lines = 10000
+
+# preview_max_kib: show at most this size before truncating, in KiB (1024 = 1 MB).
+# From 64 to 65536 (64 MB). Default:
+#preview_max_kib = 1024
+
 # --- Keybindings -------------------------------------------------------------
 #
 # Remap any global key. Key each entry by its INTENT NAME: the stable snake_case

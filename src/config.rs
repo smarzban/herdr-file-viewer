@@ -46,6 +46,28 @@ pub const MIN_TREE_MAX_COLS: u16 = 10;
 /// `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS`.
 pub const MAX_TREE_MAX_COLS: u16 = 1000;
 
+/// The built-in **content preview line cap**: past this many lines a file (or a large diff) is shown
+/// as a truncated preview plus a visible notice (AC-13), not whole. `preview_max_lines` overrides it.
+/// Mirrors [`crate::render::Caps::default`]'s line cap so a config-absent run is unchanged; the
+/// `render_caps_default_matches_config_defaults` test pins the two together.
+pub const DEFAULT_PREVIEW_MAX_LINES: u32 = 10000;
+/// The fewest lines a preview cap may be set to — below this the pane could truncate away almost
+/// everything, so a smaller configured value clamps up to it.
+pub const MIN_PREVIEW_MAX_LINES: u32 = 100;
+/// The most lines a preview may show. Bounds the work the render pipeline (external CLI +
+/// `ansi-to-tui` parse) does per file so a huge cap cannot wedge the UI; a larger value clamps down.
+pub const MAX_PREVIEW_MAX_LINES: u32 = 100_000;
+
+/// The built-in **content preview size cap**, in KiB: past this many kibibytes a file is previewed,
+/// not shown whole, and it bounds the actual disk read so a giant/hostile file is never slurped
+/// (AC-N1). `preview_max_kib` overrides it. 1024 KiB = 1 MiB. Mirrors [`crate::render::Caps::default`].
+pub const DEFAULT_PREVIEW_MAX_KIB: u32 = 1024;
+/// The smallest preview size cap (KiB); a smaller configured value clamps up to it.
+pub const MIN_PREVIEW_MAX_KIB: u32 = 64;
+/// The largest preview size cap (KiB) — 64 MiB. Even the maximum is a finite read, so the
+/// bounded-read guarantee (AC-N1) holds at every setting; a larger value clamps down to it.
+pub const MAX_PREVIEW_MAX_KIB: u32 = 65_536;
+
 /// Which side of the content pane the directory tree is drawn on (`tree_position` config key). A
 /// pure display preference; the config value is a lenient `Option<String>` resolved into this by
 /// [`resolve`] (case-insensitive, trimmed), so this enum is never deserialized directly. `Left` is
@@ -119,6 +141,16 @@ pub struct Config {
     /// out-of-`u16` number clamps into range instead of tripping the parse; only a negative /
     /// non-integer value fails to parse and degrades the whole config to defaults.
     pub tree_max_cols: Option<u32>,
+    /// The **content preview line cap**: past this many lines a file (or a large diff) is shown as a
+    /// truncated preview plus a notice, not whole (AC-13). `None` falls back to
+    /// [`DEFAULT_PREVIEW_MAX_LINES`]; the resolver clamps a present value into
+    /// `MIN_PREVIEW_MAX_LINES..=MAX_PREVIEW_MAX_LINES`. Held as `u32` (like the other numeric keys)
+    /// so an out-of-range number still clamps into range instead of tripping the parse.
+    pub preview_max_lines: Option<u32>,
+    /// The **content preview size cap**, in KiB: past this size a file is previewed, not shown whole,
+    /// and it bounds the disk read (AC-N1). `None` falls back to [`DEFAULT_PREVIEW_MAX_KIB`]; the
+    /// resolver clamps a present value into `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB`. 1024 = 1 MiB.
+    pub preview_max_kib: Option<u32>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
@@ -245,6 +277,27 @@ pub struct EffectiveSettings {
     /// `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS` when present, else [`DEFAULT_TREE_MAX_COLS`]. The tree
     /// is drawn at `min(tree_width% of the pane, tree_max_cols)`. Config-or-default (no env var).
     pub tree_max_cols: u16,
+    /// The effective **content preview line cap**: the config `preview_max_lines` clamped to
+    /// `MIN_PREVIEW_MAX_LINES..=MAX_PREVIEW_MAX_LINES` when present, else [`DEFAULT_PREVIEW_MAX_LINES`].
+    /// Wired into the Content Renderer's [`crate::render::Caps`] via [`Self::preview_caps`].
+    /// Config-or-default (no env var).
+    pub preview_max_lines: u32,
+    /// The effective **content preview size cap**, in KiB: the config `preview_max_kib` clamped to
+    /// `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB` when present, else [`DEFAULT_PREVIEW_MAX_KIB`].
+    /// Config-or-default (no env var).
+    pub preview_max_kib: u32,
+}
+
+impl EffectiveSettings {
+    /// The Content Renderer size caps (line + byte) derived from the resolved preview settings —
+    /// the single place `preview_max_kib` is converted to bytes (× 1024). Wired into
+    /// [`crate::render::classify`] / [`crate::render::render`] at startup.
+    pub fn preview_caps(&self) -> crate::render::Caps {
+        crate::render::Caps {
+            max_lines: self.preview_max_lines as usize,
+            max_bytes: self.preview_max_kib as u64 * 1024,
+        }
+    }
 }
 
 /// Pure resolver: `Config` + injected env getter -> `EffectiveSettings` (AC-3, AC-4, AC-5,
@@ -324,6 +377,22 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .map(|n| n.clamp(MIN_TREE_MAX_COLS as u32, MAX_TREE_MAX_COLS as u32) as u16)
         .unwrap_or(DEFAULT_TREE_MAX_COLS);
 
+    // Config > default; no env var. Clamp to `MIN_PREVIEW_MAX_LINES..=MAX_PREVIEW_MAX_LINES` so a
+    // preview can never truncate to near-nothing, and a huge cap can't wedge the render pipeline. A
+    // non-representable value degraded the whole config to defaults and arrived as `None`.
+    let preview_max_lines = config
+        .preview_max_lines
+        .map(|n| n.clamp(MIN_PREVIEW_MAX_LINES, MAX_PREVIEW_MAX_LINES))
+        .unwrap_or(DEFAULT_PREVIEW_MAX_LINES);
+
+    // Config > default; no env var. Clamp to `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB`: the upper
+    // bound keeps the bounded-read guarantee (AC-N1) even at the max, so no configured value can ask
+    // the viewer to slurp an arbitrary file whole.
+    let preview_max_kib = config
+        .preview_max_kib
+        .map(|n| n.clamp(MIN_PREVIEW_MAX_KIB, MAX_PREVIEW_MAX_KIB))
+        .unwrap_or(DEFAULT_PREVIEW_MAX_KIB);
+
     EffectiveSettings {
         editor,
         markdown,
@@ -337,6 +406,8 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         tree_width,
         tree_position,
         tree_max_cols,
+        preview_max_lines,
+        preview_max_kib,
     }
 }
 
@@ -818,6 +889,16 @@ mod tests {
     }
 
     #[test]
+    fn preview_cap_keys_parse_from_toml() {
+        // Proves the TOML key names bind to the fields (the `Config { .. }` resolve tests bypass
+        // parsing). Both are plain integers landing in their `Option<u32>` fields.
+        let (config, outcome) = parse_config("preview_max_lines = 20000\npreview_max_kib = 4096\n");
+        assert_eq!(config.preview_max_lines, Some(20000));
+        assert_eq!(config.preview_max_kib, Some(4096));
+        assert_eq!(outcome, LoadOutcome::Loaded);
+    }
+
+    #[test]
     fn resolve_scroll_lines_config_value_wins() {
         // AC-1: a valid config value (>= 1) is the effective scroll step (config > default).
         let config = Config {
@@ -1052,6 +1133,111 @@ mod tests {
                 "value {input} must clamp to {want}"
             );
         }
+    }
+
+    #[test]
+    fn resolve_preview_max_lines_config_value_wins() {
+        // A valid in-range config value is the effective preview line cap (config > default).
+        let cfg = Config {
+            preview_max_lines: Some(12_000),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&cfg, |_| None).preview_max_lines, 12_000);
+    }
+
+    #[test]
+    fn resolve_preview_max_lines_defaults_when_absent() {
+        let effective = resolve(&Config::default(), |_| None);
+        assert_eq!(effective.preview_max_lines, DEFAULT_PREVIEW_MAX_LINES);
+        assert_eq!(effective.preview_max_lines, 10000);
+    }
+
+    #[test]
+    fn resolve_preview_max_lines_clamps_to_range() {
+        // Below the floor clamps up (a preview can't shrink to near-nothing); above the ceiling
+        // clamps down (a huge cap can't wedge the render pipeline). u32 field so a giant value is
+        // clamped, not degraded to default.
+        assert_eq!(
+            (MIN_PREVIEW_MAX_LINES, MAX_PREVIEW_MAX_LINES),
+            (100, 100_000)
+        );
+        for (input, want) in [
+            (0u32, 100u32),
+            (99, 100),
+            (100_001, 100_000),
+            (u32::MAX, 100_000),
+        ] {
+            let cfg = Config {
+                preview_max_lines: Some(input),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).preview_max_lines,
+                want,
+                "value {input} must clamp to {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_preview_max_kib_config_value_wins() {
+        let cfg = Config {
+            preview_max_kib: Some(4096),
+            ..Default::default()
+        };
+        assert_eq!(resolve(&cfg, |_| None).preview_max_kib, 4096);
+    }
+
+    #[test]
+    fn resolve_preview_max_kib_defaults_when_absent() {
+        let effective = resolve(&Config::default(), |_| None);
+        assert_eq!(effective.preview_max_kib, DEFAULT_PREVIEW_MAX_KIB);
+        assert_eq!(effective.preview_max_kib, 1024); // 1 MiB
+    }
+
+    #[test]
+    fn resolve_preview_max_kib_clamps_to_range() {
+        // The upper clamp keeps the bounded-read guarantee (AC-N1) at every setting: even the max
+        // is a finite read, never "slurp an arbitrary file whole".
+        assert_eq!((MIN_PREVIEW_MAX_KIB, MAX_PREVIEW_MAX_KIB), (64, 65_536));
+        for (input, want) in [
+            (0u32, 64u32),
+            (63, 64),
+            (65_537, 65_536),
+            (u32::MAX, 65_536),
+        ] {
+            let cfg = Config {
+                preview_max_kib: Some(input),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).preview_max_kib,
+                want,
+                "value {input} must clamp to {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_caps_converts_kib_to_bytes() {
+        // The single conversion point: preview_max_kib × 1024 → Caps.max_bytes; lines pass through.
+        let cfg = Config {
+            preview_max_lines: Some(3000),
+            preview_max_kib: Some(512),
+            ..Default::default()
+        };
+        let caps = resolve(&cfg, |_| None).preview_caps();
+        assert_eq!(caps.max_lines, 3000);
+        assert_eq!(caps.max_bytes, 512 * 1024);
+    }
+
+    #[test]
+    fn render_caps_default_matches_config_defaults() {
+        // Lockstep guard: render::Caps::default() (used by the width-less/help paths and tests) must
+        // equal what a config-absent resolve produces, so a config-less run behaves identically no
+        // matter which side computes the caps. If someone changes one default, this fails.
+        let from_config = resolve(&Config::default(), |_| None).preview_caps();
+        assert_eq!(crate::render::Caps::default(), from_config);
     }
 
     #[test]
