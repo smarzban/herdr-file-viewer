@@ -238,21 +238,24 @@ pub fn settings_text(
             .unwrap_or_else(|| "(default)".to_owned())
     };
 
+    // Keys are padded to the widest name (`preview_max_lines`, 17) so the `=` column lines up.
     format!(
         "{status_line}\n\
          {location_line}\n\
-         editor        = {editor}\n\
-         markdown      = {markdown}\n\
-         diff          = {diff}\n\
-         syntax        = {syntax}\n\
-         open          = {open}\n\
-         reveal        = {reveal}\n\
-         hide_dotfiles = {hide_dotfiles}\n\
-         update_check  = {update_check}\n\
-         scroll_lines  = {scroll_lines}\n\
-         tree_width    = {tree_width}\n\
-         tree_position = {tree_position}\n\
-         tree_max_cols = {tree_max_cols}",
+         editor            = {editor}\n\
+         markdown          = {markdown}\n\
+         diff              = {diff}\n\
+         syntax            = {syntax}\n\
+         open              = {open}\n\
+         reveal            = {reveal}\n\
+         hide_dotfiles     = {hide_dotfiles}\n\
+         update_check      = {update_check}\n\
+         scroll_lines      = {scroll_lines}\n\
+         tree_width        = {tree_width}\n\
+         tree_position     = {tree_position}\n\
+         tree_max_cols     = {tree_max_cols}\n\
+         preview_max_lines = {preview_max_lines}\n\
+         preview_max_kib   = {preview_max_kib}",
         editor = opt_os(&eff.editor),
         markdown = opt_argv(&eff.markdown),
         diff = opt_argv(&eff.diff),
@@ -265,6 +268,8 @@ pub fn settings_text(
         tree_width = eff.tree_width,
         tree_position = eff.tree_position.label(),
         tree_max_cols = eff.tree_max_cols,
+        preview_max_lines = eff.preview_max_lines,
+        preview_max_kib = eff.preview_max_kib,
     )
 }
 
@@ -756,6 +761,8 @@ mod tests {
             tree_width: 25,
             tree_position: crate::config::TreePosition::Right,
             tree_max_cols: 50,
+            preview_max_lines: 8000,
+            preview_max_kib: 2048,
         }
     }
 
@@ -782,6 +789,8 @@ mod tests {
             "tree_width",
             "tree_position",
             "tree_max_cols",
+            "preview_max_lines",
+            "preview_max_kib",
         ] {
             assert!(
                 text.contains(key),
@@ -809,6 +818,17 @@ mod tests {
             text.lines()
                 .any(|l| l.trim_start().starts_with("tree_max_cols") && l.contains("50")),
             "settings_text must show the effective tree_max_cols value (50):\n{text}"
+        );
+        // The effective content-preview caps each appear as their own row with their value.
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("preview_max_lines") && l.contains("8000")),
+            "settings_text must show the effective preview_max_lines value (8000):\n{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("preview_max_kib") && l.contains("2048")),
+            "settings_text must show the effective preview_max_kib value (2048):\n{text}"
         );
         assert!(text.contains("nano"), "editor value must appear:\n{text}");
         assert!(

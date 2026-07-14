@@ -145,8 +145,15 @@ impl Controller {
             ),
             ..self.renderers.clone()
         };
-        let (whats_new_body, _notice) =
-            crate::render::render(&r, &prepared, ViewMode::RenderedMarkdown, None, None);
+        // The embedded CHANGELOG is small and never user-tunable, so the default caps apply.
+        let (whats_new_body, _notice) = crate::render::render(
+            &r,
+            &prepared,
+            ViewMode::RenderedMarkdown,
+            None,
+            None,
+            crate::render::Caps::default(),
+        );
         let whats_new = HelpSectionState {
             label: HelpSection::WhatsNew.label(),
             body: whats_new_body,

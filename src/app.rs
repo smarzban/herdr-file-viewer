@@ -13,7 +13,7 @@ use crate::controller::{
 use crate::editor::{EditorLauncher, SpawnError, Spawner};
 use crate::git::{self, Baseline, Status};
 use crate::presenter::{self, ViewState};
-use crate::render::{self, Prepared, Renderers};
+use crate::render::{self, Caps, Prepared, Renderers};
 use crate::view_policy::ViewMode;
 use crate::{host, input, root};
 use crossterm::event::{
@@ -60,6 +60,10 @@ pub fn run() -> io::Result<()> {
     // `Components`), so a config override is honored identically wherever the renderers are used.
     let renderers = crate::config::effective_renderers(&eff, &default_renderers());
 
+    // The Content Renderer size caps (config `preview_max_lines` / `preview_max_kib`, already clamped
+    // and byte-converted). `Copy`, so the factory closure below captures it by value.
+    let caps = eff.preview_caps();
+
     // The root-bound providers are built by a factory so a later re-root rebuilds them against
     // the new root (ADR-0004). Non-capturing — it reads the passed `Resolved`, so re-root gets
     // the new root's git/renderer rather than closing over the launch root.
@@ -78,6 +82,7 @@ pub fn run() -> io::Result<()> {
             let content: Box<dyn ContentProvider> = Box::new(LiveContent {
                 root: resolved.root.clone(),
                 renderers: factory_renderers.clone(),
+                caps,
             });
             RootProviders { git, content }
         });
@@ -350,6 +355,9 @@ impl GitService for LiveGit {
 struct LiveContent {
     root: PathBuf,
     renderers: Renderers,
+    /// The size caps (line + byte) for classifying/previewing content, resolved from config
+    /// (`preview_max_lines` / `preview_max_kib`) at startup. `Copy`.
+    caps: Caps,
 }
 
 impl ContentProvider for LiveContent {
@@ -372,7 +380,7 @@ impl ContentProvider for LiveContent {
         let prepared = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             Prepared::Binary
         } else {
-            render::classify(&self.root, path)
+            render::classify(&self.root, path, self.caps)
         };
         let name = path.file_name().and_then(OsStr::to_str);
         // Retain the raw source lines behind a source-mapped render: `SyntaxContent` displays one
@@ -399,9 +407,9 @@ impl ContentProvider for LiveContent {
                     markdown: render::with_wrap_width(&self.renderers.markdown, w),
                     ..self.renderers.clone()
                 };
-                render::render(&wrapped, &prepared, mode, raw_diff, name)
+                render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
             }
-            _ => render::render(&self.renderers, &prepared, mode, raw_diff, name),
+            _ => render::render(&self.renderers, &prepared, mode, raw_diff, name, self.caps),
         };
         RenderResult {
             content,
@@ -863,7 +871,40 @@ mod tests {
                 syntax: vec!["cat".into()],
                 timeout: Duration::from_secs(5),
             },
+            caps: Caps::default(),
         }
+    }
+
+    /// End-to-end wiring: a NON-default cap on `LiveContent` must reach `classify` and truncate,
+    /// guarding the `eff.preview_caps()` → `LiveContent.caps` → `render::classify(.., self.caps)`
+    /// thread that the config/render unit tests each cover only on their own side.
+    #[cfg(unix)]
+    #[test]
+    fn livecontent_threads_a_configured_cap_into_classify() {
+        let root = tmp("cfg-cap-wiring");
+        let file = root.join("many.txt");
+        std::fs::write(&file, "line\n".repeat(200)).unwrap(); // 200 lines, well under the default cap
+        let content = LiveContent {
+            root: root.clone(),
+            renderers: Renderers {
+                markdown: vec!["cat".into()],
+                diff: vec!["cat".into()],
+                full_diff: vec!["cat".into()],
+                syntax: vec!["cat".into()],
+                timeout: Duration::from_secs(5),
+            },
+            // A 50-line cap the default would never apply — proves the injected cap is what bites.
+            caps: Caps {
+                max_lines: 50,
+                max_bytes: 1024 * 1024,
+            },
+        };
+        let out = content.render_at_width(&file, ViewMode::SyntaxContent, None, None);
+        assert!(
+            out.notices.iter().any(|n| n.contains("50-line")),
+            "the configured 50-line cap must reach classify through LiveContent: {:?}",
+            out.notices
+        );
     }
 
     #[cfg(unix)]
