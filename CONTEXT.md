@@ -103,9 +103,9 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   command (the **opener**s, the renderers, or the editor). Written as a string and split
   into argv by the same quote-aware tokenizer used for `$EDITOR`; no shell is invoked.
 - **Settings section**: the display-only section of the help overlay that lists the
-  **effective setting**s with their real values; it shows configuration, it does not
-  edit it. A renderer row names the effective **program** only (its flags are an
-  implementation detail, documented in `docs/configuration.md`), so every row is one line.
+  **effective setting**s with their real values, one row each; it shows configuration, it
+  does not edit it. The renderer commands are excluded: they are set and documented in the
+  **config file**, and their built-in argv is long enough to wreck the row layout.
 - **scroll step**: how many content lines (or **file finder** list items, or help-overlay
   lines) the mouse wheel advances per wheel event. Set by the `scroll_lines` **config file**
   key (config > default; default 3, clamped to the range 1 to 10). The directory tree is

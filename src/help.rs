@@ -201,22 +201,13 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
     )
 }
 
-/// Wired startup values for the Settings display (AC-1..AC-4): the effective renderer programs,
-/// resolved editor, and per-OS opener labels that startup actually uses. Pure input — the caller
-/// (`app::run`) computes these once alongside the live components.
+/// Wired startup values for the Settings display (AC-1..AC-4): the resolved editor and the per-OS
+/// opener labels that startup actually uses. Pure input — the caller (`app::run`) computes these
+/// once alongside the live components.
 pub struct SettingsWired {
     /// The effective editor after config > `$EDITOR` > platform-default resolution. `None` means
     /// no editor resolves (the Settings row shows `unset`).
     pub editor: Option<std::ffi::OsString>,
-    /// The **program** of the effective markdown renderer — argv[0] of the config-merged command,
-    /// never the full argv. The built-in default resolves `-s` to an absolute path into the install
-    /// dir, which is both unreadable and machine-specific in a narrow overlay, so the Settings row
-    /// names the program that runs and leaves the flags to the docs.
-    pub markdown: String,
-    /// The **program** of the effective diff renderer (argv[0]); see [`SettingsWired::markdown`].
-    pub diff: String,
-    /// The **program** of the effective syntax renderer (argv[0]); see [`SettingsWired::markdown`].
-    pub syntax: String,
     pub open: String,
     pub reveal: String,
 }
@@ -225,9 +216,10 @@ pub struct SettingsWired {
 /// [`crate::config::LoadOutcome`], then one row per effective setting. Pure — no env/FS; all
 /// arguments are already-resolved values the caller computed once at startup (`app::run`).
 ///
-/// The renderer rows name the effective **program** from [`SettingsWired`] (argv[0], config-merged);
-/// the opener rows show the effective command. Every row is one line: no value here can wrap, which
-/// is what keeps the `=` column readable at any pane width. Formatting is kept simple and stable
+/// The `markdown`/`diff`/`syntax` renderer commands are deliberately NOT shown: they are set in the
+/// config file and documented there, and their built-in values are long argv (the markdown one
+/// resolves `-s` to an absolute path into the install dir) that wrap across rows and wreck the `=`
+/// column for no reader benefit. Every row here is one line. Formatting is kept simple and stable
 /// since this feeds a presenter snapshot.
 pub fn settings_text(
     eff: &crate::config::EffectiveSettings,
@@ -274,9 +266,6 @@ pub fn settings_text(
         "{status_line}\n\
          {location_line}\n\
          editor            = {editor}\n\
-         markdown          = {markdown}\n\
-         diff              = {diff}\n\
-         syntax            = {syntax}\n\
          open              = {open}\n\
          reveal            = {reveal}\n\
          hide_dotfiles     = {hide_dotfiles}\n\
@@ -288,9 +277,6 @@ pub fn settings_text(
          tree_max_cols     = {tree_max_cols}\n\
          preview_max_lines = {preview_max_lines}\n\
          preview_max_kib   = {preview_max_kib}",
-        markdown = wired.markdown,
-        diff = wired.diff,
-        syntax = wired.syntax,
         open = open,
         reveal = reveal,
         hide_dotfiles = eff.hide_dotfiles,
@@ -802,9 +788,6 @@ mod tests {
     fn sample_wired() -> SettingsWired {
         SettingsWired {
             editor: None,
-            markdown: "glow".to_string(),
-            diff: "delta".to_string(),
-            syntax: "bat".to_string(),
             open: "xdg-open".to_string(),
             reveal: "xdg-open".to_string(),
         }
@@ -825,9 +808,6 @@ mod tests {
 
         for key in [
             "editor",
-            "markdown",
-            "diff",
-            "syntax",
             "open",
             "reveal",
             "hide_dotfiles",
@@ -893,9 +873,6 @@ mod tests {
         );
         for row in [
             "editor            = nano",
-            "markdown          = glow",
-            "diff              = delta",
-            "syntax            = bat",
             "open              = xdg-open",
             "reveal            = xdg-open",
             "hide_dotfiles     = true",
@@ -909,27 +886,37 @@ mod tests {
         }
     }
 
-    // The renderer rows name the effective program only: whatever argv the renderer carries, the
-    // row stays a single short token. This is the guard for the real defect — the built-in markdown
-    // command resolves `-s` to an absolute path into the install dir, which wrapped across three
-    // rows and leaked the build location into the overlay.
+    // The renderer commands live in the config file, not the overlay. Their built-in values are long
+    // argv (markdown's `-s` resolves to an absolute path into the install dir) that wrapped across
+    // rows and leaked the build location, and a reader gains nothing from them here.
     #[test]
-    fn settings_text_renderer_rows_show_only_the_program() {
-        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+    fn settings_text_omits_the_renderer_commands() {
+        let eff = crate::config::EffectiveSettings {
+            markdown: Some(vec!["mdcat".to_string()]),
+            diff: Some(vec!["diff-so-fancy".to_string()]),
+            syntax: Some(vec!["highlight".to_string()]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
         let text = settings_text(
             &eff,
-            &LoadOutcome::Absent,
+            &LoadOutcome::Loaded,
             std::path::Path::new("/cfg/config.toml"),
             &sample_wired(),
         );
 
-        for (key, program) in [("markdown", "glow"), ("diff", "delta"), ("syntax", "bat")] {
-            let row = text
-                .lines()
-                .find(|l| l.starts_with(key))
-                .unwrap_or_else(|| panic!("no '{key}' row in:\n{text}"));
-            let value = row.split_once(" = ").expect("a `key = value` row").1;
-            assert_eq!(value, program, "the '{key}' row must be the program alone");
+        // Neither the key nor a configured value may appear — not even when the user overrode it.
+        for absent in [
+            "markdown",
+            "diff  ",
+            "syntax",
+            "mdcat",
+            "diff-so-fancy",
+            "highlight",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "the Settings text must not mention '{absent}':\n{text}"
+            );
         }
     }
 

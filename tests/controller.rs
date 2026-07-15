@@ -9599,9 +9599,6 @@ fn open_help_appends_settings_section_when_display_is_set() {
     };
     let wired = SettingsWired {
         editor: None,
-        markdown: "glow".to_string(),
-        diff: "delta".to_string(),
-        syntax: "bat".to_string(),
         open: "xdg-open".to_string(),
         reveal: "xdg-open".to_string(),
     };
