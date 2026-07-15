@@ -5,7 +5,7 @@
 mod common;
 
 use common::TempDir;
-use herdr_file_viewer::render::{Prepared, classify, to_text};
+use herdr_file_viewer::render::{Caps, Prepared, classify, to_text};
 use std::fs;
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ fn classify_and_ingest_one_megabyte_within_300ms() {
     fs::write(&path, &content).unwrap();
 
     let start = Instant::now();
-    let prepared = classify(dir.path(), &path);
+    let prepared = classify(dir.path(), &path, Caps::default());
     let text = match &prepared {
         Prepared::Full { text } | Prepared::Truncated { text, .. } => text.clone(),
         Prepared::Binary => String::new(),

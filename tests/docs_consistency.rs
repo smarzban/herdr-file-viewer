@@ -52,6 +52,8 @@ fn config_example_documents_every_config_key() {
         "tree_width",
         "tree_position",
         "tree_max_cols",
+        "preview_max_lines",
+        "preview_max_kib",
     ] {
         assert!(
             has_commented_assignment(CONFIG_EXAMPLE, key),
@@ -107,6 +109,22 @@ fn configuration_doc_and_example_document_tree_layout() {
     // the bundled config.example.toml, so the feature ships with discoverable, copy-pasteable
     // settings.
     for key in ["tree_width", "tree_position", "tree_max_cols"] {
+        assert!(
+            CONFIG_DOC.contains(key),
+            "docs/configuration.md must document the `{key}` config key"
+        );
+        assert!(
+            CONFIG_EXAMPLE.contains(key),
+            "config.example.toml must document the `{key}` config key"
+        );
+    }
+}
+
+#[test]
+fn configuration_doc_and_example_document_preview_caps() {
+    // The content-preview cap keys must be documented in BOTH the configuration reference and the
+    // bundled config.example.toml, so the feature ships with discoverable, copy-pasteable settings.
+    for key in ["preview_max_lines", "preview_max_kib"] {
         assert!(
             CONFIG_DOC.contains(key),
             "docs/configuration.md must document the `{key}` config key"

@@ -9593,6 +9593,8 @@ fn open_help_appends_settings_section_when_display_is_set() {
         tree_width: 30,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
         tree_max_cols: 45,
+        preview_max_lines: 5000,
+        preview_max_kib: 1024,
     };
     ctrl.set_settings_display(
         &eff,

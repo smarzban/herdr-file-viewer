@@ -4,7 +4,7 @@
 //! Renderer commands are injected: `cat` echoes stdin (a working renderer), a nonexistent
 //! program simulates a missing one — so the tests never depend on glow/delta/bat.
 
-use herdr_file_viewer::render::{Prepared, Renderers, render};
+use herdr_file_viewer::render::{Caps, Prepared, Renderers, render};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::process::{Command, Stdio};
@@ -33,7 +33,14 @@ fn syntax_mode_invokes_the_syntax_renderer_and_ingests_output() {
     let prepared = Prepared::Full {
         text: "fn main() {}".into(),
     };
-    let (text, notice) = render(&cat(), &prepared, ViewMode::SyntaxContent, None, None);
+    let (text, notice) = render(
+        &cat(),
+        &prepared,
+        ViewMode::SyntaxContent,
+        None,
+        None,
+        Caps::default(),
+    );
     assert!(flatten(&text).contains("fn main"), "AC-10");
     assert!(notice.is_none());
 }
@@ -43,7 +50,14 @@ fn markdown_mode_invokes_the_markdown_renderer() {
     let prepared = Prepared::Full {
         text: "# Title".into(),
     };
-    let (text, _) = render(&cat(), &prepared, ViewMode::RenderedMarkdown, None, None);
+    let (text, _) = render(
+        &cat(),
+        &prepared,
+        ViewMode::RenderedMarkdown,
+        None,
+        None,
+        Caps::default(),
+    );
     assert!(flatten(&text).contains("# Title"), "AC-8");
 }
 
@@ -58,20 +72,30 @@ fn diff_mode_renders_the_supplied_raw_diff() {
         ViewMode::Diff,
         Some("@@ -1 +1 @@\n+new line"),
         None,
+        Caps::default(),
     );
     assert!(flatten(&text).contains("+new line"), "AC-9");
 }
 
 #[test]
 fn an_oversized_diff_is_truncated_with_a_notice() {
-    let huge = "+line\n".repeat(6000); // > 5000 lines
+    // Cap-relative so the test can't rot when the default line cap changes.
+    let cap = Caps::default().max_lines;
+    let huge = "+line\n".repeat(cap + 1000); // over the line cap
     let prepared = Prepared::Full { text: "x".into() };
-    let (text, notice) = render(&cat(), &prepared, ViewMode::Diff, Some(&huge), None);
+    let (text, notice) = render(
+        &cat(),
+        &prepared,
+        ViewMode::Diff,
+        Some(&huge),
+        None,
+        Caps::default(),
+    );
     assert!(
         notice.unwrap().to_lowercase().contains("truncated"),
         "AC-13: large diff bounded"
     );
-    assert!(text.lines.len() <= 5000, "diff preview is line-bounded");
+    assert!(text.lines.len() <= cap, "diff preview is line-bounded");
 }
 
 #[test]
@@ -84,6 +108,7 @@ fn diff_mode_renders_even_for_a_binary_or_deleted_file() {
         ViewMode::Diff,
         Some("@@ -1 +0 @@\n-removed"),
         None,
+        Caps::default(),
     );
     let s = flatten(&text);
     assert!(s.contains("-removed"), "deletion diff is shown");
@@ -111,6 +136,7 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         ViewMode::RenderedMarkdown,
         None,
         None,
+        Caps::default(),
     );
     assert!(
         flatten(&text).contains("# Title"),
@@ -153,6 +179,7 @@ fn binary_shows_a_placeholder_not_raw_bytes() {
         ViewMode::SyntaxContent,
         None,
         None,
+        Caps::default(),
     );
     assert!(
         flatten(&text).to_lowercase().contains("binary"),
@@ -180,6 +207,7 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
         ViewMode::SyntaxContent,
         None,
         Some("main.rs"),
+        Caps::default(),
     );
     assert!(
         flatten(&text).contains("main.rs"),
@@ -210,6 +238,7 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
         ViewMode::SyntaxContent,
         None,
         Some(&evil),
+        Caps::default(),
     );
     assert!(!marker.exists(), "command substitution must not execute");
     let out = flatten(&text);
@@ -240,6 +269,7 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
         ViewMode::FullDiff,
         Some(full),
         None,
+        Caps::default(),
     );
     let s = flatten(&text);
     assert!(
@@ -260,13 +290,16 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
 fn an_oversized_full_diff_is_truncated_with_a_notice() {
     // AC-13 on the FullDiff path: a full-context diff of a large file is bounded with a visible
     // truncation notice before it is rendered, so it can't blow up the content pane.
-    let big_diff = "+line\n".repeat(6000); // > the 5000-line cap
+    // Cap-relative so the test can't rot when the default line cap changes.
+    let cap = Caps::default().max_lines;
+    let big_diff = "+line\n".repeat(cap + 1000); // over the line cap
     let (text, notice) = render(
         &cat(),
         &Prepared::Binary,
         ViewMode::FullDiff,
         Some(&big_diff),
         None,
+        Caps::default(),
     );
     let n = notice.expect("AC-13: an oversized full-context diff gets a truncation notice");
     assert!(
@@ -274,7 +307,7 @@ fn an_oversized_full_diff_is_truncated_with_a_notice() {
         "the notice names the truncation: {n}"
     );
     assert!(
-        flatten(&text).lines().count() <= 5000,
+        flatten(&text).lines().count() <= cap,
         "the rendered diff is line-bounded (AC-13)"
     );
 }
@@ -298,6 +331,7 @@ fn a_hanging_renderer_times_out_and_falls_back() {
         ViewMode::RenderedMarkdown,
         None,
         None,
+        Caps::default(),
     );
     assert!(
         start.elapsed() < Duration::from_secs(3),
@@ -319,7 +353,14 @@ fn truncation_notice_is_preserved_through_rendering() {
         text: "head".into(),
         notice: "truncated-preview".into(),
     };
-    let (_, notice) = render(&cat(), &prepared, ViewMode::SyntaxContent, None, None);
+    let (_, notice) = render(
+        &cat(),
+        &prepared,
+        ViewMode::SyntaxContent,
+        None,
+        None,
+        Caps::default(),
+    );
     assert!(
         notice.unwrap().contains("truncated-preview"),
         "AC-13 notice survives"
@@ -384,6 +425,7 @@ This is a long prose paragraph that at its natural width would be wider than the
         ViewMode::RenderedMarkdown,
         None,
         None,
+        Caps::default(),
     );
     for line in &text.lines {
         assert!(

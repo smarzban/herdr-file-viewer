@@ -38,8 +38,9 @@ normal case — every key falls back to its default.
 A config key always wins. Only two keys also have an environment-variable fallback tier below the
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
-other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`,
-`confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`) has no
+other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `confirm_discard`,
+`scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`, `preview_max_lines`,
+`preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -63,6 +64,9 @@ scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
 tree_max_cols = 30          # HARD CAP in columns; the SMALLER of this and tree_width% wins (raise both to widen)
 tree_position = "left"      # which side the directory tree sits on: "left" (default) or "right"
+
+preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
+preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
 ```
 
 `tree_width` and `tree_max_cols` **together** decide the tree's startup width, and the **smaller of
@@ -74,6 +78,19 @@ instead of a mostly-blank tree (it only bites past ~100 columns). `tree_position
 the `left` (default) or `right`. All three set the **startup** split inside the viewer's own pane
 (not the herdr pane, which the host decides); you can still resize live with the grow/shrink keys or
 by dragging the divider, and an explicit resize lifts the cap.
+
+`preview_max_lines` and `preview_max_kib` cap how much of a file the content pane shows: a file is
+displayed in full until it exceeds **either** cap, then the pane shows a truncated preview with a
+`⚠ Truncated preview` notice (the same bound also applies to a large diff). Truncation fires on
+whichever cap is hit **first**. For typical source code the **line** cap bites first; the **size**
+cap (in KiB, `1024` = 1 MB) mainly guards minified or generated files (bundles, big JSON, logs) and
+also bounds how much is ever read from disk, so a giant or hostile file is never slurped whole. Raise
+either to view bigger files (`preview_max_lines` up to `100000`, `preview_max_kib` up to `65536` =
+64 MB); both clamp into range, and a very large value can make the pane slower to render.
+
+One caveat for **diffs**: a diff is additionally bounded at ~4 MB by the git-capture step, independent
+of `preview_max_kib`. So raising `preview_max_kib` above ~4 MB widens how much *file content* is shown
+but not how much of a very large *diff* is (a diff past that bound is shown up to ~4 MB).
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either
