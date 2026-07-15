@@ -96,6 +96,11 @@ pub struct Config {
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
     pub update_check: Option<bool>,
+    /// Whether quitting with unexported session annotations confirms first. `None` falls back to
+    /// `true`: annotations are session-only, so quitting destroys them, and the confirm is the only
+    /// thing standing between a stray `q` and losing the batch. Set `false` to quit immediately and
+    /// discard them.
+    pub confirm_discard: Option<bool>,
     /// The mouse-wheel **scroll step**: how many lines/items each wheel event advances. `None`
     /// falls back to [`DEFAULT_SCROLL_LINES`]; the resolver clamps any present value into
     /// `1..=`[`MAX_SCROLL_LINES`] (`0` would freeze scrolling; a larger value just page-jumps, so it
@@ -230,6 +235,9 @@ pub struct EffectiveSettings {
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
     pub update_check: bool,
+    /// The effective **confirm-before-discarding-annotations** switch: the config
+    /// `confirm_discard` when present, else `true`. Config-or-default (no env var).
+    pub confirm_discard: bool,
     /// The effective mouse-wheel **scroll step**: the config `scroll_lines` clamped to
     /// `1..=`[`MAX_SCROLL_LINES`] when present, else [`DEFAULT_SCROLL_LINES`]. No environment
     /// variable participates — this is a config-or-default UI preference.
@@ -278,6 +286,10 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .map(crate::editor::tokenize_command);
 
     let hide_dotfiles = config.hide_dotfiles.unwrap_or(false);
+
+    // Config > default; no env var. Defaults ON: the confirm only fires when annotations are held,
+    // so a session that never annotates never sees it, and the one that does has work to lose.
+    let confirm_discard = config.confirm_discard.unwrap_or(true);
 
     let update_check = match config.update_check {
         Some(b) => b,
@@ -333,6 +345,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         reveal,
         hide_dotfiles,
         update_check,
+        confirm_discard,
         scroll_lines,
         tree_width,
         tree_position,
@@ -463,6 +476,7 @@ mod tests {
         assert_eq!(config.reveal, None);
         assert_eq!(config.hide_dotfiles, None);
         assert_eq!(config.update_check, None);
+        assert_eq!(config.confirm_discard, None);
         assert_eq!(config.scroll_lines, None);
         assert_eq!(outcome, LoadOutcome::Loaded);
     }
@@ -504,9 +518,34 @@ mod tests {
 
     #[test]
     fn bool_fields_parse() {
-        let (config, _outcome) = parse_config("hide_dotfiles = true\nupdate_check = false\n");
+        let (config, _outcome) =
+            parse_config("hide_dotfiles = true\nupdate_check = false\nconfirm_discard = false\n");
         assert_eq!(config.hide_dotfiles, Some(true));
         assert_eq!(config.update_check, Some(false));
+        assert_eq!(config.confirm_discard, Some(false));
+    }
+
+    #[test]
+    fn confirm_discard_resolves_config_over_default() {
+        let on = resolve(&Config::default(), |_| None);
+        assert!(on.confirm_discard, "absent falls back to on");
+
+        let off = resolve(
+            &Config {
+                confirm_discard: Some(false),
+                ..Default::default()
+            },
+            |_| None,
+        );
+        assert!(!off.confirm_discard, "an explicit false wins");
+
+        // No env tier: unlike `update_check`, this is a config-or-default UI preference, so a
+        // stray environment variable must not reach it.
+        let env_ignored = resolve(&Config::default(), |_| Some("1".to_string()));
+        assert!(
+            env_ignored.confirm_discard,
+            "no environment variable participates in this key"
+        );
     }
 
     // --- [keys] table (T-4, AC-9, AC-13, AC-17) ---
@@ -735,6 +774,11 @@ mod tests {
         assert_eq!(effective.editor, None);
         assert!(effective.update_check);
         assert!(!effective.hide_dotfiles);
+        assert!(
+            effective.confirm_discard,
+            "the quit guard defaults ON: annotations are session-only, so the confirm is the only \
+             thing between a stray q and losing the batch"
+        );
         assert_eq!(effective.markdown, None);
         assert_eq!(effective.diff, None);
         assert_eq!(effective.syntax, None);

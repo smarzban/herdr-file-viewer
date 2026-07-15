@@ -25,7 +25,8 @@ impl Controller {
             Modal::Picker(_)
             | Modal::Prompt(_)
             | Modal::Annotations(_)
-            | Modal::AnnotationEditor(_) => Effects::noop(),
+            | Modal::AnnotationEditor(_)
+            | Modal::DiscardConfirm(_) => Effects::noop(),
             Modal::LineSelect(_) => self.handle_line_select_mouse(ev),
             Modal::Help(_) => self.handle_help_mouse(ev),
             Modal::Finder(_) => self.handle_finder_mouse(ev),

@@ -103,6 +103,9 @@ pub fn run() -> io::Result<()> {
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Apply the config-driven quit guard (`confirm_discard`): whether quitting with
+    // session annotations held confirms first or discards them immediately.
+    controller.apply_confirm_discard(eff.confirm_discard);
     // Apply the config-driven mouse-wheel scroll step (`scroll_lines`); already clamped to >= 1 by
     // the resolver, so the wheel always advances at least one line/item.
     controller.apply_scroll_lines(eff.scroll_lines);
@@ -195,6 +198,8 @@ fn route_annotation_key(
         Some(controller.handle_annotations_key(key))
     } else if controller.annotation_editor().is_some() {
         Some(controller.handle_annotation_editor_key(key))
+    } else if controller.discard_confirm_open() {
+        Some(controller.handle_discard_confirm_key(key))
     } else {
         None
     }
@@ -288,7 +293,8 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 // before global decoding so `q`, `e`, `d`, `D`, `y`, and remapped printables cannot
                 // trigger viewer actions beneath the modal.
                 Event::Key(key)
-                    if key.kind == KeyEventKind::Press && controller.annotation_modal_open() =>
+                    if key.kind == KeyEventKind::Press
+                        && controller.annotation_raw_keys_owned() =>
                 {
                     let fx = route_annotation_key(controller, key)
                         .expect("an open annotation modal has a raw-key route");
@@ -953,6 +959,45 @@ mod tests {
             route_annotation_key(&mut controller, route_key(KeyCode::Char('q'))).is_none(),
             "without an annotation modal the key proceeds to normal global decoding"
         );
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quit_confirm_keys_route_before_globals() {
+        use crossterm::event::KeyCode;
+
+        // The gate the event loop matches on MUST cover the quit confirm: when it only covered the
+        // overview/editor, `route_annotation_key` was never reached and `y`/`q`/`Esc` fell through
+        // to global decoding, so the dialog was drawn but inert. Controller-level tests that call
+        // `handle_discard_confirm_key` directly cannot see that hole; this drives the real gate.
+        let (mut controller, root) = route_controller("app-route-quit-confirm");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+
+        controller.handle(crate::intent::Intent::Close);
+        assert!(
+            controller.discard_confirm_open(),
+            "the close raised the confirm"
+        );
+        assert!(
+            controller.annotation_raw_keys_owned(),
+            "the event loop's gate must own the confirm's keys"
+        );
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Esc))
+            .expect("the confirm owns esc");
+        assert!(!effects.quit, "esc cancels");
+        assert!(!controller.discard_confirm_open());
+
+        controller.handle(crate::intent::Intent::Close);
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('y')))
+            .expect("the confirm owns y");
+        assert!(effects.quit, "y copies and quits through the real route");
+
         drop(controller);
         let _ = std::fs::remove_dir_all(root);
     }

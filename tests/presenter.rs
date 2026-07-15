@@ -5,8 +5,8 @@ use herdr_file_viewer::annotation::LineRange;
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
-    AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, FinderView, Focus,
-    HelpView, LineSelectView, PickerRowView, PickerView, ViewState, draw,
+    AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, DiscardConfirmView,
+    FinderView, Focus, HelpView, LineSelectView, PickerRowView, PickerView, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -91,6 +91,7 @@ fn sample_state() -> ViewState {
         annotation_count: 0,
         annotation_overview: None,
         annotation_editor: None,
+        discard_confirm: None,
         annotation_indicators: AnnotationIndicatorsView::default(),
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
@@ -4340,4 +4341,132 @@ fn annotation_overlays_add_no_hit_test_geometry() {
         geometry(area, &overlay),
         "keyboard-only annotation overlays do not alter PaneGeometry"
     );
+}
+
+#[test]
+fn quit_confirm_lists_what_would_be_lost_and_every_way_out() {
+    let mut state = sample_state();
+    state.annotation_count = 3;
+    state.discard_confirm = Some(DiscardConfirmView {
+        rows: annotation_rows(),
+        verb: "quit",
+        proceed_key: "q",
+    });
+    let out = render(&state, 100, 16);
+
+    assert!(out.contains("Discard annotations?"), "title\n{out}");
+    assert!(
+        out.contains("3 annotations will be lost:"),
+        "the count is named\n{out}"
+    );
+    // The rows themselves, in the same shape the overview lists them.
+    assert!(out.contains("README.md"), "file-level row is listed\n{out}");
+    assert!(
+        out.contains("Clarify the fallback."),
+        "the note is listed, not just the target\n{out}"
+    );
+    assert!(
+        out.contains("src/app.rs:42"),
+        "the line reference is listed\n{out}"
+    );
+    assert!(
+        out.contains("y copy & quit"),
+        "copy-and-quit way out\n{out}"
+    );
+    assert!(out.contains("q quit"), "discard way out\n{out}");
+    assert!(out.contains("esc cancel"), "cancel way out\n{out}");
+    insta::assert_snapshot!("presenter_quit_confirm", out);
+}
+
+#[test]
+fn quit_confirm_singular_count_reads_naturally() {
+    let mut state = sample_state();
+    state.annotation_count = 1;
+    state.discard_confirm = Some(DiscardConfirmView {
+        rows: vec![AnnotationRowView {
+            target: annotation_target("README.md", None),
+            note: "Only one.".to_string(),
+        }],
+        verb: "quit",
+        proceed_key: "q",
+    });
+    let out = render(&state, 100, 16);
+    assert!(
+        out.contains("1 annotation will be lost:"),
+        "singular, not '1 annotations'\n{out}"
+    );
+}
+
+#[test]
+fn quit_confirm_caps_its_rows_and_reports_the_hidden_tail() {
+    let mut state = sample_state();
+    let rows: Vec<AnnotationRowView> = (1..=12)
+        .map(|i| AnnotationRowView {
+            target: annotation_target("src/app.rs", Some((i, i))),
+            note: format!("note {i}"),
+        })
+        .collect();
+    state.annotation_count = rows.len();
+    state.discard_confirm = Some(DiscardConfirmView {
+        rows,
+        verb: "quit",
+        proceed_key: "q",
+    });
+    let out = render(&state, 100, 24);
+
+    assert!(out.contains("12 annotations will be lost:"), "count\n{out}");
+    assert!(out.contains("note 8"), "the 8th row still shows\n{out}");
+    assert!(
+        !out.contains("note 9"),
+        "the 9th row is past the cap\n{out}"
+    );
+    assert!(
+        out.contains("+4 more"),
+        "the hidden tail is reported, never silently dropped\n{out}"
+    );
+    insta::assert_snapshot!("presenter_quit_confirm_capped", out);
+}
+
+#[test]
+fn quit_confirm_long_note_cannot_stretch_the_box() {
+    let mut state = sample_state();
+    state.discard_confirm = Some(DiscardConfirmView {
+        rows: vec![AnnotationRowView {
+            target: annotation_target("src/app.rs", Some((42, 42))),
+            note: "very long tail ".repeat(40),
+        }],
+        verb: "quit",
+        proceed_key: "q",
+    });
+    let out = render(&state, 100, 16);
+    let widest = out.lines().filter(|line| line.contains('\u{2502}')).count();
+    assert!(widest > 0, "the dialog drew\n{out}");
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= 102,
+            "no row escapes the frame width\n{line}"
+        );
+    }
+}
+
+#[test]
+fn discard_confirm_names_the_pending_action_not_always_quit() {
+    let mut state = sample_state();
+    state.discard_confirm = Some(DiscardConfirmView {
+        rows: vec![AnnotationRowView {
+            target: annotation_target("README.md", None),
+            note: "Only one.".to_string(),
+        }],
+        verb: "switch",
+        proceed_key: "⏎",
+    });
+    let out = render(&state, 100, 16);
+    assert!(out.contains("y copy & switch"), "copy-and-switch\n{out}");
+    assert!(out.contains("⏎ switch"), "enter proceeds a switch\n{out}");
+    assert!(out.contains("esc cancel"), "cancel\n{out}");
+    assert!(
+        !out.contains("quit"),
+        "a worktree switch must never offer to quit\n{out}"
+    );
+    insta::assert_snapshot!("presenter_discard_confirm_switch", out);
 }

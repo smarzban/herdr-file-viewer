@@ -109,6 +109,8 @@ pub struct ViewState {
     pub annotation_overview: Option<AnnotationOverviewView>,
     /// Owned add/edit annotation draw model, or `None` while that modal is closed.
     pub annotation_editor: Option<AnnotationEditorView>,
+    /// Owned discard-confirm draw model, or `None` while that modal is closed.
+    pub discard_confirm: Option<DiscardConfirmView>,
     /// Owned file/source-line indicator projection for the current root and applied content.
     pub annotation_indicators: AnnotationIndicatorsView,
     /// When `Some`, a one-row prompt is drawn across the very bottom of the viewer showing the active
@@ -293,6 +295,16 @@ pub struct AnnotationEditorView {
     pub text: String,
     pub cursor: usize,
     pub error: Option<String>,
+}
+
+/// Owned discard-confirm draw model: the session-only annotations the pending action would discard,
+/// in the same deterministic order (and the same row shape) the overview lists them in, plus the
+/// verb and proceed key naming that action (`quit`/`q`, `switch`/`⏎`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscardConfirmView {
+    pub rows: Vec<AnnotationRowView>,
+    pub verb: &'static str,
+    pub proceed_key: &'static str,
 }
 
 /// The help overlay's draw model — an owned, borrow-free snapshot of the controller's
@@ -816,6 +828,13 @@ fn blank_annotation_style(source_line: usize, state: &ViewState) -> Style {
 /// persistent background without padding content or changing wrap/search/mouse geometry.
 fn draw_blank_annotation_cells(frame: &mut Frame, text: Rect, state: &ViewState) -> Vec<Position> {
     if text.width == 0 || text.height == 0 {
+        return Vec::new();
+    }
+    // With no mapped ranges nothing can paint: `range_covers` is false for every line, so the walk
+    // below is pure waste, and it runs every draw, computing wrapped-row counts for the whole file.
+    // The common cases hit this: file-level-only annotations, and any transformed view (rendered
+    // markdown / diff), which carries no source map. (Copilot, PR #101.)
+    if state.annotation_indicators.displayed_line_ranges.is_empty() {
         return Vec::new();
     }
 
@@ -1432,6 +1451,9 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
     }
     if let Some(editor) = &state.annotation_editor {
         draw_annotation_editor(frame, frame.area(), editor);
+    }
+    if let Some(confirm) = &state.discard_confirm {
+        draw_discard_confirm(frame, frame.area(), confirm);
     }
     // The in-app help overlay draws LAST — on top of the picker/finder (AC-1, AC-5).
     if let Some(help) = &state.help {
@@ -2306,6 +2328,75 @@ fn draw_annotation_editor(frame: &mut Frame, area: Rect, editor: &AnnotationEdit
             error_area,
         );
     }
+}
+
+/// The discard confirm's title. The footer is built per action (the verb and proceed key differ
+/// between quitting and switching worktree). Static/derived, so no sanitization is needed.
+const QUIT_CONFIRM_TITLE: &str = "Discard annotations?";
+
+/// The most annotation rows the confirm lists before collapsing the tail into a `+N more` line.
+/// The dialog is a last look, not the overview: it stays a glanceable box on a short terminal
+/// rather than growing with the store (`A` is where you read all of them).
+const QUIT_CONFIRM_MAX_ROWS: usize = 8;
+
+/// Draw the discard confirm as a centered, bordered overlay: what the pending action would discard,
+/// listed, and the ways out. Width is bounded by [`ANNOTATION_MODAL_MAX_INNER_W`] (matching the overview, so a
+/// long note cannot stretch the box) and the rows are capped by [`QUIT_CONFIRM_MAX_ROWS`].
+fn draw_discard_confirm(frame: &mut Frame, area: Rect, confirm: &DiscardConfirmView) {
+    let count = confirm.rows.len();
+    let heading = format!(
+        "{count} annotation{} will be lost:",
+        if count == 1 { "" } else { "s" }
+    );
+    let footer_text = format!(
+        "y copy & {verb} · {key} {verb} · esc cancel",
+        verb = confirm.verb,
+        key = confirm.proceed_key
+    );
+    let footer = Line::styled(footer_text, Style::new().fg(Color::Reset)).centered();
+
+    let shown = confirm.rows.len().min(QUIT_CONFIRM_MAX_ROWS);
+    let hidden = confirm.rows.len() - shown;
+    // heading + one row each + the `+N more` line when the tail is collapsed.
+    let body_rows = 1 + shown + usize::from(hidden > 0);
+
+    let want_w = ANNOTATION_MODAL_MAX_INNER_W
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = (body_rows.min(u16::MAX as usize) as u16)
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let popup = centered_rect_sized(
+        want_w.min(area.width.saturating_sub(2)),
+        want_h.min(area.height.saturating_sub(2)),
+        area,
+    );
+
+    let block = modal_frame()
+        .title_top(QUIT_CONFIRM_TITLE)
+        .title_bottom(footer)
+        .border_style(modal_border_style());
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::with_capacity(body_rows);
+    lines.push(Line::from(truncate_display(&heading, inner.width)));
+    for row in confirm.rows.iter().take(shown) {
+        // Same row text as the overview, so the two dialogs name an annotation identically.
+        let text = truncate_display(&format!("  {}", annotation_row_text(row)), inner.width);
+        lines.push(Line::styled(text, Style::new().fg(Color::Reset)));
+    }
+    if hidden > 0 {
+        lines.push(Line::styled(
+            truncate_display(&format!("  +{hidden} more"), inner.width),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The computed layout geometry of the help overlay, shared between [`draw_help_overlay`] and

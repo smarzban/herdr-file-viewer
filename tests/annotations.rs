@@ -333,7 +333,9 @@ fn indicator_projection_tracks_delete_clear_and_successful_reroot_lifecycle() {
         before,
         "failed root retains"
     );
+    // A real switch confirms first now; Enter proceeds and clears the indicators with the store.
     ctrl.re_root(second.path());
+    ctrl.handle_discard_confirm_key(key(KeyCode::Enter));
     assert_eq!(ctrl.view_state().annotation_indicators, Default::default());
 }
 
@@ -660,7 +662,7 @@ fn copy_all_is_byte_exact_closes_on_success_and_preserves_store() {
     let (mut ctrl, clipboard) = controller(dir.path(), false);
     add_file_annotation(&mut ctrl, " First\tnote ");
     add_range_annotation(&mut ctrl, 4, 2, "Use <safe> & exact.");
-    let expected = "<file-annotations>\n- a.rs:First note\n- a.rs:2-4:Use &lt;safe&gt; &amp; exact.\n</file-annotations>";
+    let expected = "<file-annotations>\n- a.rs -> First note\n- a.rs:2-4 -> Use &lt;safe&gt; &amp; exact.\n</file-annotations>";
 
     ctrl.handle(Intent::ShowAnnotations);
     ctrl.handle_annotations_key(key(KeyCode::Char('y')));
@@ -696,7 +698,7 @@ fn copy_failure_still_closes_and_empty_copy_stays_open_without_calling() {
     assert_eq!(state.calls.len(), 1);
     assert_eq!(
         state.calls[0].as_bytes(),
-        b"<file-annotations>\n- a.rs:kept\n</file-annotations>"
+        b"<file-annotations>\n- a.rs -> kept\n</file-annotations>"
     );
     drop(state);
 
@@ -740,7 +742,18 @@ fn successful_root_change_clears_and_reports_but_failed_and_same_root_retain() {
             .contains("cannot switch worktree")
     );
 
+    // A REAL switch would discard them, so it now confirms first (the same guard `q` gets) rather
+    // than clearing and reporting it after the fact. The no-op/failure paths above are untouched:
+    // the guard sits after both early-returns, so neither raises a confirm.
     ctrl.re_root(second.path());
+    assert!(
+        ctrl.discard_confirm_open(),
+        "a real switch confirms before discarding"
+    );
+    assert_eq!(ctrl.annotations().len(), 2, "nothing is cleared yet");
+
+    // Enter proceeds with the switch, discarding them and reporting it exactly as before.
+    ctrl.handle_discard_confirm_key(key(KeyCode::Enter));
     assert!(ctrl.annotations().is_empty());
     assert!(
         ctrl.action_notice()
@@ -848,4 +861,306 @@ fn annotation_workflows_leave_every_file_byte_and_git_state_unchanged() {
         after_status, before_status,
         "git worktree/index state is unchanged"
     );
+}
+
+// --- Quit confirm (session-only annotations are destroyed by quitting) ---
+
+#[test]
+fn quit_with_no_annotations_is_unguarded() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), false);
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(fx.quit, "an empty store quits straight through");
+    assert!(!ctrl.discard_confirm_open());
+}
+
+#[test]
+fn quit_with_annotations_confirms_instead_of_quitting() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(!fx.quit, "the store is not empty, so the close is held");
+    assert!(ctrl.discard_confirm_open());
+    assert_eq!(ctrl.annotations().len(), 1, "confirming does not mutate");
+}
+
+#[test]
+fn quit_confirm_y_copies_then_quits() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::Close);
+
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Char('y')));
+    assert!(fx.quit, "a successful copy quits");
+    assert!(!ctrl.discard_confirm_open());
+    let state = clipboard.lock().unwrap();
+    assert_eq!(state.calls.len(), 1);
+    assert_eq!(
+        state.calls[0].as_bytes(),
+        b"<file-annotations>\n- a.rs -> kept\n</file-annotations>",
+        "y copies the same canonical export the overview does"
+    );
+}
+
+#[test]
+fn quit_confirm_q_quits_and_discards_without_touching_the_clipboard() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::Close);
+
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Char('q')));
+    assert!(fx.quit, "q quits anyway");
+    assert!(!ctrl.discard_confirm_open());
+    assert!(
+        clipboard.lock().unwrap().calls.is_empty(),
+        "discarding never writes the clipboard"
+    );
+}
+
+#[test]
+fn quit_confirm_esc_cancels_back_to_the_viewer() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::Close);
+    assert!(
+        ctrl.discard_confirm_open(),
+        "precondition: the dialog is up"
+    );
+
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Esc));
+    assert!(!fx.quit, "esc returns to the viewer");
+    assert!(!ctrl.discard_confirm_open());
+    assert_eq!(ctrl.annotations().len(), 1, "the annotations survive");
+    assert!(clipboard.lock().unwrap().calls.is_empty());
+}
+
+#[test]
+fn quit_confirm_holds_open_when_the_clipboard_write_fails() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), true);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::Close);
+
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Char('y')));
+    assert!(
+        !fx.quit,
+        "a failed copy must not quit: that would destroy what y promised to save"
+    );
+    assert!(
+        ctrl.discard_confirm_open(),
+        "the dialog stays up with the error"
+    );
+    assert!(ctrl.action_notice().unwrap().contains("Could not copy"));
+    assert_eq!(ctrl.annotations().len(), 1);
+}
+
+#[test]
+fn quit_confirm_sits_outside_the_unzoom_layer() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::ToggleZoom);
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(!fx.quit, "the first close unzooms");
+    assert!(
+        !ctrl.discard_confirm_open(),
+        "unzooming is not a quit, so it raises no confirm"
+    );
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(!fx.quit);
+    assert!(
+        ctrl.discard_confirm_open(),
+        "the second close reaches the quit layer"
+    );
+}
+
+#[test]
+fn quit_confirm_owns_every_key_so_none_leaks_to_a_global_action() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.handle(Intent::Close);
+
+    for code in [
+        KeyCode::Char('e'),
+        KeyCode::Char('j'),
+        KeyCode::Char('A'),
+        KeyCode::Enter,
+        KeyCode::Char('Z'),
+    ] {
+        let fx = ctrl.handle_discard_confirm_key(key(code));
+        assert!(!fx.quit, "{code:?} must not quit");
+        assert!(
+            ctrl.discard_confirm_open(),
+            "{code:?} must not close the dialog"
+        );
+    }
+    assert!(clipboard.lock().unwrap().calls.is_empty());
+    assert_eq!(ctrl.annotations().len(), 1);
+}
+
+#[test]
+fn confirm_discard_false_quits_without_confirming() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(dir.path(), false);
+    ctrl.apply_confirm_discard(false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    let fx = ctrl.handle(Intent::Close);
+    assert!(fx.quit, "the opt-out restores the immediate-quit behavior");
+    assert!(!ctrl.discard_confirm_open(), "no confirm is raised");
+    assert!(
+        clipboard.lock().unwrap().calls.is_empty(),
+        "opting out of the confirm never writes the clipboard"
+    );
+}
+
+#[test]
+fn confirm_discard_defaults_on() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    // No `apply_*` call: a Controller built without config must still guard, matching the
+    // resolver's default, so the two defaults cannot drift apart unnoticed.
+    let fx = ctrl.handle(Intent::Close);
+    assert!(!fx.quit);
+    assert!(ctrl.discard_confirm_open());
+}
+
+// --- Worktree switch: the other path that discards annotations ---
+
+#[test]
+fn switch_confirm_y_copies_then_switches() {
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, clipboard) = controller(first.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    ctrl.re_root(second.path());
+    assert!(ctrl.discard_confirm_open());
+
+    ctrl.handle_discard_confirm_key(key(KeyCode::Char('y')));
+    assert!(!ctrl.discard_confirm_open(), "a successful copy proceeds");
+    assert!(ctrl.annotations().is_empty(), "the switch happened");
+    assert_eq!(ctrl.root(), second.path(), "and re-rooted to the target");
+    let state = clipboard.lock().unwrap();
+    assert_eq!(
+        state.calls[0].as_bytes(),
+        b"<file-annotations>\n- a.rs -> kept\n</file-annotations>",
+        "y copies before discarding, same export as everywhere else"
+    );
+}
+
+#[test]
+fn switch_confirm_esc_cancels_the_switch_entirely() {
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(first.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    ctrl.re_root(second.path());
+    assert!(ctrl.discard_confirm_open());
+
+    ctrl.handle_discard_confirm_key(key(KeyCode::Esc));
+    assert!(!ctrl.discard_confirm_open());
+    assert_eq!(ctrl.annotations().len(), 1, "the annotations survive");
+    assert_eq!(
+        ctrl.root(),
+        first.path(),
+        "esc cancels the switch too, not just the discard: the viewer stays put"
+    );
+}
+
+#[test]
+fn switch_confirm_holds_open_when_the_clipboard_write_fails() {
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(first.path(), true);
+    add_file_annotation(&mut ctrl, "kept");
+
+    ctrl.re_root(second.path());
+    ctrl.handle_discard_confirm_key(key(KeyCode::Char('y')));
+    assert!(ctrl.discard_confirm_open(), "a failed copy does not switch");
+    assert_eq!(ctrl.root(), first.path(), "still on the old root");
+    assert_eq!(ctrl.annotations().len(), 1);
+}
+
+#[test]
+fn switch_confirm_is_skipped_when_nothing_would_be_lost() {
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+
+    // Empty store: a switch loses nothing, so it must not interrupt.
+    let (mut ctrl, _) = controller(first.path(), false);
+    ctrl.re_root(second.path());
+    assert!(
+        !ctrl.discard_confirm_open(),
+        "nothing held, nothing to confirm"
+    );
+    assert_eq!(
+        ctrl.root(),
+        second.path(),
+        "the switch went straight through"
+    );
+
+    // Opted out: the guard is off, so a switch discards immediately as it did before.
+    let (mut opted_out, _) = controller(first.path(), false);
+    opted_out.apply_confirm_discard(false);
+    add_file_annotation(&mut opted_out, "kept");
+    opted_out.re_root(second.path());
+    assert!(!opted_out.discard_confirm_open());
+    assert!(
+        opted_out.annotations().is_empty(),
+        "discarded, not confirmed"
+    );
+    assert_eq!(opted_out.root(), second.path());
+}
+
+#[test]
+fn switch_confirm_proceed_key_is_enter_not_q() {
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(first.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    ctrl.re_root(second.path());
+
+    // `q` is the QUIT confirm's proceed key. On a switch it must be inert, and above all must not
+    // quit the viewer: the user asked to change worktree, not to close.
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Char('q')));
+    assert!(!fx.quit, "q must never quit from the switch confirm");
+    assert!(ctrl.discard_confirm_open(), "q is inert here");
+    assert_eq!(ctrl.root(), first.path());
+
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Enter));
+    assert!(!fx.quit, "proceeding with a switch is not a quit");
+    assert_eq!(ctrl.root(), second.path());
 }

@@ -9588,6 +9588,7 @@ fn open_help_appends_settings_section_when_display_is_set() {
         reveal: None,
         hide_dotfiles: false,
         update_check: true,
+        confirm_discard: true,
         scroll_lines: 3,
         tree_width: 30,
         tree_position: herdr_file_viewer::config::TreePosition::Left,

@@ -351,7 +351,12 @@ pub fn format_annotations(store: &AnnotationStore) -> String {
                 output.push_str(&lines.end().to_string());
             }
         }
-        output.push(':');
+        // ` -> ` separates the reference from the note. Not `:`, which already separates path from
+        // line: reusing it made the note's position depend on whether a line number was present,
+        // and `escape_list_content` leaves colons alone, so a note containing one reproduced the
+        // separator. `>` is escaped in both path and note, so this arrow is the only unescaped one
+        // on the line.
+        output.push_str(" -> ");
         output.push_str(&escape_list_content(annotation.text()));
     }
     output.push_str("\n</file-annotations>");
@@ -520,7 +525,7 @@ mod tests {
 
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- README.md:Clarify the fallback.\n- src/app.rs:42:Explain the ignored result.\n- src/controller/mod.rs:42-47:Why is this guarded twice?\n</file-annotations>"
+            "<file-annotations>\n- README.md -> Clarify the fallback.\n- src/app.rs:42 -> Explain the ignored result.\n- src/controller/mod.rs:42-47 -> Why is this guarded twice?\n</file-annotations>"
         );
     }
 
@@ -536,7 +541,7 @@ mod tests {
         store.add(lines("a.rs", 9, 8), "range").unwrap();
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- a.rs:file\n- a.rs:7:line\n- a.rs:8-9:range\n</file-annotations>"
+            "<file-annotations>\n- a.rs -> file\n- a.rs:7 -> line\n- a.rs:8-9 -> range\n</file-annotations>"
         );
         assert!(!store.canonical_text().ends_with('\n'));
     }
@@ -552,7 +557,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- evil&lt;&amp;&gt;[2J.rs:&lt;/file-annotations&gt; &amp; &lt;tag&gt; : \"quoted\"\n</file-annotations>"
+            "<file-annotations>\n- evil&lt;&amp;&gt;[2J.rs -> &lt;/file-annotations&gt; &amp; &lt;tag&gt; : \"quoted\"\n</file-annotations>"
         );
         assert_eq!(
             store.canonical_text().matches("<file-annotations>").count(),
@@ -574,7 +579,7 @@ mod tests {
         store.add(file(native), "note").unwrap();
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- dir/sub/a.rs:note\n</file-annotations>"
+            "<file-annotations>\n- dir/sub/a.rs -> note\n</file-annotations>"
         );
     }
 
@@ -590,7 +595,7 @@ mod tests {
         store.add(file(path), "note").unwrap();
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- dir/f�.rs:note\n</file-annotations>"
+            "<file-annotations>\n- dir/f�.rs -> note\n</file-annotations>"
         );
     }
 
@@ -611,7 +616,7 @@ mod tests {
         store.add(file(path), "note").unwrap();
         assert_eq!(
             store.canonical_text(),
-            "<file-annotations>\n- dir/f�.rs:note\n</file-annotations>"
+            "<file-annotations>\n- dir/f�.rs -> note\n</file-annotations>"
         );
     }
 
@@ -634,7 +639,7 @@ mod tests {
         store
             .add(lines("src/lib.rs", 3, 1), "Use <safe> & exact.")
             .unwrap();
-        let expected = "<file-annotations>\n- README.md:First note\n- src/lib.rs:1-3:Use &lt;safe&gt; &amp; exact.\n</file-annotations>";
+        let expected = "<file-annotations>\n- README.md -> First note\n- src/lib.rs:1-3 -> Use &lt;safe&gt; &amp; exact.\n</file-annotations>";
 
         let mut clipboard = RecordingClipboard::default();
         clipboard.copy(&format_annotations(&store)).unwrap();

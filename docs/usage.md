@@ -120,23 +120,45 @@ Saving normalizes every run of Unicode whitespace or control characters to one A
 trims both ends. If that leaves the note empty, the editor stays open and shows a validation error;
 the annotation is not added or changed.
 
-A successful worktree switch (re-root) clears all annotations and reports how many were cleared,
-because their targets belong to the old root. A failed switch or same-root no-op retains them.
-Closing and relaunching the viewer always starts with an empty annotation store.
+A worktree switch (re-root) also clears all annotations, because their targets belong to the old
+root, so it raises the same confirm quitting does (`y` copies them and switches, `Enter` switches
+and discards, `Esc` cancels the switch and stays put). A failed switch or a same-root no-op changes
+nothing and never confirms, since neither would lose anything. Closing and relaunching the viewer
+always starts with an empty annotation store.
+
+Because annotations live only for the session, anything that would discard them confirms first
+rather than losing them to a stray key: quitting (`q`) and switching worktree (`W`) both raise it.
+The dialog lists what would be lost, in the same rows the overview uses (the first eight, then
+`+N more`, so it stays glanceable on a short terminal):
+
+- **`y` copies them and continues**, which is usually where you were headed anyway: it writes the
+  same `<file-annotations>` block the overview's `y` does, so you land ready to paste. If the
+  clipboard write fails, the dialog stays open with the error rather than continuing and destroying
+  what `y` promised to save.
+- **The action's own key continues and discards them**: `q` when quitting, `Enter` when switching
+  worktree (matching the picker's own confirm key).
+- **`Esc` cancels**, returning to the viewer with the annotations intact. On a switch this cancels
+  the switch itself, not just the discard.
+
+The confirm only appears when the store is non-empty, so it never interrupts a session that did not
+use annotations. Backing out of zoom with `q` is not a quit and raises no confirm. Set
+`confirm_discard = false` in the config to skip it and discard immediately.
 
 The exact concise copy format is:
 
 ```text
 <file-annotations>
-- README.md:Clarify the fallback.
-- src/app.rs:42:Explain the ignored result.
-- src/controller/mod.rs:42-47:Why is this guarded twice?
+- README.md -> Clarify the fallback.
+- src/app.rs:42 -> Explain the ignored result.
+- src/controller/mod.rs:42-47 -> Why is this guarded twice?
 </file-annotations>
 ```
 
-File-level entries omit the line field. Notes and paths escape `&`, `<`, and `>` so the single outer
-wrapper cannot be spoofed; the copied block has no heading, blank lines, root path, or trailing
-newline.
+File-level entries omit the line field, so ` -> ` (not `:`) separates the reference from the note:
+the reference keeps its greppable `path:line` shape, and because `>` is escaped in both paths and
+notes, the arrow is unambiguous even when a note contains a colon. Notes and paths escape `&`, `<`,
+and `>` so the single outer wrapper cannot be spoofed; the copied block has no heading, blank lines,
+root path, or trailing newline.
 
 ## Copying paths and lines
 

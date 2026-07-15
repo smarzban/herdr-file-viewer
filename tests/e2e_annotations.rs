@@ -18,7 +18,7 @@ use expectrl::{Eof, Expect, Regex, Session};
 use std::time::Duration;
 
 const ESC_SETTLE: Duration = Duration::from_millis(150);
-const EXPECTED_EXPORT: &[u8] = b"<file-annotations>\n- annotate.txt:File note\n- annotate.txt:1-3:Range &lt;note&gt; &amp; exact\n</file-annotations>";
+const EXPECTED_EXPORT: &[u8] = b"<file-annotations>\n- annotate.txt -> File note\n- annotate.txt:1-3 -> Range &lt;note&gt; &amp; exact\n</file-annotations>";
 
 fn decode_rfc4648(input: &[u8]) -> Result<Vec<u8>, String> {
     if !input.len().is_multiple_of(4) {
@@ -227,6 +227,153 @@ fn live_file_range_overview_copy_clear_and_modal_isolation() {
         .expect("the viewer exits cleanly after all annotation flows");
     match session.get_process().wait().expect("reap the viewer") {
         WaitStatus::Exited(_, code) => assert_eq!(code, 0, "annotation flow exits cleanly"),
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}
+
+/// The quit confirm through the LIVE event loop. This is the layer that matters: the confirm is
+/// gated by a match guard in `event_loop`, so a controller-level test that calls
+/// `handle_discard_confirm_key` directly cannot see whether the loop ever routes to it. It did
+/// not: the gate covered only the overview/editor, so the dialog drew but `y`/`q`/`Esc` fell
+/// through to global decoding and the dialog was inert.
+#[test]
+fn live_quit_confirm_cancels_then_copies_and_quits() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    std::fs::write(root.join("annotate.txt"), "TOPANNOTATIONMARK\nline two\n").unwrap();
+
+    let mut cmd = viewer_command(root);
+    cmd.env("HERDR_PLUGIN_CONFIG_DIR", root.join("missing-config"));
+    cmd.env("EDITOR", "true");
+    let mut session = Session::spawn(cmd).expect("spawn the viewer in a pty");
+    session.set_expect_timeout(Some(Duration::from_secs(15)));
+    session
+        .expect("TOPANNOTATIONMARK")
+        .expect("the selected file finished its initial render");
+
+    session.send("a").expect("add a file annotation");
+    session.expect("Add annotation").expect("editor opens");
+    session.send("Keep me").expect("type the note");
+    session.send("\r").expect("save the annotation");
+    session
+        .expect("annotations: 1")
+        .expect("the annotation is held");
+
+    // `q` must not quit while an annotation is held: it raises the confirm.
+    session.send("q").expect("attempt to quit");
+    session
+        .expect("Discard annotations?")
+        .expect("quitting with a held annotation confirms rather than quitting");
+
+    // Esc cancels back to the viewer, with the annotation intact.
+    send_esc!(session);
+    session.send("A").expect("reopen the overview after cancel");
+    session
+        .expect("Annotations (1)")
+        .expect("esc cancelled the quit and kept the annotation");
+    send_esc!(session);
+
+    // `q` again, then `y`: copies through the real OSC 52 adapter, then exits.
+    session.send("q").expect("attempt to quit again");
+    session
+        .expect("Discard annotations?")
+        .expect("the confirm returns");
+    session.send("y").expect("copy and quit");
+    let capture = session
+        .expect(Regex(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07"))
+        .expect("y wrote the clipboard through the live adapter");
+    let encoded = capture.get(1).expect("OSC 52 regex captured its payload");
+    let decoded = decode_rfc4648(encoded).expect("OSC 52 payload is valid RFC 4648 base64");
+    assert_eq!(
+        decoded.as_slice(),
+        b"<file-annotations>\n- annotate.txt -> Keep me\n</file-annotations>",
+        "y copies the canonical export before quitting"
+    );
+    session
+        .expect(Eof)
+        .expect("y quits after a successful copy");
+    match session.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => assert_eq!(code, 0, "copy-and-quit exits cleanly"),
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}
+
+/// `q` at the confirm quits and discards, without ever writing the clipboard.
+#[test]
+fn live_quit_confirm_q_discards_and_exits() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    std::fs::write(root.join("annotate.txt"), "TOPANNOTATIONMARK\nline two\n").unwrap();
+
+    let mut cmd = viewer_command(root);
+    cmd.env("HERDR_PLUGIN_CONFIG_DIR", root.join("missing-config"));
+    cmd.env("EDITOR", "true");
+    let mut session = Session::spawn(cmd).expect("spawn the viewer in a pty");
+    session.set_expect_timeout(Some(Duration::from_secs(15)));
+    session
+        .expect("TOPANNOTATIONMARK")
+        .expect("the selected file finished its initial render");
+
+    session.send("a").expect("add a file annotation");
+    session.expect("Add annotation").expect("editor opens");
+    session.send("Drop me").expect("type the note");
+    session.send("\r").expect("save the annotation");
+    session
+        .expect("annotations: 1")
+        .expect("the annotation is held");
+
+    session.send("q").expect("attempt to quit");
+    session
+        .expect("Discard annotations?")
+        .expect("the confirm appears");
+    session.send("q").expect("quit anyway");
+    session
+        .expect(Eof)
+        .expect("q at the confirm quits and discards");
+    match session.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => assert_eq!(code, 0, "discard-and-quit exits cleanly"),
+        other => panic!("expected a clean exit, got {other:?}"),
+    }
+}
+
+/// `confirm_discard = false` opts out: `q` quits and discards immediately. Drives the
+/// real binary with a real config file, so it covers the whole wiring path (config parse -> resolve
+/// -> `apply_confirm_discard` -> the guard) that unit tests stub out.
+#[test]
+fn live_confirm_discard_false_quits_immediately() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    std::fs::write(root.join("annotate.txt"), "TOPANNOTATIONMARK\nline two\n").unwrap();
+    // The config dir lives OUTSIDE the viewer root: a `conf/` inside it would sort first in the
+    // tree and steal the initial selection, so no file would render.
+    let conf_dir = TempDir::new();
+    let conf = conf_dir.path();
+    std::fs::write(conf.join("config.toml"), "confirm_discard = false\n").unwrap();
+
+    let mut cmd = viewer_command(root);
+    cmd.env("HERDR_PLUGIN_CONFIG_DIR", conf);
+    cmd.env("EDITOR", "true");
+    let mut session = Session::spawn(cmd).expect("spawn the viewer in a pty");
+    session.set_expect_timeout(Some(Duration::from_secs(15)));
+    session
+        .expect("TOPANNOTATIONMARK")
+        .expect("the selected file finished its initial render");
+
+    session.send("a").expect("add a file annotation");
+    session.expect("Add annotation").expect("editor opens");
+    session.send("Discard me").expect("type the note");
+    session.send("\r").expect("save the annotation");
+    session
+        .expect("annotations: 1")
+        .expect("the annotation is held");
+
+    // With the guard off, this `q` must exit rather than raise the confirm.
+    session.send("q").expect("quit with the guard disabled");
+    session
+        .expect(Eof)
+        .expect("confirm_discard = false quits immediately, no confirm");
+    match session.get_process().wait().expect("reap the viewer") {
+        WaitStatus::Exited(_, code) => assert_eq!(code, 0, "the opt-out exits cleanly"),
         other => panic!("expected a clean exit, got {other:?}"),
     }
 }

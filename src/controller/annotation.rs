@@ -156,19 +156,40 @@ impl Controller {
     }
 
     /// Owned, typed annotation-overview projection for the pure Presenter.
+    /// The store's annotations as owned rows in canonical order. Shared by the overview and the
+    /// quit confirm so the two can never name the same annotation differently.
+    fn annotation_rows(&self) -> Vec<AnnotationRowView> {
+        self.annotations
+            .ordered()
+            .into_iter()
+            .map(|annotation| AnnotationRowView {
+                target: target_view(annotation.target()),
+                note: annotation.text().to_string(),
+            })
+            .collect()
+    }
+
     pub(super) fn annotation_overview_view(&self) -> Option<AnnotationOverviewView> {
         let list = self.modal.annotations()?;
         Some(AnnotationOverviewView {
-            rows: self
-                .annotations
-                .ordered()
-                .into_iter()
-                .map(|annotation| AnnotationRowView {
-                    target: target_view(annotation.target()),
-                    note: annotation.text().to_string(),
-                })
-                .collect(),
+            rows: self.annotation_rows(),
             cursor: list.cursor(),
+        })
+    }
+
+    /// Owned discard-confirm projection: the annotations the pending action would discard, plus the
+    /// verb and proceed key naming that action. `None` while the confirm is closed.
+    pub(super) fn discard_confirm_view(&self) -> Option<DiscardConfirmView> {
+        let Modal::DiscardConfirm(action) = &self.modal else {
+            return None;
+        };
+        Some(DiscardConfirmView {
+            rows: self.annotation_rows(),
+            verb: action.verb(),
+            proceed_key: match action {
+                DiscardAction::Quit => "q",
+                DiscardAction::SwitchRoot(_) => "⏎",
+            },
         })
     }
 
@@ -203,9 +224,19 @@ impl Controller {
         self.modal.annotation_editor()
     }
 
-    /// Whether any annotation modal owns input.
+    /// Whether the annotation overview or add/edit editor owns input.
     pub fn annotation_modal_open(&self) -> bool {
         self.annotation_list().is_some() || self.annotation_editor().is_some()
+    }
+
+    /// Whether any annotation modal owns *raw* keys, so the run loop must route them before global
+    /// decoding. The single predicate the event loop gates on: [`route_annotation_key`] handles
+    /// exactly this set, so a new raw-key modal that lands in one and not the other is a routing
+    /// hole (the quit confirm was, and its keys silently fell through to global actions).
+    ///
+    /// [`route_annotation_key`]: crate::app
+    pub fn annotation_raw_keys_owned(&self) -> bool {
+        self.annotation_modal_open() || self.discard_confirm_open()
     }
 
     /// Open an empty add editor for the selected file.
@@ -342,19 +373,35 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// Copy the canonical export to the clipboard and report the outcome as an action notice.
+    /// Returns whether the write succeeded. Leaves the modal alone so callers can decide what a
+    /// failure means: the overview closes either way, the quit confirm stays open.
+    pub(super) fn copy_annotations_to_clipboard(&mut self) -> bool {
+        if self.annotations.is_empty() {
+            return false;
+        }
+        let count = self.annotations.len();
+        let text = self.annotations.canonical_text();
+        match self.clipboard.copy(&text) {
+            Ok(()) => {
+                self.action_notice = Some(format!(
+                    "Copied {count} annotation{}",
+                    if count == 1 { "" } else { "s" }
+                ));
+                true
+            }
+            Err(error) => {
+                self.action_notice = Some(format!("Could not copy annotations: {error}"));
+                false
+            }
+        }
+    }
+
     fn copy_annotations(&mut self) -> Effects {
         if self.annotations.is_empty() {
             return Effects::noop();
         }
-        let count = self.annotations.len();
-        let text = self.annotations.canonical_text();
-        self.action_notice = Some(match self.clipboard.copy(&text) {
-            Ok(()) => format!(
-                "Copied {count} annotation{}",
-                if count == 1 { "" } else { "s" }
-            ),
-            Err(error) => format!("Could not copy annotations: {error}"),
-        });
+        self.copy_annotations_to_clipboard();
         self.modal = Modal::None;
         Effects::redraw()
     }

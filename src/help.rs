@@ -241,18 +241,19 @@ pub fn settings_text(
     format!(
         "{status_line}\n\
          {location_line}\n\
-         editor        = {editor}\n\
-         markdown      = {markdown}\n\
-         diff          = {diff}\n\
-         syntax        = {syntax}\n\
-         open          = {open}\n\
-         reveal        = {reveal}\n\
-         hide_dotfiles = {hide_dotfiles}\n\
-         update_check  = {update_check}\n\
-         scroll_lines  = {scroll_lines}\n\
-         tree_width    = {tree_width}\n\
-         tree_position = {tree_position}\n\
-         tree_max_cols = {tree_max_cols}",
+         editor          = {editor}\n\
+         markdown        = {markdown}\n\
+         diff            = {diff}\n\
+         syntax          = {syntax}\n\
+         open            = {open}\n\
+         reveal          = {reveal}\n\
+         hide_dotfiles   = {hide_dotfiles}\n\
+         update_check    = {update_check}\n\
+         confirm_discard = {confirm_discard}\n\
+         scroll_lines    = {scroll_lines}\n\
+         tree_width      = {tree_width}\n\
+         tree_position   = {tree_position}\n\
+         tree_max_cols   = {tree_max_cols}",
         editor = opt_os(&eff.editor),
         markdown = opt_argv(&eff.markdown),
         diff = opt_argv(&eff.diff),
@@ -265,6 +266,7 @@ pub fn settings_text(
         tree_width = eff.tree_width,
         tree_position = eff.tree_position.label(),
         tree_max_cols = eff.tree_max_cols,
+        confirm_discard = if eff.confirm_discard { "on" } else { "off" },
     )
 }
 
@@ -752,6 +754,7 @@ mod tests {
             reveal: None,
             hide_dotfiles: true,
             update_check: false,
+            confirm_discard: false,
             scroll_lines: 7,
             tree_width: 25,
             tree_position: crate::config::TreePosition::Right,

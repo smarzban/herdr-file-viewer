@@ -38,9 +38,9 @@ normal case — every key falls back to its default.
 A config key always wins. Only two keys also have an environment-variable fallback tier below the
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
-other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `scroll_lines`,
-`tree_width`, `tree_position`, `tree_max_cols`) has no applicable environment variable; for those
-it's `config > default` only.
+other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`,
+`confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`) has no
+applicable environment variable; for those it's `config > default` only.
 
 ## Keys
 
@@ -58,6 +58,7 @@ reveal = "nautilus"
 
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 update_check = true         # false to disable the once-a-day update check
+confirm_discard = true      # false to discard annotations without confirming (on quit / worktree switch)
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
 tree_max_cols = 30          # HARD CAP in columns; the SMALLER of this and tree_width% wins (raise both to widen)
@@ -73,6 +74,14 @@ instead of a mostly-blank tree (it only bites past ~100 columns). `tree_position
 the `left` (default) or `right`. All three set the **startup** split inside the viewer's own pane
 (not the herdr pane, which the host decides); you can still resize live with the grow/shrink keys or
 by dragging the divider, and an explicit resize lifts the cap.
+
+`confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
+session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either
+raises a confirm listing what would be lost: `y` copies them to the clipboard and continues, the
+action's own key continues and discards (`q` to quit, `Enter` to switch), and `Esc` cancels. Set it
+to `false` to skip the confirm and discard immediately. It only appears when annotations are
+actually held, so leaving it on costs nothing in a session that never uses them. See
+[annotating files and ranges](usage.md#annotating-files-and-ranges).
 
 ## Command values
 
