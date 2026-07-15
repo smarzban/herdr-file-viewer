@@ -70,6 +70,23 @@ pub fn opener_argv(os: OsKind, action: OpenAction, path: &Path) -> Vec<OsString>
     }
 }
 
+/// A short display label for the built-in OS opener (no concrete path), used by the Settings
+/// help tab when `open` / `reveal` are unset. Mirrors [`opener_argv`]'s program (+ fixed flags).
+pub fn default_opener_display(os: OsKind, action: OpenAction) -> String {
+    match (os, action) {
+        (OsKind::Mac, OpenAction::Open) => "open".to_owned(),
+        (OsKind::Mac, OpenAction::Reveal) => "open -R".to_owned(),
+        (OsKind::Linux, OpenAction::Open | OpenAction::Reveal) => "xdg-open".to_owned(),
+        (OsKind::Windows, OpenAction::Open) => windows_explorer_program(system_root().as_deref())
+            .to_string_lossy()
+            .into_owned(),
+        (OsKind::Windows, OpenAction::Reveal) => format!(
+            "{} /select,<path>",
+            windows_explorer_program(system_root().as_deref()).to_string_lossy()
+        ),
+    }
+}
+
 /// The current process's `%SystemRoot%`, if set and non-empty. Only meaningful on Windows;
 /// unset on unix (so the Windows-arm tests resolve the bare-name fallback on a unix CI host).
 fn system_root() -> Option<PathBuf> {

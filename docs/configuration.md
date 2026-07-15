@@ -4,7 +4,8 @@ An optional TOML config file lets you override the editor, the renderer/opener c
 of startup toggles, the tree layout, and the keybindings. **Read-only input** — the viewer never
 writes this file; edit it in your own editor and relaunch to pick up changes (there is no in-app
 settings editor). You can see what's currently in effect any time in the `?` help overlay's
-**Settings** section.
+**Settings** section: each row shows the effective value (after config/env/default precedence). The
+`markdown`, `diff` and `syntax` rows name the renderer program that runs, not its full argument list.
 
 **Quick start.** A fully-commented [`config.example.toml`](../config.example.toml) ships in the
 plugin folder, documenting every setting. You never have to guess where the live file goes: under

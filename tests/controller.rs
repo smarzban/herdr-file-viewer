@@ -9575,6 +9575,7 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
 #[test]
 fn open_help_appends_settings_section_when_display_is_set() {
     use herdr_file_viewer::config::{EffectiveSettings, LoadOutcome};
+    use herdr_file_viewer::help::SettingsWired;
 
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -9596,10 +9597,19 @@ fn open_help_appends_settings_section_when_display_is_set() {
         preview_max_lines: 5000,
         preview_max_kib: 1024,
     };
+    let wired = SettingsWired {
+        editor: None,
+        markdown: "glow".to_string(),
+        diff: "delta".to_string(),
+        syntax: "bat".to_string(),
+        open: "xdg-open".to_string(),
+        reveal: "xdg-open".to_string(),
+    };
     ctrl.set_settings_display(
         &eff,
         &LoadOutcome::Absent,
         std::path::Path::new("/cfg/config.toml"),
+        &wired,
     );
 
     ctrl.handle(Intent::ShowHelp);

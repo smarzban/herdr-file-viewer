@@ -88,10 +88,24 @@ pub fn run() -> io::Result<()> {
         });
     // The effective editor (AC-6): config > `$EDITOR` (already encoded in `eff.editor`) >
     // platform default (`resolve_editor(None)` — e.g. Notepad on Windows).
+    let platform_editor = resolve_editor(None);
     let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
-        editor: crate::config::effective_editor(&eff, resolve_editor(None)),
+        editor: crate::config::effective_editor(&eff, platform_editor.clone()),
     });
     let clipboard: Box<dyn Clipboard> = Box::new(Osc52Clipboard);
+
+    // Wired values for the Settings display (AC-1..AC-4): built from the same startup resolution
+    // as the live components below so the overlay shows what's actually in effect. The renderers
+    // contribute only their **program** (argv[0]) — the display names what runs, not the flags.
+    let os = current_os_kind();
+    let settings_wired = crate::help::SettingsWired {
+        editor: crate::config::effective_editor(&eff, platform_editor),
+        markdown: renderer_program(&renderers.markdown),
+        diff: renderer_program(&renderers.diff),
+        syntax: renderer_program(&renderers.syntax),
+        open: crate::opener::default_opener_display(os, crate::opener::OpenAction::Open),
+        reveal: crate::opener::default_opener_display(os, crate::opener::OpenAction::Reveal),
+    };
 
     // `Controller::new` now consumes `resolved` by value; `baseline` was already built from it
     // above (`git::default_baseline(&resolved)`), so moving it here is the last use.
@@ -123,7 +137,12 @@ pub fn run() -> io::Result<()> {
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.
-    controller.set_settings_display(&eff, &load_outcome, &crate::config::config_path_from_env());
+    controller.set_settings_display(
+        &eff,
+        &load_outcome,
+        &crate::config::config_path_from_env(),
+        &settings_wired,
+    );
     // Resolve the effective key bindings from the registry + the config's `[keys]` table (Slice B,
     // T-6): `config > default`, defensively (a rejected entry reverts to its default key set). This
     // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
@@ -715,6 +734,14 @@ fn bundled_style_path(exe: Option<&Path>) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// The program of a renderer command for the Settings display: argv[0], or `unset` for the
+/// (unreachable) empty argv. The full argv is deliberately not shown — the default markdown
+/// command carries an absolute path to the bundled style file, which is machine-specific noise
+/// that wraps across several rows in a narrow overlay; the flags are documented in `docs/`.
+fn renderer_program(argv: &[String]) -> String {
+    argv.first().cloned().unwrap_or_else(|| "unset".to_owned())
+}
+
 /// The default external renderers (the documented runtime deps). Each reads the untrusted
 /// content on **stdin** (never as an argument); a missing one degrades to plain text +
 /// notice (AC-24/25). `{name}` is substituted with the sanitized file name for language
@@ -1107,6 +1134,28 @@ mod tests {
             "glow width disabled with `-w 0`: {:?}",
             r.markdown
         );
+    }
+
+    #[test]
+    fn settings_renderer_programs_are_short_names_from_the_real_defaults() {
+        // The altitude that matters: run against the REAL `default_renderers()`, not a hand-made
+        // fixture. The markdown command resolves `-s` to an absolute path into the install dir, so
+        // a fixture with a tidy `-s dark` proves nothing about what the overlay actually shows.
+        let r = default_renderers();
+        for (label, argv) in [
+            ("markdown", &r.markdown),
+            ("diff", &r.diff),
+            ("syntax", &r.syntax),
+        ] {
+            let shown = renderer_program(argv);
+            assert!(
+                !shown.contains(std::path::MAIN_SEPARATOR) && !shown.contains(char::is_whitespace),
+                "the {label} Settings row must be a bare program name, got {shown:?} from {argv:?}"
+            );
+        }
+        assert_eq!(renderer_program(&r.markdown), "glow");
+        assert_eq!(renderer_program(&r.diff), "delta");
+        assert_eq!(renderer_program(&r.syntax), "bat");
     }
 
     #[test]
