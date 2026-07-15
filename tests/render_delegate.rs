@@ -545,9 +545,51 @@ fn missing_converter_degrades_to_a_notice_not_a_crash() {
 
 #[test]
 fn tempfile_converter_reads_back_the_written_output() {
-    // A temp-file converter (libreoffice-shaped): it writes `<stem>.txt` into {outdir}; the viewer
-    // reads it back and renders it through the delegate.
+    // A one-stage temp-file converter (Calc → CSV shape): it writes `<stem>.csv` into {outdir};
+    // the viewer reads it back (`then` = None) and renders it through the delegate.
     let dir = tmpdir("tempfile");
+    let doc = dir.join("model.xlsx");
+    std::fs::write(&doc, b"PK\x03\x04 (fake xlsx)").unwrap();
+    let renderers = Renderers {
+        documents: DocConverters {
+            xlsx: Converter::TempFile {
+                argv: [
+                    "sh",
+                    "-c",
+                    // $1 = {outdir}, $2 = {path}. Write "<stem>.csv" holding XLSXBODY.
+                    "printf 'XLSXBODY' > \"$1/$(basename \"$2\" .xlsx).csv\"",
+                    "sh",
+                    "{outdir}",
+                    "{path}",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+                out_ext: "csv".to_string(),
+                then: None,
+            },
+            ..DocConverters::defaults()
+        },
+        ..cat()
+    };
+    let (content, notice) = render_document(&renderers, &doc, DocKind::Xlsx, Caps::default());
+    assert!(
+        flatten(&content).contains("XLSXBODY"),
+        "the written temp-file output must be read back and rendered"
+    );
+    assert!(
+        notice.is_none(),
+        "a working temp-file converter leaves no notice: {notice:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_stage_tempfile_converter_extracts_the_produced_file() {
+    // The pptx shape: stage 1 writes an intermediate file (`<stem>.pdf`), stage 2 (`then`) extracts
+    // its text to stdout. Here stage 1 writes a file and `then` = `cat {tmpfile}` stands in for
+    // pdftotext — proving the produced file is piped through the extractor to the pane.
+    let dir = tmpdir("twostage");
     let doc = dir.join("deck.pptx");
     std::fs::write(&doc, b"PK\x03\x04 (fake pptx)").unwrap();
     let renderers = Renderers {
@@ -556,8 +598,7 @@ fn tempfile_converter_reads_back_the_written_output() {
                 argv: [
                     "sh",
                     "-c",
-                    // $1 = {outdir}, $2 = {path}. Write "<stem>.txt" holding PPTXBODY.
-                    "printf 'PPTXBODY' > \"$1/$(basename \"$2\" .pptx).txt\"",
+                    "printf 'SLIDE-TEXT' > \"$1/$(basename \"$2\" .pptx).pdf\"",
                     "sh",
                     "{outdir}",
                     "{path}",
@@ -565,7 +606,8 @@ fn tempfile_converter_reads_back_the_written_output() {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-                out_ext: "txt".to_string(),
+                out_ext: "pdf".to_string(),
+                then: Some(vec!["cat".to_string(), "{tmpfile}".to_string()]),
             },
             ..DocConverters::defaults()
         },
@@ -573,12 +615,40 @@ fn tempfile_converter_reads_back_the_written_output() {
     };
     let (content, notice) = render_document(&renderers, &doc, DocKind::Pptx, Caps::default());
     assert!(
-        flatten(&content).contains("PPTXBODY"),
-        "the written temp-file output must be read back and rendered"
+        flatten(&content).contains("SLIDE-TEXT"),
+        "the produced file must be piped through the second-stage extractor"
     );
     assert!(
         notice.is_none(),
-        "a working temp-file converter leaves no notice: {notice:?}"
+        "a working two-stage converter leaves no notice: {notice:?}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tempfile_converter_that_writes_nothing_is_a_failure_not_empty() {
+    // LibreOffice exits 0 even when it writes no output (missing export filter). A converter that
+    // produces no file must surface a notice + placeholder, never a silent empty pane.
+    let dir = tmpdir("nooutput");
+    let doc = dir.join("deck.pptx");
+    std::fs::write(&doc, b"PK\x03\x04").unwrap();
+    let renderers = Renderers {
+        documents: DocConverters {
+            pptx: Converter::TempFile {
+                // `true` succeeds (exit 0) but writes nothing — the "no export filter" shape.
+                argv: vec!["true".to_string()],
+                out_ext: "pdf".to_string(),
+                then: Some(vec!["cat".to_string(), "{tmpfile}".to_string()]),
+            },
+            ..DocConverters::defaults()
+        },
+        ..cat()
+    };
+    let (content, notice) = render_document(&renderers, &doc, DocKind::Pptx, Caps::default());
+    assert!(
+        flatten(&content).contains("could not render"),
+        "no converter output → placeholder"
+    );
+    assert!(notice.is_some(), "no converter output → a notice");
     let _ = std::fs::remove_dir_all(&dir);
 }

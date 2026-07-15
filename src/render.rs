@@ -272,14 +272,20 @@ pub fn render_document(
     kind: DocKind,
     caps: Caps,
 ) -> (Text<'static>, Option<String>) {
-    let timeout = renderers.timeout;
-    // 1. Convert the document to intermediate text: markdown (pandoc) or plain text / CSV
-    //    (pdftotext, LibreOffice). `{path}`/`{outdir}` tokens are substituted with real paths.
+    // 1. Convert the document to intermediate text: markdown (pandoc) or plain text / CSV / PDF
+    //    (pdftotext, LibreOffice). `{path}`/`{outdir}`/`{tmpfile}` tokens get real paths. The
+    //    converter runs under a more generous bound than the interactive delegates below — a
+    //    LibreOffice cold start alone can outlast glow's few-second timeout.
     let converted = match renderers.documents.for_kind(kind) {
         // Stdout converters (pandoc, pdftotext): the path is an argv arg, nothing on stdin.
-        Converter::Stdout(argv) => run_renderer(&subst_path(argv, path), "", timeout),
-        // Temp-file converters (LibreOffice): write into a private temp dir, then read it back.
-        Converter::TempFile { argv, out_ext } => run_tempfile(argv, out_ext, path, timeout),
+        Converter::Stdout(argv) => run_renderer(&subst_path(argv, path), "", DOC_CONVERT_TIMEOUT),
+        // Temp-file converters (LibreOffice): write into a private temp dir; either read the
+        // produced file back (`then` None) or run a second extractor over it (`then` Some).
+        Converter::TempFile {
+            argv,
+            out_ext,
+            then,
+        } => run_tempfile(argv, out_ext, then.as_deref(), path, DOC_CONVERT_TIMEOUT),
     };
     let intermediate = match converted {
         Ok(text) => text,
@@ -296,15 +302,22 @@ pub fn render_document(
     let trunc = over.map(|_| "⚠ Truncated: converted document exceeds the size cap.".to_string());
     // 3. Render the intermediate through the markdown delegate (glow) — headings/lists/tables for
     //    pandoc output, readable plain text otherwise. A missing glow degrades to plain text, and
-    //    either way `to_text` neutralizes the converter output (AC-27).
+    //    either way `to_text` neutralizes the converter output (AC-27). The interactive delegate
+    //    keeps the normal (shorter) renderer timeout.
     delegate(
         &renderers.markdown,
         &bounded,
         ViewMode::RenderedMarkdown,
-        timeout,
+        renderers.timeout,
         trunc,
     )
 }
+
+/// Converters (especially a LibreOffice cold start that spins up a fresh user profile) routinely
+/// outlast the interactive `RENDER_TIMEOUT` used for glow/delta/bat. Give document conversion its
+/// own, more generous wall-clock bound; the render of the *converted* text still uses the normal
+/// renderer timeout.
+const DOC_CONVERT_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Substitute the `{path}` token in a converter argv with the (absolute, root-confined) file path.
 fn subst_path(argv: &[String], path: &Path) -> Vec<String> {
@@ -313,11 +326,16 @@ fn subst_path(argv: &[String], path: &Path) -> Vec<String> {
 }
 
 /// Run a temp-file converter (LibreOffice): substitute `{path}`/`{outdir}`, run it in a fresh
-/// private temp dir, then read back the `<stem>.<out_ext>` file it wrote. The temp dir is removed
-/// best-effort afterward. The converter's own stdout is ignored (it writes a file).
+/// private temp dir, and produce the intermediate text. If `then` is `None` the `<stem>.<out_ext>`
+/// file it wrote is read back directly (Calc → CSV); if `then` is `Some`, that extractor is run
+/// over the produced file (`{tmpfile}`) and its stdout is the result (Impress → PDF → pdftotext).
+/// The temp dir is removed best-effort afterward. LibreOffice exits `0` even when it writes nothing
+/// (e.g. "no export filter"), so a missing output file is treated as a conversion failure rather
+/// than trusting the exit status.
 fn run_tempfile(
     argv: &[String],
     out_ext: &str,
+    then: Option<&[String]>,
     path: &Path,
     timeout: Duration,
 ) -> Result<String, RendererError> {
@@ -336,16 +354,34 @@ fn run_tempfile(
         .iter()
         .map(|a| a.replace("{path}", &p).replace("{outdir}", &out))
         .collect();
-    let run = run_renderer(&cmd, "", timeout);
-    let read = run.and_then(|_stdout| {
+    let result = run_renderer(&cmd, "", timeout).and_then(|_stdout| {
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
         let produced = dir.join(format!("{stem}.{out_ext}"));
-        std::fs::read_to_string(&produced).map_err(|e| RendererError::Failed {
-            detail: format!("read converted output: {e}"),
-        })
+        // The converter exited 0 but may have written nothing (LibreOffice does this on a missing
+        // export filter). Surface that as a failure, not a silent empty pane.
+        if !produced.is_file() {
+            return Err(RendererError::Failed {
+                detail: format!("converter produced no .{out_ext} output"),
+            });
+        }
+        match then {
+            // Read the produced text file directly.
+            None => std::fs::read_to_string(&produced).map_err(|e| RendererError::Failed {
+                detail: format!("read converted output: {e}"),
+            }),
+            // Run the second-stage extractor over the produced file (e.g. pdftotext on the PDF).
+            Some(extractor) => {
+                let tf = produced.to_string_lossy();
+                let cmd2: Vec<String> = extractor
+                    .iter()
+                    .map(|a| a.replace("{tmpfile}", &tf))
+                    .collect();
+                run_renderer(&cmd2, "", timeout)
+            }
+        }
     });
     let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup, regardless of outcome
-    read
+    result
 }
 
 /// Return a copy of a markdown renderer command (e.g. glow) with its wrap width set to `width`:

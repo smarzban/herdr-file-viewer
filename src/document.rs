@@ -8,8 +8,9 @@
 //!
 //! Two converter output shapes exist because the best-in-class tools differ:
 //!   * `pandoc` (docx/odt) and `pdftotext` (pdf) write the converted text to **stdout**.
-//!   * `libreoffice` (pptx/xlsx) only writes a **file**, so its converter runs in a temp dir and
-//!     the viewer reads the output back.
+//!   * `libreoffice` (pptx/xlsx) only writes a **file**, so its converter runs in a private temp
+//!     dir; the produced file is either read back directly (Calc → CSV) or handed to a second
+//!     extractor (Impress has no text-export filter, so it writes a PDF that `pdftotext` reads).
 //!
 //! Unlike the stdin-fed markdown/diff/syntax renderers, a document converter is handed the file
 //! **path** (these tools can't take a binary office file on stdin). The path is already confined
@@ -35,9 +36,16 @@ pub enum Converter {
     /// from the process's **stdout**. For converters that stream (pandoc, pdftotext).
     Stdout(Vec<String>),
     /// Run `argv` (with `{path}` and `{outdir}` tokens replaced); the converter writes
-    /// `<file-stem>.<out_ext>` into `{outdir}`, which the viewer then reads. For converters that
-    /// only emit a file (LibreOffice).
-    TempFile { argv: Vec<String>, out_ext: String },
+    /// `<file-stem>.<out_ext>` into `{outdir}`. Then:
+    ///   * `then: None` — read that file back as text (Calc → CSV).
+    ///   * `then: Some(cmd)` — run `cmd` (with `{tmpfile}` → the produced file) and take its
+    ///     **stdout**. For formats LibreOffice can't export as text directly: Impress (pptx) has
+    ///     no text filter, so it exports a PDF here and `then` = `pdftotext` extracts it.
+    TempFile {
+        argv: Vec<String>,
+        out_ext: String,
+        then: Option<Vec<String>>,
+    },
 }
 
 impl DocKind {
@@ -91,42 +99,48 @@ pub struct DocConverters {
 
 impl DocConverters {
     /// The shipped defaults. docx/odt → pandoc GitHub-flavored markdown (rendered by glow like any
-    /// markdown); pdf → pdftotext with `-layout` (keeps columns readable); pptx/xlsx → LibreOffice
-    /// into a temp dir (plain text / CSV), read back and rendered.
+    /// markdown); pdf → pdftotext with `-layout` (keeps columns readable); xlsx → LibreOffice Calc
+    /// → CSV; pptx → LibreOffice Impress → **PDF** → pdftotext (Impress has no direct text export).
+    ///
+    /// The LibreOffice invocations pin a private `-env:UserInstallation` under the per-invocation
+    /// temp dir (`{outdir}`) so a converting viewer never collides with an already-open LibreOffice
+    /// or a second concurrent conversion (the classic "another instance is running" failure).
     pub fn defaults() -> DocConverters {
         let s = |args: &[&str]| Converter::Stdout(args.iter().map(|s| s.to_string()).collect());
-        let tf = |args: &[&str], ext: &str| Converter::TempFile {
-            argv: args.iter().map(|s| s.to_string()).collect(),
-            out_ext: ext.to_string(),
+        // A LibreOffice `--convert-to <fmt>` command with a private, per-invocation profile.
+        let lo = |fmt: &str| -> Vec<String> {
+            [
+                "libreoffice",
+                "-env:UserInstallation=file://{outdir}/lo-profile",
+                "--headless",
+                "--convert-to",
+                fmt,
+                "--outdir",
+                "{outdir}",
+                "{path}",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
         };
+        let extract =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|s| s.to_string()).collect() };
         DocConverters {
             docx: s(&["pandoc", "{path}", "-t", "gfm"]),
             odt: s(&["pandoc", "{path}", "-t", "gfm"]),
             pdf: s(&["pdftotext", "-layout", "{path}", "-"]),
-            pptx: tf(
-                &[
-                    "libreoffice",
-                    "--headless",
-                    "--convert-to",
-                    "txt",
-                    "--outdir",
-                    "{outdir}",
-                    "{path}",
-                ],
-                "txt",
-            ),
-            xlsx: tf(
-                &[
-                    "libreoffice",
-                    "--headless",
-                    "--convert-to",
-                    "csv",
-                    "--outdir",
-                    "{outdir}",
-                    "{path}",
-                ],
-                "csv",
-            ),
+            // Impress has no text/CSV export filter, so export a PDF and extract it with pdftotext.
+            pptx: Converter::TempFile {
+                argv: lo("pdf"),
+                out_ext: "pdf".to_string(),
+                then: Some(extract(&["pdftotext", "-layout", "{tmpfile}", "-"])),
+            },
+            // Calc exports CSV directly, so read the produced file back as text.
+            xlsx: Converter::TempFile {
+                argv: lo("csv"),
+                out_ext: "csv".to_string(),
+                then: None,
+            },
         }
     }
 
@@ -192,7 +206,7 @@ mod tests {
         let d = DocConverters::defaults();
         for kind in [DocKind::Pptx, DocKind::Xlsx] {
             match d.for_kind(kind) {
-                Converter::TempFile { argv, out_ext } => {
+                Converter::TempFile { argv, out_ext, .. } => {
                     assert!(
                         argv.iter().any(|a| a == "{path}"),
                         "{kind:?} needs {{path}}"
@@ -204,6 +218,49 @@ mod tests {
                     assert!(!out_ext.is_empty(), "{kind:?} needs an output extension");
                 }
                 Converter::Stdout(_) => panic!("{kind:?} should be a temp-file converter"),
+            }
+        }
+    }
+
+    #[test]
+    fn pptx_exports_pdf_then_extracts_it_but_xlsx_reads_csv_directly() {
+        // Impress has no text/CSV export, so pptx must be a two-stage pipeline (→ PDF, then a
+        // `{tmpfile}` extractor); Calc exports CSV directly, so xlsx is a single stage (`then` None).
+        let d = DocConverters::defaults();
+        match d.for_kind(DocKind::Pptx) {
+            Converter::TempFile { out_ext, then, .. } => {
+                assert_eq!(out_ext, "pdf", "pptx must export a PDF");
+                let then = then.as_ref().expect("pptx needs a text-extraction stage");
+                assert!(
+                    then.iter().any(|a| a == "{tmpfile}"),
+                    "extractor needs {{tmpfile}}"
+                );
+                assert_eq!(then[0], "pdftotext", "pptx PDF is extracted by pdftotext");
+            }
+            Converter::Stdout(_) => panic!("pptx should be a temp-file converter"),
+        }
+        match d.for_kind(DocKind::Xlsx) {
+            Converter::TempFile { then, .. } => {
+                assert!(
+                    then.is_none(),
+                    "xlsx reads its CSV directly, no second stage"
+                )
+            }
+            Converter::Stdout(_) => panic!("xlsx should be a temp-file converter"),
+        }
+    }
+
+    #[test]
+    fn libreoffice_converters_pin_a_private_profile() {
+        // Without a per-invocation UserInstallation, a conversion collides with an already-open
+        // LibreOffice ("another instance is running"). Both LO converters must pin one.
+        let d = DocConverters::defaults();
+        for kind in [DocKind::Pptx, DocKind::Xlsx] {
+            if let Converter::TempFile { argv, .. } = d.for_kind(kind) {
+                assert!(
+                    argv.iter().any(|a| a.starts_with("-env:UserInstallation=")),
+                    "{kind:?} must pin a private LibreOffice profile"
+                );
             }
         }
     }
