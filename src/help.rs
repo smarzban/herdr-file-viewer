@@ -250,6 +250,7 @@ pub fn settings_text(
          reveal            = {reveal}\n\
          hide_dotfiles     = {hide_dotfiles}\n\
          update_check      = {update_check}\n\
+         confirm_discard   = {confirm_discard}\n\
          scroll_lines      = {scroll_lines}\n\
          tree_width        = {tree_width}\n\
          tree_position     = {tree_position}\n\
@@ -268,6 +269,7 @@ pub fn settings_text(
         tree_width = eff.tree_width,
         tree_position = eff.tree_position.label(),
         tree_max_cols = eff.tree_max_cols,
+        confirm_discard = if eff.confirm_discard { "on" } else { "off" },
         preview_max_lines = eff.preview_max_lines,
         preview_max_kib = eff.preview_max_kib,
     )
@@ -757,6 +759,7 @@ mod tests {
             reveal: None,
             hide_dotfiles: true,
             update_check: false,
+            confirm_discard: false,
             scroll_lines: 7,
             tree_width: 25,
             tree_position: crate::config::TreePosition::Right,
@@ -1048,6 +1051,7 @@ mod tests {
             ("toggle_wrap", "View & layout"),
             ("refresh", "Git & filters"),
             ("open_with_app", "Open & copy"),
+            ("add_annotation", "Annotations"),
             ("open_finder", "Search & jump"),
             ("close", "Session"),
         ] {
@@ -1141,6 +1145,31 @@ mod tests {
             refresh_row.contains("(custom)"),
             "the row is still a custom binding:\n{refresh_row}"
         );
+    }
+
+    #[test]
+    fn keybindings_text_shows_displaced_annotation_actions_as_unbound() {
+        let mut keys: BTreeMap<String, KeySpec> = BTreeMap::new();
+        keys.insert("refresh".to_string(), KeySpec::One("a".to_string()));
+        keys.insert("show_help".to_string(), KeySpec::One("A".to_string()));
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        assert!(outcome.is_empty());
+
+        let text = keybindings_text(input::registry(), &bindings, &outcome);
+        for name in ["add_annotation", "show_annotations"] {
+            let row = text
+                .lines()
+                .find(|line| line.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("missing {name} row:\n{text}"));
+            assert!(
+                row.contains("(unbound)"),
+                "a config-owned default must leave {name} visibly unbound:\n{row}"
+            );
+            assert!(
+                !row.contains("(custom)"),
+                "the displaced annotation action itself was not customized:\n{row}"
+            );
+        }
     }
 
     // AC-16: an outcome carrying a rejected entry surfaces a leading ignored-bindings status line

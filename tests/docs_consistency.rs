@@ -47,6 +47,7 @@ fn config_example_documents_every_config_key() {
         "reveal",
         "hide_dotfiles",
         "update_check",
+        "confirm_discard",
         "scroll_lines",
         "tree_width",
         "tree_position",
@@ -212,6 +213,7 @@ fn configuration_doc_documents_config_file() {
         "reveal",
         "hide_dotfiles",
         "update_check",
+        "confirm_discard",
     ] {
         assert!(
             CONFIG_DOC.contains(key),

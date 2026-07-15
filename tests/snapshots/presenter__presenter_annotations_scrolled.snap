@@ -1,0 +1,16 @@
+---
+source: tests/presenter.rs
+expression: out
+---
+"┌r─────────────────────────────┐┌main.rs───────────────────────────────────────┐"
+"│ ┌Annotations (24)──────────────────────────────────────────────────────────┐ │"
+"│M│                                                                          │ │"
+"│ │ src/file-16.rs:17 — note 16                                              │ │"
+"│A│ src/file-17.rs:18 — note 17                                              │ │"
+"│ │ src/file-18.rs:19 — note 18                                              │ │"
+"│D│ src/file-19.rs:20 — note 19                                              │ │"
+"│?│ src/file-20.rs:21 — note 20                                              │ │"
+"│ │ src/file-21.rs:22 — note 21                                              │ │"
+"│ │                                                                          │ │"
+"│ └──↑↓/j/k move · Enter/e edit · d delete · D clear · y copy · Esc/q close──┘ │"
+"└──────────────────────────────┘└annotations: 24─────────────────────────? help┘"

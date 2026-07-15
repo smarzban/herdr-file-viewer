@@ -21,6 +21,7 @@
 //! (the bottom prompt), `mouse` (column/tree pointer handling), and `git_apply`. This module keeps
 //! the type definitions, construction, the intent/poll/render core, and tree-navigation intents.
 
+mod annotation;
 mod finder;
 mod git_apply;
 mod help;
@@ -29,6 +30,7 @@ mod lineselect;
 mod mouse;
 mod picker;
 
+use crate::annotation::AnnotationStore;
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::help::{HelpSection, HelpSectionState, HelpState};
@@ -37,14 +39,17 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry,
-    PickerRowView, PickerView, ViewState,
+    AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
+    AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, DiscardConfirmView,
+    FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView, PickerView,
+    ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
+use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lineselect::LineSelectState;
 use ratatui::layout::Position;
@@ -301,6 +306,41 @@ enum Modal {
     Prompt(PromptState),
     Help(HelpState),
     LineSelect(LineSelectState),
+    Annotations(AnnotationListState),
+    AnnotationEditor(AnnotationEditorState),
+    /// The confirm raised when an action would discard unexported annotations. Carries what to do
+    /// once the user decides; the store it guards is the controller's.
+    DiscardConfirm(DiscardAction),
+}
+
+/// What a [`Modal::DiscardConfirm`] proceeds with once the user confirms: the two paths that
+/// destroy session annotations. Both clear the store, so both are guarded identically.
+#[derive(Debug, Clone)]
+pub(crate) enum DiscardAction {
+    /// Close the viewer.
+    Quit,
+    /// Re-root to an already-resolved worktree. Boxed: `Resolved` is much larger than the other
+    /// variants, and this enum lives inside every `Modal`.
+    SwitchRoot(Box<crate::root::Resolved>),
+}
+
+impl DiscardAction {
+    /// The verb shown in the confirm's key hints (`copy & quit` / `copy & switch`).
+    fn verb(&self) -> &'static str {
+        match self {
+            DiscardAction::Quit => "quit",
+            DiscardAction::SwitchRoot(_) => "switch",
+        }
+    }
+
+    /// The key that proceeds and discards: `q` mirrors the key that raised the quit confirm, and
+    /// `Enter` mirrors the picker's own confirm key for a switch.
+    fn proceed_key(&self) -> KeyCode {
+        match self {
+            DiscardAction::Quit => KeyCode::Char('q'),
+            DiscardAction::SwitchRoot(_) => KeyCode::Enter,
+        }
+    }
 }
 
 impl Modal {
@@ -368,6 +408,30 @@ impl Modal {
             _ => None,
         }
     }
+    fn annotations(&self) -> Option<&AnnotationListState> {
+        match self {
+            Modal::Annotations(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotations_mut(&mut self) -> Option<&mut AnnotationListState> {
+        match self {
+            Modal::Annotations(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotation_editor(&self) -> Option<&AnnotationEditorState> {
+        match self {
+            Modal::AnnotationEditor(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotation_editor_mut(&mut self) -> Option<&mut AnnotationEditorState> {
+        match self {
+            Modal::AnnotationEditor(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 /// The interaction orchestrator and the ephemeral session state.
@@ -377,6 +441,10 @@ pub struct Controller {
     baseline: Baseline,
     show_ignored: bool,
     hide_hidden: bool,
+    /// Whether quitting with annotations held raises the discard confirm (config
+    /// `confirm_discard`, default `true`). When `false`, `q` quits and discards, which
+    /// is the pre-confirm behavior.
+    confirm_discard: bool,
     changed_only: bool,
     /// The tree's horizontal scroll offset (columns), for reading long / deeply-nested rows. Like
     /// the cursor it is navigation state: reset on a re-root (AC-13), not carried.
@@ -475,6 +543,8 @@ pub struct Controller {
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
     action_notice: Option<String>,
+    /// Session-only annotations, bound to the current root and never persisted.
+    annotations: AnnotationStore,
     git: Arc<dyn GitService>,
     editor: Box<dyn EditorHandoff>,
     clipboard: Box<dyn Clipboard>,
@@ -652,6 +722,8 @@ impl Controller {
             baseline,
             show_ignored: false,
             hide_hidden: false,
+            // Defaults ON, matching the resolver: a Controller built without config still guards.
+            confirm_discard: true,
             tree_hscroll: 0,
             changed_only: false,
             focus: Focus::Tree,
@@ -676,6 +748,7 @@ impl Controller {
             content_path: None,
             content_rendering: false,
             action_notice: None,
+            annotations: AnnotationStore::new(),
             git,
             editor,
             clipboard,
@@ -817,6 +890,22 @@ impl Controller {
             return;
         }
 
+        // Past both early-returns the switch is really going to happen, so this is the first point
+        // where the annotations are genuinely at risk: a switch clears them exactly like a quit
+        // does. Guarding earlier (at the picker) would confirm for a switch that would have
+        // no-opped and lost nothing. `resolved` rides along so confirming costs no re-resolve.
+        if self.confirm_discard && !self.annotations.is_empty() {
+            self.modal = Modal::DiscardConfirm(DiscardAction::SwitchRoot(Box::new(resolved)));
+            return;
+        }
+        self.apply_re_root(resolved);
+    }
+
+    /// Perform an already-resolved, already-confirmed re-root: rebuild the root-bound services and
+    /// reset the per-root state (including clearing the annotations, whose targets belong to the old
+    /// root). Split out of [`re_root`](Self::re_root) so the discard confirm can hold the resolved
+    /// target and apply it later without re-resolving.
+    fn apply_re_root(&mut self, resolved: crate::root::Resolved) {
         // Rebuild the root-bound providers for the new root and respawn the worker. Overwriting
         // `job_tx` drops the old sender, so the old worker (holding the old git Arc + content)
         // exits; the new worker owns the new providers.
@@ -854,7 +943,13 @@ impl Controller {
         // path so the title falls back to a neutral label until the new selection's render lands
         //. `dispatch_render` below sets `content_rendering` and the loading placeholder.
         self.content_path = None;
-        self.action_notice = None;
+        let cleared_annotations = self.annotations.clear();
+        self.action_notice = (cleared_annotations > 0).then(|| {
+            format!(
+                "Cleared {cleared_annotations} annotation{} after switching root",
+                if cleared_annotations == 1 { "" } else { "s" }
+            )
+        });
         self.changed = BTreeMap::new();
         // Close whatever modal is open (one assignment, since `modal` is now a single value). A
         // re-root only fires via picker-confirm, so in practice it's the picker being torn down —
@@ -1090,6 +1185,11 @@ impl Controller {
         self.dispatch_render();
     }
 
+    /// Apply the config-driven `confirm_discard` switch. Pure in-memory wiring.
+    pub fn apply_confirm_discard(&mut self, confirm: bool) {
+        self.confirm_discard = confirm;
+    }
+
     /// Set the mouse-wheel **scroll step** from the effective config (`scroll_lines`). Called once
     /// at startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The resolver has
     /// already clamped the value to ≥ 1, so a wheel event always advances at least one line/item;
@@ -1243,6 +1343,11 @@ impl Controller {
             update_banner: self.update_banner(),
             picker: self.picker_view(),
             finder: self.finder_view(),
+            annotation_count: self.annotations.len(),
+            annotation_overview: self.annotation_overview_view(),
+            annotation_editor: self.annotation_editor_view(),
+            discard_confirm: self.discard_confirm_view(),
+            annotation_indicators: self.annotation_indicators_view(),
             // The tree's top-border title is the root directory basename; the bottom is the cached
             // current branch. The basename is empty only for a filesystem-root `/`, where
             // the Presenter falls back to "Files".
@@ -1430,10 +1535,12 @@ impl Controller {
         if self.modal.help().is_some() {
             return Effects::noop();
         }
-        // Line-select is modal too: while it is active the run loop (T-5) routes raw keys to a
-        // dedicated handler, so any non-routed intent reaching `handle` is inert — mirrors the
-        // finder/prompt/help guards above.
-        if self.modal.line_select().is_some() {
+        // Raw-key modals own every key. Defensive guards prevent a direct/test caller from
+        // leaking a globally-decoded intent to the tree or opening a second modal beneath one.
+        if self.modal.line_select().is_some()
+            || self.modal.annotations().is_some()
+            || self.modal.annotation_editor().is_some()
+        {
             return Effects::noop();
         }
         match intent {
@@ -1453,6 +1560,8 @@ impl Controller {
             Intent::RevealInFileManager => self.reveal_in_file_manager(),
             Intent::CopyRepoPath => self.copy_path(PathKind::Repo),
             Intent::CopyAbsPath => self.copy_path(PathKind::Absolute),
+            Intent::AddAnnotation => self.add_annotation(),
+            Intent::ShowAnnotations => self.show_annotations(),
             Intent::ToggleFocus => self.toggle_focus(),
             Intent::ShrinkTree => self.resize_split(-(SPLIT_STEP as i16)),
             Intent::GrowTree => self.resize_split(SPLIT_STEP as i16),
@@ -2007,11 +2116,107 @@ impl Controller {
             self.leave_host_zoom();
             return Effects::redraw();
         }
+        // Annotations are session-only, so quitting destroys them. Confirm first rather than lose
+        // work to a stray `q`. The outermost layer, after search/unzoom have had their turn.
+        // Opt out with `confirm_discard = false`.
+        if self.confirm_discard && !self.annotations.is_empty() {
+            self.modal = Modal::DiscardConfirm(DiscardAction::Quit);
+            return Effects::redraw();
+        }
         // Quitting: release any host pane zoom the viewer opened so it does not outlive the viewer.
         self.leave_host_zoom();
         Effects {
             quit: true,
             ..Default::default()
+        }
+    }
+
+    /// Quit, releasing any host pane zoom the viewer opened so it does not outlive the viewer.
+    fn quit_now(&mut self) -> Effects {
+        self.modal = Modal::None;
+        self.leave_host_zoom();
+        Effects {
+            quit: true,
+            ..Default::default()
+        }
+    }
+
+    /// Whether the discard confirm is the open modal. Drives the Presenter and the app's key
+    /// routing.
+    pub fn discard_confirm_open(&self) -> bool {
+        matches!(self.modal, Modal::DiscardConfirm(_))
+    }
+
+    /// Carry out a confirmed [`DiscardAction`], discarding the annotations with it.
+    fn proceed_with(&mut self, action: DiscardAction) -> Effects {
+        match action {
+            DiscardAction::Quit => self.quit_now(),
+            DiscardAction::SwitchRoot(resolved) => {
+                // The confirm held this target across arbitrary user think-time, and `apply_re_root`
+                // validates nothing, so re-check what `re_root` checked before committing. Without
+                // this, a worktree removed while the dialog was open would clear the annotations AND
+                // re-root the viewer to a dead path: AC-16 says a failed switch leaves every piece of
+                // state intact, and losing the notes to a switch that itself failed is precisely the
+                // loss this confirm exists to prevent.
+                self.modal = Modal::None;
+                if !resolved.root.is_dir() {
+                    self.action_notice = Some(format!(
+                        "cannot switch worktree: {} is not an accessible directory",
+                        resolved.root.display()
+                    ));
+                    return Effects::redraw();
+                }
+                // The current root can also have MOVED under us, making this a no-op switch (AC-11).
+                let target_canon = resolved
+                    .root
+                    .canonicalize()
+                    .unwrap_or_else(|_| resolved.root.clone());
+                let current_canon = self
+                    .root
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.root.clone());
+                if target_canon == current_canon {
+                    return Effects::redraw();
+                }
+                // `apply_re_root` resets the modal and clears the store itself.
+                self.apply_re_root(*resolved);
+                Effects::redraw()
+            }
+        }
+    }
+
+    /// Route the discard confirm's fixed keys: `y` copies the annotations then proceeds, the
+    /// action's own proceed key (`q` to quit, `Enter` to switch) discards them and proceeds, and
+    /// `Esc` cancels back to the viewer. Every other key is an inert no-op the modal still owns, so
+    /// nothing leaks to a global action.
+    ///
+    /// `y` only proceeds when the copy actually succeeded: proceeding on a failed clipboard write
+    /// would destroy the annotations at the exact moment the viewer promised to save them, so a
+    /// failure holds the dialog open with the error showing.
+    pub fn handle_discard_confirm_key(&mut self, key: KeyEvent) -> Effects {
+        if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
+            return Effects::noop();
+        }
+        let Modal::DiscardConfirm(action) = &self.modal else {
+            return Effects::noop();
+        };
+        let action = action.clone();
+        if key.code == action.proceed_key() {
+            return self.proceed_with(action);
+        }
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if self.copy_annotations_to_clipboard() {
+                    self.proceed_with(action)
+                } else {
+                    Effects::redraw()
+                }
+            }
+            KeyCode::Esc => {
+                self.modal = Modal::None;
+                Effects::redraw()
+            }
+            _ => Effects::noop(),
         }
     }
 

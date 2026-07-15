@@ -9,6 +9,7 @@ customize it see [configuration](configuration.md).
 - [Viewing a file](#viewing-a-file)
 - [Git awareness](#git-awareness)
 - [Navigating within a file](#navigating-within-a-file)
+- [Annotating files and ranges](#annotating-files-and-ranges)
 - [Copying paths and lines](#copying-paths-and-lines)
 - [Handing a file off](#handing-a-file-off)
 - [Switching worktree](#switching-worktree)
@@ -89,6 +90,75 @@ viewer still opens, but the status markers, filter, baseline, and diffs are degr
   type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase — a
   lowercase query matches any case; add a capital to go case-sensitive — and it works in every view
   (code, markdown, or diff). `Esc` clears it and restores your scroll.
+
+## Annotating files and ranges
+
+Annotations are read-only notes for the **current viewer session and root**. They start empty on
+launch, stay in memory only, and never modify files or git state.
+
+Annotated files show `@` in the tree's reserved prefix column (alongside any git marker) and before
+the applied content title. Unselected annotated filenames use a subtle background; line/range
+targets use the same background on extant lines in the source/content view, including a one-cell cue
+for a blank line. Rendered Markdown and diff views keep the file/title `@`, but do not color numeric
+line targets because transformed output has no trustworthy source-line mapping. Active line-select,
+mouse selection, and search highlighting take precedence: cyan replaces the persistent background,
+while the current line-select marker or current search match retains it with reversed bold emphasis.
+Closing the active state reveals the persistent annotation background again.
+
+- **Add to a file**: select a file and press `a`, type the note, then press `Enter` to save or `Esc`
+  to cancel. Directories cannot be annotated.
+- **Add to lines**: focus the content pane, press `L`, select a line/range, then press the
+  line-select-local `a`. The target is captured as a root-relative file plus the normalized
+  inclusive line/range; canceling the editor restores the exact selection.
+- **Edit, delete, or clear**: press `A` for the annotation overview. Move with `↑`/`↓` or `j`/`k`,
+  edit with `Enter`/`e`, delete one with `d`, or press uppercase `D` once to clear all immediately.
+  `Esc`/`q` closes the overview.
+- **Copy all**: press `y` in a non-empty overview. The deterministic, path/range-ordered export goes
+  through OSC 52 and the overview closes; copying does not remove annotations.
+
+Saving normalizes every run of Unicode whitespace or control characters to one ASCII space and
+trims both ends. If that leaves the note empty, the editor stays open and shows a validation error;
+the annotation is not added or changed.
+
+A worktree switch (re-root) also clears all annotations, because their targets belong to the old
+root, so it raises the same confirm quitting does (`y` copies them and switches, `Enter` switches
+and discards, `Esc` cancels the switch and stays put). A failed switch or a same-root no-op changes
+nothing and never confirms, since neither would lose anything. Closing and relaunching the viewer
+always starts with an empty annotation store.
+
+Because annotations live only for the session, anything that would discard them confirms first
+rather than losing them to a stray key: quitting (`q`) and switching worktree (`W`) both raise it.
+The dialog lists what would be lost, in the same rows the overview uses (the first eight, then
+`+N more`, so it stays glanceable on a short terminal):
+
+- **`y` copies them and continues**, which is usually where you were headed anyway: it writes the
+  same `<file-annotations>` block the overview's `y` does, so you land ready to paste. If the
+  clipboard write fails, the dialog stays open with the error rather than continuing and destroying
+  what `y` promised to save.
+- **The action's own key continues and discards them**: `q` when quitting, `Enter` when switching
+  worktree (matching the picker's own confirm key).
+- **`Esc` cancels**, returning to the viewer with the annotations intact. On a switch this cancels
+  the switch itself, not just the discard.
+
+The confirm only appears when the store is non-empty, so it never interrupts a session that did not
+use annotations. Backing out of zoom with `q` is not a quit and raises no confirm. Set
+`confirm_discard = false` in the config to skip it and discard immediately.
+
+The exact concise copy format is:
+
+```text
+<file-annotations>
+- README.md -> Clarify the fallback.
+- src/app.rs:42 -> Explain the ignored result.
+- src/controller/mod.rs:42-47 -> Why is this guarded twice?
+</file-annotations>
+```
+
+File-level entries omit the line field, so ` -> ` (not `:`) separates the reference from the note:
+the reference keeps its greppable `path:line` shape, and because `>` is escaped in both paths and
+notes, the arrow is unambiguous even when a note contains a colon. Notes and paths escape `&`, `<`,
+and `>` so the single outer wrapper cannot be spoofed; the copied block has no heading, blank lines,
+root path, or trailing newline.
 
 ## Copying paths and lines
 

@@ -72,6 +72,13 @@
 # $HERDR_FILE_VIEWER_NO_UPDATE_CHECK environment variable). Default:
 #update_check = true
 
+# Annotations (`a` / `A`) live only for the session, so both quitting (`q`) and
+# switching worktree (`W`) destroy them. By default either confirms first,
+# offering to copy them to the clipboard on the way out. Set false to skip the
+# confirm and discard immediately. It only appears when annotations are actually
+# held. Default:
+#confirm_discard = true
+
 # How many lines the mouse wheel scrolls per event (also how many items it moves
 # in the file-search list, and lines in the `?` help overlay). Can be set from 1
 # to 10 as a scale: 1 = slow, 3 = medium (default), 6 = fast, 10 = max speed.

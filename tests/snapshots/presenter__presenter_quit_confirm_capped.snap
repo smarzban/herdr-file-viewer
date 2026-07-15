@@ -1,0 +1,28 @@
+---
+source: tests/presenter.rs
+expression: out
+---
+"┌r─────────────────────────────────────┐┌main.rs───────────────────────────────────────────────────┐"
+"│  ▾ src                               ││Showing first 5000 lines (truncated)                      │"
+"│M   main.rs                           ││delta not found — showing plain diff                      │"
+"│    ▾ inner                           ││fn main() {                                               │"
+"│A     added.rs                        ││    println!("hello");                                    │"
+"│  README.md┌Discard annotations?──────────────────────────────────────────────────────┐           │"
+"│D gone.txt │                                                                          │           │"
+"│? scratch.l│ 12 annotations will be lost:                                             │           │"
+"│           │   src/app.rs:1 — note 1                                                  │           │"
+"│           │   src/app.rs:2 — note 2                                                  │           │"
+"│           │   src/app.rs:3 — note 3                                                  │           │"
+"│           │   src/app.rs:4 — note 4                                                  │           │"
+"│           │   src/app.rs:5 — note 5                                                  │           │"
+"│           │   src/app.rs:6 — note 6                                                  │           │"
+"│           │   src/app.rs:7 — note 7                                                  │           │"
+"│           │   src/app.rs:8 — note 8                                                  │           │"
+"│           │   +4 more                                                                │           │"
+"│           │                                                                          │           │"
+"│           └───────────────────y copy & quit · q quit · esc cancel────────────────────┘           │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"└──────────────────────────────────────┘└annotations: 12─────────────────────────────────────? help┘"
