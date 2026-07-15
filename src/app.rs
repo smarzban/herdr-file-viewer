@@ -1011,6 +1011,43 @@ mod tests {
     }
 
     #[test]
+    fn switch_confirm_enter_routes_before_globals() {
+        use crossterm::event::KeyCode;
+
+        // The SwitchRoot variant's proceed key is `Enter`, not `q`. Every switch_confirm_* test
+        // calls `handle_discard_confirm_key` directly, which cannot see whether the event loop's
+        // gate routes to it: an `Enter` falling through to global decoding would pass them all.
+        // That is exactly how the quit confirm shipped inert. (empanel round 1, lens-tests.)
+        let (mut controller, root) = route_controller("app-route-switch-confirm");
+        let second = tmp("app-route-switch-target");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("other.rs"), "fn other() {}\n").unwrap();
+
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+
+        controller.re_root(&second);
+        assert!(controller.discard_confirm_open(), "the switch confirmed");
+        assert!(
+            controller.annotation_raw_keys_owned(),
+            "the event loop's gate must own the switch confirm's keys too"
+        );
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Enter))
+            .expect("the switch confirm owns Enter");
+        assert!(!effects.quit, "proceeding with a switch is not a quit");
+        assert!(!controller.discard_confirm_open());
+        assert!(controller.annotations().is_empty(), "the switch proceeded");
+
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(second);
+    }
+
+    #[test]
     fn bundled_style_is_found_in_the_executables_install_tree() {
         // A binary at <root>/target/release/<bin> resolves <root>/assets/markdown-style.json,
         // so glow is pointed at the bundled palette style (not the built-in `dark`).

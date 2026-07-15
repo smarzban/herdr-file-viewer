@@ -1164,3 +1164,70 @@ fn switch_confirm_proceed_key_is_enter_not_q() {
     assert!(!fx.quit, "proceeding with a switch is not a quit");
     assert_eq!(ctrl.root(), second.path());
 }
+
+#[test]
+fn switch_confirm_re_validates_its_held_target_before_committing() {
+    // The confirm holds a resolved target across arbitrary user think-time, and `apply_re_root`
+    // validates nothing. If the worktree goes away while the dialog is open, proceeding must NOT
+    // clear the annotations or re-root to a dead path: AC-16 says a failed switch leaves state
+    // intact, and losing the notes to a switch that itself failed is the exact loss this confirm
+    // exists to prevent. (empanel round 1, gpt-5.5.)
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(first.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+
+    ctrl.re_root(second.path());
+    assert!(ctrl.discard_confirm_open(), "the switch confirmed first");
+
+    // The target disappears while the dialog is open.
+    std::fs::remove_dir_all(second.path()).unwrap();
+
+    ctrl.handle_discard_confirm_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.annotations().len(),
+        1,
+        "a failed switch must retain the annotations"
+    );
+    assert_eq!(ctrl.root(), first.path(), "and must not re-root");
+    assert!(
+        ctrl.action_notice()
+            .unwrap()
+            .contains("cannot switch worktree"),
+        "and reports the non-fatal notice"
+    );
+    assert!(!ctrl.discard_confirm_open(), "the dialog closed");
+}
+
+#[test]
+fn discard_confirm_absorbs_mouse_input() {
+    // The `Modal::DiscardConfirm` arm in handle_mouse is the only thing stopping a wheel/click from
+    // moving the tree beneath the dialog. The match is exhaustive, so moving the arm to
+    // handle_column_mouse would still compile: pin the behavior. (empanel round 1, lens-tests.)
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "source\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(dir.path(), false);
+    ctrl.set_pane_geometry(content_geometry());
+    add_file_annotation(&mut ctrl, "kept");
+    let before = ctrl.tree().selected().map(|n| n.path.clone());
+
+    ctrl.handle(Intent::Close);
+    assert!(ctrl.discard_confirm_open());
+
+    for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+        let fx = ctrl.handle_mouse(mouse(kind, 5, 3));
+        assert!(!fx.redraw, "the confirm swallows the wheel entirely");
+    }
+    let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+    assert!(!fx.redraw, "and a press");
+
+    assert!(ctrl.discard_confirm_open(), "the dialog stays open");
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path.clone()),
+        before,
+        "the tree beneath is untouched"
+    );
+}

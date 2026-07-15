@@ -1185,16 +1185,16 @@ impl Controller {
         self.dispatch_render();
     }
 
-    /// Set the mouse-wheel **scroll step** from the effective config (`scroll_lines`). Called once
-    /// at startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The resolver has
-    /// already clamped the value to ≥ 1, so a wheel event always advances at least one line/item;
-    /// storing it as `isize` lets the wheel handlers negate it for wheel-up. Affects the content
-    /// pane, the finder list, and the help overlay (not the tree, which is sign-only).
     /// Apply the config-driven `confirm_discard` switch. Pure in-memory wiring.
     pub fn apply_confirm_discard(&mut self, confirm: bool) {
         self.confirm_discard = confirm;
     }
 
+    /// Set the mouse-wheel **scroll step** from the effective config (`scroll_lines`). Called once
+    /// at startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The resolver has
+    /// already clamped the value to ≥ 1, so a wheel event always advances at least one line/item;
+    /// storing it as `isize` lets the wheel handlers negate it for wheel-up. Affects the content
+    /// pane, the finder list, and the help overlay (not the tree, which is sign-only).
     pub fn apply_scroll_lines(&mut self, lines: u16) {
         // Defensive floor at the public boundary: the resolver already clamps to >= 1, but a `0`
         // reaching here (a future caller, a direct test) would freeze wheel scrolling — guard it
@@ -2152,6 +2152,32 @@ impl Controller {
         match action {
             DiscardAction::Quit => self.quit_now(),
             DiscardAction::SwitchRoot(resolved) => {
+                // The confirm held this target across arbitrary user think-time, and `apply_re_root`
+                // validates nothing, so re-check what `re_root` checked before committing. Without
+                // this, a worktree removed while the dialog was open would clear the annotations AND
+                // re-root the viewer to a dead path: AC-16 says a failed switch leaves every piece of
+                // state intact, and losing the notes to a switch that itself failed is precisely the
+                // loss this confirm exists to prevent.
+                self.modal = Modal::None;
+                if !resolved.root.is_dir() {
+                    self.action_notice = Some(format!(
+                        "cannot switch worktree: {} is not an accessible directory",
+                        resolved.root.display()
+                    ));
+                    return Effects::redraw();
+                }
+                // The current root can also have MOVED under us, making this a no-op switch (AC-11).
+                let target_canon = resolved
+                    .root
+                    .canonicalize()
+                    .unwrap_or_else(|_| resolved.root.clone());
+                let current_canon = self
+                    .root
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.root.clone());
+                if target_canon == current_canon {
+                    return Effects::redraw();
+                }
                 // `apply_re_root` resets the modal and clears the store itself.
                 self.apply_re_root(*resolved);
                 Effects::redraw()

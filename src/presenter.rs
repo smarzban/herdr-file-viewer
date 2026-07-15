@@ -1053,22 +1053,27 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // Persistent annotation styling is the base. The existing mutually-exclusive active overlay
     // then patches over it: line-select first, ambient selection second, committed search third.
     // Cyan active highlights replace DarkGray; modifier-only current markers retain DarkGray.
-    let annotated_lines = apply_annotation_lines(
-        &state.content.lines,
-        &state.annotation_indicators.displayed_line_ranges,
-    );
+    // With no mapped ranges `apply_annotation_lines` is an identity deep-clone of the whole file,
+    // and `draw_content` runs every frame. Build it only when something can actually be styled;
+    // otherwise borrow the original, which is what the overlays did before annotations existed. Skip
+    // it and an active overlay (line-select / selection / search) deep-clones the content a SECOND
+    // time per keystroke, on a file up to `preview_max_lines` long, for users with no annotations at
+    // all. Same waste guarded in `draw_blank_annotation_cells` below.
+    let ranges = &state.annotation_indicators.displayed_line_ranges;
+    let annotated =
+        (!ranges.is_empty()).then(|| apply_annotation_lines(&state.content.lines, ranges));
+    let base: &[Line<'static>] = annotated.as_deref().unwrap_or(&state.content.lines);
     let content_text = if let Some(ls) = &state.line_select {
-        ratatui::text::Text::from(apply_line_select(&annotated_lines, ls))
+        ratatui::text::Text::from(apply_line_select(base, ls))
     } else if let Some(cs) = &state.content_selection {
-        ratatui::text::Text::from(apply_char_selection(&annotated_lines, cs))
+        ratatui::text::Text::from(apply_char_selection(base, cs))
     } else if let Some(cs) = &state.search {
-        ratatui::text::Text::from(crate::highlight::apply(
-            &annotated_lines,
-            &cs.matches,
-            cs.current,
-        ))
+        ratatui::text::Text::from(crate::highlight::apply(base, &cs.matches, cs.current))
+    } else if let Some(annotated) = annotated {
+        ratatui::text::Text::from(annotated)
     } else {
-        ratatui::text::Text::from(annotated_lines)
+        // No ranges and no overlay: exactly main's pre-annotation path.
+        state.content.clone()
     };
     let mut content =
         Paragraph::new(content_text).scroll((state.content_scroll, state.content_hscroll));

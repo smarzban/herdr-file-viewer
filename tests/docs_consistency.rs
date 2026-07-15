@@ -213,6 +213,7 @@ fn configuration_doc_documents_config_file() {
         "reveal",
         "hide_dotfiles",
         "update_check",
+        "confirm_discard",
     ] {
         assert!(
             CONFIG_DOC.contains(key),
