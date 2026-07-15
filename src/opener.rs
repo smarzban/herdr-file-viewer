@@ -546,4 +546,74 @@ mod tests {
             "empty override falls through to the default, never [path] alone",
         );
     }
+
+    // The Settings display label is a hand-written mirror of `opener_argv`'s program (+ its fixed
+    // flags). Nothing but these tests ties the two together, so pin every branch: a change to
+    // `opener_argv` that leaves the label behind makes the overlay lie about what `O`/`R` run.
+    #[test]
+    fn default_opener_display_matches_opener_argv_program_on_unix() {
+        let path = Path::new("/abs/dir/file.rs");
+        for (os, action, expected) in [
+            (OsKind::Mac, OpenAction::Open, "open"),
+            (OsKind::Mac, OpenAction::Reveal, "open -R"),
+            (OsKind::Linux, OpenAction::Open, "xdg-open"),
+            (OsKind::Linux, OpenAction::Reveal, "xdg-open"),
+        ] {
+            let shown = default_opener_display(os, action);
+            assert_eq!(shown, expected, "{os:?}/{action:?} label");
+            // The label's program must be argv[0] of what actually spawns.
+            let argv0 = opener_argv(os, action, path)[0]
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(
+                shown.split(' ').next().unwrap(),
+                argv0,
+                "{os:?}/{action:?}: label program must be argv[0] of opener_argv",
+            );
+        }
+    }
+
+    #[test]
+    fn default_opener_display_windows_mirrors_explorer_program_and_select_flag() {
+        // Windows resolves the explorer program from %SystemRoot% (absolute, non-hijackable), so
+        // the label must carry that same resolution rather than a bare name.
+        let path = Path::new("C:\\dir\\file.rs");
+        let expected_program = windows_explorer_program(system_root().as_deref())
+            .to_string_lossy()
+            .into_owned();
+
+        let open = default_opener_display(OsKind::Windows, OpenAction::Open);
+        assert_eq!(open, expected_program);
+        assert_eq!(
+            OsString::from(&open),
+            opener_argv(OsKind::Windows, OpenAction::Open, path)[0],
+            "the open label must be argv[0] of opener_argv",
+        );
+
+        let reveal = default_opener_display(OsKind::Windows, OpenAction::Reveal);
+        assert_eq!(reveal, format!("{expected_program} /select,<path>"));
+        assert!(
+            reveal.starts_with(&expected_program),
+            "the reveal label must start with the resolved explorer program: {reveal}",
+        );
+        // `/select,` is what makes Reveal reveal rather than open; the label must show it.
+        assert!(
+            opener_argv(OsKind::Windows, OpenAction::Reveal, path)[1]
+                .to_string_lossy()
+                .starts_with("/select,"),
+            "opener_argv reveal still uses the /select, flag the label advertises",
+        );
+    }
+
+    #[test]
+    fn default_opener_display_open_and_reveal_are_not_crossed() {
+        // The one mistake a per-OS label table invites: wiring Open's label to Reveal.
+        for os in [OsKind::Mac, OsKind::Windows] {
+            assert_ne!(
+                default_opener_display(os, OpenAction::Open),
+                default_opener_display(os, OpenAction::Reveal),
+                "{os:?}: Open and Reveal labels must differ",
+            );
+        }
+    }
 }

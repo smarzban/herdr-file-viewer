@@ -248,16 +248,16 @@ pub fn settings_text(
         (None, None) => "unset".to_owned(),
     };
 
-    let open = eff
-        .open
-        .as_ref()
-        .map(|argv| argv.join(" "))
-        .unwrap_or_else(|| wired.open.clone());
-    let reveal = eff
-        .reveal
-        .as_ref()
-        .map(|argv| argv.join(" "))
-        .unwrap_or_else(|| wired.reveal.clone());
+    // An EMPTY override (`open = ""` tokenizes to no args) is not an override: `CommandOpener`
+    // falls through to the per-OS default argv rather than spawning the path as a program (see
+    // `opener::with_overrides_empty_prefix_falls_through_to_the_per_os_default`). The row must
+    // report that same fallthrough, or it shows a blank value for an opener that in fact runs.
+    let opener_row = |override_argv: &Option<Vec<String>>, wired: &str| match override_argv {
+        Some(argv) if !argv.is_empty() => argv.join(" "),
+        _ => wired.to_owned(),
+    };
+    let open = opener_row(&eff.open, &wired.open);
+    let reveal = opener_row(&eff.reveal, &wired.reveal);
     let update_check = if eff.update_check { "on" } else { "off" };
     let confirm_discard = if eff.confirm_discard { "on" } else { "off" };
 
@@ -976,6 +976,78 @@ mod tests {
             assert!(
                 text.lines().any(|l| l == row),
                 "built-in default scalar row must be exactly '{row}':\n{text}"
+            );
+        }
+    }
+
+    // AC-3: with no config editor, the row shows the WIRED editor (the `$EDITOR`/platform default
+    // that would actually take the hand-off), not "unset".
+    #[test]
+    fn settings_text_falls_back_to_the_wired_editor() {
+        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let wired = SettingsWired {
+            editor: Some(std::ffi::OsString::from("vi")),
+            ..sample_wired()
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+            &wired,
+        );
+        assert!(
+            text.lines().any(|l| l == "editor            = vi"),
+            "the wired editor must show when config sets none:\n{text}"
+        );
+    }
+
+    // A configured opener replaces the per-OS label, and both rows follow their own key.
+    #[test]
+    fn settings_text_shows_configured_opener_overrides() {
+        let eff = crate::config::EffectiveSettings {
+            open: Some(vec!["myopen".to_string(), "--flag".to_string()]),
+            reveal: Some(vec!["myreveal".to_string(), "-R".to_string()]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+        for row in [
+            "open              = myopen --flag",
+            "reveal            = myreveal -R",
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "configured opener row must be exactly '{row}':\n{text}"
+            );
+        }
+    }
+
+    // An empty override (`open = ""` → no args) is NOT an override: `CommandOpener` falls through
+    // to the per-OS default argv, so the row must show that default rather than a blank value.
+    #[test]
+    fn settings_text_empty_opener_override_shows_the_wired_default() {
+        let eff = crate::config::EffectiveSettings {
+            open: Some(vec![]),
+            reveal: Some(vec![]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+        for row in [
+            "open              = xdg-open",
+            "reveal            = xdg-open",
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "an empty override must display the wired fallthrough, not a blank: '{row}':\n{text}"
             );
         }
     }

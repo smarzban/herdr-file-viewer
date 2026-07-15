@@ -96,12 +96,7 @@ pub fn run() -> io::Result<()> {
 
     // Wired values for the Settings display (AC-1..AC-4): built from the same startup resolution
     // as the live components below so the overlay shows what's actually in effect.
-    let os = current_os_kind();
-    let settings_wired = crate::help::SettingsWired {
-        editor: crate::config::effective_editor(&eff, platform_editor),
-        open: crate::opener::default_opener_display(os, crate::opener::OpenAction::Open),
-        reveal: crate::opener::default_opener_display(os, crate::opener::OpenAction::Reveal),
-    };
+    let settings_wired = settings_wired(&eff, current_os_kind(), platform_editor);
 
     // `Controller::new` now consumes `resolved` by value; `baseline` was already built from it
     // above (`git::default_baseline(&resolved)`), so moving it here is the last use.
@@ -730,6 +725,22 @@ fn bundled_style_path(exe: Option<&Path>) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// Build the [`crate::help::SettingsWired`] the Settings display reads, from the same startup
+/// resolution the live components use. Extracted from `run` (which needs a terminal) so the wiring
+/// itself is testable: the `open`/`reveal` labels must not be crossed, and the editor must follow
+/// config > `$EDITOR` > platform default.
+fn settings_wired(
+    eff: &crate::config::EffectiveSettings,
+    os: crate::opener::OsKind,
+    platform_editor: Option<std::ffi::OsString>,
+) -> crate::help::SettingsWired {
+    crate::help::SettingsWired {
+        editor: crate::config::effective_editor(eff, platform_editor),
+        open: crate::opener::default_opener_display(os, crate::opener::OpenAction::Open),
+        reveal: crate::opener::default_opener_display(os, crate::opener::OpenAction::Reveal),
+    }
+}
+
 /// The default external renderers (the documented runtime deps). Each reads the untrusted
 /// content on **stdin** (never as an argument); a missing one degrades to plain text +
 /// notice (AC-24/25). `{name}` is substituted with the sanitized file name for language
@@ -1122,6 +1133,40 @@ mod tests {
             "glow width disabled with `-w 0`: {:?}",
             r.markdown
         );
+    }
+
+    #[test]
+    fn settings_wired_maps_each_opener_to_its_own_label_and_resolves_the_editor() {
+        use crate::opener::OsKind;
+        // The wiring `run` does, minus the terminal: Open and Reveal must not be crossed, and the
+        // editor must follow config > `$EDITOR` > platform default.
+        let eff = crate::config::EffectiveSettings {
+            editor: Some(std::ffi::OsString::from("nvim")),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let w = settings_wired(&eff, OsKind::Mac, Some(std::ffi::OsString::from("vi")));
+        assert_eq!(
+            w.editor,
+            Some(std::ffi::OsString::from("nvim")),
+            "config wins"
+        );
+        assert_eq!(
+            w.open,
+            crate::opener::default_opener_display(OsKind::Mac, crate::opener::OpenAction::Open)
+        );
+        assert_eq!(
+            w.reveal,
+            crate::opener::default_opener_display(OsKind::Mac, crate::opener::OpenAction::Reveal)
+        );
+        assert_ne!(
+            w.open, w.reveal,
+            "Open and Reveal labels must not be crossed"
+        );
+
+        // No config editor: the platform default is what the row must report.
+        let bare = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let w = settings_wired(&bare, OsKind::Linux, Some(std::ffi::OsString::from("vi")));
+        assert_eq!(w.editor, Some(std::ffi::OsString::from("vi")));
     }
 
     #[test]
