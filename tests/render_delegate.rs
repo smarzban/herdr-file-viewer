@@ -16,6 +16,7 @@ fn cat() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -125,6 +126,7 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -196,6 +198,7 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -226,6 +229,7 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -258,6 +262,7 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
         diff: vec!["herdr-no-such-binary-xyz".into()], // would fail if FullDiff used it
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     };
     let full = "@@ -1,2 +1,2 @@\n fn main() {\n-    old();\n+    new();\n }";
@@ -319,6 +324,7 @@ fn a_hanging_renderer_times_out_and_falls_back() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_millis(150),
     };
     let prepared = Prepared::Full {
@@ -407,6 +413,7 @@ fn glow_markdown_wrapped_to_width_never_exceeds_it() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     };
     // A table far wider than `width` at natural layout, plus a long prose paragraph — both must be
@@ -445,4 +452,133 @@ This is a long prose paragraph that at its natural width would be wider than the
         flat.contains('│') || flat.contains('┼') || flat.contains('─'),
         "table borders present in the rendered output: {flat:?}"
     );
+}
+
+// --- Document rendering (render_document): converter → markdown/glow pipeline -------------
+//
+// Hermetic: the converters are injected stubs (`sh -c …` / a nonexistent program) and the
+// markdown delegate is `cat`, so these never depend on pandoc / pdftotext / libreoffice / glow.
+
+use herdr_file_viewer::document::{Converter, DocConverters, DocKind};
+use herdr_file_viewer::render::render_document;
+
+fn tmpdir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "hfv-doctest-{}-{}-{}",
+        std::process::id(),
+        tag,
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn stdout_converter_output_flows_through_the_markdown_delegate() {
+    // A stdout converter (pandoc-shaped): print markdown, ignoring the passed {path}. Its output
+    // must reach the pane via the markdown delegate (here `cat`).
+    let dir = tmpdir("stdout");
+    let doc = dir.join("brief.docx");
+    std::fs::write(&doc, b"PK\x03\x04 (fake docx bytes)").unwrap();
+    let renderers = Renderers {
+        documents: DocConverters {
+            docx: Converter::Stdout(
+                [
+                    "sh",
+                    "-c",
+                    "printf '# Heading\\n\\nDOCXBODY'",
+                    "sh",
+                    "{path}",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+            ..DocConverters::defaults()
+        },
+        ..cat()
+    };
+    let (content, notice) = render_document(&renderers, &doc, DocKind::Docx, Caps::default());
+    let text = flatten(&content);
+    assert!(
+        text.contains("DOCXBODY"),
+        "converter output must reach the pane: {text:?}"
+    );
+    assert!(
+        notice.is_none(),
+        "a working converter + delegate leaves no notice: {notice:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_converter_degrades_to_a_notice_not_a_crash() {
+    // A converter program that isn't on PATH: the pane shows a placeholder + a notice naming the
+    // capability, never a crash or empty pane (AC-24/25 parity for documents).
+    let dir = tmpdir("missing");
+    let doc = dir.join("brief.docx");
+    std::fs::write(&doc, b"anything").unwrap();
+    let renderers = Renderers {
+        documents: DocConverters {
+            docx: Converter::Stdout(
+                ["herdr-no-such-converter", "{path}"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            ..DocConverters::defaults()
+        },
+        ..cat()
+    };
+    let (content, notice) = render_document(&renderers, &doc, DocKind::Docx, Caps::default());
+    assert!(
+        flatten(&content).contains("could not render"),
+        "a missing converter shows a placeholder"
+    );
+    let n = notice.expect("a missing converter yields a notice");
+    assert!(
+        n.contains("pandoc"),
+        "the notice names the needed tool: {n}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tempfile_converter_reads_back_the_written_output() {
+    // A temp-file converter (libreoffice-shaped): it writes `<stem>.txt` into {outdir}; the viewer
+    // reads it back and renders it through the delegate.
+    let dir = tmpdir("tempfile");
+    let doc = dir.join("deck.pptx");
+    std::fs::write(&doc, b"PK\x03\x04 (fake pptx)").unwrap();
+    let renderers = Renderers {
+        documents: DocConverters {
+            pptx: Converter::TempFile {
+                argv: [
+                    "sh",
+                    "-c",
+                    // $1 = {outdir}, $2 = {path}. Write "<stem>.txt" holding PPTXBODY.
+                    "printf 'PPTXBODY' > \"$1/$(basename \"$2\" .pptx).txt\"",
+                    "sh",
+                    "{outdir}",
+                    "{path}",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+                out_ext: "txt".to_string(),
+            },
+            ..DocConverters::defaults()
+        },
+        ..cat()
+    };
+    let (content, notice) = render_document(&renderers, &doc, DocKind::Pptx, Caps::default());
+    assert!(
+        flatten(&content).contains("PPTXBODY"),
+        "the written temp-file output must be read back and rendered"
+    );
+    assert!(
+        notice.is_none(),
+        "a working temp-file converter leaves no notice: {notice:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

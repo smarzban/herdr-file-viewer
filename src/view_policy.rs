@@ -12,6 +12,10 @@ use std::path::PathBuf;
 pub enum ViewMode {
     /// Markdown rendered to formatted text.
     RenderedMarkdown,
+    /// A binary document (docx / pptx / xlsx / pdf / odt) converted to markdown/text by an
+    /// external converter, then rendered like markdown. The one mode a document offers — a
+    /// unified diff or a syntax view of its binary bytes would be meaningless.
+    RenderedDocument,
     /// Unified diff against the active baseline — only the changed hunks.
     Diff,
     /// Full-context diff against the active baseline: the whole file with a line-number
@@ -27,11 +31,20 @@ pub struct FileDescriptor {
     pub path: PathBuf,
     pub is_markdown: bool,
     pub is_changed: bool,
+    /// A convertible binary document (docx/pptx/xlsx/pdf/odt) — recognized by extension.
+    pub is_document: bool,
 }
 
 /// The auto-selected default view mode for a file.
+///
+/// A document wins outright: it is binary, so a diff or syntax view of its bytes is
+/// meaningless — the rendered (converted) view is the only sensible one, even when git
+/// reports it changed. Otherwise the text precedence holds: changed → diff (AC-9);
+/// else markdown → rendered (AC-8); else → syntax content (AC-10).
 pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
-    if fd.is_changed {
+    if fd.is_document {
+        ViewMode::RenderedDocument
+    } else if fd.is_changed {
         ViewMode::Diff
     } else if fd.is_markdown {
         ViewMode::RenderedMarkdown
@@ -44,6 +57,11 @@ pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
 /// also offers a full-context diff (whole file + line numbers + inline diff) right after
 /// the compact diff; markdown adds its rendered view; every file ends with syntax content.
 pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
+    // A document offers only its converted view — diffing or syntax-highlighting its binary
+    // bytes is meaningless, so the cycle key has nothing else to step to.
+    if fd.is_document {
+        return vec![ViewMode::RenderedDocument];
+    }
     let mut modes = vec![default_mode(fd)];
     let add = |modes: &mut Vec<ViewMode>, m: ViewMode| {
         if !modes.contains(&m) {
@@ -70,6 +88,42 @@ mod tests {
             path: PathBuf::from(name),
             is_markdown,
             is_changed,
+            is_document: false,
+        }
+    }
+
+    fn fd_doc(name: &str, is_changed: bool) -> FileDescriptor {
+        FileDescriptor {
+            path: PathBuf::from(name),
+            is_markdown: false,
+            is_changed,
+            is_document: true,
+        }
+    }
+
+    #[test]
+    fn document_defaults_to_rendered_document_even_when_changed() {
+        // A document is binary: its converted view is the only sensible one, so it wins over
+        // the changed→diff precedence that governs text files.
+        assert_eq!(
+            default_mode(&fd_doc("deck.pptx", false)),
+            ViewMode::RenderedDocument
+        );
+        assert_eq!(
+            default_mode(&fd_doc("brief.docx", true)),
+            ViewMode::RenderedDocument
+        );
+    }
+
+    #[test]
+    fn document_cycle_offers_only_the_rendered_document_view() {
+        // Diffing or syntax-highlighting binary bytes is meaningless, so a document's cycle
+        // has exactly one stop regardless of its changed state.
+        for changed in [true, false] {
+            assert_eq!(
+                applicable_modes(&fd_doc("sheet.xlsx", changed)),
+                vec![ViewMode::RenderedDocument]
+            );
         }
     }
 

@@ -472,6 +472,9 @@ pub fn effective_renderers(
         diff,
         full_diff,
         syntax: eff.syntax.clone().unwrap_or_else(|| base.syntax.clone()),
+        // Document converters are built-in defaults (not user-configurable in v1); carry the
+        // base's set through unchanged.
+        documents: base.documents.clone(),
         timeout: base.timeout,
     }
 }
@@ -1326,6 +1329,7 @@ mod tests {
             diff: vec!["delta".to_string()],
             full_diff: vec!["delta".to_string(), "--line-numbers".to_string()],
             syntax: vec!["bat".to_string(), "-".to_string()],
+            documents: crate::document::DocConverters::defaults(),
             timeout: std::time::Duration::from_secs(2),
         }
     }

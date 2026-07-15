@@ -412,6 +412,27 @@ impl ContentProvider for LiveContent {
         raw_diff: Option<&str>,
         width: Option<u16>,
     ) -> RenderResult {
+        // A document (docx/pptx/xlsx/pdf/odt) is binary, so `classify` would reject it as
+        // `Binary` — instead it renders via a path-based converter (→ markdown/text → glow),
+        // dispatched here before the classify path. Width is threaded to glow exactly as for
+        // rendered markdown so the converted content wraps to the pane.
+        if mode == ViewMode::RenderedDocument
+            && let Some(kind) = crate::document::DocKind::from_path(path)
+        {
+            let renderers = match width.filter(|w| *w > 0) {
+                Some(w) => Renderers {
+                    markdown: render::with_wrap_width(&self.renderers.markdown, w),
+                    ..self.renderers.clone()
+                },
+                None => self.renderers.clone(),
+            };
+            let (content, notice) = render::render_document(&renderers, path, kind, self.caps);
+            return RenderResult {
+                content,
+                notices: notice.into_iter().collect(),
+                source: None,
+            };
+        }
         // Both diff modes render from git's diff text, not the file bytes — so a deleted or
         // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
         // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
@@ -750,6 +771,7 @@ fn default_renderers() -> Renderers {
             "--file-name={name}".into(),
             "-".into(),
         ],
+        documents: crate::document::DocConverters::defaults(),
         timeout: RENDER_TIMEOUT,
     }
 }
@@ -1150,6 +1172,7 @@ mod tests {
                 diff: vec!["cat".into()],
                 full_diff: vec!["cat".into()],
                 syntax: vec!["cat".into()],
+                documents: crate::document::DocConverters::defaults(),
                 timeout: Duration::from_secs(5),
             },
             caps: Caps::default(),
@@ -1172,6 +1195,7 @@ mod tests {
                 diff: vec!["cat".into()],
                 full_diff: vec!["cat".into()],
                 syntax: vec!["cat".into()],
+                documents: crate::document::DocConverters::defaults(),
                 timeout: Duration::from_secs(5),
             },
             // A 50-line cap the default would never apply — proves the injected cap is what bites.

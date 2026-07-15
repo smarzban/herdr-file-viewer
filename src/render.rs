@@ -5,15 +5,16 @@
 //! sequences (AC-27), and delegates styling to external CLIs with a plain-text fallback
 //! (AC-24/25). Reads only, never writes (AC-N1).
 
+use crate::document::{Converter, DocKind};
 use crate::view_policy::ViewMode;
 use ansi_to_tui::IntoText;
 use ratatui::text::Text;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The default preview line cap — mirror of [`crate::config::DEFAULT_PREVIEW_MAX_LINES`]. Used by
 /// [`Caps::default`] so a config-absent run behaves exactly as before; a config test keeps the two
@@ -180,6 +181,11 @@ pub struct Renderers {
     /// show a line-number gutter, so the file's lines are numbered with the diff shown inline.
     pub full_diff: Vec<String>,
     pub syntax: Vec<String>,
+    /// The per-kind converters for binary documents (docx/odt/pdf/pptx/xlsx). Held here (not
+    /// hard-coded in [`render_document`]) so tests inject stubs, the same hermeticity rule the
+    /// stdin renderers above follow. Each is optional at runtime: a missing converter tool
+    /// degrades to a notice, never a crash.
+    pub documents: crate::document::DocConverters,
     /// Per-invocation wall-clock bound; a renderer exceeding it is killed and the plain-
     /// text fallback is used, so a wedged delegate can never hang rendering.
     pub timeout: Duration,
@@ -244,7 +250,102 @@ pub fn render(
             base_notice,
         ),
         ViewMode::Diff | ViewMode::FullDiff => unreachable!("handled above"),
+        // Documents don't flow through `classify`/`Prepared` (they're binary); they render via
+        // the separate path-based [`render_document`], dispatched before this by the caller.
+        ViewMode::RenderedDocument => {
+            unreachable!("documents render via render_document, not render")
+        }
     }
+}
+
+/// Render a binary document by converting it to text and rendering that like markdown.
+///
+/// Unlike the stdin-fed renderers, the converter is handed the file **path** (pandoc / pdftotext /
+/// LibreOffice can't take a binary office file on stdin). The path is already confined to the tree
+/// root by the caller (`classify`'s root check governs the same selection), and the converter's
+/// output is re-neutralized by [`to_text`] before display — so the trust boundary holds. A missing
+/// converter tool, or a conversion failure/timeout, degrades to a short notice (never a crash or an
+/// empty pane), exactly like the markdown/diff/syntax delegates (AC-24/25).
+pub fn render_document(
+    renderers: &Renderers,
+    path: &Path,
+    kind: DocKind,
+    caps: Caps,
+) -> (Text<'static>, Option<String>) {
+    let timeout = renderers.timeout;
+    // 1. Convert the document to intermediate text: markdown (pandoc) or plain text / CSV
+    //    (pdftotext, LibreOffice). `{path}`/`{outdir}` tokens are substituted with real paths.
+    let converted = match renderers.documents.for_kind(kind) {
+        // Stdout converters (pandoc, pdftotext): the path is an argv arg, nothing on stdin.
+        Converter::Stdout(argv) => run_renderer(&subst_path(argv, path), "", timeout),
+        // Temp-file converters (LibreOffice): write into a private temp dir, then read it back.
+        Converter::TempFile { argv, out_ext } => run_tempfile(argv, out_ext, path, timeout),
+    };
+    let intermediate = match converted {
+        Ok(text) => text,
+        Err(err) => {
+            let cap = format!("{} ({})", kind.label(), kind.tool());
+            return (
+                Text::raw(format!("[{}: could not render]", kind.label())),
+                Some(err.notice(&cap)),
+            );
+        }
+    };
+    // 2. Bound the converted text to the size caps (a huge doc can't blow up the pane, AC-13).
+    let (bounded, over) = cap_preview(&intermediate, caps);
+    let trunc = over.map(|_| "⚠ Truncated: converted document exceeds the size cap.".to_string());
+    // 3. Render the intermediate through the markdown delegate (glow) — headings/lists/tables for
+    //    pandoc output, readable plain text otherwise. A missing glow degrades to plain text, and
+    //    either way `to_text` neutralizes the converter output (AC-27).
+    delegate(
+        &renderers.markdown,
+        &bounded,
+        ViewMode::RenderedMarkdown,
+        timeout,
+        trunc,
+    )
+}
+
+/// Substitute the `{path}` token in a converter argv with the (absolute, root-confined) file path.
+fn subst_path(argv: &[String], path: &Path) -> Vec<String> {
+    let p = path.to_string_lossy();
+    argv.iter().map(|a| a.replace("{path}", &p)).collect()
+}
+
+/// Run a temp-file converter (LibreOffice): substitute `{path}`/`{outdir}`, run it in a fresh
+/// private temp dir, then read back the `<stem>.<out_ext>` file it wrote. The temp dir is removed
+/// best-effort afterward. The converter's own stdout is ignored (it writes a file).
+fn run_tempfile(
+    argv: &[String],
+    out_ext: &str,
+    path: &Path,
+    timeout: Duration,
+) -> Result<String, RendererError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir: PathBuf =
+        std::env::temp_dir().join(format!("hfv-doc-{}-{}", std::process::id(), nanos));
+    std::fs::create_dir_all(&dir).map_err(|e| RendererError::Failed {
+        detail: format!("temp dir: {e}"),
+    })?;
+    let p = path.to_string_lossy();
+    let out = dir.to_string_lossy();
+    let cmd: Vec<String> = argv
+        .iter()
+        .map(|a| a.replace("{path}", &p).replace("{outdir}", &out))
+        .collect();
+    let run = run_renderer(&cmd, "", timeout);
+    let read = run.and_then(|_stdout| {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+        let produced = dir.join(format!("{stem}.{out_ext}"));
+        std::fs::read_to_string(&produced).map_err(|e| RendererError::Failed {
+            detail: format!("read converted output: {e}"),
+        })
+    });
+    let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup, regardless of outcome
+    read
 }
 
 /// Return a copy of a markdown renderer command (e.g. glow) with its wrap width set to `width`:
@@ -396,6 +497,7 @@ fn capability(mode: ViewMode) -> &'static str {
         ViewMode::FullDiff => "Full-file diff",
         ViewMode::RenderedMarkdown => "Markdown",
         ViewMode::SyntaxContent => "Syntax",
+        ViewMode::RenderedDocument => "Document",
     }
 }
 
