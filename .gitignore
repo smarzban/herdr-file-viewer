@@ -26,6 +26,7 @@ AGENTS.local.md
 # tracked/public and intentionally NOT ignored here.
 /HANDOFF.md
 /specs/
+/docs/specs/
 /docs/adr/
 /docs/manual-verification.md
 /.agent-sdlc/
