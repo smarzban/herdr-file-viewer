@@ -136,6 +136,8 @@ customized).
 | | `reveal_in_file_manager` | `R` | Reveal the selected entry in the OS file manager |
 | | `copy_repo_path` | `y` | Copy the selected node's repo-relative path to the clipboard |
 | | `copy_abs_path` | `Y` | Copy the selected node's absolute path to the clipboard |
+| **Annotations** | `add_annotation` | `a` | Add an in-memory annotation for the selected file |
+| | `show_annotations` | `A` | Open the session annotation overview |
 | **Search & jump** | `open_finder` | `f` | Open the go-to-file fuzzy finder |
 | | `open_go_to_line` | `:` | Open the go-to-line prompt |
 | | `open_search` | `/` | Open the in-file search prompt |
@@ -147,26 +149,32 @@ customized).
 | | `close` | `q`, `Esc` | Close the viewer and return to the prior pane |
 
 `Esc` always closes the viewer even if you rebind `close` — that floor can't be rebound away (see
-below). Keys handled inside a modal (the finder query, the `:` / `/` prompt, line-select mode) are
-fixed and not remappable.
+below). Keys handled inside a modal are fixed and not remappable. That includes line-select `a`
+(add an annotation for the selected line/range), annotation-editor `←`/`→`/`Home`/`End`/`Enter`/`Esc`,
+and annotation-overview `j`/`k`/arrows, `Enter`/`e`, `d`, uppercase `D`, `y`, `Esc`/`q`, as well as
+the finder and `:` / `/` prompts. Remapping a global action never changes these local modal keys.
 
 **Bindable keys** are the modifier-free surface the viewer already uses: any printable or shifted
-character (`g`, `<`, `?`, and capitals such as `W` are each their own key), plus the named keys
+character (`g`, `<`, `?`, and capitals such as `A`, `D`, and `W` are each their own key), plus the named keys
 `Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Backspace`,
 `Delete`, `Insert`, and `F1` through `F12` (named keys are matched case-insensitively). There are
 **no `Ctrl` / `Alt` chords**: a chord never fires a viewer action, so terminal combinations like
 `Ctrl+C` always pass straight through.
 
 **Precedence is `config > default`:** a `[keys]` value replaces the action's built-in keys, and any
-action you don't list keeps its defaults. The load is defensive and never crashes the viewer: an
+action you don't list keeps its defaults unless an explicit binding claims one of those default
+keys. For example, `refresh = "a"` keeps `a` for Refresh and leaves `add_annotation` unbound;
+`show_help = "A"` similarly leaves `show_annotations` unbound. The Keybindings help section shows
+such displaced actions as `(unbound)` rather than stealing the user's configured key. The load is
+defensive and never crashes the viewer: an
 unknown intent name, an unbindable key, or two actions claiming the same key is ignored for those
 entries only (their defaults are kept). Invalid TOML in the config (a syntax error, or a wrong-typed
 value such as `refresh = 42`) is the same whole-file fallback the rest of the config uses: the viewer
 ignores the entire file and falls back to built-in defaults, and the `?` overlay flags that the
 config was malformed. Whatever you configure, **`Esc` always closes** the viewer: that floor cannot be
 rebound away, so you can never strand yourself (you may still move the `q` Close key or any other
-action). Only the global keys are remappable; keys handled inside a modal (the finder query, the
-`:` / `/` prompt, line-select mode) keep their own keys.
+action). Only the global keys are remappable; keys handled inside a modal (including line-select
+and the annotation editor/overview) keep their fixed keys.
 
 See your bindings in effect any time in the `?` help overlay's **Keybindings** section. It groups
 the actions into sections and shows, for each, its config-var name (the `[keys]` id you type to

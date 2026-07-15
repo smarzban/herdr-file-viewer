@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Added
+- Session-only file and line/range annotations, with persistent tree/title/source-line indicators, stable dialogs, an overview for edit/delete/clear-all, and exact clipboard export. → [usage](docs/usage.md#annotating-files-and-ranges)
+
 ## [1.12.0] - 2026-07-13
 
 ### Added

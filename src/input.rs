@@ -2,8 +2,8 @@
 //!
 //! Keyboard-complete: every viewer function has at least one key. Unbound keys are a no-op
 //! (`None`). Char bindings fire only with no active modifier, so a chord like Ctrl+C (the
-//! terminal interrupt) never trips an intent. No key yields an editing action — the closed
-//! [`Intent`] set has none (AC-N3).
+//! terminal interrupt) never trips an intent. No key yields a file/git mutation action; annotation
+//! actions edit session-only in-memory state (AC-N3).
 
 use crate::config::KeySpec;
 use crate::intent::Intent;
@@ -131,6 +131,7 @@ pub(crate) const CATEGORY_ORDER: &[&str] = &[
     "View & layout",
     "Git & filters",
     "Open & copy",
+    "Annotations",
     "Search & jump",
     "Session",
 ];
@@ -252,6 +253,20 @@ pub(crate) const REGISTRY: &[Binding] = &[
         default_keys: &[KeyCode::Char('Y')],
         description: "Copy the selected node's absolute path to the clipboard.",
         category: "Open & copy",
+    },
+    Binding {
+        intent: Intent::AddAnnotation,
+        name: "add_annotation",
+        default_keys: &[KeyCode::Char('a')],
+        description: "Add an in-memory annotation for the selected file.",
+        category: "Annotations",
+    },
+    Binding {
+        intent: Intent::ShowAnnotations,
+        name: "show_annotations",
+        default_keys: &[KeyCode::Char('A')],
+        description: "Open the session annotation overview.",
+        category: "Annotations",
     },
     Binding {
         intent: Intent::ToggleFocus,
@@ -688,6 +703,8 @@ mod tests {
         (KeyCode::Char('R'), Intent::RevealInFileManager),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
+        (KeyCode::Char('a'), Intent::AddAnnotation),
+        (KeyCode::Char('A'), Intent::ShowAnnotations),
         (KeyCode::Char('W'), Intent::SwitchWorktree),
         (KeyCode::Tab, Intent::ToggleFocus),
         (KeyCode::Char('<'), Intent::ShrinkTree),
@@ -993,6 +1010,34 @@ mod tests {
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
             None
+        );
+    }
+
+    #[test]
+    fn annotation_defaults_are_unique_and_shift_capital_a_opens_overview() {
+        let owners_of = |key| {
+            registry()
+                .iter()
+                .filter(|binding| binding.default_keys.contains(&key))
+                .map(|binding| binding.intent)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(owners_of(KeyCode::Char('a')), [Intent::AddAnnotation]);
+        assert_eq!(owners_of(KeyCode::Char('A')), [Intent::ShowAnnotations]);
+        assert_eq!(map_key(k(KeyCode::Char('a'))), Some(Intent::AddAnnotation));
+        assert_eq!(
+            map_key(k(KeyCode::Char('A'))),
+            Some(Intent::ShowAnnotations)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some(Intent::ShowAnnotations),
+            "A with the SHIFT bit set still maps to ShowAnnotations"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-A must not fire an annotation action"
         );
     }
 
@@ -1401,6 +1446,37 @@ mod tests {
         assert!(!b.is_customized(Intent::NavDown));
     }
 
+    #[test]
+    fn annotation_actions_support_normal_remapping() {
+        let (bindings, outcome) =
+            resolve_with(&[("add_annotation", one("g")), ("show_annotations", one("G"))]);
+        assert!(outcome.is_empty());
+        assert_eq!(
+            dec(&bindings, KeyCode::Char('g')),
+            Some(Intent::AddAnnotation)
+        );
+        assert_eq!(
+            dec(&bindings, KeyCode::Char('G')),
+            Some(Intent::ShowAnnotations)
+        );
+        assert_eq!(dec(&bindings, KeyCode::Char('a')), None);
+        assert_eq!(dec(&bindings, KeyCode::Char('A')), None);
+        assert!(bindings.is_customized(Intent::AddAnnotation));
+        assert!(bindings.is_customized(Intent::ShowAnnotations));
+    }
+
+    #[test]
+    fn explicit_config_claims_displace_annotation_defaults_without_stealing() {
+        let (bindings, outcome) = resolve_with(&[("refresh", one("a")), ("show_help", one("A"))]);
+        assert!(outcome.is_empty());
+        assert_eq!(dec(&bindings, KeyCode::Char('a')), Some(Intent::Refresh));
+        assert_eq!(dec(&bindings, KeyCode::Char('A')), Some(Intent::ShowHelp));
+        assert!(bindings.keys_for(Intent::AddAnnotation).is_empty());
+        assert!(bindings.keys_for(Intent::ShowAnnotations).is_empty());
+        assert!(!bindings.is_customized(Intent::AddAnnotation));
+        assert!(!bindings.is_customized(Intent::ShowAnnotations));
+    }
+
     // --- T-8 docs consistency: the keys reference `## Keys` table stays in sync with the registry (AC-21) ---
 
     /// The keys-reference source (`docs/keys.md`), compiled in so a drift between the registry and
@@ -1422,18 +1498,21 @@ mod tests {
         let end = rest.find("\n## ").unwrap_or(rest.len());
         let keys_section = &rest[..end];
 
-        // Per action, require AT LEAST ONE of its default keys to appear as a backtick-wrapped
-        // label (e.g. `` `k` ``). Rationale: an action with an arrow default (nav_up = [Up, k]) is
-        // written in the table with the glyph `↑`, not the word `Up`, so a literal `Up` check
-        // would fail spuriously; but every such action ALSO carries a letter key (`k`) whose
-        // backtick form IS in the table. A per-action "at least one key documented" check is
-        // therefore robust to the glyph-vs-name spelling AND still catches a NEW registry action
-        // that has no README row at all (none of its keys would appear).
+        // Inspect ONLY Markdown table key cells, never action text or prose. This prevents a local
+        // line-select `a` mentioned in an Action cell from falsely documenting the global
+        // add_annotation binding. Arrow defaults use glyphs in the docs, but each arrow-backed
+        // action also has a letter default, so requiring any backtick-wrapped default remains valid.
+        let key_cells: Vec<&str> = keys_section
+            .lines()
+            .filter(|line| line.trim_start().starts_with('|'))
+            .filter_map(|line| line.split('|').nth(1))
+            .map(str::trim)
+            .collect();
         for binding in registry() {
-            let documented = binding
-                .default_keys
-                .iter()
-                .any(|&code| keys_section.contains(&format!("`{}`", key_label(code))));
+            let documented = binding.default_keys.iter().any(|&code| {
+                let needle = format!("`{}`", key_label(code));
+                key_cells.iter().any(|cell| cell.contains(&needle))
+            });
             assert!(
                 documented,
                 "the docs/keys.md `## Keys` table documents no key for `{}` (intent {:?}); expected a \

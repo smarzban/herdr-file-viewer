@@ -7,8 +7,8 @@
 //! via the hook `ratatui::try_init` installs.
 
 use crate::controller::{
-    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
+    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, Effects,
+    GitService, RenderResult, RootProviders,
 };
 use crate::editor::{EditorLauncher, SpawnError, Spawner};
 use crate::git::{self, Baseline, Status};
@@ -184,6 +184,22 @@ pub fn run() -> io::Result<()> {
     outcome
 }
 
+/// Route annotation-modal raw keys before configurable global decoding. Returning `Some` means
+/// the modal consumed ownership even when the particular key is an inert no-op, so no printable or
+/// fixed modal key can leak to a global quit/editor/copy action.
+fn route_annotation_key(
+    controller: &mut Controller,
+    key: crossterm::event::KeyEvent,
+) -> Option<Effects> {
+    if controller.annotation_list().is_some() {
+        Some(controller.handle_annotations_key(key))
+    } else if controller.annotation_editor().is_some() {
+        Some(controller.handle_annotation_editor_key(key))
+    } else {
+        None
+    }
+}
+
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat
 /// until the Close intent. Drawing only when `dirty` avoids re-walking the filesystem (the
 /// tree enumeration in `view_state`) on every idle tick.
@@ -259,6 +275,23 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     if key.kind == KeyEventKind::Press && controller.line_select_active() =>
                 {
                     let fx = controller.handle_line_select_key(key);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
+                    }
+                    if fx.quit {
+                        return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
+                // Annotation overview/editor keys are fixed modal controls/raw text. Route them
+                // before global decoding so `q`, `e`, `d`, `D`, `y`, and remapped printables cannot
+                // trigger viewer actions beneath the modal.
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && controller.annotation_modal_open() =>
+                {
+                    let fx = route_annotation_key(controller, key)
+                        .expect("an open annotation modal has a raw-key route");
                     if fx.clear {
                         let _ = terminal.clear();
                         dirty = true;
@@ -756,6 +789,172 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[derive(Default)]
+    struct RouteGit;
+
+    impl GitService for RouteGit {
+        fn status(&self) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+
+        fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+
+        fn diff(&self, _path: &Path, _baseline: Baseline, _full_context: bool) -> String {
+            String::new()
+        }
+    }
+
+    struct RouteContent;
+
+    impl ContentProvider for RouteContent {
+        fn render(&self, _path: &Path, _mode: ViewMode, _diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: ratatui::text::Text::raw("body"),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+
+    struct RouteEditor;
+
+    impl EditorHandoff for RouteEditor {
+        fn open(&mut self, _file: &Path) -> EditorOutcome {
+            EditorOutcome::NoTakeover
+        }
+    }
+
+    struct RouteClipboard;
+
+    impl Clipboard for RouteClipboard {
+        fn copy(&mut self, _text: &str) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn route_controller(tag: &str) -> (Controller, PathBuf) {
+        let root = tmp(tag);
+        std::fs::write(root.join("note.rs"), "fn main() {}\n").unwrap();
+        let resolved = crate::root::Resolved {
+            root: root.clone(),
+            is_git_repo: false,
+            repo_root: None,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let controller = Controller::new(
+            resolved,
+            Baseline::Head,
+            Components {
+                providers: Box::new(|_| RootProviders {
+                    git: Arc::new(RouteGit),
+                    content: Box::new(RouteContent),
+                }),
+                editor: Box::new(RouteEditor),
+                clipboard: Box::new(RouteClipboard),
+                renderers: None,
+            },
+        );
+        (controller, root)
+    }
+
+    fn route_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn annotation_editor_raw_printables_route_before_global_decoding() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut controller, root) = route_controller("app-route-editor");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        assert!(controller.annotation_editor().is_some());
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            controller
+                .view_state()
+                .annotation_editor
+                .expect("validation stays in the projected editor")
+                .error
+                .as_deref(),
+            Some("Annotation text cannot be empty")
+        );
+
+        for key in [
+            route_key(KeyCode::Char('q')),
+            route_key(KeyCode::Char('e')),
+            route_key(KeyCode::Char('d')),
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
+            route_key(KeyCode::Char('y')),
+        ] {
+            let effects = route_annotation_key(&mut controller, key).expect("editor owns raw key");
+            assert!(
+                !effects.quit,
+                "a printable modal key cannot leak to global quit"
+            );
+        }
+        assert_eq!(controller.annotation_editor().unwrap().text(), "qedDy");
+        let view = controller.view_state();
+        let editor = view.annotation_editor.expect("typed editor projection");
+        assert_eq!(editor.text, "qedDy");
+        assert_eq!(editor.target.path, PathBuf::from("note.rs"));
+        assert_eq!(editor.kind, crate::presenter::AnnotationEditorKind::Add);
+        assert!(view.annotation_overview.is_none());
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn annotation_overview_fixed_keys_route_before_globals_and_project_owned_rows() {
+        use crossterm::event::KeyCode;
+
+        let (mut controller, root) = route_controller("app-route-overview");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+        controller.handle(crate::intent::Intent::ShowAnnotations);
+
+        let view = controller.view_state();
+        assert_eq!(view.annotation_count, 1);
+        let overview = view.annotation_overview.expect("owned overview projection");
+        assert_eq!(overview.cursor, 0);
+        assert_eq!(overview.rows.len(), 1);
+        assert_eq!(overview.rows[0].target.path, PathBuf::from("note.rs"));
+        assert_eq!(overview.rows[0].note, "note");
+
+        route_annotation_key(&mut controller, route_key(KeyCode::Char('e')))
+            .expect("fixed edit key is routed to the overview");
+        let editor = controller
+            .view_state()
+            .annotation_editor
+            .expect("edit projection");
+        assert_eq!(editor.kind, crate::presenter::AnnotationEditorKind::Edit);
+        assert_eq!(editor.text, "note");
+        route_annotation_key(&mut controller, route_key(KeyCode::Esc))
+            .expect("editor cancel returns to overview");
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('d')))
+            .expect("overview owns fixed delete");
+        assert!(effects.redraw && !effects.quit);
+        assert!(controller.annotations().is_empty());
+        assert!(controller.annotation_list().is_some());
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('q')))
+            .expect("overview owns fixed close");
+        assert!(effects.redraw && !effects.quit, "q closes only the modal");
+        assert!(!controller.annotation_modal_open());
+        assert!(
+            route_annotation_key(&mut controller, route_key(KeyCode::Char('q'))).is_none(),
+            "without an annotation modal the key proceeds to normal global decoding"
+        );
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

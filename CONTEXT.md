@@ -74,6 +74,12 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   source-mapped **view mode** (auto-switches to it from rendered markdown / diff).
 - **line marker**: the visible indicator of the currently selected line inside
   **line-select mode**; moved by `j`/`k`, arrows, or a mouse click.
+- **annotation**: a normalized, non-empty note kept only in the current viewer session and
+  attached to one **annotation target**; it never changes the target file or git state.
+- **annotation target**: an immutable root-relative file plus, optionally, a normalized
+  inclusive 1-based line/range captured from **line-select mode**.
+- **annotation overview**: the keyboard modal that lists the current root's **annotations**
+  in deterministic order and provides edit, delete, clear-all, and copy-all actions.
 - **opener**: an injected external command that hands the selected entry off to the
   host OS; the read-only external-effect seam shared by **open with default app** and
   **reveal in file manager**, modeled on the editor launcher. Non-blocking (fire-and-

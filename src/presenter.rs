@@ -7,11 +7,12 @@
 //!
 //! Pure view: takes a [`ViewState`] and draws it; holds no state and performs no I/O.
 
+use crate::annotation::LineRange;
 use crate::git::Status;
-use crate::text_layout::sanitize_control;
+use crate::text_layout::{line_wrapped_rows_prefixed, sanitize_control};
 use crate::tree::{Node, NodeKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -101,6 +102,15 @@ pub struct ViewState {
     /// When `Some`, the go-to-file finder overlay is drawn on top of the columns (AC-1).
     /// `None` ⇒ no overlay.
     pub finder: Option<FinderView>,
+    /// Number of session-only annotations for the current root. A nonzero count is shown as a
+    /// content-border status chip when it fits opposite the persistent help hint.
+    pub annotation_count: usize,
+    /// Owned annotation-overview draw model, or `None` while that modal is closed.
+    pub annotation_overview: Option<AnnotationOverviewView>,
+    /// Owned add/edit annotation draw model, or `None` while that modal is closed.
+    pub annotation_editor: Option<AnnotationEditorView>,
+    /// Owned file/source-line indicator projection for the current root and applied content.
+    pub annotation_indicators: AnnotationIndicatorsView,
     /// When `Some`, a one-row prompt is drawn across the very bottom of the viewer showing the active
     /// in-file-nav prompt (e.g. `Go to line: 42`). `None` ⇒ no prompt open. The Controller builds the
     /// display string (label + buffer) so the Presenter stays mode-agnostic. (AC-1)
@@ -236,6 +246,55 @@ pub struct FinderView {
     pub hscroll: u16,
 }
 
+/// Owned, typed persistent-indicator projection for the pure Presenter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnnotationIndicatorsView {
+    /// Absolute tree-file paths with one or more annotations (visible or currently collapsed).
+    pub annotated_files: std::collections::BTreeSet<std::path::PathBuf>,
+    /// Whether the applied `content_path` has one or more annotations.
+    pub displayed_file_annotated: bool,
+    /// Sorted, merged source-line ranges for the applied source-mapped file.
+    pub displayed_line_ranges: Vec<LineRange>,
+}
+
+/// Owned, typed target projection shared by annotation rows and the editor overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationTargetView {
+    pub path: std::path::PathBuf,
+    pub lines: Option<LineRange>,
+}
+
+/// One annotation-overview row. The Presenter, not the Controller, formats the target and row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationRowView {
+    pub target: AnnotationTargetView,
+    pub note: String,
+}
+
+/// Owned annotation-overview draw model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationOverviewView {
+    pub rows: Vec<AnnotationRowView>,
+    pub cursor: usize,
+}
+
+/// Whether the annotation editor is adding or editing a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationEditorKind {
+    Add,
+    Edit,
+}
+
+/// Owned annotation-editor draw model. `cursor` is a UTF-8 byte offset in `text`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationEditorView {
+    pub kind: AnnotationEditorKind,
+    pub target: AnnotationTargetView,
+    pub text: String,
+    pub cursor: usize,
+    pub error: Option<String>,
+}
+
 /// The help overlay's draw model — an owned, borrow-free snapshot of the controller's
 /// [`crate::help::HelpState`], so the Presenter holds no reference into the controller (exactly
 /// like [`FinderView`]/[`PickerView`]). Built by the Session Controller's `view_state()`.
@@ -359,35 +418,46 @@ fn row_color(node: &Node) -> Option<Color> {
 fn tree_rows_max_width(nodes: &[Node]) -> usize {
     nodes
         .iter()
-        .map(|n| tree_row(n, false).width())
+        .map(|n| tree_row(n, false, false).width())
         .max()
         .unwrap_or(0)
 }
 
-/// Render one tree row: `<marker> <indent><glyph><name>`. Indentation grows with depth so
-/// the recursion is visible (AC-3); a directory carries an expand/collapse glyph; the row is
-/// tinted by git status (AC-7).
-fn tree_row(node: &Node, selected: bool) -> Line<'static> {
+/// Persistent annotation styling is background-only so delegated syntax/git foregrounds survive.
+const ANNOTATION_STYLE: Style = Style::new().bg(Color::DarkGray);
+
+/// Render one tree row: `<git><annotation><indent><glyph><name>`. The annotation marker replaces
+/// the reserved blank prefix cell, so git coexistence and row geometry stay unchanged.
+fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
     let glyph = match node.kind {
         NodeKind::Dir if node.expanded => "▾ ",
         NodeKind::Dir => "▸ ",
         NodeKind::File => "",
     };
-    let text = format!(
-        "{} {}{}{}",
-        status_marker(node),
-        "  ".repeat(node.depth),
-        glyph,
-        sanitize_control(&node_name(node)),
-    );
-    let mut style = Style::new();
+    let annotated = annotated && node.kind == NodeKind::File;
+    let mut row_style = Style::new();
     if let Some(color) = row_color(node) {
-        style = style.fg(color);
+        row_style = row_style.fg(color);
     }
     if selected {
-        style = style.add_modifier(Modifier::REVERSED);
+        row_style = row_style.add_modifier(Modifier::REVERSED);
     }
-    Line::from(Span::styled(text, style))
+    let prefix = format!(
+        "{}{}{}{}",
+        status_marker(node),
+        if annotated { '@' } else { ' ' },
+        "  ".repeat(node.depth),
+        glyph,
+    );
+    let name_style = if annotated && !selected {
+        row_style.patch(ANNOTATION_STYLE)
+    } else {
+        row_style
+    };
+    Line::from(vec![
+        Span::styled(prefix, row_style),
+        Span::styled(sanitize_control(&node_name(node)), name_style),
+    ])
 }
 
 /// Build a [`ScrollbarState`] that places the thumb correctly for a **scroll offset** (not a list
@@ -532,6 +602,46 @@ const LINE_SELECT_MARKER: char = '▶';
 /// The gutter glyph on the selection rows other than the marker — a bar so the extent of the
 /// selection is visible in text (the rows also carry [`crate::highlight::HIGHLIGHT`]).
 const LINE_SELECT_BAR: char = '│';
+
+/// Test whether a source line is covered while advancing once through sorted, merged ranges.
+fn range_covers(ranges: &[LineRange], range_index: &mut usize, source_line: usize) -> bool {
+    while ranges
+        .get(*range_index)
+        .is_some_and(|range| range.end() < source_line)
+    {
+        *range_index += 1;
+    }
+    ranges
+        .get(*range_index)
+        .is_some_and(|range| range.start() <= source_line && source_line <= range.end())
+}
+
+/// Patch the persistent annotation background onto covered source-line spans without changing
+/// text, geometry, alignment, or delegated foreground styling.
+fn apply_annotation_lines(lines: &[Line<'static>], ranges: &[LineRange]) -> Vec<Line<'static>> {
+    let mut range_index = 0;
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if !range_covers(ranges, &mut range_index, index + 1) {
+                return line.clone();
+            }
+            Line {
+                spans: line
+                    .spans
+                    .iter()
+                    .map(|span| Span {
+                        content: span.content.clone(),
+                        style: span.style.patch(ANNOTATION_STYLE),
+                    })
+                    .collect(),
+                style: line.style,
+                alignment: line.alignment,
+            }
+        })
+        .collect()
+}
 
 /// Overlay the line-select marker + selection styling onto the content lines (read-only, AC-1/AC-7).
 ///
@@ -685,6 +795,72 @@ fn styled_run(text: &str, base: Style, selected: bool, style: Style) -> Span<'st
     Span::styled(text.to_string(), s)
 }
 
+fn blank_annotation_style(source_line: usize, state: &ViewState) -> Style {
+    if let Some(line_select) = &state.line_select {
+        if source_line == line_select.marker {
+            return ANNOTATION_STYLE.patch(crate::highlight::CURRENT_HIGHLIGHT);
+        }
+        if source_line >= line_select.start && source_line <= line_select.end {
+            return ANNOTATION_STYLE.patch(crate::highlight::HIGHLIGHT);
+        }
+    } else if state.content_selection.as_ref().is_some_and(|selection| {
+        source_line >= selection.start_line && source_line <= selection.end_line
+    }) {
+        return ANNOTATION_STYLE.patch(crate::highlight::HIGHLIGHT);
+    }
+    ANNOTATION_STYLE
+}
+
+/// Patch one bounded visible cell for each annotated source line whose rendered width is zero.
+/// Paragraph deliberately leaves those rows textually empty; this post-render pass supplies the
+/// persistent background without padding content or changing wrap/search/mouse geometry.
+fn draw_blank_annotation_cells(frame: &mut Frame, text: Rect, state: &ViewState) -> Vec<Position> {
+    if text.width == 0 || text.height == 0 {
+        return Vec::new();
+    }
+
+    let scroll = state.content_scroll as usize;
+    let visible_end = scroll.saturating_add(text.height as usize);
+    let prefix = usize::from(state.line_select.is_some());
+    let mut display_row = 0usize;
+    let mut range_index = 0usize;
+    let mut painted = Vec::with_capacity(text.height as usize);
+
+    for (index, line) in state.content.lines.iter().enumerate() {
+        let source_line = index + 1;
+        let annotated = range_covers(
+            &state.annotation_indicators.displayed_line_ranges,
+            &mut range_index,
+            source_line,
+        );
+        let line_start = display_row;
+        let rows = if state.wrap {
+            line_wrapped_rows_prefixed(line, text.width as usize, prefix)
+        } else {
+            1
+        };
+        display_row = display_row.saturating_add(rows);
+
+        if line_start >= visible_end {
+            break;
+        }
+        if !annotated || line.width() != 0 || line_start < scroll {
+            continue;
+        }
+
+        let y_offset = line_start - scroll;
+        if y_offset >= text.height as usize {
+            continue;
+        }
+        let position = Position::new(text.x, text.y + y_offset as u16);
+        if let Some(cell) = frame.buffer_mut().cell_mut(position) {
+            cell.set_style(blank_annotation_style(source_line, state));
+            painted.push(position);
+        }
+    }
+    painted
+}
+
 /// Border style for a column — highlighted when it holds focus.
 fn border_style(focused: bool) -> Style {
     if focused {
@@ -723,7 +899,16 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
         .nodes
         .iter()
         .enumerate()
-        .map(|(i, node)| tree_row(node, i == state.selected))
+        .map(|(i, node)| {
+            tree_row(
+                node,
+                i == state.selected,
+                state
+                    .annotation_indicators
+                    .annotated_files
+                    .contains(&node.path),
+            )
+        })
         .collect();
     // Reserve an in-pane gutter for whichever scrollbars are needed, then render the rows into the
     // (possibly shrunk) text rect. The vertical offset scrolls minimally from last frame's offset
@@ -788,7 +973,8 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     // directory/empty selection); in that case fall back to the selected node's name (a directory)
     // or "Content" — but only when NO render is in flight, otherwise the fallback would pick up
     // the still-loading selection's name and re-introduce the title-ahead-of-body bug.
-    let title = if let Some(name) = &state.content_title {
+    let applied_title = state.content_title.is_some();
+    let mut title = if let Some(name) = &state.content_title {
         sanitize_control(name)
     } else if !state.content_rendering {
         state
@@ -799,16 +985,28 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     } else {
         "Content".to_string()
     };
-    // A persistent `? help` hint rides the content block's bottom border, right-aligned —
-    // one short segment, sanitized (AC-27) like the other border titles, so a new user
-    // discovers the help overlay without opening it first. It shares the border
-    // row (not the layout), so it never crowds the content or steals a row.
-    let hint =
-        Line::styled(sanitize_control(HELP_HINT), Style::new().fg(Color::Reset)).right_aligned();
-    let block = content_block(state)
-        .title(title)
-        .title_bottom(hint)
-        .border_style(border_style(state.focus == Focus::Content));
+    if applied_title && state.annotation_indicators.displayed_file_annotated {
+        title.insert(0, '@');
+    }
+    // Persistent bottom-border chips: annotation count on the left (only when nonzero and it
+    // fits), help on the right. Both ride the border rather than consuming a content row. The
+    // annotation chip deliberately names no key because ShowAnnotations is configurable.
+    let hint_text = sanitize_control(HELP_HINT);
+    let hint = Line::styled(hint_text.clone(), Style::new().fg(Color::Reset)).right_aligned();
+    let annotation_chip = (state.annotation_count > 0)
+        .then(|| sanitize_control(&format!("annotations: {}", state.annotation_count)));
+    let chip_fits = annotation_chip.as_ref().is_some_and(|chip| {
+        Line::from(chip.as_str()).width() + 1 + Line::from(hint_text.as_str()).width()
+            <= area.width.saturating_sub(2) as usize
+    });
+    let mut block = content_block(state).title(title).title_bottom(hint);
+    if chip_fits {
+        block = block.title_bottom(Line::styled(
+            annotation_chip.expect("checked as present"),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    let block = block.border_style(border_style(state.focus == Focus::Content));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -833,23 +1031,25 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     let max_width = content_max_line_width(&state.content);
     let (text, vbar, hbar) = content_bars(content_area, total_rows, max_width, state.wrap);
 
-    // Overlay the line-select marker/selection first (it is a modal — search cannot be committed
-    // while it is open), then an ambient content-pane selection, then a committed search, else the
-    // content as-is. Each overlay returns the same line count, so `content_rows` (computed above
-    // from `state.content`) stays valid. When all are `None`, cloning `state.content` is
-    // byte-identical to the prior path, so existing snapshots are unaffected (AC zero-churn invariant).
+    // Persistent annotation styling is the base. The existing mutually-exclusive active overlay
+    // then patches over it: line-select first, ambient selection second, committed search third.
+    // Cyan active highlights replace DarkGray; modifier-only current markers retain DarkGray.
+    let annotated_lines = apply_annotation_lines(
+        &state.content.lines,
+        &state.annotation_indicators.displayed_line_ranges,
+    );
     let content_text = if let Some(ls) = &state.line_select {
-        ratatui::text::Text::from(apply_line_select(&state.content.lines, ls))
+        ratatui::text::Text::from(apply_line_select(&annotated_lines, ls))
     } else if let Some(cs) = &state.content_selection {
-        ratatui::text::Text::from(apply_char_selection(&state.content.lines, cs))
+        ratatui::text::Text::from(apply_char_selection(&annotated_lines, cs))
     } else if let Some(cs) = &state.search {
         ratatui::text::Text::from(crate::highlight::apply(
-            &state.content.lines,
+            &annotated_lines,
             &cs.matches,
             cs.current,
         ))
     } else {
-        state.content.clone()
+        ratatui::text::Text::from(annotated_lines)
     };
     let mut content =
         Paragraph::new(content_text).scroll((state.content_scroll, state.content_hscroll));
@@ -857,6 +1057,7 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
         content = content.wrap(Wrap { trim: false });
     }
     frame.render_widget(content, text);
+    draw_blank_annotation_cells(frame, text, state);
 
     if let Some(track) = vbar {
         draw_vscrollbar(
@@ -1223,6 +1424,14 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
     // an independent check is correct — if both are somehow set, both draw (last wins).
     if let Some(finder) = &state.finder {
         draw_finder_overlay(frame, frame.area(), finder);
+    }
+    // Annotation modals are keyboard-only overlays. They add no hit-test geometry; their owned,
+    // typed draw models contain raw fields and the Presenter formats/sanitizes them here.
+    if let Some(overview) = &state.annotation_overview {
+        draw_annotation_overview(frame, frame.area(), overview);
+    }
+    if let Some(editor) = &state.annotation_editor {
+        draw_annotation_editor(frame, frame.area(), editor);
     }
     // The in-app help overlay draws LAST — on top of the picker/finder (AC-1, AC-5).
     if let Some(help) = &state.help {
@@ -1828,6 +2037,277 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
     }
 }
 
+const ANNOTATION_OVERVIEW_FOOTER: &str =
+    "↑↓/j/k move · Enter/e edit · d delete · D clear · y copy · Esc/q close";
+const ANNOTATION_EDITOR_FOOTER: &str = "←→/Home/End move · Enter save · Esc cancel";
+const ANNOTATION_EMPTY: &str = "No annotations";
+const ANNOTATION_MODAL_MAX_INNER_W: u16 = 72;
+
+/// Render a typed annotation target as `file[:line[-line]]`. Paths use lossy UTF-8, forward
+/// separators, and the shared control sanitizer at this final untrusted-value sink.
+fn annotation_target_text(target: &AnnotationTargetView) -> String {
+    let path = target
+        .path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    let mut text = sanitize_control(&path);
+    if let Some(lines) = target.lines {
+        text.push(':');
+        text.push_str(&lines.start().to_string());
+        if lines.start() != lines.end() {
+            text.push('-');
+            text.push_str(&lines.end().to_string());
+        }
+    }
+    text
+}
+
+/// Truncate sanitized display text to `width` columns, reserving the final column for an ellipsis.
+fn truncate_display(text: &str, width: u16) -> String {
+    let width = width as usize;
+    if width == 0 {
+        return String::new();
+    }
+    if Line::from(text).width() <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let budget = width - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let char_width = Line::from(ch.to_string()).width();
+        if used.saturating_add(char_width) > budget {
+            break;
+        }
+        out.push(ch);
+        used = used.saturating_add(char_width);
+    }
+    out.push('…');
+    out
+}
+
+fn annotation_row_text(row: &AnnotationRowView) -> String {
+    format!(
+        "{} — {}",
+        annotation_target_text(&row.target),
+        sanitize_control(&row.note)
+    )
+}
+
+struct AnnotationOverviewLayout {
+    popup: Rect,
+    inner: Rect,
+    offset: usize,
+}
+
+fn annotation_overview_layout(
+    area: Rect,
+    overview: &AnnotationOverviewView,
+) -> AnnotationOverviewLayout {
+    let desired_inner_h = (overview.rows.len().max(1).min(u16::MAX as usize)) as u16;
+    let want_w = ANNOTATION_MODAL_MAX_INNER_W
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let popup = centered_rect_sized(
+        want_w.min(area.width.saturating_sub(2)),
+        want_h.min(area.height.saturating_sub(2)),
+        area,
+    );
+    let inner = modal_frame().inner(popup);
+    let offset = scroll_offset(overview.cursor, overview.rows.len(), inner.height as usize);
+    AnnotationOverviewLayout {
+        popup,
+        inner,
+        offset,
+    }
+}
+
+fn draw_annotation_overview(frame: &mut Frame, area: Rect, overview: &AnnotationOverviewView) {
+    let layout = annotation_overview_layout(area, overview);
+    let title = format!("Annotations ({})", overview.rows.len());
+    let footer = Line::styled(ANNOTATION_OVERVIEW_FOOTER, Style::new().fg(Color::Reset)).centered();
+
+    frame.render_widget(Clear, layout.popup);
+    frame.render_widget(
+        modal_frame()
+            .title_top(title)
+            .title_bottom(footer)
+            .border_style(modal_border_style()),
+        layout.popup,
+    );
+
+    if layout.inner.width == 0 || layout.inner.height == 0 {
+        return;
+    }
+    if overview.rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                ANNOTATION_EMPTY,
+                Style::new().add_modifier(Modifier::DIM),
+            )),
+            layout.inner,
+        );
+        return;
+    }
+
+    let visible = layout.inner.height as usize;
+    let rows: Vec<Line<'static>> = overview
+        .rows
+        .iter()
+        .enumerate()
+        .skip(layout.offset)
+        .take(visible)
+        .map(|(index, row)| {
+            let text = truncate_display(&annotation_row_text(row), layout.inner.width);
+            let style = if index == overview.cursor {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            Line::styled(text, style)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(rows), layout.inner);
+}
+
+struct AnnotationEditorLayout {
+    popup: Rect,
+    inner: Rect,
+}
+
+fn annotation_editor_layout(area: Rect, editor: &AnnotationEditorView) -> AnnotationEditorLayout {
+    let title = match editor.kind {
+        AnnotationEditorKind::Add => "Add annotation",
+        AnnotationEditorKind::Edit => "Edit annotation",
+    };
+    let target = format!("Target: {}", annotation_target_text(&editor.target));
+    let content_w = Line::from(target)
+        .width()
+        .max(Line::from(title).width())
+        .max(Line::from(ANNOTATION_EDITOR_FOOTER).width())
+        .min(ANNOTATION_MODAL_MAX_INNER_W as usize) as u16;
+    let body_h = 2u16.saturating_add(u16::from(editor.error.is_some()));
+    let want_w = content_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = body_h.saturating_add(2).saturating_add(PICKER_PADDING * 2);
+    let popup = centered_rect_sized(
+        want_w.min(area.width.saturating_sub(2)),
+        want_h.min(area.height.saturating_sub(2)),
+        area,
+    );
+    let inner = modal_frame().inner(popup);
+    AnnotationEditorLayout { popup, inner }
+}
+
+/// Build the one-line editor display and the horizontal offset that keeps its Unicode-safe cursor
+/// visible. Untrusted text is sanitized before it reaches spans; the cursor is clamped defensively
+/// to a UTF-8 boundary even though the controller's PromptInput already guarantees that invariant.
+fn annotation_input_line(editor: &AnnotationEditorView, width: u16) -> (Line<'static>, u16) {
+    let mut cursor = editor.cursor.min(editor.text.len());
+    while !editor.text.is_char_boundary(cursor) {
+        cursor = cursor.saturating_sub(1);
+    }
+    let left = sanitize_control(&editor.text[..cursor]);
+    let right = sanitize_control(&editor.text[cursor..]);
+    let (cursor_glyph, rest) = right.chars().next().map_or_else(
+        || (" ".to_string(), String::new()),
+        |first| {
+            let start = first.len_utf8();
+            (first.to_string(), right[start..].to_string())
+        },
+    );
+    let cursor_col = Line::from(format!("> {left}")).width();
+    let cursor_width = Line::from(cursor_glyph.as_str()).width().max(1);
+    let visible_right = width as usize;
+    let hscroll = if visible_right == 0 {
+        0
+    } else {
+        cursor_col
+            .saturating_add(cursor_width)
+            .saturating_sub(visible_right)
+            .min(u16::MAX as usize) as u16
+    };
+    (
+        Line::from(vec![
+            Span::raw(format!("> {left}")),
+            Span::styled(cursor_glyph, Style::new().add_modifier(Modifier::REVERSED)),
+            Span::raw(rest),
+        ]),
+        hscroll,
+    )
+}
+
+fn draw_annotation_editor(frame: &mut Frame, area: Rect, editor: &AnnotationEditorView) {
+    let layout = annotation_editor_layout(area, editor);
+    let title = match editor.kind {
+        AnnotationEditorKind::Add => "Add annotation",
+        AnnotationEditorKind::Edit => "Edit annotation",
+    };
+    let footer = Line::styled(ANNOTATION_EDITOR_FOOTER, Style::new().fg(Color::Reset)).centered();
+
+    frame.render_widget(Clear, layout.popup);
+    frame.render_widget(
+        modal_frame()
+            .title_top(title)
+            .title_bottom(footer)
+            .border_style(modal_border_style()),
+        layout.popup,
+    );
+    if layout.inner.width == 0 || layout.inner.height == 0 {
+        return;
+    }
+
+    let target = truncate_display(
+        &format!("Target: {}", annotation_target_text(&editor.target)),
+        layout.inner.width,
+    );
+    let target_area = Rect {
+        x: layout.inner.x,
+        y: layout.inner.y,
+        width: layout.inner.width,
+        height: 1,
+    };
+    frame.render_widget(Paragraph::new(target), target_area);
+
+    if layout.inner.height > 1 {
+        let input_area = Rect {
+            x: layout.inner.x,
+            y: layout.inner.y + 1,
+            width: layout.inner.width,
+            height: 1,
+        };
+        let (input, hscroll) = annotation_input_line(editor, input_area.width);
+        frame.render_widget(Paragraph::new(input).scroll((0, hscroll)), input_area);
+    }
+    if layout.inner.height > 2
+        && let Some(error) = &editor.error
+    {
+        let error = truncate_display(&sanitize_control(error), layout.inner.width);
+        let error_area = Rect {
+            x: layout.inner.x,
+            y: layout.inner.y + 2,
+            width: layout.inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(error, Style::new().fg(Color::Yellow))),
+            error_area,
+        );
+    }
+}
+
 /// The computed layout geometry of the help overlay, shared between [`draw_help_overlay`] and
 /// [`geometry`] so neither can drift from the other — mirroring [`FinderLayout`]/[`PickerLayout`].
 /// Both functions call [`help_overlay_layout`] and operate on the returned rects.
@@ -2129,6 +2609,188 @@ mod tests {
         // Empty range highlights nothing.
         assert_eq!(selected_text(&patch_char_range(&spans, 3, 3, hl), hl), "");
         assert_eq!(plain(&patch_char_range(&spans, 3, 3, hl)), "hello");
+    }
+
+    #[test]
+    fn annotation_overview_horizontal_geometry_ignores_row_content() {
+        let area = Rect::new(7, 3, 100, 24);
+        let short = AnnotationOverviewView {
+            rows: vec![AnnotationRowView {
+                target: AnnotationTargetView {
+                    path: "a.rs".into(),
+                    lines: None,
+                },
+                note: "short".to_string(),
+            }],
+            cursor: 0,
+        };
+        let long = AnnotationOverviewView {
+            rows: vec![AnnotationRowView {
+                target: AnnotationTargetView {
+                    path: "src/界\u{1b}[2J.rs".into(),
+                    lines: None,
+                },
+                note: format!("🙂 control\u{7} {}", "very long ".repeat(30)),
+            }],
+            cursor: 0,
+        };
+
+        let short_layout = annotation_overview_layout(area, &short);
+        let long_layout = annotation_overview_layout(area, &long);
+        assert_eq!(
+            (short_layout.popup.x, short_layout.popup.width),
+            (long_layout.popup.x, long_layout.popup.width),
+            "overview rows cannot move or resize the popup horizontally"
+        );
+        assert_eq!(short_layout.inner.width, ANNOTATION_MODAL_MAX_INNER_W);
+        assert_eq!(Line::from(ANNOTATION_OVERVIEW_FOOTER).width(), 70);
+    }
+
+    #[test]
+    fn annotation_editor_horizontal_geometry_ignores_mutable_text_and_error() {
+        let area = Rect::new(7, 3, 100, 24);
+        let target = AnnotationTargetView {
+            path: "src/界\u{1b}[2J.rs".into(),
+            lines: None,
+        };
+        let empty = AnnotationEditorView {
+            kind: AnnotationEditorKind::Add,
+            target: target.clone(),
+            text: String::new(),
+            cursor: 0,
+            error: None,
+        };
+        let long_text = AnnotationEditorView {
+            text: format!("🙂 input\u{7} {}", "very long ".repeat(30)),
+            cursor: usize::MAX,
+            ..empty.clone()
+        };
+        let with_error = AnnotationEditorView {
+            error: Some(format!("界 error\u{1b}[2J {}", "very long ".repeat(30))),
+            ..empty.clone()
+        };
+
+        let empty_layout = annotation_editor_layout(area, &empty);
+        let long_layout = annotation_editor_layout(area, &long_text);
+        let error_layout = annotation_editor_layout(area, &with_error);
+        let horizontal = |layout: &AnnotationEditorLayout| (layout.popup.x, layout.popup.width);
+        assert_eq!(horizontal(&empty_layout), horizontal(&long_layout));
+        assert_eq!(horizontal(&empty_layout), horizontal(&error_layout));
+
+        let expected_inner_w =
+            Line::from(format!("Target: {}", annotation_target_text(&empty.target)))
+                .width()
+                .max(Line::from("Add annotation").width())
+                .max(Line::from(ANNOTATION_EDITOR_FOOTER).width()) as u16;
+        assert!(expected_inner_w < ANNOTATION_MODAL_MAX_INNER_W);
+        assert_eq!(empty_layout.inner.width, expected_inner_w);
+
+        let capped = AnnotationEditorView {
+            target: AnnotationTargetView {
+                path: format!("src/{}.rs", "long".repeat(40)).into(),
+                lines: None,
+            },
+            ..empty
+        };
+        assert_eq!(
+            annotation_editor_layout(area, &capped).inner.width,
+            ANNOTATION_MODAL_MAX_INNER_W,
+            "immutable target chrome is capped by the shared modal maximum"
+        );
+    }
+
+    #[test]
+    fn annotation_layouts_clamp_stably_on_narrow_frames() {
+        let area = Rect::new(4, 6, 18, 10);
+        let target = AnnotationTargetView {
+            path: "src/界\u{1b}[2J.rs".into(),
+            lines: None,
+        };
+        let short_overview = AnnotationOverviewView {
+            rows: vec![AnnotationRowView {
+                target: target.clone(),
+                note: "short".to_string(),
+            }],
+            cursor: 0,
+        };
+        let long_overview = AnnotationOverviewView {
+            rows: vec![AnnotationRowView {
+                target: target.clone(),
+                note: format!("🙂\u{7}{}", "long".repeat(30)),
+            }],
+            cursor: 0,
+        };
+        let empty_editor = AnnotationEditorView {
+            kind: AnnotationEditorKind::Edit,
+            target: target.clone(),
+            text: String::new(),
+            cursor: 0,
+            error: None,
+        };
+        let long_editor = AnnotationEditorView {
+            text: format!("界\u{1b}[2J{}", "long".repeat(30)),
+            cursor: usize::MAX,
+            error: Some(format!("🙂\u{7}{}", "error".repeat(30))),
+            ..empty_editor.clone()
+        };
+
+        let short_layout = annotation_overview_layout(area, &short_overview);
+        let long_layout = annotation_overview_layout(area, &long_overview);
+        let empty_layout = annotation_editor_layout(area, &empty_editor);
+        let long_editor_layout = annotation_editor_layout(area, &long_editor);
+        assert_eq!(
+            (short_layout.popup.x, short_layout.popup.width),
+            (long_layout.popup.x, long_layout.popup.width)
+        );
+        assert_eq!(
+            (empty_layout.popup.x, empty_layout.popup.width),
+            (long_editor_layout.popup.x, long_editor_layout.popup.width)
+        );
+        assert_eq!(short_layout.popup.width, area.width.saturating_sub(2));
+        assert_eq!(empty_layout.popup.width, area.width.saturating_sub(2));
+    }
+
+    #[test]
+    fn annotation_layouts_are_saturating_at_zero_size() {
+        let target = AnnotationTargetView {
+            path: "src/界\u{1b}[2J.rs".into(),
+            lines: None,
+        };
+        let overview = AnnotationOverviewView {
+            rows: vec![AnnotationRowView {
+                target: target.clone(),
+                note: "🙂 note\u{7}".to_string(),
+            }],
+            cursor: usize::MAX,
+        };
+        let editor = AnnotationEditorView {
+            kind: AnnotationEditorKind::Add,
+            target,
+            text: "界\u{1b}[2J".to_string(),
+            cursor: usize::MAX,
+            error: Some("🙂 error\u{7}".to_string()),
+        };
+        let zero = Rect::default();
+        let list_layout = annotation_overview_layout(zero, &overview);
+        let editor_layout = annotation_editor_layout(zero, &editor);
+        assert_eq!(list_layout.popup, zero);
+        assert_eq!((list_layout.inner.width, list_layout.inner.height), (0, 0));
+        assert_eq!(editor_layout.popup, zero);
+        assert_eq!(
+            (editor_layout.inner.width, editor_layout.inner.height),
+            (0, 0)
+        );
+        let (line, scroll) = annotation_input_line(&editor, 0);
+        assert!(line.width() > 0, "input remains representable off-screen");
+        assert_eq!(scroll, 0, "zero-width input never underflows its scroll");
+    }
+
+    #[test]
+    fn annotation_truncation_is_unicode_column_safe() {
+        assert_eq!(truncate_display("界🙂abc", 1), "…");
+        assert_eq!(truncate_display("界🙂abc", 5), "界🙂…");
+        assert_eq!(truncate_display("界🙂abc", 7), "界🙂abc");
+        assert_eq!(truncate_display("anything", 0), "");
     }
 
     #[test]

@@ -21,6 +21,7 @@
 //! (the bottom prompt), `mouse` (column/tree pointer handling), and `git_apply`. This module keeps
 //! the type definitions, construction, the intent/poll/render core, and tree-navigation intents.
 
+mod annotation;
 mod finder;
 mod git_apply;
 mod help;
@@ -29,6 +30,7 @@ mod lineselect;
 mod mouse;
 mod picker;
 
+use crate::annotation::AnnotationStore;
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::help::{HelpSection, HelpSectionState, HelpState};
@@ -37,14 +39,16 @@ use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
 use crate::presenter::{
-    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PaneGeometry,
-    PickerRowView, PickerView, ViewState,
+    AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
+    AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, FinderView, Focus,
+    HelpView, LineSelectView, PaneGeometry, PickerRowView, PickerView, ViewState,
 };
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, UpdateState, Version};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
+use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lineselect::LineSelectState;
 use ratatui::layout::Position;
@@ -301,6 +305,8 @@ enum Modal {
     Prompt(PromptState),
     Help(HelpState),
     LineSelect(LineSelectState),
+    Annotations(AnnotationListState),
+    AnnotationEditor(AnnotationEditorState),
 }
 
 impl Modal {
@@ -365,6 +371,30 @@ impl Modal {
     fn line_select_mut(&mut self) -> Option<&mut LineSelectState> {
         match self {
             Modal::LineSelect(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotations(&self) -> Option<&AnnotationListState> {
+        match self {
+            Modal::Annotations(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotations_mut(&mut self) -> Option<&mut AnnotationListState> {
+        match self {
+            Modal::Annotations(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotation_editor(&self) -> Option<&AnnotationEditorState> {
+        match self {
+            Modal::AnnotationEditor(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn annotation_editor_mut(&mut self) -> Option<&mut AnnotationEditorState> {
+        match self {
+            Modal::AnnotationEditor(s) => Some(s),
             _ => None,
         }
     }
@@ -475,6 +505,8 @@ pub struct Controller {
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
     action_notice: Option<String>,
+    /// Session-only annotations, bound to the current root and never persisted.
+    annotations: AnnotationStore,
     git: Arc<dyn GitService>,
     editor: Box<dyn EditorHandoff>,
     clipboard: Box<dyn Clipboard>,
@@ -676,6 +708,7 @@ impl Controller {
             content_path: None,
             content_rendering: false,
             action_notice: None,
+            annotations: AnnotationStore::new(),
             git,
             editor,
             clipboard,
@@ -854,7 +887,13 @@ impl Controller {
         // path so the title falls back to a neutral label until the new selection's render lands
         //. `dispatch_render` below sets `content_rendering` and the loading placeholder.
         self.content_path = None;
-        self.action_notice = None;
+        let cleared_annotations = self.annotations.clear();
+        self.action_notice = (cleared_annotations > 0).then(|| {
+            format!(
+                "Cleared {cleared_annotations} annotation{} after switching root",
+                if cleared_annotations == 1 { "" } else { "s" }
+            )
+        });
         self.changed = BTreeMap::new();
         // Close whatever modal is open (one assignment, since `modal` is now a single value). A
         // re-root only fires via picker-confirm, so in practice it's the picker being torn down —
@@ -1243,6 +1282,10 @@ impl Controller {
             update_banner: self.update_banner(),
             picker: self.picker_view(),
             finder: self.finder_view(),
+            annotation_count: self.annotations.len(),
+            annotation_overview: self.annotation_overview_view(),
+            annotation_editor: self.annotation_editor_view(),
+            annotation_indicators: self.annotation_indicators_view(),
             // The tree's top-border title is the root directory basename; the bottom is the cached
             // current branch. The basename is empty only for a filesystem-root `/`, where
             // the Presenter falls back to "Files".
@@ -1430,10 +1473,12 @@ impl Controller {
         if self.modal.help().is_some() {
             return Effects::noop();
         }
-        // Line-select is modal too: while it is active the run loop (T-5) routes raw keys to a
-        // dedicated handler, so any non-routed intent reaching `handle` is inert — mirrors the
-        // finder/prompt/help guards above.
-        if self.modal.line_select().is_some() {
+        // Raw-key modals own every key. Defensive guards prevent a direct/test caller from
+        // leaking a globally-decoded intent to the tree or opening a second modal beneath one.
+        if self.modal.line_select().is_some()
+            || self.modal.annotations().is_some()
+            || self.modal.annotation_editor().is_some()
+        {
             return Effects::noop();
         }
         match intent {
@@ -1453,6 +1498,8 @@ impl Controller {
             Intent::RevealInFileManager => self.reveal_in_file_manager(),
             Intent::CopyRepoPath => self.copy_path(PathKind::Repo),
             Intent::CopyAbsPath => self.copy_path(PathKind::Absolute),
+            Intent::AddAnnotation => self.add_annotation(),
+            Intent::ShowAnnotations => self.show_annotations(),
             Intent::ToggleFocus => self.toggle_focus(),
             Intent::ShrinkTree => self.resize_split(-(SPLIT_STEP as i16)),
             Intent::GrowTree => self.resize_split(SPLIT_STEP as i16),

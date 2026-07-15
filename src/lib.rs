@@ -3,6 +3,7 @@
 //! A library crate (the testable components) plus a thin binary (`src/main.rs` → [`run`]).
 //! Modules are added by each plan task as it lands.
 
+pub mod annotation;
 pub mod app;
 pub mod config;
 pub mod context;

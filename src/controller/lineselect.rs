@@ -664,6 +664,12 @@ impl Controller {
             KeyCode::Enter => {
                 return self.copy_line_reference(); // AC-9: the reference, as shipped
             }
+            // Line-select-local `a`: snapshot this exact selection (including character-mode
+            // carets), derive its covering line range, and replace the modal with the annotation
+            // editor. Esc in that editor restores this snapshot; save returns to normal mode.
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
+                return self.add_annotation_for_line_selection();
+            }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 return self.copy_line_content(); // the content — the PR #78 addition
             }

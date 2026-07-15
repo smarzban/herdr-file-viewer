@@ -1,10 +1,12 @@
 //! Presenter: two-column layout, recursive tree display, status markers, notices.
 //! AC-3 (display), AC-7 (display), AC-13 (truncation notice), AC-25 (fallback notice).
 
+use herdr_file_viewer::annotation::LineRange;
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
-    CharSelView, ContentSearch, FinderView, Focus, HelpView, LineSelectView, PickerRowView,
-    PickerView, ViewState, draw,
+    AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
+    AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, FinderView, Focus,
+    HelpView, LineSelectView, PickerRowView, PickerView, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -86,6 +88,10 @@ fn sample_state() -> ViewState {
         update_banner: None,
         picker: None,
         finder: None,
+        annotation_count: 0,
+        annotation_overview: None,
+        annotation_editor: None,
+        annotation_indicators: AnnotationIndicatorsView::default(),
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
         prompt: None,
@@ -1021,6 +1027,25 @@ fn render_buffer(state: &ViewState, w: u16, h: u16) -> ratatui::buffer::Buffer {
         })
         .unwrap();
     terminal.backend().buffer().clone()
+}
+
+fn find_cell(buf: &ratatui::buffer::Buffer, needle: &str) -> (u16, u16) {
+    let (w, h) = (buf.area().width, buf.area().height);
+    for y in 0..h {
+        for x in 0..w {
+            let matches = needle.chars().enumerate().all(|(i, ch)| {
+                let cx = x + i as u16;
+                cx < w
+                    && buf
+                        .cell((cx, y))
+                        .is_some_and(|cell| cell.symbol() == ch.to_string())
+            });
+            if matches {
+                return (x, y);
+            }
+        }
+    }
+    panic!("{needle:?} not found in buffer");
 }
 
 /// The foreground color of the first cell where `needle` begins in the buffer.
@@ -3609,4 +3634,710 @@ fn loading_state_snapshot_while_a_render_is_in_flight() {
     state.content_title = None;
     state.content_rendering = true;
     insta::assert_snapshot!("presenter_loading", render(&state, 100, 24));
+}
+
+// ── Persistent annotation indicators ──────────────────────────────────
+
+fn annotation_content_state(
+    lines: Vec<ratatui::text::Line<'static>>,
+    ranges: Vec<LineRange>,
+) -> ViewState {
+    let mut state = sample_state();
+    state.notices.clear();
+    state.zoomed = true;
+    state.focus = Focus::Content;
+    state.content_rows = lines.len().min(u16::MAX as usize) as u16;
+    state.content = ratatui::text::Text::from(lines);
+    state.annotation_indicators.displayed_file_annotated = true;
+    state.annotation_indicators.displayed_line_ranges = ranges;
+    state
+}
+
+#[test]
+fn annotation_tree_markers_preserve_git_width_foregrounds_and_selection_style() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Modifier};
+
+    let mut state = sample_state();
+    state.notices.clear();
+    state.nodes = vec![
+        node("/r/clean.rs", NodeKind::File, 0, false, None),
+        node(
+            "/r/modified.rs",
+            NodeKind::File,
+            0,
+            false,
+            Some(Status::Modified),
+        ),
+        node("/r/selected.rs", NodeKind::File, 0, false, None),
+    ];
+    state.selected = 2;
+    for node in &state.nodes {
+        state
+            .annotation_indicators
+            .annotated_files
+            .insert(node.path.clone());
+    }
+
+    let area = Rect::new(0, 0, 100, 12);
+    let annotated_width = geometry(area, &state).tree_content_width;
+    let buf = render_buffer(&state, 100, 12);
+    for (name, git, foreground) in [
+        ("clean.rs", " ", Color::Reset),
+        ("modified.rs", "M", Color::LightRed),
+    ] {
+        let (x, y) = find_cell(&buf, name);
+        assert_eq!(buf.cell((x - 2, y)).unwrap().symbol(), git);
+        assert_eq!(buf.cell((x - 1, y)).unwrap().symbol(), "@");
+        assert_eq!(buf.cell((x - 1, y)).unwrap().bg, Color::Reset);
+        for offset in 0..name.len() as u16 {
+            let cell = buf.cell((x + offset, y)).unwrap();
+            assert_eq!(
+                cell.bg,
+                Color::DarkGray,
+                "filename-only annotation background"
+            );
+            assert_eq!(cell.fg, foreground, "git foreground survives");
+        }
+    }
+    let (x, y) = find_cell(&buf, "selected.rs");
+    assert_eq!(buf.cell((x - 1, y)).unwrap().symbol(), "@");
+    assert_eq!(buf.cell((x, y)).unwrap().bg, Color::Reset);
+    assert!(
+        buf.cell((x, y))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "selected rows keep the normal reversed style"
+    );
+
+    state.annotation_indicators.annotated_files.clear();
+    assert_eq!(
+        geometry(area, &state).tree_content_width,
+        annotated_width,
+        "the marker replaces a reserved prefix cell and cannot change row width"
+    );
+}
+
+#[test]
+fn annotation_applied_content_title_is_sanitized_then_marked_in_zoom_and_transformed_views() {
+    let mut state = sample_state();
+    state.notices.clear();
+    state.zoomed = true;
+    state.content_pad_left = true;
+    state.content_title = Some("ma\u{1b}[2Jin.rs".to_string());
+    state.annotation_indicators.displayed_file_annotated = true;
+    let out = render(&state, 40, 8);
+    assert!(
+        out.contains("@ma[2Jin.rs"),
+        "trusted marker follows sanitization\n{out}"
+    );
+
+    state.content_title = None;
+    state.content_rendering = true;
+    let loading = render(&state, 40, 8);
+    assert!(
+        !loading.contains("@Content"),
+        "an unapplied selection stays neutral"
+    );
+    state.content_rendering = false;
+    state.nodes[state.selected].kind = NodeKind::Dir;
+    let directory = render(&state, 40, 8);
+    assert!(
+        !directory.contains("@main.rs"),
+        "a directory fallback is never marked"
+    );
+}
+
+#[test]
+fn annotation_source_ranges_preserve_text_syntax_foreground_and_ignore_file_or_stale_ranges() {
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
+
+    let red = Style::new().fg(Color::Red);
+    let lines = vec![
+        Line::from(Span::styled("alpha", red)),
+        Line::raw("beta"),
+        Line::raw(""),
+        Line::raw("delta"),
+    ];
+    let mut state = annotation_content_state(
+        lines,
+        vec![
+            LineRange::new(1, 1).unwrap(),
+            LineRange::new(2, 3).unwrap(),
+            LineRange::new(99, 100).unwrap(),
+        ],
+    );
+    let buf = render_buffer(&state, 40, 9);
+    let (alpha_x, alpha_y) = find_cell(&buf, "alpha");
+    assert_eq!(buf.cell((alpha_x, alpha_y)).unwrap().fg, Color::Red);
+    assert_eq!(buf.cell((alpha_x, alpha_y)).unwrap().bg, Color::DarkGray);
+    let (beta_x, beta_y) = find_cell(&buf, "beta");
+    assert_eq!(buf.cell((beta_x, beta_y)).unwrap().bg, Color::DarkGray);
+    let (delta_x, delta_y) = find_cell(&buf, "delta");
+    assert_eq!(buf.cell((delta_x, delta_y)).unwrap().bg, Color::Reset);
+    let text =
+        herdr_file_viewer::presenter::geometry(ratatui::layout::Rect::new(0, 0, 40, 9), &state)
+            .content_inner
+            .unwrap();
+    let blank_y = text.y + 2;
+    let blank_cells = (text.x..text.x + text.width)
+        .filter(|&x| buf.cell((x, blank_y)).unwrap().bg == Color::DarkGray)
+        .count();
+    assert_eq!(
+        blank_cells, 1,
+        "a blank annotated source line paints one cell"
+    );
+
+    state.annotation_indicators.displayed_line_ranges.clear();
+    let file_only = render_buffer(&state, 40, 9);
+    let (x, y) = find_cell(&file_only, "alpha");
+    assert_eq!(file_only.cell((x, y)).unwrap().bg, Color::Reset);
+}
+
+#[test]
+fn annotation_blank_line_cell_tracks_horizontal_vertical_and_wrapped_rows_boundedly() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::text::Line;
+
+    let mut horizontal = annotation_content_state(
+        vec![Line::raw("x".repeat(100)), Line::raw("")],
+        vec![LineRange::new(2, 2).unwrap()],
+    );
+    horizontal.content_hscroll = 40;
+    let horizontal_area = Rect::new(0, 0, 30, 8);
+    let horizontal_text = geometry(horizontal_area, &horizontal)
+        .content_inner
+        .unwrap();
+    let horizontal_buf = render_buffer(&horizontal, 30, 8);
+    assert_eq!(
+        horizontal_buf
+            .cell((horizontal_text.x, horizontal_text.y + 1))
+            .unwrap()
+            .bg,
+        Color::DarkGray,
+        "horizontal scrolling keeps one direct-cell cue visible"
+    );
+
+    let mut vertical = annotation_content_state(
+        (1..=10)
+            .map(|line| {
+                if line == 5 {
+                    Line::raw("")
+                } else {
+                    Line::raw(format!("L{line}"))
+                }
+            })
+            .collect(),
+        vec![LineRange::new(5, 5).unwrap()],
+    );
+    vertical.content_rows = 10;
+    vertical.content_scroll = 4;
+    let vertical_area = Rect::new(0, 0, 30, 6);
+    let vertical_text = geometry(vertical_area, &vertical).content_inner.unwrap();
+    let vertical_buf = render_buffer(&vertical, 30, 6);
+    assert_eq!(
+        vertical_buf
+            .cell((vertical_text.x, vertical_text.y))
+            .unwrap()
+            .bg,
+        Color::DarkGray,
+        "vertical scroll maps source line five to the first visible row"
+    );
+
+    let mut wrapped = annotation_content_state(
+        vec![Line::raw("w".repeat(30)), Line::raw("")],
+        vec![LineRange::new(2, 2).unwrap()],
+    );
+    wrapped.wrap = true;
+    wrapped.content_rows = 3;
+    let wrapped_area = Rect::new(0, 0, 20, 8);
+    let wrapped_text = geometry(wrapped_area, &wrapped).content_inner.unwrap();
+    let wrapped_buf = render_buffer(&wrapped, 20, 8);
+    assert_eq!(
+        wrapped_buf
+            .cell((wrapped_text.x, wrapped_text.y + 2))
+            .unwrap()
+            .bg,
+        Color::DarkGray,
+        "blank line follows both wrapped rows of the preceding source line"
+    );
+    let painted = (wrapped_text.y..wrapped_text.y + wrapped_text.height)
+        .filter(|&y| {
+            (wrapped_text.x..wrapped_text.x + wrapped_text.width)
+                .any(|x| wrapped_buf.cell((x, y)).unwrap().bg == Color::DarkGray)
+        })
+        .count();
+    assert!(
+        painted <= wrapped_text.height as usize,
+        "painted positions are viewport-bounded"
+    );
+
+    let mut bounded = annotation_content_state(
+        (0..100).map(|_| Line::raw("")).collect(),
+        vec![LineRange::new(1, 100).unwrap()],
+    );
+    bounded.content_rows = 100;
+    bounded.content_scroll = 50;
+    let bounded_area = Rect::new(0, 0, 20, 6);
+    let bounded_text = geometry(bounded_area, &bounded).content_inner.unwrap();
+    let bounded_buf = render_buffer(&bounded, 20, 6);
+    let direct_cells = (bounded_text.y..bounded_text.y + bounded_text.height)
+        .flat_map(|y| (bounded_text.x..bounded_text.x + bounded_text.width).map(move |x| (x, y)))
+        .filter(|&position| bounded_buf.cell(position).unwrap().bg == Color::DarkGray)
+        .count();
+    assert_eq!(
+        direct_cells, bounded_text.height as usize,
+        "the helper paints exactly one in-bounds position per visible blank line, never more than text.height"
+    );
+}
+
+#[test]
+fn annotation_blank_lines_compose_exact_line_select_and_ambient_styles() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::text::Line;
+
+    let mut state = annotation_content_state(
+        vec![Line::raw(""), Line::raw("")],
+        vec![LineRange::new(1, 2).unwrap()],
+    );
+    state.line_select = Some(LineSelectView {
+        marker: 1,
+        start: 1,
+        end: 2,
+        char_sel: None,
+    });
+    let area = Rect::new(0, 0, 30, 7);
+    let text = geometry(area, &state).content_inner.unwrap();
+    let buf = render_buffer(&state, 30, 7);
+    let marker = buf.cell((text.x, text.y)).unwrap();
+    assert_eq!(marker.symbol(), "▶");
+    assert_eq!(marker.bg, Color::DarkGray);
+    assert_eq!(marker.fg, Color::Reset);
+    assert!(
+        marker
+            .modifier
+            .contains(Modifier::REVERSED | Modifier::BOLD)
+    );
+    let range = buf.cell((text.x, text.y + 1)).unwrap();
+    assert_eq!(range.symbol(), "│");
+    assert_eq!(range.bg, Color::Cyan);
+    assert_eq!(range.fg, Color::Black);
+
+    state.line_select = None;
+    state.content_selection = Some(CharSelView {
+        start_line: 1,
+        start_col: 0,
+        end_line: 1,
+        end_col: 0,
+        gutter: 0,
+    });
+    let ambient = render_buffer(&state, 30, 7);
+    let cell = ambient.cell((text.x, text.y)).unwrap();
+    assert_eq!(cell.bg, Color::Cyan);
+    assert_eq!(cell.fg, Color::Black);
+}
+
+#[test]
+fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrapped_backgrounds() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::text::Line;
+
+    let area = Rect::new(0, 0, 30, 8);
+    let mut state = annotation_content_state(
+        vec![Line::raw("alpha"), Line::raw("beta")],
+        vec![LineRange::new(1, 2).unwrap()],
+    );
+    state.line_select = Some(LineSelectView {
+        marker: 1,
+        start: 1,
+        end: 2,
+        char_sel: None,
+    });
+    let text = geometry(area, &state).content_inner.unwrap();
+    let buf = render_buffer(&state, 30, 8);
+    let marker_text = buf.cell((text.x + 1, text.y)).unwrap();
+    assert_eq!(marker_text.bg, Color::DarkGray);
+    assert!(
+        marker_text
+            .modifier
+            .contains(Modifier::REVERSED | Modifier::BOLD)
+    );
+    let selected_text = buf.cell((text.x + 1, text.y + 1)).unwrap();
+    assert_eq!(selected_text.bg, Color::Cyan);
+    assert_eq!(selected_text.fg, Color::Black);
+
+    state.line_select = None;
+    state.content_selection = Some(CharSelView {
+        start_line: 1,
+        start_col: 1,
+        end_line: 1,
+        end_col: 4,
+        gutter: 0,
+    });
+    let ambient = render_buffer(&state, 30, 8);
+    assert_eq!(ambient.cell((text.x, text.y)).unwrap().bg, Color::DarkGray);
+    assert_eq!(ambient.cell((text.x + 1, text.y)).unwrap().bg, Color::Cyan);
+    assert_eq!(ambient.cell((text.x + 1, text.y)).unwrap().fg, Color::Black);
+
+    state.content_selection = None;
+    state.search = Some(ContentSearch {
+        matches: vec![
+            Match {
+                line: 0,
+                start: 1,
+                end: 4,
+            },
+            Match {
+                line: 1,
+                start: 0,
+                end: 4,
+            },
+        ],
+        current: 1,
+    });
+    let search = render_buffer(&state, 30, 8);
+    assert_eq!(search.cell((text.x + 1, text.y)).unwrap().bg, Color::Cyan);
+    assert_eq!(search.cell((text.x + 1, text.y)).unwrap().fg, Color::Black);
+    let current = search.cell((text.x, text.y + 1)).unwrap();
+    assert_eq!(current.bg, Color::DarkGray);
+    assert!(
+        current
+            .modifier
+            .contains(Modifier::REVERSED | Modifier::BOLD)
+    );
+
+    let mut wrapped = annotation_content_state(
+        vec![Line::raw("w".repeat(45))],
+        vec![LineRange::new(1, 1).unwrap()],
+    );
+    wrapped.wrap = true;
+    wrapped.content_rows = 2;
+    let wrapped_text = geometry(area, &wrapped).content_inner.unwrap();
+    let wrapped_buf = render_buffer(&wrapped, 30, 8);
+    assert_eq!(
+        wrapped_buf
+            .cell((wrapped_text.x, wrapped_text.y))
+            .unwrap()
+            .bg,
+        Color::DarkGray
+    );
+    assert_eq!(
+        wrapped_buf
+            .cell((wrapped_text.x, wrapped_text.y + 1))
+            .unwrap()
+            .bg,
+        Color::DarkGray,
+        "Paragraph carries the span background across wrapped nonblank rows"
+    );
+}
+
+#[test]
+fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_search() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::text::Line;
+
+    let area = Rect::new(0, 0, 30, 8);
+    let mut state = annotation_content_state(
+        vec![Line::raw("alpha"), Line::raw("beta")],
+        vec![LineRange::new(1, 2).unwrap()],
+    );
+    state.search = Some(ContentSearch {
+        matches: vec![Match {
+            line: 0,
+            start: 0,
+            end: 5,
+        }],
+        current: 0,
+    });
+    state.line_select = Some(LineSelectView {
+        marker: 2,
+        start: 1,
+        end: 2,
+        char_sel: None,
+    });
+
+    let text = geometry(area, &state).content_inner.unwrap();
+    let line_select = render_buffer(&state, 30, 8);
+    let line_select_cell = line_select.cell((text.x + 1, text.y)).unwrap();
+    assert_eq!(line_select_cell.bg, Color::Cyan);
+    assert_eq!(line_select_cell.fg, Color::Black);
+    assert!(
+        !line_select_cell.modifier.contains(Modifier::REVERSED),
+        "line-select's non-current range style wins over the simultaneous current search match"
+    );
+
+    state.line_select = None;
+    state.content_selection = Some(CharSelView {
+        start_line: 1,
+        start_col: 0,
+        end_line: 1,
+        end_col: 5,
+        gutter: 0,
+    });
+    let ambient = render_buffer(&state, 30, 8);
+    let ambient_cell = ambient.cell((text.x, text.y)).unwrap();
+    assert_eq!(ambient_cell.bg, Color::Cyan);
+    assert_eq!(ambient_cell.fg, Color::Black);
+    assert!(
+        !ambient_cell.modifier.contains(Modifier::REVERSED),
+        "ambient selection wins over the simultaneous current search match"
+    );
+}
+
+// ── Annotation overview/editor overlays + count chip ───────────────────
+
+fn annotation_target(path: &str, lines: Option<(usize, usize)>) -> AnnotationTargetView {
+    AnnotationTargetView {
+        path: PathBuf::from(path),
+        lines: lines.map(|(start, end)| LineRange::new(start, end).unwrap()),
+    }
+}
+
+fn annotation_rows() -> Vec<AnnotationRowView> {
+    vec![
+        AnnotationRowView {
+            target: annotation_target("README.md", None),
+            note: "Clarify the fallback.".to_string(),
+        },
+        AnnotationRowView {
+            target: annotation_target("src/app.rs", Some((42, 42))),
+            note: "Explain the ignored result.".to_string(),
+        },
+        AnnotationRowView {
+            target: annotation_target("src/界\u{1b}[2J.rs", Some((47, 42))),
+            note: format!(
+                "Unicode 🙂 note\u{7} with a very long tail that must truncate safely {}",
+                "and keep going ".repeat(8)
+            ),
+        },
+    ]
+}
+
+fn annotation_overview_state(rows: Vec<AnnotationRowView>, cursor: usize) -> ViewState {
+    let mut state = sample_state();
+    state.annotation_count = rows.len();
+    state.annotation_overview = Some(AnnotationOverviewView { rows, cursor });
+    state
+}
+
+#[test]
+fn annotation_overview_empty_state_has_exact_title_and_footer() {
+    let state = annotation_overview_state(Vec::new(), 0);
+    let out = render(&state, 100, 18);
+    assert!(
+        out.contains("Annotations (0)"),
+        "counted title is shown\n{out}"
+    );
+    assert!(
+        out.contains("No annotations"),
+        "typed empty state is shown\n{out}"
+    );
+    assert!(
+        out.contains("↑↓/j/k move · Enter/e edit · d delete · D clear · y copy · Esc/q close"),
+        "the exact overview footer is shown\n{out}"
+    );
+    insta::assert_snapshot!("presenter_annotations_empty", out);
+}
+
+#[test]
+fn annotation_overview_formats_sanitizes_truncates_and_highlights_rows() {
+    use ratatui::style::Modifier;
+
+    let state = annotation_overview_state(annotation_rows(), 1);
+    let out = render(&state, 100, 18);
+    assert!(
+        out.contains("README.md — Clarify"),
+        "file target row\n{out}"
+    );
+    assert!(
+        out.contains("src/app.rs:42 — Explain"),
+        "line target row\n{out}"
+    );
+    assert!(
+        out.contains("src/界[2J.rs:42-47 — Unicode 🙂"),
+        "range is normalized and controls are dropped\n{out}"
+    );
+    assert!(!out.contains('\u{1b}') && !out.contains('\u{7}'));
+    assert!(
+        out.contains('…'),
+        "the long row is visibly truncated\n{out}"
+    );
+
+    let buf = render_buffer(&state, 100, 18);
+    let (x, y) = (0..buf.area().height)
+        .find_map(|y| {
+            (0..buf.area().width).find_map(|x| {
+                let hit = "src/app.rs:42".chars().enumerate().all(|(i, ch)| {
+                    let cx = x + i as u16;
+                    cx < buf.area().width
+                        && buf
+                            .cell((cx, y))
+                            .is_some_and(|cell| cell.symbol() == ch.to_string())
+                });
+                hit.then_some((x, y))
+            })
+        })
+        .expect("selected annotation row");
+    assert!(
+        buf.cell((x, y))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the selected annotation row is reversed"
+    );
+    insta::assert_snapshot!("presenter_annotations_populated", out);
+}
+
+#[test]
+fn annotation_overview_vertical_window_keeps_late_selection_visible() {
+    let rows = (0..24)
+        .map(|i| AnnotationRowView {
+            target: annotation_target(&format!("src/file-{i:02}.rs"), Some((i + 1, i + 1))),
+            note: format!("note {i:02}"),
+        })
+        .collect();
+    let state = annotation_overview_state(rows, 21);
+    let out = render(&state, 80, 12);
+    assert!(
+        out.contains("file-21.rs"),
+        "selected late row stays visible\n{out}"
+    );
+    assert!(
+        !out.contains("file-00.rs"),
+        "early rows are windowed away\n{out}"
+    );
+    insta::assert_snapshot!("presenter_annotations_scrolled", out);
+}
+
+fn annotation_editor_state(kind: AnnotationEditorKind) -> ViewState {
+    let mut state = sample_state();
+    let text = format!(
+        "hidden-control-\u{1b}[2J {}Unicode note 界🙂 ending",
+        "long-prefix ".repeat(10)
+    );
+    let cursor = text.find('界').unwrap();
+    state.annotation_editor = Some(AnnotationEditorView {
+        kind,
+        target: annotation_target(
+            "src/hostile\u{7}/very-long-component-name.rs",
+            Some((8, 12)),
+        ),
+        text,
+        cursor,
+        error: Some("Annotation text cannot be empty\u{1b}[2J".to_string()),
+    });
+    state
+}
+
+#[test]
+fn annotation_editor_sanitizes_target_scrolls_input_and_draws_cursor_error_footer() {
+    use ratatui::style::{Color, Modifier};
+
+    let state = annotation_editor_state(AnnotationEditorKind::Edit);
+    let out = render(&state, 100, 16);
+    assert!(out.contains("Edit annotation"), "edit title\n{out}");
+    assert!(
+        out.contains("Target: src/hostile/very-long-component-name.rs:8-12"),
+        "sanitized target\n{out}"
+    );
+    assert!(
+        out.contains("Unicode note"),
+        "input was horizontally scrolled near cursor\n{out}"
+    );
+    assert!(
+        !out.contains("hidden-control"),
+        "off-screen input head is clipped\n{out}"
+    );
+    assert!(
+        out.contains("Annotation text cannot be empty[2J"),
+        "validation error\n{out}"
+    );
+    assert!(
+        out.contains("←→/Home/End move · Enter save · Esc cancel"),
+        "exact editor footer\n{out}"
+    );
+    assert!(!out.contains('\u{1b}') && !out.contains('\u{7}'));
+
+    let buf = render_buffer(&state, 100, 16);
+    let cursor_cell = (0..buf.area().height)
+        .find_map(|y| {
+            (0..buf.area().width).find_map(|x| {
+                let cell = buf.cell((x, y))?;
+                (cell.symbol() == "界" && cell.modifier.contains(Modifier::REVERSED))
+                    .then_some(cell)
+            })
+        })
+        .expect("the Unicode cursor glyph is visibly reversed");
+    assert_eq!(cursor_cell.fg, Color::Reset);
+    insta::assert_snapshot!("presenter_annotation_editor", out);
+}
+
+#[test]
+fn annotation_add_editor_uses_add_title() {
+    let out = render(&annotation_editor_state(AnnotationEditorKind::Add), 100, 16);
+    assert!(out.contains("Add annotation"), "add title\n{out}");
+    assert!(
+        !out.contains("Edit annotation"),
+        "mode title is typed\n{out}"
+    );
+}
+
+#[test]
+fn annotation_count_chip_is_nonzero_only_and_never_names_the_configurable_key() {
+    let mut state = sample_state();
+    let zero = render(&state, 100, 12);
+    assert!(
+        !zero.contains("annotations:"),
+        "zero count omits the chip\n{zero}"
+    );
+
+    state.annotation_count = 3;
+    let out = render(&state, 100, 12);
+    let last = out.lines().last().unwrap();
+    assert!(last.contains("annotations: 3"), "left chip shown\n{last}");
+    assert!(last.contains("? help"), "right help chip retained\n{last}");
+    assert!(
+        !last.contains('A'),
+        "the configurable A key is not hardcoded\n{last}"
+    );
+}
+
+#[test]
+fn annotation_count_chip_is_omitted_when_it_would_overlap_help() {
+    let mut state = sample_state();
+    state.focus = Focus::Content;
+    state.annotation_count = 1;
+    let out = render(&state, 20, 8);
+    let last = out.lines().last().unwrap();
+    assert!(last.contains("? help"), "help keeps precedence\n{last}");
+    assert!(
+        !last.contains("annotations:"),
+        "the count chip is omitted rather than overlapping\n{last}"
+    );
+}
+
+#[test]
+fn annotation_overlays_add_no_hit_test_geometry() {
+    use herdr_file_viewer::presenter::geometry;
+    use ratatui::layout::Rect;
+
+    let area = Rect::new(0, 0, 100, 18);
+    let base = sample_state();
+    let overlay = annotation_overview_state(annotation_rows(), 1);
+    assert_eq!(
+        geometry(area, &base),
+        geometry(area, &overlay),
+        "keyboard-only annotation overlays do not alter PaneGeometry"
+    );
 }

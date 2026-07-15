@@ -22,7 +22,10 @@ impl Controller {
         //   their own handler, which consumes every event and never leaks to the columns (AC-21).
         // - None: no modal → the two-column mouse handler below.
         match self.modal {
-            Modal::Picker(_) | Modal::Prompt(_) => Effects::noop(),
+            Modal::Picker(_)
+            | Modal::Prompt(_)
+            | Modal::Annotations(_)
+            | Modal::AnnotationEditor(_) => Effects::noop(),
             Modal::LineSelect(_) => self.handle_line_select_mouse(ev),
             Modal::Help(_) => self.handle_help_mouse(ev),
             Modal::Finder(_) => self.handle_finder_mouse(ev),

@@ -16,7 +16,7 @@ is additive and on by default.
 | `←` / `h` | Collapse the selected directory, or **scroll the content pane left** when it is focused |
 | `H` (Shift+`h`) | Scroll the **tree** pane left (long / deeply-nested rows), inert unless the tree is focused |
 | `L` (Shift+`l`) | Focus-gated: with the **tree** focused, scroll it right (long / deeply-nested rows); with the **content pane** focused (or zoomed), enter **line-select mode** to select lines and copy either a `file:line` reference or the content itself (see [below](#copy-a-line-reference-or-line-content-l)) |
-| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends a line selection; **click-drag** with the mouse selects **text** (character-granular); `Enter` copies the `path:line` / `path:start-end` **reference**, `y`/`Y` copies the selected **content**, `Esc` exits |
+| _line-select mode_ | `j`/`k` (or `↑`/`↓`) move the marker, `Shift`+move (`J`/`K`, Shift+`↑`/`↓`) extends a line selection; **click-drag** with the mouse selects **text** (character-granular); `a` adds an annotation for the selected line/range, `Enter` copies the `path:line` / `path:start-end` **reference**, `y`/`Y` copies the selected **content**, `Esc` exits |
 | `Enter` | Activate the selection: expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `.` | Toggle hidden (dot-prefixed) files and folders |
@@ -32,6 +32,8 @@ is additive and on by default.
 | `n` / `N` (Shift+`n`) | After a committed search, jump to the **next** / **previous** match and scroll it into view, wrapping at the ends with a notice |
 | `y` | Copy the selected file's **repo-relative** path to the clipboard (e.g. `src/app.rs`) |
 | `Y` | Copy the selected file's **absolute** path to the clipboard |
+| `a` | **Add annotation**: open the annotation editor for the selected file (`←`/`→` or `Home`/`End` move the text cursor, `Enter` saves, `Esc` cancels). Annotations live only for this viewer session and never modify the file |
+| `A` (Shift+`a`) | **Show annotations**: open the session overview; fixed keys `j`/`k` or `↑`/`↓` move, `Enter`/`e` edits, `d` deletes one, `D` (Shift+`d`) clears all immediately, `y` copies all, and `Esc`/`q` closes |
 | `Tab` | Move focus between the tree and content columns |
 | `<` / `>` | Narrow / widen the tree column (move the divider) |
 | `w` | Toggle line wrapping for the content pane. For rendered markdown this switches between the fit-to-pane view (wide tables sized to fit, over-long cells shown as `…`) and a wide view that renders tables at full width and scrolls horizontally (`←`/`→`) so you can read every cell |
@@ -43,8 +45,10 @@ is additive and on by default.
 | `u` | Dismiss the "update available" banner for this session |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane |
 
-These are the **default** keys. Remap any of them with a `[keys]` table in the
-[config file](configuration.md#keybindings).
+These are the **default global** keys. Remap them with a `[keys]` table in the
+[config file](configuration.md#keybindings). Keys handled inside line-select mode, the annotation
+editor/overview, and other modals are fixed and not remappable; remapping global `a` or `A` does not
+change a modal's local controls.
 
 `Tab` to the content pane, then the arrow keys (or `h`/`j`/`k`/`l`) scroll it in all four
 directions; `Tab` back to the tree to move between files. Long lines wrap in prose (markdown /
@@ -60,8 +64,9 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `y`/`Y`, `W`, `N`,
-`O`, `R`, `Z`, `?`, `H`/`L`, and `J`/`K` in line-select mode).
+never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `a`/`A`, `y`/`Y`,
+`W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the annotation
+overview).
 
 ### Copy a path (`y` / `Y`)
 
@@ -86,6 +91,9 @@ two products:
 - **`y` / `Y` copy the content itself**: for a line selection, the lines joined by newlines; for
   a mouse text selection, exactly the characters you dragged over. The syntax view's line-number
   gutter is stripped and indentation is preserved, so it pastes as real code.
+- **`a` adds an annotation** whose target is the selected line/range (or all lines covered by a
+  mouse text selection). This `a` is a fixed line-select control, independent of the remappable
+  global `add_annotation` key.
 
 A confirmation notice names what was copied. Both copies use the same **OSC 52** path as the
 tree's `y`/`Y`. `Esc` leaves the mode.

@@ -855,6 +855,15 @@ fn no_handled_intent_mutates_the_filesystem() {
         if ctrl.picker().is_some() {
             ctrl.handle(Intent::Close);
         }
+        if ctrl.line_select_active() {
+            ctrl.exit_line_select();
+        }
+        if ctrl.annotation_editor().is_some() {
+            ctrl.handle_annotation_editor_key(key(KeyCode::Esc));
+        }
+        if ctrl.annotation_list().is_some() {
+            ctrl.handle_annotations_key(key(KeyCode::Esc));
+        }
     }
 
     let after = snapshot_no_git(dir.path());
@@ -3914,6 +3923,9 @@ enum ModalKind {
     PromptGoToLine,
     PromptSearch,
     Help,
+    LineSelect,
+    Annotations,
+    AnnotationEditor,
 }
 
 impl ModalKind {
@@ -3924,6 +3936,9 @@ impl ModalKind {
             ModalKind::PromptGoToLine => "prompt(go-to-line)",
             ModalKind::PromptSearch => "prompt(search)",
             ModalKind::Help => "help",
+            ModalKind::LineSelect => "line-select",
+            ModalKind::Annotations => "annotations",
+            ModalKind::AnnotationEditor => "annotation-editor",
         }
     }
 
@@ -3938,6 +3953,9 @@ impl ModalKind {
                 | ModalKind::PromptGoToLine
                 | ModalKind::PromptSearch
                 | ModalKind::Help
+                | ModalKind::LineSelect
+                | ModalKind::Annotations
+                | ModalKind::AnnotationEditor
         )
     }
 
@@ -4013,6 +4031,43 @@ fn controller_with_modal_open(kind: &ModalKind) -> Controller {
             std::mem::forget(dir);
             ctrl
         }
+        ModalKind::LineSelect => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            await_marker(&mut ctrl, "stub-content");
+            ctrl.enter_line_select_at_top();
+            assert!(
+                ctrl.line_select_active(),
+                "precondition: line-select is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::Annotations => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::ShowAnnotations);
+            assert!(
+                ctrl.annotation_list().is_some(),
+                "precondition: annotations overview is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::AnnotationEditor => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::AddAnnotation);
+            assert!(
+                ctrl.annotation_editor().is_some(),
+                "precondition: annotation editor is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
     }
 }
 
@@ -4023,12 +4078,21 @@ fn modal_open(kind: &ModalKind, ctrl: &Controller) -> bool {
         ModalKind::Finder => ctrl.finder_open(),
         ModalKind::PromptGoToLine | ModalKind::PromptSearch => ctrl.prompt_open(),
         ModalKind::Help => ctrl.help_open(),
+        ModalKind::LineSelect => ctrl.line_select_active(),
+        ModalKind::Annotations => ctrl.annotation_list().is_some(),
+        ModalKind::AnnotationEditor => ctrl.annotation_editor().is_some(),
     }
 }
 
 /// Whether any modal at all is open on `ctrl` — used to assert no second modal opens.
 fn any_modal_open(ctrl: &Controller) -> bool {
-    ctrl.picker().is_some() || ctrl.finder_open() || ctrl.prompt_open() || ctrl.help_open()
+    ctrl.picker().is_some()
+        || ctrl.finder_open()
+        || ctrl.prompt_open()
+        || ctrl.help_open()
+        || ctrl.line_select_active()
+        || ctrl.annotation_list().is_some()
+        || ctrl.annotation_editor().is_some()
 }
 
 /// The full cross-product: for each modal × each `Intent::ALL` variant, drive `handle(intent)`
@@ -4048,6 +4112,9 @@ fn modal_intent_cross_product_isolates_the_tree() {
         ModalKind::PromptGoToLine,
         ModalKind::PromptSearch,
         ModalKind::Help,
+        ModalKind::LineSelect,
+        ModalKind::Annotations,
+        ModalKind::AnnotationEditor,
     ];
 
     for modal in modals {
@@ -4136,13 +4203,66 @@ fn modal_intent_cross_product_isolates_the_tree() {
             let finder_still = ctrl.finder_open();
             let prompt_still = ctrl.prompt_open();
             let help_still = ctrl.help_open();
+            let line_still = ctrl.line_select_active();
+            let annotations_still = ctrl.annotation_list().is_some();
+            let editor_still = ctrl.annotation_editor().is_some();
             let any_other = match &modal {
-                ModalKind::Picker => finder_still || prompt_still || help_still,
-                ModalKind::Finder => picker_still || prompt_still || help_still,
-                ModalKind::PromptGoToLine | ModalKind::PromptSearch => {
-                    picker_still || finder_still || help_still
+                ModalKind::Picker => {
+                    finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
                 }
-                ModalKind::Help => picker_still || finder_still || prompt_still,
+                ModalKind::Finder => {
+                    picker_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::PromptGoToLine | ModalKind::PromptSearch => {
+                    picker_still
+                        || finder_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::Help => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::LineSelect => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::Annotations => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || editor_still
+                }
+                ModalKind::AnnotationEditor => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                }
             };
             assert!(
                 !any_other,
@@ -4362,6 +4482,15 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
         // so the help modal guard cannot block SwitchWorktree in Part 2.
         if ctrl.help_open() {
             ctrl.close_help();
+        }
+        if ctrl.line_select_active() {
+            ctrl.exit_line_select();
+        }
+        if ctrl.annotation_editor().is_some() {
+            ctrl.handle_annotation_editor_key(key(KeyCode::Esc));
+        }
+        if ctrl.annotation_list().is_some() {
+            ctrl.handle_annotations_key(key(KeyCode::Esc));
         }
     }
 

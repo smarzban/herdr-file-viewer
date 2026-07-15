@@ -9,6 +9,7 @@ customize it see [configuration](configuration.md).
 - [Viewing a file](#viewing-a-file)
 - [Git awareness](#git-awareness)
 - [Navigating within a file](#navigating-within-a-file)
+- [Annotating files and ranges](#annotating-files-and-ranges)
 - [Copying paths and lines](#copying-paths-and-lines)
 - [Handing a file off](#handing-a-file-off)
 - [Switching worktree](#switching-worktree)
@@ -89,6 +90,53 @@ viewer still opens, but the status markers, filter, baseline, and diffs are degr
   type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase — a
   lowercase query matches any case; add a capital to go case-sensitive — and it works in every view
   (code, markdown, or diff). `Esc` clears it and restores your scroll.
+
+## Annotating files and ranges
+
+Annotations are read-only notes for the **current viewer session and root**. They start empty on
+launch, stay in memory only, and never modify files or git state.
+
+Annotated files show `@` in the tree's reserved prefix column (alongside any git marker) and before
+the applied content title. Unselected annotated filenames use a subtle background; line/range
+targets use the same background on extant lines in the source/content view, including a one-cell cue
+for a blank line. Rendered Markdown and diff views keep the file/title `@`, but do not color numeric
+line targets because transformed output has no trustworthy source-line mapping. Active line-select,
+mouse selection, and search highlighting take precedence: cyan replaces the persistent background,
+while the current line-select marker or current search match retains it with reversed bold emphasis.
+Closing the active state reveals the persistent annotation background again.
+
+- **Add to a file**: select a file and press `a`, type the note, then press `Enter` to save or `Esc`
+  to cancel. Directories cannot be annotated.
+- **Add to lines**: focus the content pane, press `L`, select a line/range, then press the
+  line-select-local `a`. The target is captured as a root-relative file plus the normalized
+  inclusive line/range; canceling the editor restores the exact selection.
+- **Edit, delete, or clear**: press `A` for the annotation overview. Move with `↑`/`↓` or `j`/`k`,
+  edit with `Enter`/`e`, delete one with `d`, or press uppercase `D` once to clear all immediately.
+  `Esc`/`q` closes the overview.
+- **Copy all**: press `y` in a non-empty overview. The deterministic, path/range-ordered export goes
+  through OSC 52 and the overview closes; copying does not remove annotations.
+
+Saving normalizes every run of Unicode whitespace or control characters to one ASCII space and
+trims both ends. If that leaves the note empty, the editor stays open and shows a validation error;
+the annotation is not added or changed.
+
+A successful worktree switch (re-root) clears all annotations and reports how many were cleared,
+because their targets belong to the old root. A failed switch or same-root no-op retains them.
+Closing and relaunching the viewer always starts with an empty annotation store.
+
+The exact concise copy format is:
+
+```text
+<file-annotations>
+- README.md:Clarify the fallback.
+- src/app.rs:42:Explain the ignored result.
+- src/controller/mod.rs:42-47:Why is this guarded twice?
+</file-annotations>
+```
+
+File-level entries omit the line field. Notes and paths escape `&`, `<`, and `>` so the single outer
+wrapper cannot be spoofed; the copied block has no heading, blank lines, root path, or trailing
+newline.
 
 ## Copying paths and lines
 
