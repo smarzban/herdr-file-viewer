@@ -76,11 +76,25 @@ pub(crate) fn default_bindings() -> EffectiveBindings {
 /// typing — not a chord — and some terminals report them with the Shift bit set. `key.code` is the
 /// already-normalized lookup key: a shifted char carries its case in `key.code`, and a named key
 /// reports its base [`KeyCode`] with Shift in the modifiers (stripped by the guard below).
+///
+/// On Windows, some terminals report `Shift+o` as `Char('o')` with `SHIFT` modifier rather than
+/// `Char('O')` with no modifier. When SHIFT is the only modifier and the character is lowercase,
+/// normalize to uppercase before lookup so shifted keys resolve correctly.
 pub(crate) fn decode(key: KeyEvent, bindings: &EffectiveBindings) -> Option<Intent> {
     if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
-    bindings.intent_for(key.code)
+    // Normalize SHIFT+lowercase to uppercase for cross-platform compatibility.
+    // On Windows terminals, Shift+o may arrive as Char('o') + SHIFT instead of Char('O').
+    let code = if key.modifiers.contains(KeyModifiers::SHIFT) {
+        match key.code {
+            KeyCode::Char(c) if c.is_ascii_lowercase() => KeyCode::Char(c.to_ascii_uppercase()),
+            other => other,
+        }
+    } else {
+        key.code
+    };
+    bindings.intent_for(code)
 }
 
 /// Borrow the process-lifetime default [`EffectiveBindings`], built once from the [`REGISTRY`].
@@ -1098,6 +1112,54 @@ mod tests {
         // Lowercase `o` stays unbound; `r` stays Refresh (no collision).
         assert_eq!(map_key(k(KeyCode::Char('o'))), None);
         assert_eq!(map_key(k(KeyCode::Char('r'))), Some(Intent::Refresh));
+    }
+
+    #[test]
+    fn windows_shift_lowercase_normalizes_to_uppercase_for_lookup() {
+        // On Windows terminals, Shift+o may arrive as Char('o') with SHIFT modifier
+        // instead of Char('O'). The decode function must normalize this to uppercase
+        // before lookup, so Shift+o resolves to OpenWithApp and Shift+r to RevealInFileManager.
+        let bindings = default_bindings();
+
+        // Windows-style: Shift+lowercase 'o' -> should resolve to OpenWithApp
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::SHIFT),
+                &bindings
+            ),
+            Some(Intent::OpenWithApp),
+            "Shift+o (lowercase char with SHIFT) must resolve to OpenWithApp"
+        );
+
+        // Windows-style: Shift+lowercase 'r' -> should resolve to RevealInFileManager
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT),
+                &bindings
+            ),
+            Some(Intent::RevealInFileManager),
+            "Shift+r (lowercase char with SHIFT) must resolve to RevealInFileManager"
+        );
+
+        // Plain lowercase 'o' remains unbound
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+                &bindings
+            ),
+            None,
+            "Plain 'o' stays unbound"
+        );
+
+        // Ctrl+o remains rejected
+        assert_eq!(
+            decode(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &bindings
+            ),
+            None,
+            "Ctrl+o must not decode"
+        );
     }
 
     #[test]
