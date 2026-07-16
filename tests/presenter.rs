@@ -3234,7 +3234,7 @@ fn help_state() -> ViewState {
              \n\
              github.com/smarzban/herdr-file-viewer\n\
              \n\
-             v1.11.0 · Up to date\n\
+             v1.12.0 · Up to date\n\
              MIT License\n\
              \n\
              If you enjoy the file viewer, don't forget to give it a ★ on GitHub!",
