@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
-## [Unreleased]
+## [1.13.0] - 2026-07-16
 
 ### Added
 - Configurable content-preview caps: `preview_max_lines` (100–100000, default 10000) and `preview_max_kib` (64–65536 KiB, default 1024 = 1 MB) set how much of a file the content pane shows before a truncated preview. → [configuration](docs/configuration.md)
