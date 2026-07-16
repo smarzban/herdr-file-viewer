@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format is based on
 - Settings tab shows each setting's effective value instead of a `(default)` placeholder; the renderer commands are no longer listed (they live in the config file). → [configuration](docs/configuration.md)
 
 ### Fixed
-- Native Windows launchers now preserve non-ASCII pane titles and paths while parsing herdr JSON, instead of falling back to the plugin install directory.
+- Native Windows launchers now preserve non-ASCII pane titles and paths while parsing herdr JSON, instead of falling back to the plugin install directory. Thanks @mkioutcc (#105).
 
 ## [1.12.0] - 2026-07-13
 
