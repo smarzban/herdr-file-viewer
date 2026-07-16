@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format is based on
 - Configurable content-preview caps: `preview_max_lines` (100–100000, default 10000) and `preview_max_kib` (64–65536 KiB, default 1024 = 1 MB) set how much of a file the content pane shows before a truncated preview. → [configuration](docs/configuration.md)
 - Session-only file and line/range annotations, with persistent tree/title/source-line indicators, stable dialogs, an overview for edit/delete/clear-all, and exact clipboard export. Quitting or switching worktree with annotations held confirms first, listing what would be lost (`y` copies them and continues, `Esc` cancels); disable with `confirm_discard = false`. Thanks @mschwarzmueller (#100, #101). → [usage](docs/usage.md#annotating-files-and-ranges)
 
+### Changed
+- Settings tab shows each setting's effective value instead of a `(default)` placeholder; the renderer commands are no longer listed (they live in the config file). → [configuration](docs/configuration.md)
+
 ### Fixed
 - Native Windows launchers now preserve non-ASCII pane titles and paths while parsing herdr JSON, instead of falling back to the plugin install directory.
 

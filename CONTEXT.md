@@ -94,12 +94,18 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   **input, not state**: the app reads it and never writes it.
 - **effective setting**: the value a setting actually resolves to after precedence is
   applied: the **config file** key if present, else the environment variable, else the
-  built-in default (config > env > default).
+  **built-in default** (config > env > default).
+- **built-in default**: the value a setting has when neither the **config file** nor an
+  applicable environment variable supplies one: the viewer's shipped default (for a
+  **command override**, the wired renderer/opener/editor command; for a scalar, the
+  documented numeric or on/off default).
 - **command override**: a **config file** value that replaces a built-in external
   command (the **opener**s, the renderers, or the editor). Written as a string and split
   into argv by the same quote-aware tokenizer used for `$EDITOR`; no shell is invoked.
 - **Settings section**: the display-only section of the help overlay that lists the
-  **effective setting**s; it shows configuration, it does not edit it.
+  **effective setting**s with their real values, one row each; it shows configuration, it
+  does not edit it. The renderer commands are excluded: they are set and documented in the
+  **config file**, and their built-in argv is long enough to wreck the row layout.
 - **scroll step**: how many content lines (or **file finder** list items, or help-overlay
   lines) the mouse wheel advances per wheel event. Set by the `scroll_lines` **config file**
   key (config > default; default 3, clamped to the range 1 to 10). The directory tree is

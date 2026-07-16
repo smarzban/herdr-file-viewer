@@ -201,17 +201,31 @@ pub fn about_text(update: Option<crate::update::version::Version>) -> String {
     )
 }
 
+/// Wired startup values for the Settings display (AC-1..AC-4): the resolved editor and the per-OS
+/// opener labels that startup actually uses. Pure input — the caller (`app::run`) computes these
+/// once alongside the live components.
+pub struct SettingsWired {
+    /// The effective editor after config > `$EDITOR` > platform-default resolution. `None` means
+    /// no editor resolves (the Settings row shows `unset`).
+    pub editor: Option<std::ffi::OsString>,
+    pub open: String,
+    pub reveal: String,
+}
+
 /// Assemble the "Settings" pane text (AC-15, AC-18): a first line reflecting the config
-/// [`crate::config::LoadOutcome`], then one row per effective setting. Pure — no env/FS; both
+/// [`crate::config::LoadOutcome`], then one row per effective setting. Pure — no env/FS; all
 /// arguments are already-resolved values the caller computed once at startup (`app::run`).
 ///
-/// `None` renderer/editor fields print as `(default)`; `hide_dotfiles`/`update_check` print as
-/// `true`/`false` and `on`/`off` respectively. Formatting is kept simple and stable since this
-/// feeds a presenter snapshot.
+/// The `markdown`/`diff`/`syntax` renderer commands are deliberately NOT shown: they are set in the
+/// config file and documented there, and their built-in values are long argv (the markdown one
+/// resolves `-s` to an absolute path into the install dir) that wrap across rows and wreck the `=`
+/// column for no reader benefit. Every row here is one line. Formatting is kept simple and stable
+/// since this feeds a presenter snapshot.
 pub fn settings_text(
     eff: &crate::config::EffectiveSettings,
     outcome: &crate::config::LoadOutcome,
     config_path: &std::path::Path,
+    wired: &SettingsWired,
 ) -> String {
     let status_line = match outcome {
         crate::config::LoadOutcome::Loaded => "Config: loaded.".to_owned(),
@@ -227,25 +241,31 @@ pub fn settings_text(
     // Always show where the file is (or would be) so the user knows what to fix or create.
     let location_line = format!("Location: {}", config_path.display());
 
-    let opt_os = |v: &Option<std::ffi::OsString>| -> String {
-        v.as_ref()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "(default)".to_owned())
+    // The editor is the one command shown in full: it is the user's own `$EDITOR`/config value
+    // (short by nature), and knowing *which* editor takes the hand-off is the point of the row.
+    let editor = match (&eff.editor, &wired.editor) {
+        (Some(ed), _) | (None, Some(ed)) => ed.to_string_lossy().into_owned(),
+        (None, None) => "unset".to_owned(),
     };
-    let opt_argv = |v: &Option<Vec<String>>| -> String {
-        v.as_ref()
-            .map(|argv| argv.join(" "))
-            .unwrap_or_else(|| "(default)".to_owned())
+
+    // An EMPTY override (`open = ""` tokenizes to no args) is not an override: `CommandOpener`
+    // falls through to the per-OS default argv rather than spawning the path as a program (see
+    // `opener::with_overrides_empty_prefix_falls_through_to_the_per_os_default`). The row must
+    // report that same fallthrough, or it shows a blank value for an opener that in fact runs.
+    let opener_row = |override_argv: &Option<Vec<String>>, wired: &str| match override_argv {
+        Some(argv) if !argv.is_empty() => argv.join(" "),
+        _ => wired.to_owned(),
     };
+    let open = opener_row(&eff.open, &wired.open);
+    let reveal = opener_row(&eff.reveal, &wired.reveal);
+    let update_check = if eff.update_check { "on" } else { "off" };
+    let confirm_discard = if eff.confirm_discard { "on" } else { "off" };
 
     // Keys are padded to the widest name (`preview_max_lines`, 17) so the `=` column lines up.
     format!(
         "{status_line}\n\
          {location_line}\n\
          editor            = {editor}\n\
-         markdown          = {markdown}\n\
-         diff              = {diff}\n\
-         syntax            = {syntax}\n\
          open              = {open}\n\
          reveal            = {reveal}\n\
          hide_dotfiles     = {hide_dotfiles}\n\
@@ -257,19 +277,15 @@ pub fn settings_text(
          tree_max_cols     = {tree_max_cols}\n\
          preview_max_lines = {preview_max_lines}\n\
          preview_max_kib   = {preview_max_kib}",
-        editor = opt_os(&eff.editor),
-        markdown = opt_argv(&eff.markdown),
-        diff = opt_argv(&eff.diff),
-        syntax = opt_argv(&eff.syntax),
-        open = opt_argv(&eff.open),
-        reveal = opt_argv(&eff.reveal),
+        open = open,
+        reveal = reveal,
         hide_dotfiles = eff.hide_dotfiles,
-        update_check = if eff.update_check { "on" } else { "off" },
+        update_check = update_check,
+        confirm_discard = confirm_discard,
         scroll_lines = eff.scroll_lines,
         tree_width = eff.tree_width,
         tree_position = eff.tree_position.label(),
         tree_max_cols = eff.tree_max_cols,
-        confirm_discard = if eff.confirm_discard { "on" } else { "off" },
         preview_max_lines = eff.preview_max_lines,
         preview_max_kib = eff.preview_max_kib,
     )
@@ -769,21 +785,29 @@ mod tests {
         }
     }
 
-    // AC-18: every setting key appears with its effective value; unset fields show "(default)".
+    fn sample_wired() -> SettingsWired {
+        SettingsWired {
+            editor: None,
+            open: "xdg-open".to_string(),
+            reveal: "xdg-open".to_string(),
+        }
+    }
+
+    // AC-18: every setting key appears with its effective value; unset command fields show the
+    // wired default rather than a placeholder.
     #[test]
     fn settings_text_lists_every_setting_row() {
         let eff = sample_eff();
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Loaded,
             std::path::Path::new("/cfg/config.toml"),
+            &wired,
         );
 
         for key in [
             "editor",
-            "markdown",
-            "diff",
-            "syntax",
             "open",
             "reveal",
             "hide_dotfiles",
@@ -835,10 +859,6 @@ mod tests {
         );
         assert!(text.contains("nano"), "editor value must appear:\n{text}");
         assert!(
-            text.contains("glow -w 80"),
-            "the markdown argv must appear space-joined:\n{text}"
-        );
-        assert!(
             text.contains("true"),
             "hide_dotfiles=true must appear:\n{text}"
         );
@@ -846,21 +866,221 @@ mod tests {
             text.contains("off"),
             "update_check=false must render as 'off':\n{text}"
         );
-        // None fields show "(default)" — diff/syntax/open/reveal are all None in the fixture.
-        let default_count = text.matches("(default)").count();
-        assert_eq!(
-            default_count, 4,
-            "diff/syntax/open/reveal are None and must each show '(default)':\n{text}"
+        // AC-1/AC-2: command rows show the wired value, never a "(default)" placeholder.
+        assert!(
+            !text.contains("(default)"),
+            "settings_text must not use the '(default)' placeholder:\n{text}"
+        );
+        for row in [
+            "editor            = nano",
+            "open              = xdg-open",
+            "reveal            = xdg-open",
+            "hide_dotfiles     = true",
+            "update_check      = off",
+            "scroll_lines      = 7",
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "row must be exactly '{row}':\n{text}"
+            );
+        }
+    }
+
+    // The renderer commands live in the config file, not the overlay. Their built-in values are long
+    // argv (markdown's `-s` resolves to an absolute path into the install dir) that wrapped across
+    // rows and leaked the build location, and a reader gains nothing from them here.
+    #[test]
+    fn settings_text_omits_the_renderer_commands() {
+        let eff = crate::config::EffectiveSettings {
+            markdown: Some(vec!["mdcat".to_string()]),
+            diff: Some(vec!["diff-so-fancy".to_string()]),
+            syntax: Some(vec!["highlight".to_string()]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+
+        // Neither the key nor a configured value may appear — not even when the user overrode it.
+        for absent in [
+            "markdown",
+            "diff  ",
+            "syntax",
+            "mdcat",
+            "diff-so-fancy",
+            "highlight",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "the Settings text must not mention '{absent}':\n{text}"
+            );
+        }
+    }
+
+    // Every row is a single line: no value may reintroduce a wrap that breaks the `=` column.
+    #[test]
+    fn settings_text_rows_have_no_marker_and_no_trailing_space() {
+        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+        assert!(
+            !text.contains("(d)"),
+            "the built-in-default marker is gone:\n{text}"
+        );
+        for line in text.lines() {
+            assert_eq!(line.trim_end(), line, "row must not end in space: '{line}'");
+        }
+    }
+
+    // AC-2: every scalar shows its effective value — here, each documented built-in default.
+    #[test]
+    fn settings_text_shows_builtin_default_scalars() {
+        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let wired = sample_wired();
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+            &wired,
+        );
+        for row in [
+            "hide_dotfiles     = false",
+            "update_check      = on",
+            "confirm_discard   = on",
+            &format!(
+                "scroll_lines      = {}",
+                crate::config::DEFAULT_SCROLL_LINES
+            ),
+            &format!("tree_width        = {}", crate::config::DEFAULT_TREE_WIDTH),
+            "tree_position     = left",
+            &format!(
+                "tree_max_cols     = {}",
+                crate::config::DEFAULT_TREE_MAX_COLS
+            ),
+            &format!(
+                "preview_max_lines = {}",
+                crate::config::DEFAULT_PREVIEW_MAX_LINES
+            ),
+            &format!(
+                "preview_max_kib   = {}",
+                crate::config::DEFAULT_PREVIEW_MAX_KIB
+            ),
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "built-in default scalar row must be exactly '{row}':\n{text}"
+            );
+        }
+    }
+
+    // AC-3: with no config editor, the row shows the WIRED editor (the `$EDITOR`/platform default
+    // that would actually take the hand-off), not "unset".
+    #[test]
+    fn settings_text_falls_back_to_the_wired_editor() {
+        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let wired = SettingsWired {
+            editor: Some(std::ffi::OsString::from("vi")),
+            ..sample_wired()
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+            &wired,
+        );
+        assert!(
+            text.lines().any(|l| l == "editor            = vi"),
+            "the wired editor must show when config sets none:\n{text}"
+        );
+    }
+
+    // A configured opener replaces the per-OS label, and both rows follow their own key.
+    #[test]
+    fn settings_text_shows_configured_opener_overrides() {
+        let eff = crate::config::EffectiveSettings {
+            open: Some(vec!["myopen".to_string(), "--flag".to_string()]),
+            reveal: Some(vec!["myreveal".to_string(), "-R".to_string()]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+        for row in [
+            "open              = myopen --flag",
+            "reveal            = myreveal -R",
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "configured opener row must be exactly '{row}':\n{text}"
+            );
+        }
+    }
+
+    // An empty override (`open = ""` → no args) is NOT an override: `CommandOpener` falls through
+    // to the per-OS default argv, so the row must show that default rather than a blank value.
+    #[test]
+    fn settings_text_empty_opener_override_shows_the_wired_default() {
+        let eff = crate::config::EffectiveSettings {
+            open: Some(vec![]),
+            reveal: Some(vec![]),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Loaded,
+            std::path::Path::new("/cfg/config.toml"),
+            &sample_wired(),
+        );
+        for row in [
+            "open              = xdg-open",
+            "reveal            = xdg-open",
+        ] {
+            assert!(
+                text.lines().any(|l| l == row),
+                "an empty override must display the wired fallthrough, not a blank: '{row}':\n{text}"
+            );
+        }
+    }
+
+    // AC-4: when no editor resolves at all, the row shows "unset".
+    #[test]
+    fn settings_text_unset_editor_shows_unset() {
+        let eff = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let wired = SettingsWired {
+            editor: None,
+            ..sample_wired()
+        };
+        let text = settings_text(
+            &eff,
+            &LoadOutcome::Absent,
+            std::path::Path::new("/cfg/config.toml"),
+            &wired,
+        );
+        assert!(
+            text.lines().any(|l| l == "editor            = unset"),
+            "unset editor must show 'unset':\n{text}"
         );
     }
 
     #[test]
     fn settings_text_loaded_outcome_reflects_success() {
         let eff = sample_eff();
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Loaded,
             std::path::Path::new("/cfg/config.toml"),
+            &wired,
         );
         assert!(
             text.starts_with("Config: loaded."),
@@ -872,10 +1092,12 @@ mod tests {
     #[test]
     fn settings_text_malformed_outcome_shows_using_defaults_and_reason() {
         let eff = sample_eff();
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Malformed("bad toml".to_string()),
             std::path::Path::new("/cfg/config.toml"),
+            &wired,
         );
         assert!(
             text.contains("using defaults"),
@@ -894,10 +1116,12 @@ mod tests {
         let eff = sample_eff();
         let multiline =
             "TOML parse error at line 1, column 5\n  |\n1 | x = = [\n  |     ^\nexpected value";
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Malformed(multiline.to_string()),
             std::path::Path::new("/cfg/config.toml"),
+            &wired,
         );
         let status = text.lines().next().unwrap();
         assert!(
@@ -914,10 +1138,12 @@ mod tests {
     fn settings_text_shows_the_config_location() {
         // The resolved config path is surfaced so the user knows what to fix/create.
         let eff = sample_eff();
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Absent,
             std::path::Path::new("/home/u/.config/herdr-file-viewer/config.toml"),
+            &wired,
         );
         assert!(
             text.contains("/home/u/.config/herdr-file-viewer/config.toml"),
@@ -928,10 +1154,12 @@ mod tests {
     #[test]
     fn settings_text_absent_outcome_shows_using_defaults() {
         let eff = sample_eff();
+        let wired = sample_wired();
         let text = settings_text(
             &eff,
             &LoadOutcome::Absent,
             std::path::Path::new("/cfg/config.toml"),
+            &wired,
         );
         assert!(
             text.contains("using defaults"),
