@@ -21,6 +21,9 @@ PowerShell launcher scripts.
   keybinding.
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
+- **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing
+  herdr's JSON under Windows PowerShell 5.1, so names outside the active legacy code page do not
+  make the viewer fall back to its plugin install directory.
 - **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
   project's CI gate (the `windows-latest` job is advisory, not required), so a Windows-specific
   regression can land between releases. Full feature parity with Linux/macOS is the goal, not a

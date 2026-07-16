@@ -1,9 +1,9 @@
-//! Cross-platform regression guard for the Windows launcher spawn form (GH #58).
+//! Cross-platform regression guards for the Windows launcher scripts.
 //!
 //! `launcher_ps1.rs` parse-checks the scripts, but it is `#![cfg(windows)]` and so runs only on
-//! the advisory Windows CI job. This content check is deliberately **not** gated to Windows: it
-//! reads the launcher text and runs on the *required* (Linux/macOS) matrix, so a regression to the
-//! bare-path spawn fails a blocking check.
+//! the advisory Windows CI job. These content checks are deliberately **not** gated to Windows:
+//! they read the launcher text and run on the *required* (Linux/macOS) matrix, so regressions in
+//! the spaced-path spawn form (GH #58) or UTF-8 JSON setup fail a blocking check.
 //!
 //! Why it matters: herdr's `pane run <id> <command>` types `<command>` into the pane's shell
 //! (PowerShell on Windows). A bare or plain-quoted path like `pane run $np "$ViewerBin"` splits on
@@ -39,4 +39,43 @@ fn windows_launchers_spawn_via_call_operator_not_a_bare_path() {
              pane run $np \"& \\\"$ViewerBin\\\"\""
         );
     }
+}
+
+#[test]
+fn windows_json_consumers_force_utf8_before_convert_from_json() {
+    for name in ["open-file-viewer.ps1", "open-file-viewer-tab.ps1"] {
+        let script = read_script(name);
+        assert_utf8_before_json(name, &script);
+    }
+
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("herdr-plugin.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+    let actions: Vec<&str> = manifest
+        .lines()
+        .filter(|line| line.contains("ConvertFrom-Json"))
+        .collect();
+    assert_eq!(actions.len(), 2, "expected both Windows action payloads");
+    for action in actions {
+        assert_utf8_before_json("manifest Windows action", action);
+    }
+}
+
+fn assert_utf8_before_json(label: &str, text: &str) {
+    let convert = text
+        .find("ConvertFrom-Json")
+        .unwrap_or_else(|| panic!("{label} must parse herdr JSON"));
+    let setup = &text[..convert];
+    assert!(
+        setup.contains("[Console]::OutputEncoding"),
+        "{label} must set the native stdout decoder to UTF-8 before ConvertFrom-Json"
+    );
+    assert!(
+        setup.contains("$OutputEncoding"),
+        "{label} must set PowerShell's native-pipeline encoding before ConvertFrom-Json"
+    );
+    assert!(
+        setup.contains("System.Text.UTF8Encoding($false)"),
+        "{label} must use BOM-less UTF-8 before ConvertFrom-Json"
+    );
 }
