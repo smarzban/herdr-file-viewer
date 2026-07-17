@@ -57,6 +57,9 @@ impl GitService for StubGit {
     fn diff(&self, _rel_path: &Path, _baseline: Baseline, _full_context: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 /// A Content Renderer stub: returns fixed text and no notices, so the controller's content
@@ -146,6 +149,14 @@ fn controller(
         components,
     );
     (ctrl, changed_calls, opened)
+}
+
+fn visible_names(ctrl: &Controller) -> Vec<String> {
+    ctrl.tree()
+        .visible_nodes()
+        .iter()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
 }
 
 // ---- tests ----------------------------------------------------------------------------
@@ -339,6 +350,120 @@ fn toggle_changed_only_flips_in_a_repo() {
     assert!(
         !ctrl.changed_only(),
         "toggling again restores the full tree"
+    );
+}
+
+#[test]
+fn toggle_status_mode_filters_by_git_status_not_baseline_changed_set() {
+    // `d` filters to working-tree status even when the baseline-dependent changed-set differs.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("status_only.rs"), "s\n").unwrap();
+    std::fs::write(dir.path().join("base_only.rs"), "b\n").unwrap();
+    std::fs::write(dir.path().join("clean.rs"), "c\n").unwrap();
+
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("status_only.rs"), Status::Modified);
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("base_only.rs"), Status::Modified);
+    let git = StubGit {
+        status,
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    assert!(!ctrl.status_mode());
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "d enters git-status mode");
+    assert!(!ctrl.changed_only(), "d is not baseline-aware c");
+    assert!(fx.redraw);
+
+    let visible = visible_names(&ctrl);
+    assert!(
+        visible.iter().any(|n| n == "status_only.rs"),
+        "status mode shows working-tree status files: {visible:?}"
+    );
+    assert!(
+        !visible.iter().any(|n| n == "base_only.rs"),
+        "status mode must not show baseline-only files: {visible:?}"
+    );
+    assert!(
+        !visible.iter().any(|n| n == "clean.rs"),
+        "status mode hides clean files: {visible:?}"
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(!ctrl.status_mode(), "second d leaves status mode");
+    let restored = visible_names(&ctrl);
+    assert!(
+        restored.iter().any(|n| n == "clean.rs"),
+        "leaving d restores the full tree: {restored:?}"
+    );
+}
+
+#[test]
+fn status_mode_and_changed_only_are_mutually_exclusive() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("a.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only());
+    assert!(!ctrl.status_mode());
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "d turns on status mode");
+    assert!(!ctrl.changed_only(), "d turns off c");
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only(), "c turns on changed-only");
+    assert!(!ctrl.status_mode(), "c turns off d");
+}
+
+#[test]
+fn status_mode_is_inert_without_git() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(!ctrl.status_mode());
+    assert!(!fx.redraw, "no git → d is a no-op");
+}
+
+#[test]
+fn baseline_toggle_while_status_mode_keeps_status_filter() {
+    // `b` must keep working while `d` is on (stored baseline updates) without leaving status mode.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("wt.rs"), "w\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("wt.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, calls, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+    assert_eq!(ctrl.baseline(), Baseline::Head);
+
+    ctrl.handle(Intent::ToggleBaseline);
+    assert_eq!(ctrl.baseline(), Baseline::Base, "b still flips baseline");
+    assert!(ctrl.status_mode(), "b does not leave status mode");
+    assert!(
+        visible_names(&ctrl).iter().any(|n| n == "wt.rs"),
+        "status filter stays applied after b"
+    );
+    assert!(
+        calls.lock().unwrap().contains(&Baseline::Base),
+        "b still recomputes the baseline changed-set for when c is used later"
     );
 }
 
@@ -2774,6 +2899,9 @@ impl GitService for EvolvingGit {
         }
     }
     fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
         String::new()
     }
 }
@@ -9505,6 +9633,9 @@ impl GitService for CountingGit {
     }
     fn diff(&self, _rel_path: &Path, _baseline: Baseline, _full_context: bool) -> String {
         self.calls.lock().unwrap().push("diff");
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
         String::new()
     }
 }
