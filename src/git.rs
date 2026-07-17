@@ -270,11 +270,11 @@ pub fn diff_directory(
     baseline: Baseline,
     base_hint: Option<&str>,
 ) -> String {
-    if !rel_dir.as_os_str().is_empty() {
-        let abs = repo_root.join(rel_dir);
-        if !is_within_root(repo_root, &abs) {
-            return String::new();
-        }
+    // Same root-bound check as [`diff`]: reject absolute paths and any `..` component so a
+    // pathspec cannot escape the tree root (AC-N5). Pass the *relative* path — joining first
+    // would make `is_within_root` see an absolute path and always reject it.
+    if !rel_dir.as_os_str().is_empty() && !is_within_root(repo_root, rel_dir) {
+        return String::new();
     }
     let against = match baseline {
         Baseline::Head => head_or_empty_tree(repo_root),
@@ -487,6 +487,28 @@ fn classify_name_status(code: &str) -> Option<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_directory_rejects_parent_dir_and_absolute_pathspecs() {
+        // AC-N5: pathspecs must stay inside the tree root. `..` and absolute paths are rejected
+        // before any git invocation (is_within_root rejects both).
+        let root = Path::new("/tmp/some-repo");
+        assert_eq!(
+            diff_directory(root, Path::new(".."), Baseline::Head, None),
+            "",
+            "parent-dir pathspec must not run git"
+        );
+        assert_eq!(
+            diff_directory(root, Path::new("../outside"), Baseline::Head, None),
+            "",
+            "escaped relative pathspec must not run git"
+        );
+        assert_eq!(
+            diff_directory(root, Path::new("/etc"), Baseline::Head, None),
+            "",
+            "absolute pathspec must not run git"
+        );
+    }
 
     // ---- path_from_git_bytes: platform path-decode seam (AC-5, T-1) ------------
 

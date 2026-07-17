@@ -437,6 +437,39 @@ fn status_mode_is_inert_without_git() {
 }
 
 #[test]
+fn status_mode_can_be_turned_off_after_reroot_to_non_git() {
+    // status_mode is a carried preference. Re-rooting into a non-git directory must not
+    // trap the user: `d` still turns the mode off even though entering is inert without git.
+    let repo = TempDir::new();
+    std::fs::write(repo.path().join("a.rs"), "a\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("a.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(repo.path(), true, git, false);
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "precondition: status mode on");
+
+    let non_git = TempDir::new();
+    std::fs::write(non_git.path().join("plain.txt"), "x\n").unwrap();
+    ctrl.re_root(non_git.path());
+    assert!(
+        ctrl.status_mode(),
+        "status_mode is a carried preference across re-root"
+    );
+
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(
+        !ctrl.status_mode(),
+        "d must still turn status mode off without git"
+    );
+    assert!(fx.redraw);
+}
+
+#[test]
 fn baseline_toggle_while_status_mode_keeps_status_filter() {
     // `b` must keep working while `d` is on (stored baseline updates) without leaving status mode.
     let dir = TempDir::new();

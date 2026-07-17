@@ -1941,8 +1941,11 @@ impl Controller {
     /// Toggle sticky git-status mode (`d`): filter the tree to current working-tree status
     /// and force working-tree diffs. Mutually exclusive with baseline-aware `c`.
     fn toggle_status_mode(&mut self) -> Effects {
-        if !self.is_git_repo {
-            return Effects::noop(); // inert without git (AC-26)
+        // Entering status mode needs a repo (AC-26). Leaving it must stay possible even after a
+        // re-root into a non-git directory, otherwise a carried-on `status_mode` can leave the
+        // user stuck on an empty filtered tree with no way to turn `d` off.
+        if !self.is_git_repo && !self.status_mode {
+            return Effects::noop();
         }
         if self.status_mode {
             self.status_mode = false;
