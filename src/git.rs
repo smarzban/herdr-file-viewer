@@ -260,6 +260,39 @@ pub fn diff(
     capture_stdout(cmd)
 }
 
+/// Raw unified diff for every tracked change under `rel_dir` against `baseline`.
+/// `rel_dir` is repo-root-relative; an empty path means the whole tree root (no pathspec).
+/// Untracked files are not included — `git diff` only sees the index/worktree for tracked paths
+/// (file-level untracked still uses the single-file [`diff`] `--no-index` path).
+pub fn diff_directory(
+    repo_root: &Path,
+    rel_dir: &Path,
+    baseline: Baseline,
+    base_hint: Option<&str>,
+) -> String {
+    if !rel_dir.as_os_str().is_empty() {
+        let abs = repo_root.join(rel_dir);
+        if !is_within_root(repo_root, &abs) {
+            return String::new();
+        }
+    }
+    let against = match baseline {
+        Baseline::Head => head_or_empty_tree(repo_root),
+        Baseline::Base => {
+            base_fork_point(repo_root, base_hint).unwrap_or_else(|| head_or_empty_tree(repo_root))
+        }
+    };
+    // Pathspec only when scoped to a subdir; empty pathspec = whole tree.
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
+    args.push(&against);
+    args.push("--");
+    let mut cmd = git_command(repo_root, &args);
+    if !rel_dir.as_os_str().is_empty() {
+        cmd.arg(rel_dir);
+    }
+    capture_stdout(cmd)
+}
+
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
 /// repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the index (AC-N2);
 /// `core.fsmonitor` / `core.hooksPath` are neutralized so a planted `.git/config` can't run a

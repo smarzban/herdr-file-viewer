@@ -36,6 +36,9 @@ impl GitService for StubGit {
     fn diff(&self, _path: &Path, _baseline: Baseline, _full: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 struct NoopEditor;

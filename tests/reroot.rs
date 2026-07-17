@@ -37,6 +37,9 @@ impl GitService for FakeGit {
     fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 /// A fake Git Service whose status / changed-set are canned per construction, so a re-root's
@@ -58,6 +61,9 @@ impl GitService for CannedGit {
     }
     fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
         self.diff.clone()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
     }
 }
 

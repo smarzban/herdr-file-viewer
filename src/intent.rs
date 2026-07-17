@@ -41,6 +41,10 @@ pub enum Intent {
     ToggleHidden,
     /// Restrict the tree to changed files / restore the full tree (AC-6).
     ToggleChangedOnly,
+    /// Toggle git-status mode: filter the tree to current working-tree status and force
+    /// working-tree diffs in the content pane (file or directory-scoped). Mutually exclusive
+    /// with [`Intent::ToggleChangedOnly`] (which stays baseline-aware for branch review).
+    ToggleStatusMode,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
     ToggleBaseline,
     /// Cycle the content pane's view mode over the applicable set (AC-11).
@@ -134,7 +138,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 35] = [
+    pub const ALL: [Intent; 36] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -144,6 +148,7 @@ impl Intent {
         Intent::ToggleIgnore,
         Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
+        Intent::ToggleStatusMode,
         Intent::ToggleBaseline,
         Intent::CycleView,
         Intent::OpenInEditor,
@@ -195,6 +200,7 @@ mod tests {
                 | Intent::ToggleIgnore
                 | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
+                | Intent::ToggleStatusMode
                 | Intent::ToggleBaseline
                 | Intent::CycleView
                 | Intent::OpenInEditor
@@ -292,11 +298,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_35() {
+    fn all_length_is_36() {
         assert_eq!(
             Intent::ALL.len(),
-            35,
-            "Intent::ALL must have exactly 35 variants after adding annotation actions"
+            36,
+            "Intent::ALL must have exactly 36 variants after adding ToggleStatusMode"
         );
     }
 

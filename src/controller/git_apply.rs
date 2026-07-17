@@ -24,27 +24,32 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Store a new changed-set and re-apply the changed-only filter against it (AC-16). The two
-    /// move together — the filter reads `self.changed` — so the pair lives in one place and the
-    /// stored set and the displayed filter can never disagree.
+    /// Store a new baseline-dependent changed-set. Re-applies the tree filter only when
+    /// baseline-aware `c` is on — status mode (`d`) filters from [`Self::git_status`] instead.
     pub(super) fn set_changed(&mut self, changed: BTreeMap<PathBuf, Status>) {
         self.changed = changed;
-        self.tree.set_changed_only(self.changed_only, &self.changed);
+        if self.changed_only && !self.status_mode {
+            self.tree.set_changed_only(true, &self.changed);
+        }
     }
 
     /// Push a freshly-queried git status + changed-set onto the tree together: per-node status
-    /// markers (AC-7) plus the changed-set behind the changed-only filter (AC-16). The single
-    /// place a status and its matching changed-set are applied in lockstep, so the markers can
-    /// never drift from the set the filter reads. `changed` is passed in because callers source
-    /// it differently — synchronously (`refresh_git_state`) or from the off-thread re-root fetch
-    /// (`poll`).
+    /// markers (AC-7), the cached working-tree status for status mode (`d`), and the
+    /// baseline-dependent changed-set for `c` (AC-16). Callers source `changed` differently —
+    /// synchronously (`refresh_git_state`) or from the off-thread re-root fetch (`poll`).
     pub(super) fn apply_git_state(
         &mut self,
         status: &BTreeMap<PathBuf, Status>,
         changed: BTreeMap<PathBuf, Status>,
     ) {
+        self.git_status = status.clone();
         self.tree.set_status(status);
         self.set_changed(changed);
+        // Status mode filters from working-tree status; re-apply after a refresh so external
+        // edits (focus-gain / `r`) update the filtered tree without leaving the mode.
+        if self.status_mode {
+            self.tree.set_changed_only(true, &self.git_status);
+        }
     }
 
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
