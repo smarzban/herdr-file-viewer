@@ -41,8 +41,9 @@ large repo.
 ## Viewing a file
 
 The content pane shows **the right view for each file, automatically**: a changed file shows its
-**diff**, a markdown file **renders**, anything else is **syntax-highlighted** content with line
-numbers. No mode-switching, no commands.
+**diff**, a markdown file **renders**, a binary **document** (`.docx`, `.odt`, `.pdf`, `.pptx`,
+`.xlsx`) is **converted and rendered**, and anything else is **syntax-highlighted** content with
+line numbers. No mode-switching, no commands.
 
 - **Cycle the view** with `v` to override the automatic choice (e.g. see a changed markdown file's
   raw source instead of its diff).

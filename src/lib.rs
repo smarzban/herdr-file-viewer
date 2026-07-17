@@ -8,6 +8,7 @@ pub mod app;
 pub mod config;
 pub mod context;
 pub mod controller;
+pub mod document;
 pub mod editor;
 pub mod finder;
 pub mod fuzzy;

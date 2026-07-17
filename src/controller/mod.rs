@@ -695,6 +695,7 @@ impl Controller {
             diff: vec!["herdr-no-such-diff-renderer".into()],
             full_diff: vec!["herdr-no-such-full-diff-renderer".into()],
             syntax: vec!["herdr-no-such-syntax-renderer".into()],
+            documents: crate::document::DocConverters::defaults(),
             timeout: std::time::Duration::from_millis(100),
         });
         let RootProviders { git, content } = providers(&resolved);
@@ -1314,7 +1315,10 @@ impl Controller {
         let content_pad_left = self.content_path.as_ref().is_some_and(|p| {
             matches!(
                 self.effective_mode(p),
-                ViewMode::RenderedMarkdown | ViewMode::Diff | ViewMode::FullDiff
+                ViewMode::RenderedMarkdown
+                    | ViewMode::RenderedDocument
+                    | ViewMode::Diff
+                    | ViewMode::FullDiff
             )
         });
         // Gutter width for a character selection's highlight (0 when not applicable); computed once
@@ -2435,8 +2439,15 @@ impl Controller {
         let Some(node) = self.tree.selected() else {
             return;
         };
+        // Both glow-delegating views are width-tied: rendered markdown AND a converted document
+        // (which is rendered through the same markdown/glow pipeline). A resize or wrap toggle
+        // must re-run glow for either; every other mode re-wraps in the Presenter alone.
+        let mode = self.effective_mode(&node.path);
         if node.kind != NodeKind::File
-            || self.effective_mode(&node.path) != ViewMode::RenderedMarkdown
+            || !matches!(
+                mode,
+                ViewMode::RenderedMarkdown | ViewMode::RenderedDocument
+            )
         {
             return;
         }
@@ -2450,7 +2461,7 @@ impl Controller {
             seq,
             path: node.path,
             rel,
-            mode: ViewMode::RenderedMarkdown,
+            mode,
             baseline: self.baseline,
             is_git: self.is_git_repo,
             wrap_width: self.md_wrap_width(),
@@ -2683,6 +2694,7 @@ impl Controller {
             path: path.to_path_buf(),
             is_markdown: is_markdown(path),
             is_changed: self.is_changed(path),
+            is_document: is_document(path),
         }
     }
 
@@ -2748,6 +2760,11 @@ fn is_markdown(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)
+}
+
+/// Whether a path names a convertible binary document (docx/pptx/xlsx/pdf/odt).
+fn is_document(path: &Path) -> bool {
+    crate::document::DocKind::from_path(path).is_some()
 }
 
 #[cfg(test)]

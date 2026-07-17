@@ -8,6 +8,21 @@ dependencies (not Cargo dependencies) and each is **optional**:
 | Rendered markdown | [`glow`](https://github.com/charmbracelet/glow) | `brew install glow` / package manager |
 | Diffs | [`delta`](https://github.com/dandavison/delta) | `brew install git-delta` / `cargo install git-delta` |
 | Syntax-highlighted content | [`bat`](https://github.com/sharkdp/bat) | `brew install bat` / package manager |
+| `.docx` / `.odt` documents | [`pandoc`](https://pandoc.org) | `brew install pandoc` / package manager |
+| `.pdf` documents | `pdftotext` ([poppler](https://poppler.freedesktop.org/)) | `brew install poppler` / package manager |
+| `.pptx` / `.xlsx` documents | [`libreoffice`](https://www.libreoffice.org/) | `brew install --cask libreoffice` / package manager |
+
+### Rendered documents
+
+Binary office and PDF files that used to show a `[binary file]` placeholder now render: the viewer
+converts the file to text with the tool above (`pandoc` emits markdown for Word/OpenDocument;
+`pdftotext` reads PDFs; LibreOffice exports spreadsheets to CSV, and — since Impress has no text
+export — turns PowerPoint into a PDF that `pdftotext` then reads), then shows the result through the
+**markdown** renderer (`glow`) — so headings, lists, and tables render and wrap to the pane just
+like a `.md` file. Because these converters read a *binary* file, they receive the file **path** (the one file
+type that can't be piped on stdin); the path is confined to the tree root and the converter's
+output is re-sanitized before display, so the trust boundary is unchanged. As with every renderer,
+a missing converter degrades to a short notice naming the tool to install — never a crash.
 
 Or install all three at once with the bundled helper (best-effort; detects brew/apt/dnf/pacman
 and falls back to `cargo install` for `delta` and `bat`; `glow` is written in Go, so the helper

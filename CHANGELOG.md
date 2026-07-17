@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [1.13.0] - 2026-07-16
 
 ### Added
+- Rendered documents: `.docx`, `.odt`, `.pdf`, `.pptx`, and `.xlsx` now render in the content pane (previously a binary placeholder), converted to text by an external tool — `pandoc` (Word/OpenDocument), `pdftotext` (PDF), or `libreoffice` (PowerPoint/spreadsheets) — and shown through the markdown renderer. Each converter is optional: a missing one degrades to a notice, never a crash. → [renderers](docs/renderers.md)
 - Configurable content-preview caps: `preview_max_lines` (100–100000, default 10000) and `preview_max_kib` (64–65536 KiB, default 1024 = 1 MB) set how much of a file the content pane shows before a truncated preview. → [configuration](docs/configuration.md)
 - Session-only file and line/range annotations, with persistent tree/title/source-line indicators, stable dialogs, an overview for edit/delete/clear-all, and exact clipboard export. Quitting or switching worktree with annotations held confirms first, listing what would be lost (`y` copies them and continues, `Esc` cancels); disable with `confirm_discard = false`. Thanks @mschwarzmueller (#100, #101). → [usage](docs/usage.md#annotating-files-and-ranges)
 

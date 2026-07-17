@@ -8610,6 +8610,7 @@ fn uppercasing_markdown_renderers() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -8622,6 +8623,7 @@ fn absent_markdown_renderers() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -8719,6 +8721,7 @@ fn slow_markdown_renderers() -> Renderers {
         syntax: vec!["cat".into()],
         // The SHARED render timeout is generous (5s). FIX-B must NOT lean on it — the help path
         // installs its own ~250ms bound — so we set this high to prove the bound is help-specific.
+        documents: herdr_file_viewer::document::DocConverters::defaults(),
         timeout: Duration::from_secs(5),
     }
 }
