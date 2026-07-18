@@ -24,6 +24,14 @@ PowerShell launcher scripts.
 - **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing
   herdr's JSON under Windows PowerShell 5.1, so names outside the active legacy code page do not
   make the viewer fall back to its plugin install directory.
+- **PowerShell and Git Bash/zsh pane shells are both supported.** `pane run` types into whatever
+  `terminal.default_shell` is (PowerShell when unset). The launchers read that setting from
+  `%APPDATA%\herdr\config.toml` and emit either `& "…\hfv.exe"` (PowerShell) or `"…/hfv.exe"`
+  (bash/zsh). They also install a short `%USERPROFILE%\bin\hfv.exe` shim and mirror
+  `assets/markdown-style.json` beside it so glow still finds its style when launched from the shim.
+- **Git 2.41+ is required for status markers and branch display.** The viewer passes
+  `--attr-source=…` on every git call; older Git for Windows (e.g. 2.39) rejects that flag and
+  silently degrades to a plain tree.
 - **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
   project's CI gate (the `windows-latest` job is advisory, not required), so a Windows-specific
   regression can land between releases. Full feature parity with Linux/macOS is the goal, not a

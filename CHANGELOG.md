@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Changed
+- The split-pane viewer now opens to the **left** of the focused work pane on all platforms (herdr only accepts `split --direction right|down`, so launchers open right then `pane swap --direction left`). → [summoning](docs/summoning.md)
+
+### Fixed
+- Windows launchers now support both PowerShell and Git Bash/zsh pane shells by reading `terminal.default_shell` and emitting the matching `pane run` form; they also use a short `%USERPROFILE%\bin\hfv.exe` shim and mirror `assets/markdown-style.json` beside it so glow markdown styling still works from the shim. → [windows](docs/windows.md)
+- Documented Windows renderer install via `winget` and the Git 2.41+ requirement for status markers. → [renderers](docs/renderers.md), [windows](docs/windows.md)
+
 ## [1.13.0] - 2026-07-16
 
 ### Added

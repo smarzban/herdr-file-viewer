@@ -18,6 +18,16 @@ prints its manual install link instead of attempting a cargo install), run from 
 ./scripts/install-renderers.sh
 ```
 
+On **Windows**, `install-renderers.sh` is not used. Install via winget (or scoop) instead:
+
+```powershell
+winget install charmbracelet.glow
+winget install dandavison.delta
+winget install sharkdp.bat
+```
+
+Open a new herdr pane after installing so `PATH` updates.
+
 **If a renderer is not installed, the viewer falls back to plain text** and shows a short
 notice in the content pane naming the missing capability (e.g. *“Markdown renderer
 unavailable (glow: …); showing plain text.”*). The viewer never crashes or shows an empty
