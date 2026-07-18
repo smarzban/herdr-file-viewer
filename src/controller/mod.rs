@@ -101,6 +101,31 @@ pub trait GitService: Send + Sync {
     fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String;
 }
 
+/// Local addition (not upstream): which command the Diff/FullDiff views delegate to.
+/// Cycled by `Intent::ToggleDeltaRaw` (key `D`): `Delta` → `DeltaSideBySide` → `Raw` → `Delta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffRenderMode {
+    /// The configured `delta` renderer, unified (delta's default layout).
+    #[default]
+    Delta,
+    /// The configured `delta` renderer with `--side-by-side` appended — old/new shown in two
+    /// columns instead of interleaved.
+    DeltaSideBySide,
+    /// A plain, unstyled `git diff` passthrough — bypasses `delta` entirely.
+    Raw,
+}
+
+impl DiffRenderMode {
+    /// The next mode in the cycle (wraps at the end).
+    pub fn next(self) -> Self {
+        match self {
+            DiffRenderMode::Delta => DiffRenderMode::DeltaSideBySide,
+            DiffRenderMode::DeltaSideBySide => DiffRenderMode::Raw,
+            DiffRenderMode::Raw => DiffRenderMode::Delta,
+        }
+    }
+}
+
 /// The rendered content pane for one file: ingested text plus any non-fatal notices
 /// (truncation AC-13, renderer fallback AC-25).
 pub struct RenderResult {
@@ -129,14 +154,29 @@ pub trait ContentProvider: Send {
     /// width into glow's `-w`.
     ///
     /// [`render`]: ContentProvider::render
+    ///
+    /// `diff_render_mode` is a local addition (not upstream): for the Diff/FullDiff modes it
+    /// picks which command they delegate to — `delta` unified, `delta --side-by-side`, or a
+    /// plain `git diff` passthrough (`Intent::ToggleDeltaRaw` cycles it, key `D`). Ignored by
+    /// every other mode.
+    ///
+    /// `pane_width` is a second, local-addition width channel: unlike `width` (gated by the
+    /// markdown wrap preference), it is the pane's drawable width whenever it's known, and it
+    /// feeds `delta`'s own `--width` so `DeltaSideBySide`'s two columns size to the pane
+    /// instead of delta's fixed fallback (delta is piped, not a real tty, so it cannot
+    /// auto-detect terminal width itself). Ignored by every mode except Diff/FullDiff.
     fn render_at_width(
         &self,
         path: &Path,
         mode: ViewMode,
         raw_diff: Option<&str>,
         width: Option<u16>,
+        pane_width: Option<u16>,
+        diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         let _ = width;
+        let _ = pane_width;
+        let _ = diff_render_mode;
         self.render(path, mode, raw_diff)
     }
 }
@@ -271,6 +311,17 @@ struct RenderJob {
     /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
     /// instead of overflowing and being shattered by the Presenter's re-wrap.
     wrap_width: Option<u16>,
+    /// Local addition: the content pane's drawable text width, unconditional — unlike
+    /// `wrap_width` it is NOT gated by the markdown wrap preference (`effective_wrap`), because
+    /// it feeds `delta`'s own `--width` rather than a line-wrap decision. `delta` is spawned
+    /// with stdout piped (not a real tty), so it cannot auto-detect a terminal width itself and
+    /// falls back to a fixed default, which visibly clips `DiffRenderMode::DeltaSideBySide`'s
+    /// two columns regardless of the actual pane size. `None` before the first draw has
+    /// measured the pane. Ignored by every mode except Diff/FullDiff.
+    pane_width: Option<u16>,
+    /// Local addition: which command a Diff/FullDiff render delegates to
+    /// (`Intent::ToggleDeltaRaw`). Ignored by other modes.
+    diff_render_mode: DiffRenderMode,
 }
 
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
@@ -378,6 +429,11 @@ pub struct Controller {
     show_ignored: bool,
     hide_hidden: bool,
     changed_only: bool,
+    /// Local addition: which command a Diff/FullDiff render delegates to
+    /// (`Intent::ToggleDeltaRaw`, key `D`, cycles Delta → DeltaSideBySide → Raw). Carried
+    /// across a re-root like the other display preferences (`show_ignored`, `hide_hidden`,
+    /// `changed_only`, `baseline`).
+    diff_render_mode: DiffRenderMode,
     /// The tree's horizontal scroll offset (columns), for reading long / deeply-nested rows. Like
     /// the cursor it is navigation state: reset on a re-root (AC-13), not carried.
     tree_hscroll: u16,
@@ -654,6 +710,7 @@ impl Controller {
             hide_hidden: false,
             tree_hscroll: 0,
             changed_only: false,
+            diff_render_mode: DiffRenderMode::default(),
             focus: Focus::Tree,
             width: 0,
             content_scroll: 0,
@@ -756,6 +813,8 @@ impl Controller {
                         job.mode,
                         raw_diff.as_deref(),
                         job.wrap_width,
+                        job.pane_width,
+                        job.diff_render_mode,
                     )
                 }))
                 .unwrap_or_else(|_| RenderResult {
@@ -1141,13 +1200,12 @@ impl Controller {
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
-        // When markdown is fit-to-pane (wrapped), glow lays the table out to the pane width, so a
-        // width change (terminal resize or split-bar drag) must reflow it, preserving scroll and
-        // search (unlike a selection-change render). When unwrapped (the `w` horizontal-scroll view)
-        // glow's natural-width output is width-independent — the pane just re-clamps h-scroll, no
-        // re-render. A height-only change never affects glow's layout either.
-        if width_changed && self.effective_wrap() {
-            self.rerender_markdown_reflow();
+        // A width-sensitive delegate (glow fit-to-pane markdown, or a non-`Raw` delta diff mode)
+        // must reflow to the new width, preserving scroll and search (unlike a selection-change
+        // render); `rerender_after_resize` gates per-mode whether that applies. A height-only
+        // change never affects either delegate's layout.
+        if width_changed {
+            self.rerender_after_resize();
         }
     }
 
@@ -1447,6 +1505,7 @@ impl Controller {
             Intent::ToggleHidden => self.toggle_hidden(),
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
             Intent::ToggleBaseline => self.toggle_baseline(),
+            Intent::ToggleDeltaRaw => self.toggle_delta_raw(),
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
             Intent::OpenWithApp => self.open_with_app(),
@@ -1803,6 +1862,17 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// Local addition: cycle which command Diff/FullDiff renders delegate to (`delta` unified →
+    /// `delta --side-by-side` → plain `git diff` → back to unified). Independent of the view
+    /// mode and baseline — it only changes the diff modes' renderer command, so it re-renders
+    /// unconditionally rather than gating on the current mode (a non-diff file's re-render is a
+    /// harmless no-op).
+    fn toggle_delta_raw(&mut self) -> Effects {
+        self.diff_render_mode = self.diff_render_mode.next();
+        self.dispatch_render();
+        Effects::redraw()
+    }
+
     fn cycle_view(&mut self) -> Effects {
         let Some(node) = self.tree.selected() else {
             return Effects::noop();
@@ -2076,7 +2146,7 @@ impl Controller {
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
         // Markdown must re-render at the new wrap width (fit vs. natural); a no-op for other modes,
         // which only need the re-clamp above.
-        self.rerender_markdown_reflow();
+        self.rerender_after_wrap_toggle();
         Effects::redraw()
     }
 
@@ -2215,39 +2285,78 @@ impl Controller {
         (self.content_width > 0 && self.effective_wrap()).then_some(self.content_width)
     }
 
-    /// Re-render the current markdown selection **without** the view-state reset [`dispatch_render`]
-    /// performs — the triggers are a content-pane resize and the `w` wrap toggle, neither of which is
-    /// a selection change, so scroll position and any active search must survive. Only rendered
-    /// markdown is re-rendered: glow's layout is tied to the wrap width we pass it (fit-to-pane vs.
-    /// natural width), so a resize-while-fit or a wrap toggle must re-run glow; every other mode is
-    /// width-independent here (diffs/code re-wrap in the Presenter alone), so this is a no-op for
-    /// them. The current content stays on screen until the new render lands (no `Rendering…`
-    /// placeholder), so a live split-drag doesn't flash; the worker collapses the backlog so only the
-    /// final state renders. [`poll`] applies the result by `seq` and, seeing it flagged in
-    /// `reflow_seq`, keeps the scroll and recomputes an active search.
-    fn rerender_markdown_reflow(&mut self) {
+    /// Local addition: the content pane's drawable text width, unconditional (unlike
+    /// [`md_wrap_width`](Self::md_wrap_width), which is gated by the markdown wrap
+    /// preference) — feeds `delta`'s own `--width` for the diff modes. `None` before the
+    /// first draw has measured the pane.
+    fn pane_width(&self) -> Option<u16> {
+        (self.content_width > 0).then_some(self.content_width)
+    }
+
+    /// `w` wrap toggle: re-render if the selection is rendered markdown, since wrap changes
+    /// glow's `-w` (fit-to-pane vs. natural width). No-op for every other mode — wrap is pure
+    /// Presenter layout there (diffs/code re-wrap in the Presenter alone; `delta`'s own output
+    /// is width-, not wrap-, sensitive — see [`rerender_after_resize`](Self::rerender_after_resize)).
+    fn rerender_after_wrap_toggle(&mut self) {
         let Some(node) = self.tree.selected() else {
             return;
         };
-        if node.kind != NodeKind::File
-            || self.effective_mode(&node.path) != ViewMode::RenderedMarkdown
+        if node.kind == NodeKind::File && self.effective_mode(&node.path) == ViewMode::RenderedMarkdown
         {
+            self.dispatch_reflow(node.path, ViewMode::RenderedMarkdown);
+        }
+    }
+
+    /// Content-pane resize (a terminal resize or a split-bar drag): re-render if the selection
+    /// delegates to something width-sensitive — rendered markdown when fit-to-pane (glow lays
+    /// the table out to the pane width), or a Diff/FullDiff view whose `delta` mode isn't `Raw`
+    /// (`delta` is piped, not a real tty, so it can't auto-detect a terminal width itself and a
+    /// `DeltaSideBySide` render otherwise stays sized to its stale fallback width after a
+    /// resize — `Raw` is `cat`, unaffected by width either way). Every other case is
+    /// width-independent here and a no-op.
+    fn rerender_after_resize(&mut self) {
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        if node.kind != NodeKind::File {
             return;
         }
+        let mode = self.effective_mode(&node.path);
+        let reflow = match mode {
+            ViewMode::RenderedMarkdown => self.effective_wrap(),
+            ViewMode::Diff | ViewMode::FullDiff => self.diff_render_mode != DiffRenderMode::Raw,
+            ViewMode::SyntaxContent => false,
+        };
+        if reflow {
+            self.dispatch_reflow(node.path, mode);
+        }
+    }
+
+    /// Re-render `path` at `mode` **without** the view-state reset [`dispatch_render`] performs
+    /// — shared core for [`rerender_after_wrap_toggle`](Self::rerender_after_wrap_toggle) and
+    /// [`rerender_after_resize`](Self::rerender_after_resize), neither of which is a selection
+    /// change, so scroll position and any active search must survive. The current content stays
+    /// on screen until the new render lands (no `Rendering…` placeholder), so a live split-drag
+    /// doesn't flash; the worker collapses the backlog so only the final state renders. [`poll`]
+    /// applies the result by `seq` and, seeing it flagged in `reflow_seq`, keeps the scroll and
+    /// recomputes an active search.
+    fn dispatch_reflow(&mut self, path: PathBuf, mode: ViewMode) {
         self.latest_seq += 1;
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
-        let rel = self.rel(&node.path);
+        let rel = self.rel(&path);
         // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
         // never receive a result for this seq, which is fine (nothing was cleared).
         let _ = self.job_tx.send(RenderJob {
             seq,
-            path: node.path,
+            path,
             rel,
-            mode: ViewMode::RenderedMarkdown,
+            mode,
             baseline: self.baseline,
             is_git: self.is_git_repo,
             wrap_width: self.md_wrap_width(),
+            pane_width: self.pane_width(),
+            diff_render_mode: self.diff_render_mode,
         });
     }
 
@@ -2317,6 +2426,8 @@ impl Controller {
                 baseline: self.baseline,
                 is_git: self.is_git_repo,
                 wrap_width: self.md_wrap_width(),
+                pane_width: self.pane_width(),
+                diff_render_mode: self.diff_render_mode,
             })
             .is_ok()
         {

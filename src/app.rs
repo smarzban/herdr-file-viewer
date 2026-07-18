@@ -7,8 +7,8 @@
 //! via the hook `ratatui::try_init` installs.
 
 use crate::controller::{
-    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
+    Clipboard, Components, ContentProvider, Controller, DiffRenderMode, EditorHandoff,
+    EditorOutcome, GitService, RenderResult, RootProviders,
 };
 use crate::editor::{EditorLauncher, SpawnError, Spawner};
 use crate::git::{self, Baseline, Status};
@@ -355,7 +355,7 @@ struct LiveContent {
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
         // The width-less entry point: no pane width known, so glow keeps its `-w 0` (no wrap).
-        self.render_at_width(path, mode, raw_diff, None)
+        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
     }
 
     fn render_at_width(
@@ -364,6 +364,8 @@ impl ContentProvider for LiveContent {
         mode: ViewMode,
         raw_diff: Option<&str>,
         width: Option<u16>,
+        pane_width: Option<u16>,
+        diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         // Both diff modes render from git's diff text, not the file bytes — so a deleted or
         // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
@@ -390,18 +392,89 @@ impl ContentProvider for LiveContent {
         // out and wraps tables to fit the pane (columns sized, cells ellipsized, borders intact),
         // and pads every line to exactly that width — the Presenter's re-wrap is then a no-op
         // rather than shattering a natural-width `-w 0` table across the border rows. The bundled
-        // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide. Every
-        // other mode is width-independent here (delta/bat manage their own width; they h-scroll,
-        // never re-wrap), so they use the base renderers unchanged.
-        let (content, notice) = match (mode, width.filter(|w| *w > 0)) {
-            (ViewMode::RenderedMarkdown, Some(w)) => {
-                let wrapped = Renderers {
-                    markdown: render::with_wrap_width(&self.renderers.markdown, w),
+        // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide.
+        // `bat`/plain-diff (`cat`) manage their own width; they h-scroll, never re-wrap, so they
+        // use the base renderers unchanged. `delta` is the exception among those: spawned with
+        // stdout piped (not a real tty) it can't auto-detect a terminal width and falls back to
+        // its own default, wrapping `DeltaSideBySide`'s two columns at a fixed size regardless of
+        // the pane — so it gets the same `-w` treatment as glow, below.
+        // Local addition (`Intent::ToggleDeltaRaw`): pick which command the diff modes delegate
+        // to. Mirrors the markdown wrap-width override just below — a cloned `Renderers` with
+        // only the relevant command(s) replaced, so every other renderer (markdown/syntax) is
+        // untouched. `Raw` uses `cat` rather than skipping the delegate call outright, so the
+        // existing renderer/timeout/fallback machinery in `render::render` stays the single
+        // code path for every mode.
+        let base_renderers = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
+            match diff_render_mode {
+                DiffRenderMode::Delta => self.renderers.clone(),
+                DiffRenderMode::DeltaSideBySide => {
+                    let mut diff = self.renderers.diff.clone();
+                    diff.push("--side-by-side".to_string());
+                    let mut full_diff = self.renderers.full_diff.clone();
+                    full_diff.push("--side-by-side".to_string());
+                    Renderers {
+                        diff,
+                        full_diff,
+                        ..self.renderers.clone()
+                    }
+                }
+                DiffRenderMode::Raw => Renderers {
+                    diff: vec!["cat".to_string()],
+                    full_diff: vec!["cat".to_string()],
                     ..self.renderers.clone()
+                },
+            }
+        } else {
+            self.renderers.clone()
+        };
+        let (content, notice) = match (
+            mode,
+            width.filter(|w| *w > 0),
+            pane_width.filter(|w| *w > 0),
+        ) {
+            (ViewMode::RenderedMarkdown, Some(w), _) => {
+                let wrapped = Renderers {
+                    markdown: render::with_wrap_width(&base_renderers.markdown, w),
+                    ..base_renderers.clone()
                 };
                 render::render(&wrapped, &prepared, mode, raw_diff, name)
             }
-            _ => render::render(&self.renderers, &prepared, mode, raw_diff, name),
+            (ViewMode::Diff | ViewMode::FullDiff, _, Some(w))
+                if diff_render_mode != DiffRenderMode::Raw =>
+            {
+                // `delta`'s own `-w`/`--width` (not glow's) — same flag letter, so
+                // `with_wrap_width` finds/appends it unchanged. `Raw` is excluded: its command
+                // is `cat`, which would choke on an unknown `-w` flag. `pane_width`, not
+                // `width`: the latter is gated by the markdown wrap preference and stays `None`
+                // for diffs (their line-wrap defaults off, AC-N/a) — unrelated to delta needing
+                // *a* width at all to size its columns.
+                let wrapped = Renderers {
+                    diff: render::with_wrap_width(&base_renderers.diff, w),
+                    full_diff: render::with_wrap_width(&base_renderers.full_diff, w),
+                    ..base_renderers.clone()
+                };
+                render::render(&wrapped, &prepared, mode, raw_diff, name)
+            }
+            _ => render::render(&base_renderers, &prepared, mode, raw_diff, name),
+        };
+        let mode_notice = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
+            match diff_render_mode {
+                DiffRenderMode::Delta => None,
+                DiffRenderMode::DeltaSideBySide => {
+                    Some("Delta rendering: side-by-side — press D to cycle.".to_string())
+                }
+                DiffRenderMode::Raw => {
+                    Some("Delta rendering: OFF (plain git diff) — press D to cycle.".to_string())
+                }
+            }
+        } else {
+            None
+        };
+        let notice = match (notice, mode_notice) {
+            (Some(prev), Some(m)) => Some(format!("{prev}\n{m}")),
+            (Some(prev), None) => Some(prev),
+            (None, Some(m)) => Some(m),
+            (None, None) => None,
         };
         RenderResult {
             content,
@@ -886,7 +959,14 @@ mod tests {
         let md = root.join("doc.md");
         std::fs::write(&md, "| a | b |\n|---|---|\n| 1 | 2 |\n").unwrap();
         let content = echoing_md_content(&root);
-        let out = content.render_at_width(&md, ViewMode::RenderedMarkdown, None, Some(80));
+        let out = content.render_at_width(
+            &md,
+            ViewMode::RenderedMarkdown,
+            None,
+            Some(80),
+            None,
+            DiffRenderMode::default(),
+        );
         assert!(
             flatten_content(&out).contains("W=80"),
             "the pane width must reach glow's -w: {:?}",
@@ -906,7 +986,14 @@ mod tests {
         let content = echoing_md_content(&root);
         // Explicit None, an inert zero width, and the width-less `render` all keep the base `-w 0`.
         for w in [None, Some(0)] {
-            let out = content.render_at_width(&md, ViewMode::RenderedMarkdown, None, w);
+            let out = content.render_at_width(
+                &md,
+                ViewMode::RenderedMarkdown,
+                None,
+                w,
+                None,
+                DiffRenderMode::default(),
+            );
             assert!(
                 flatten_content(&out).contains("W=0"),
                 "width {w:?} must leave -w at 0: {:?}",

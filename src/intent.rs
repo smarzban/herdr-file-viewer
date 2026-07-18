@@ -42,6 +42,11 @@ pub enum Intent {
     ToggleChangedOnly,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
     ToggleBaseline,
+    /// Cycle the Diff/FullDiff views' delegate: `delta` unified → `delta --side-by-side` →
+    /// plain, unstyled `git diff` → back to unified. Read-only — it only swaps which renderer
+    /// command the diff modes delegate to; no file or git mutation. Local addition, not
+    /// upstream.
+    ToggleDeltaRaw,
     /// Cycle the content pane's view mode over the applicable set (AC-11).
     CycleView,
     /// Hand the selected file off to an external editor (AC-19).
@@ -128,7 +133,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 33] = [
+    pub const ALL: [Intent; 34] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -139,6 +144,7 @@ impl Intent {
         Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
         Intent::ToggleBaseline,
+        Intent::ToggleDeltaRaw,
         Intent::CycleView,
         Intent::OpenInEditor,
         Intent::OpenWithApp,
@@ -188,6 +194,7 @@ mod tests {
                 | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
                 | Intent::ToggleBaseline
+                | Intent::ToggleDeltaRaw
                 | Intent::CycleView
                 | Intent::OpenInEditor
                 | Intent::OpenWithApp
@@ -278,11 +285,19 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_33() {
+    fn all_length_is_34() {
         assert_eq!(
             Intent::ALL.len(),
-            33,
-            "Intent::ALL must have exactly 33 variants after adding OpenFullscreen"
+            34,
+            "Intent::ALL must have exactly 34 variants after adding ToggleDeltaRaw"
+        );
+    }
+
+    #[test]
+    fn toggle_delta_raw_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::ToggleDeltaRaw),
+            "Intent::ALL must contain ToggleDeltaRaw"
         );
     }
 

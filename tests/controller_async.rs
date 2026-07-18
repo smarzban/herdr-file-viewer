@@ -8,8 +8,8 @@ mod common;
 use common::TempDir;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
+    Components, ContentProvider, Controller, DiffRenderMode, EditorHandoff, EditorOutcome,
+    GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -613,7 +613,7 @@ impl WidthProbe {
 }
 impl ContentProvider for WidthProbe {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None)
+        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
     }
     fn render_at_width(
         &self,
@@ -621,6 +621,8 @@ impl ContentProvider for WidthProbe {
         _mode: ViewMode,
         _raw_diff: Option<&str>,
         width: Option<u16>,
+        _pane_width: Option<u16>,
+        _diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         self.widths.lock().unwrap().push(width);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -854,7 +856,14 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
     let s = DefaultStub;
     let p = Path::new("/x/a.rs");
     let base = s.render(p, ViewMode::SyntaxContent, Some("d"));
-    let widthed = s.render_at_width(p, ViewMode::SyntaxContent, Some("d"), Some(42));
+    let widthed = s.render_at_width(
+        p,
+        ViewMode::SyntaxContent,
+        Some("d"),
+        Some(42),
+        None,
+        DiffRenderMode::default(),
+    );
     assert_eq!(
         flatten(&base.content),
         flatten(&widthed.content),
@@ -869,7 +878,7 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
 struct WidthDependentMatches;
 impl ContentProvider for WidthDependentMatches {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None)
+        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
     }
     fn render_at_width(
         &self,
@@ -877,6 +886,8 @@ impl ContentProvider for WidthDependentMatches {
         _mode: ViewMode,
         _raw_diff: Option<&str>,
         width: Option<u16>,
+        _pane_width: Option<u16>,
+        _diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         let n = match width {
             Some(w) if w >= 40 => 8,

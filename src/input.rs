@@ -212,6 +212,13 @@ pub(crate) const REGISTRY: &[Binding] = &[
         category: "Git & filters",
     },
     Binding {
+        intent: Intent::ToggleDeltaRaw,
+        name: "toggle_delta_raw",
+        default_keys: &[KeyCode::Char('D')],
+        description: "Toggle the diff view between delta rendering and plain git diff text.",
+        category: "Git & filters",
+    },
+    Binding {
         intent: Intent::CycleView,
         name: "cycle_view",
         default_keys: &[KeyCode::Char('v')],
@@ -675,6 +682,7 @@ mod tests {
         (KeyCode::Char('.'), Intent::ToggleHidden),
         (KeyCode::Char('c'), Intent::ToggleChangedOnly),
         (KeyCode::Char('b'), Intent::ToggleBaseline),
+        (KeyCode::Char('D'), Intent::ToggleDeltaRaw),
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
         (KeyCode::Char('f'), Intent::OpenFinder),

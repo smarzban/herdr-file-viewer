@@ -22,6 +22,7 @@ is additive and on by default.
 | `.` | Toggle hidden (dot-prefixed) files and folders |
 | `c` | Toggle changed-files-only |
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
+| `D` (Shift+`d`) | **Local addition**: cycle the Diff/FullDiff views' delegate — `delta` unified → `delta --side-by-side` → plain, unstyled `git diff` text → back to unified |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` (see [Opening in an editor](#opening-in-an-editor)) |
 | `O` (Shift+`o`) | **Open with default app**: hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |
