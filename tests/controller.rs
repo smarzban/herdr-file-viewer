@@ -401,6 +401,92 @@ fn toggle_status_mode_filters_by_git_status_not_baseline_changed_set() {
     );
 }
 
+/// A Git stub whose `status()` result CHANGES after the first call, so a test can drive the
+/// refresh path (`Refresh` / re-query) and see the tree re-filter from the new working-tree
+/// status. `changed_set` stays empty (status mode is baseline-independent).
+struct EvolvingStatusGit {
+    first: BTreeMap<PathBuf, Status>,
+    rest: BTreeMap<PathBuf, Status>,
+    calls: Arc<Mutex<usize>>,
+}
+impl GitService for EvolvingStatusGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        let mut n = self.calls.lock().unwrap();
+        *n += 1;
+        if *n <= 1 {
+            self.first.clone()
+        } else {
+            self.rest.clone()
+        }
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        BTreeMap::new()
+    }
+    fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+#[test]
+fn status_mode_refilters_from_working_tree_status_on_refresh() {
+    // In status mode, `r` (Refresh) must re-query git status and re-filter the tree from the NEW
+    // working-tree status WITHOUT leaving the mode — the `apply_git_state` status-mode branch. A
+    // single changed file at each step makes the visible set deterministic.
+    let dir = TempDir::new();
+    for f in ["a.rs", "b.rs"] {
+        std::fs::write(dir.path().join(f), "x\n").unwrap();
+    }
+    let (a, b) = (PathBuf::from("a.rs"), PathBuf::from("b.rs"));
+    let git = EvolvingStatusGit {
+        first: BTreeMap::from([(a.clone(), Status::Modified)]), // only a.rs dirty initially
+        rest: BTreeMap::from([(b.clone(), Status::Modified)]),  // after an external edit: only b.rs
+        calls: Arc::new(Mutex::new(0)),
+    };
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor::default()),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+    let before = visible_names(&ctrl);
+    assert!(
+        before.iter().any(|n| n == "a.rs"),
+        "initial status shows a.rs: {before:?}"
+    );
+    assert!(
+        !before.iter().any(|n| n == "b.rs"),
+        "b.rs is clean initially: {before:?}"
+    );
+
+    ctrl.handle(Intent::Refresh);
+
+    assert!(ctrl.status_mode(), "refresh must not leave status mode");
+    let after = visible_names(&ctrl);
+    assert!(
+        after.iter().any(|n| n == "b.rs"),
+        "refresh re-filters to the new status (b.rs): {after:?}"
+    );
+    assert!(
+        !after.iter().any(|n| n == "a.rs"),
+        "a.rs left the status set after refresh: {after:?}"
+    );
+}
+
 #[test]
 fn status_mode_and_changed_only_are_mutually_exclusive() {
     let dir = TempDir::new();

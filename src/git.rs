@@ -41,6 +41,12 @@ const FULL_CONTEXT: &str = "-U1000000";
 /// layer's display cap (AC-13) runs. Comfortably above that display cap (render's ~1 MB), so
 /// it never reduces what the user sees — only the transient buffer and git's work.
 const MAX_DIFF_BYTES: u64 = 4 * 1024 * 1024; // 4 MB
+/// Hard cap on how many untracked descendants a directory diff will spawn a `git` process for.
+/// The byte cap ([`MAX_DIFF_BYTES`]) alone does not bound process spawns: a directory of many
+/// *small* untracked files stays under it while still spawning one process each. The render
+/// layer's AC-13 preview cap truncates the visible pane far below this, so a dropped tail is
+/// never displayed.
+const MAX_UNTRACKED_DIFF_FILES: usize = 512;
 
 /// A file's git status against the working tree (AC-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,19 +237,7 @@ pub fn diff(
     // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
     // filenames reach git verbatim and their diffs are not silently empty.
     if is_untracked(repo_root, path) {
-        let mut args = vec![
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-index",
-            "--no-color",
-        ];
-        args.extend(unified);
-        args.push("--");
-        args.push(NULL_DEVICE);
-        let mut cmd = git_command(repo_root, &args);
-        cmd.arg(path);
-        return capture_stdout(cmd);
+        return diff_untracked(repo_root, path, unified);
     }
     let against = match baseline {
         Baseline::Head => head_or_empty_tree(repo_root),
@@ -255,6 +249,30 @@ pub fn diff(
     args.extend(unified);
     args.push(&against);
     args.push("--");
+    let mut cmd = git_command(repo_root, &args);
+    cmd.arg(path);
+    capture_stdout(cmd)
+}
+
+/// The `/dev/null`-vs-file `--no-index` patch for a KNOWN-untracked path (all its content shown
+/// as additions). The caller guarantees `path` is untracked, so this skips the `is_untracked`
+/// probe that the general [`diff`] must run first — one `git` process, not two. `unified` is the
+/// optional full-context window. Read-only, and the same root-confinement guard [`diff`] applies
+/// (AC-N5) so a status-derived path can never resolve outside the tree.
+fn diff_untracked(repo_root: &Path, path: &Path, unified: Option<&str>) -> String {
+    if !is_within_root(repo_root, path) {
+        return String::new();
+    }
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-index",
+        "--no-color",
+    ];
+    args.extend(unified);
+    args.push("--");
+    args.push(NULL_DEVICE);
     let mut cmd = git_command(repo_root, &args);
     cmd.arg(path);
     capture_stdout(cmd)
@@ -293,20 +311,24 @@ pub fn diff_directory(
     }
     let mut output = capture_stdout(cmd);
 
-    // `git diff` intentionally omits untracked paths. Add each untracked descendant through the
-    // existing single-file path, which emits a safe /dev/null-vs-file patch and already handles
-    // binary content, path confinement, and platform null-device differences.
+    // `git diff` intentionally omits untracked paths. Append each untracked descendant as a safe
+    // /dev/null-vs-file patch via [`diff_untracked`] — NOT the general [`diff`], which would
+    // re-spawn `git ls-files` to re-establish untracked-ness we already have from `status` (a
+    // second, wasted process per file).
     //
-    // Bound the running total to the SAME hard [`MAX_DIFF_BYTES`] limit [`capture_stdout`] applies
-    // to a single git invocation, so a directory with many (or large) untracked files can never
-    // build an oversized string in memory. The final admitted patch is trimmed to the remaining
-    // budget at a UTF-8 boundary (mirroring `capture_stdout`'s own byte-cap truncation); the render
-    // layer's AC-13 preview cap already truncates the visible pane far below this, so the trimmed
-    // tail is never displayed. `status` is a `BTreeMap`, so the paths admitted before the cap are
-    // the lexicographically-first ones (deterministic), not an arbitrary subset.
+    // Two independent bounds, because they guard different resources:
+    //   • BYTES — cap the running total at [`MAX_DIFF_BYTES`] (like [`capture_stdout`] does for a
+    //     single invocation) so the string can't grow oversized; the final admitted patch is
+    //     trimmed to the remaining budget at a UTF-8 boundary.
+    //   • COUNT — cap the number of spawned processes at [`MAX_UNTRACKED_DIFF_FILES`]; the byte cap
+    //     alone doesn't bound spawns when the untracked files are small (many stay under it).
+    // The render layer's AC-13 preview cap truncates the visible pane far below either bound, so a
+    // dropped tail is never displayed. `status` is a `BTreeMap`, so the paths admitted before a cap
+    // are the lexicographically-first ones (deterministic), not an arbitrary subset.
     let cap = MAX_DIFF_BYTES as usize;
+    let mut spawned = 0usize;
     for (path, state) in status(repo_root) {
-        if cap.saturating_sub(output.len()) == 0 {
+        if cap.saturating_sub(output.len()) == 0 || spawned >= MAX_UNTRACKED_DIFF_FILES {
             break;
         }
         if state != Status::Untracked
@@ -314,7 +336,8 @@ pub fn diff_directory(
         {
             continue;
         }
-        let file_diff = diff(repo_root, &path, baseline, base_hint, false);
+        spawned += 1;
+        let file_diff = diff_untracked(repo_root, &path, None);
         if file_diff.is_empty() {
             continue;
         }
