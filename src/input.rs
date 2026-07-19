@@ -73,14 +73,21 @@ pub(crate) fn default_bindings() -> EffectiveBindings {
 ///
 /// Pure (AC-24). Control-style chords (Ctrl/Alt/Super/…) never fire an intent so reserved combos
 /// (e.g. Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
-/// typing — not a chord — and some terminals report them with the Shift bit set. `key.code` is the
-/// already-normalized lookup key: a shifted char carries its case in `key.code`, and a named key
-/// reports its base [`KeyCode`] with Shift in the modifiers (stripped by the guard below).
+/// typing — not a chord. Some Windows terminals report `Shift+d` as lowercase `d` plus the Shift
+/// modifier, so lowercase ASCII is normalized before the lookup.
 pub(crate) fn decode(key: KeyEvent, bindings: &EffectiveBindings) -> Option<Intent> {
     if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
-    bindings.intent_for(key.code)
+    let code = if key.modifiers.contains(KeyModifiers::SHIFT) {
+        match key.code {
+            KeyCode::Char(c) if c.is_ascii_lowercase() => KeyCode::Char(c.to_ascii_uppercase()),
+            other => other,
+        }
+    } else {
+        key.code
+    };
+    bindings.intent_for(code)
 }
 
 /// Borrow the process-lifetime default [`EffectiveBindings`], built once from the [`REGISTRY`].
@@ -212,10 +219,10 @@ pub(crate) const REGISTRY: &[Binding] = &[
         category: "Git & filters",
     },
     Binding {
-        intent: Intent::ToggleDeltaRaw,
-        name: "toggle_delta_raw",
+        intent: Intent::CycleDiffRender,
+        name: "cycle_diff_render",
         default_keys: &[KeyCode::Char('D')],
-        description: "Toggle the diff view between delta rendering and plain git diff text.",
+        description: "Cycle diff presentation: delta unified, side-by-side, or plain git diff.",
         category: "Git & filters",
     },
     Binding {
@@ -682,7 +689,7 @@ mod tests {
         (KeyCode::Char('.'), Intent::ToggleHidden),
         (KeyCode::Char('c'), Intent::ToggleChangedOnly),
         (KeyCode::Char('b'), Intent::ToggleBaseline),
-        (KeyCode::Char('D'), Intent::ToggleDeltaRaw),
+        (KeyCode::Char('D'), Intent::CycleDiffRender),
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
         (KeyCode::Char('f'), Intent::OpenFinder),
@@ -1071,6 +1078,26 @@ mod tests {
             "Ctrl-Z must not fire an intent"
         );
         assert_eq!(map_key(k(KeyCode::Char('z'))), Some(Intent::ToggleZoom));
+    }
+
+    #[test]
+    fn windows_style_shifted_lowercase_chars_normalize_before_lookup() {
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT)),
+            Some(Intent::CycleDiffRender)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::SHIFT)),
+            Some(Intent::OpenWithApp)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT)),
+            Some(Intent::RevealInFileManager)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 
     #[test]

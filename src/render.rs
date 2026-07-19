@@ -177,6 +177,13 @@ pub fn render(
     }
 }
 
+/// Return a bounded, escape-neutralized raw diff without invoking an external renderer. This is
+/// the `D` cycle's plain-text state: the diff still comes from git, but no formatter is required.
+pub fn render_raw_diff(raw_diff: Option<&str>) -> (Text<'static>, Option<String>) {
+    let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
+    (to_text(&diff), notice)
+}
+
 /// Return a copy of a markdown renderer command (e.g. glow) with its wrap width set to `width`:
 /// replace the argument following the `-w` flag, or append `-w <width>` if absent. Used by the help
 /// overlay's What's New render so glow wraps the changelog to the fixed help-box body width (with its
@@ -532,6 +539,15 @@ mod tests {
         let p = tmp("bin", &[0x00, 0x01, 0x02, b'h', b'i']);
         assert_eq!(classify(&std::env::temp_dir(), &p), Prepared::Binary); // AC-12
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn raw_diff_is_bounded_and_neutralized_without_a_renderer_process() {
+        let (text, notice) = render_raw_diff(Some("- old\n+ new\n"));
+        assert_eq!(notice, None);
+        assert_eq!(text.lines.len(), 2);
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "- old");
+        assert_eq!(text.lines[1].spans[0].content.as_ref(), "+ new");
     }
 
     #[test]

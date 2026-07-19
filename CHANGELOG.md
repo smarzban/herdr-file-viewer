@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Added
+- `D` cycles changed-file diffs through Delta unified, Delta side-by-side, and plain git diff presentation. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+
 ## [1.12.0] - 2026-07-13
 
 ### Added

@@ -32,7 +32,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long the input poll blocks each tick before draining finished off-thread renders, so
 /// late content appears promptly without the loop busy-spinning.
@@ -319,6 +319,11 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
         if let Some(fx) = controller.poll() {
             dirty |= fx.redraw;
         }
+        // Advance the self-expiring status flash; it redraws once per phase change (dim / gone),
+        // never on every idle tick, so a quiet screen stays quiet after it fades.
+        if controller.tick_flash(Instant::now()) {
+            dirty = true;
+        }
     }
 }
 
@@ -344,6 +349,50 @@ impl GitService for LiveGit {
             full_context,
         )
     }
+}
+
+/// Whether a configured renderer command invokes Delta directly. Custom tools and shell
+/// wrappers are left untouched by Delta-specific presentation flags.
+fn is_delta_renderer(command: &[String]) -> bool {
+    command
+        .first()
+        .and_then(|program| Path::new(program).file_stem())
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("delta"))
+}
+
+/// Add a Delta option before a possible stdin `-` positional argument, without duplicating an
+/// equivalent short or long flag. Keeping options before `-` preserves the command shape used by
+/// configured stdin renderers.
+fn add_delta_option(
+    command: &[String],
+    flag: &str,
+    value: Option<&str>,
+    short: Option<&str>,
+) -> Vec<String> {
+    let mut out = command.to_vec();
+    if out
+        .iter()
+        .any(|arg| arg == flag || short.is_some_and(|short| arg == short))
+    {
+        return out;
+    }
+    let insert_at = out.iter().rposition(|arg| arg == "-").unwrap_or(out.len());
+    out.insert(insert_at, flag.to_string());
+    if let Some(value) = value {
+        out.insert(insert_at + 1, value.to_string());
+    }
+    out
+}
+
+/// Build the side-by-side command for a configured renderer. Only Delta understands these flags;
+/// a custom renderer is returned unchanged rather than being passed unsupported arguments.
+fn side_by_side_renderer(command: &[String]) -> Vec<String> {
+    if !is_delta_renderer(command) {
+        return command.to_vec();
+    }
+    let command = add_delta_option(command, "--side-by-side", None, Some("-s"));
+    add_delta_option(&command, "--wrap-right-percent", Some("1"), None)
 }
 
 /// The live Content Renderer: classify + delegate to the external renderers, with guards.
@@ -393,88 +442,62 @@ impl ContentProvider for LiveContent {
         // and pads every line to exactly that width — the Presenter's re-wrap is then a no-op
         // rather than shattering a natural-width `-w 0` table across the border rows. The bundled
         // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide.
-        // `bat`/plain-diff (`cat`) manage their own width; they h-scroll, never re-wrap, so they
-        // use the base renderers unchanged. `delta` is the exception among those: spawned with
-        // stdout piped (not a real tty) it can't auto-detect a terminal width and falls back to
-        // its own default, wrapping `DeltaSideBySide`'s two columns at a fixed size regardless of
-        // the pane — so it gets the same `-w` treatment as glow, below.
-        // Local addition (`Intent::ToggleDeltaRaw`): pick which command the diff modes delegate
-        // to. Mirrors the markdown wrap-width override just below — a cloned `Renderers` with
-        // only the relevant command(s) replaced, so every other renderer (markdown/syntax) is
-        // untouched. `Raw` uses `cat` rather than skipping the delegate call outright, so the
-        // existing renderer/timeout/fallback machinery in `render::render` stays the single
-        // code path for every mode.
+        // `bat` and custom diff tools manage their own width; they use the configured commands
+        // unchanged. Delta is spawned with stdout piped (not a real tty), so it cannot auto-detect
+        // the pane width and gets an explicit `-w`/`--width` when the pane has been measured.
+        // Select the configured delegate for the current diff presentation. Side-by-side flags
+        // are added only for Delta commands and are never duplicated; custom diff commands remain
+        // valid but keep their own presentation. Raw mode bypasses external commands below.
         let base_renderers = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             match diff_render_mode {
                 DiffRenderMode::Delta => self.renderers.clone(),
-                DiffRenderMode::DeltaSideBySide => {
-                    let mut diff = self.renderers.diff.clone();
-                    diff.push("--side-by-side".to_string());
-                    let mut full_diff = self.renderers.full_diff.clone();
-                    full_diff.push("--side-by-side".to_string());
-                    Renderers {
-                        diff,
-                        full_diff,
-                        ..self.renderers.clone()
-                    }
-                }
-                DiffRenderMode::Raw => Renderers {
-                    diff: vec!["cat".to_string()],
-                    full_diff: vec!["cat".to_string()],
+                DiffRenderMode::DeltaSideBySide => Renderers {
+                    diff: side_by_side_renderer(&self.renderers.diff),
+                    full_diff: side_by_side_renderer(&self.renderers.full_diff),
                     ..self.renderers.clone()
                 },
+                DiffRenderMode::Raw => self.renderers.clone(),
             }
         } else {
             self.renderers.clone()
         };
-        let (content, notice) = match (
-            mode,
-            width.filter(|w| *w > 0),
-            pane_width.filter(|w| *w > 0),
-        ) {
-            (ViewMode::RenderedMarkdown, Some(w), _) => {
-                let wrapped = Renderers {
-                    markdown: render::with_wrap_width(&base_renderers.markdown, w),
-                    ..base_renderers.clone()
-                };
-                render::render(&wrapped, &prepared, mode, raw_diff, name)
-            }
-            (ViewMode::Diff | ViewMode::FullDiff, _, Some(w))
-                if diff_render_mode != DiffRenderMode::Raw =>
-            {
-                // `delta`'s own `-w`/`--width` (not glow's) — same flag letter, so
-                // `with_wrap_width` finds/appends it unchanged. `Raw` is excluded: its command
-                // is `cat`, which would choke on an unknown `-w` flag. `pane_width`, not
-                // `width`: the latter is gated by the markdown wrap preference and stays `None`
-                // for diffs (their line-wrap defaults off, AC-N/a) — unrelated to delta needing
-                // *a* width at all to size its columns.
-                let wrapped = Renderers {
-                    diff: render::with_wrap_width(&base_renderers.diff, w),
-                    full_diff: render::with_wrap_width(&base_renderers.full_diff, w),
-                    ..base_renderers.clone()
-                };
-                render::render(&wrapped, &prepared, mode, raw_diff, name)
-            }
-            _ => render::render(&base_renderers, &prepared, mode, raw_diff, name),
-        };
-        let mode_notice = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
-            match diff_render_mode {
-                DiffRenderMode::Delta => None,
-                DiffRenderMode::DeltaSideBySide => {
-                    Some("Delta rendering: side-by-side — press D to cycle.".to_string())
-                }
-                DiffRenderMode::Raw => {
-                    Some("Delta rendering: OFF (plain git diff) — press D to cycle.".to_string())
-                }
-            }
+        let (content, notice) = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff)
+            && diff_render_mode == DiffRenderMode::Raw
+        {
+            render::render_raw_diff(raw_diff)
         } else {
-            None
-        };
-        let notice = match (notice, mode_notice) {
-            (Some(prev), Some(m)) => Some(format!("{prev}\n{m}")),
-            (Some(prev), None) => Some(prev),
-            (None, Some(m)) => Some(m),
-            (None, None) => None,
+            match (
+                mode,
+                width.filter(|w| *w > 0),
+                pane_width.filter(|w| *w > 0),
+            ) {
+                (ViewMode::RenderedMarkdown, Some(w), _) => {
+                    let wrapped = Renderers {
+                        markdown: render::with_wrap_width(&base_renderers.markdown, w),
+                        ..base_renderers.clone()
+                    };
+                    render::render(&wrapped, &prepared, mode, raw_diff, name)
+                }
+                (ViewMode::Diff | ViewMode::FullDiff, _, Some(w)) => {
+                    // Delta is piped rather than attached to a terminal, so pass the drawable
+                    // pane width explicitly. Custom diff commands are left untouched.
+                    let wrapped = Renderers {
+                        diff: if is_delta_renderer(&base_renderers.diff) {
+                            render::with_wrap_width(&base_renderers.diff, w)
+                        } else {
+                            base_renderers.diff.clone()
+                        },
+                        full_diff: if is_delta_renderer(&base_renderers.full_diff) {
+                            render::with_wrap_width(&base_renderers.full_diff, w)
+                        } else {
+                            base_renderers.full_diff.clone()
+                        },
+                        ..base_renderers.clone()
+                    };
+                    render::render(&wrapped, &prepared, mode, raw_diff, name)
+                }
+                _ => render::render(&base_renderers, &prepared, mode, raw_diff, name),
+            }
         };
         RenderResult {
             content,
@@ -829,6 +852,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn side_by_side_renderer_adds_delta_flags_once_before_stdin() {
+        assert_eq!(
+            side_by_side_renderer(&["delta".into(), "-".into()]),
+            ["delta", "--side-by-side", "--wrap-right-percent", "1", "-"]
+                .map(String::from)
+                .to_vec()
+        );
+        assert_eq!(
+            side_by_side_renderer(&[
+                "delta".into(),
+                "--side-by-side".into(),
+                "--wrap-right-percent".into(),
+                "37".into(),
+                "-".into()
+            ]),
+            ["delta", "--side-by-side", "--wrap-right-percent", "37", "-"]
+                .map(String::from)
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn side_by_side_renderer_leaves_custom_tools_unchanged() {
+        let command = vec!["my-diff".into(), "--style=plain".into(), "-".into()];
+        assert_eq!(side_by_side_renderer(&command), command);
     }
 
     #[test]

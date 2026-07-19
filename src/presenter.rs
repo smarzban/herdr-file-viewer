@@ -25,6 +25,13 @@ pub enum Focus {
     Content,
 }
 
+/// A self-expiring status hint. `dim` is set once the flash enters its fade-out phase, so the
+/// Presenter can render it dimmed just before it disappears.
+pub struct FlashLine {
+    pub text: String,
+    pub dim: bool,
+}
+
 /// Everything the Presenter needs to draw one frame. Built by the Session Controller from
 /// the Tree Model (nodes + selection), Content Renderer (content + notices), and session
 /// focus/width. `width` is the pane width the controller observed (the narrow-split input
@@ -38,6 +45,9 @@ pub struct ViewState {
     pub content: Text<'static>,
     /// Non-fatal notices to surface (truncation AC-13, renderer fallback AC-25).
     pub notices: Vec<String>,
+    /// A self-expiring status hint (e.g. `D`'s diff-presentation label), drawn as one line atop
+    /// the notices strip and styled distinctly from a warning. `None` when nothing is flashing.
+    pub flash: Option<FlashLine>,
     /// Which column has focus.
     pub focus: Focus,
     /// The pane width the controller last observed (session state — e.g. for tracking the
@@ -493,6 +503,13 @@ fn tree_bars(
     bar_layout(inner, needs_v, needs_h)
 }
 
+/// Total rows the notice strip occupies: the persistent notices plus the optional flash line.
+/// Used by both [`draw_content`] and [`geometry`] so the drawn strip and the hit-test geometry
+/// reserve the same rows.
+fn notice_strip_len(state: &ViewState) -> usize {
+    state.notices.len() + usize::from(state.flash.is_some())
+}
+
 /// Split the content block interior into the notices strip (top) and the content area (below it,
 /// where the file + its scrollbars are drawn). Shared by [`draw_content`] and [`geometry`].
 fn content_notice_split(inner: Rect, notices_len: usize) -> (Rect, Rect) {
@@ -814,13 +831,28 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
 
     // A notice strip (truncation AC-13, fallback AC-25) sits above the content, bounded so
     // it can never crowd out the file itself; the file + its scrollbars fill the area below it.
-    let (notices_rect, content_area) = content_notice_split(inner, state.notices.len());
+    // The self-expiring flash (if any) leads the strip, styled distinctly from a yellow warning
+    // (cyan, dimming to gray as it fades) so a status hint never reads as an error.
+    let (notices_rect, content_area) = content_notice_split(inner, notice_strip_len(state));
     if notices_rect.height > 0 {
-        let notice_lines: Vec<Line> = state
-            .notices
-            .iter()
-            .map(|n| Line::styled(sanitize_control(n), Style::new().fg(Color::Yellow)))
-            .collect();
+        let mut notice_lines: Vec<Line> = Vec::new();
+        if let Some(flash) = &state.flash {
+            let color = if flash.dim {
+                Color::DarkGray
+            } else {
+                Color::Cyan
+            };
+            notice_lines.push(Line::styled(
+                sanitize_control(&flash.text),
+                Style::new().fg(color),
+            ));
+        }
+        notice_lines.extend(
+            state
+                .notices
+                .iter()
+                .map(|n| Line::styled(sanitize_control(n), Style::new().fg(Color::Yellow))),
+        );
         frame.render_widget(Paragraph::new(notice_lines), notices_rect);
     }
 
@@ -1117,7 +1149,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     let (content_inner, content_vbar, content_hbar) =
         match content.map(|r| content_block(state).inner(r)) {
             Some(ci) => {
-                let (_notices, content_area) = content_notice_split(ci, state.notices.len());
+                let (_notices, content_area) = content_notice_split(ci, notice_strip_len(state));
                 let (text, v, h) = content_bars(
                     content_area,
                     state.content_rows as usize,

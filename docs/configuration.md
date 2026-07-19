@@ -130,7 +130,7 @@ customized).
 | | `toggle_hidden` | `.` | Hide or reveal dot-prefixed (hidden) files and folders |
 | | `toggle_changed_only` | `c` | Restrict the tree to changed files, or restore the full tree |
 | | `toggle_baseline` | `b` | Switch the diff baseline between base-branch and `HEAD` |
-| | `toggle_delta_raw` | `D` | Local addition: cycle Diff/FullDiff's delegate — delta unified → delta side-by-side → plain `git diff` |
+| | `cycle_diff_render` | `D` | Cycle diff presentation — delta unified → side-by-side → plain `git diff` (side-by-side applies when the configured diff renderer is Delta) |
 | | `refresh` | `r` | Re-read git state and re-render |
 | **Open & copy** | `open_in_editor` | `e` | Hand the selected file off to an external editor |
 | | `open_with_app` | `O` | Open the selected entry with the OS default application |

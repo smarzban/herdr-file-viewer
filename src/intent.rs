@@ -42,11 +42,9 @@ pub enum Intent {
     ToggleChangedOnly,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
     ToggleBaseline,
-    /// Cycle the Diff/FullDiff views' delegate: `delta` unified → `delta --side-by-side` →
-    /// plain, unstyled `git diff` → back to unified. Read-only — it only swaps which renderer
-    /// command the diff modes delegate to; no file or git mutation. Local addition, not
-    /// upstream.
-    ToggleDeltaRaw,
+    /// Cycle the Diff/FullDiff renderer: `delta` unified → side-by-side → plain `git diff`.
+    /// Read-only — it only changes presentation, never files or git state.
+    CycleDiffRender,
     /// Cycle the content pane's view mode over the applicable set (AC-11).
     CycleView,
     /// Hand the selected file off to an external editor (AC-19).
@@ -144,7 +142,7 @@ impl Intent {
         Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
         Intent::ToggleBaseline,
-        Intent::ToggleDeltaRaw,
+        Intent::CycleDiffRender,
         Intent::CycleView,
         Intent::OpenInEditor,
         Intent::OpenWithApp,
@@ -194,7 +192,7 @@ mod tests {
                 | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
                 | Intent::ToggleBaseline
-                | Intent::ToggleDeltaRaw
+                | Intent::CycleDiffRender
                 | Intent::CycleView
                 | Intent::OpenInEditor
                 | Intent::OpenWithApp
@@ -289,15 +287,15 @@ mod tests {
         assert_eq!(
             Intent::ALL.len(),
             34,
-            "Intent::ALL must have exactly 34 variants after adding ToggleDeltaRaw"
+            "Intent::ALL must have exactly 34 variants"
         );
     }
 
     #[test]
-    fn toggle_delta_raw_is_in_all() {
+    fn cycle_diff_render_is_in_all() {
         assert!(
-            Intent::ALL.contains(&Intent::ToggleDeltaRaw),
-            "Intent::ALL must contain ToggleDeltaRaw"
+            Intent::ALL.contains(&Intent::CycleDiffRender),
+            "Intent::ALL must contain CycleDiffRender"
         );
     }
 
