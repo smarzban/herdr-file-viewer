@@ -1150,15 +1150,21 @@ fn status_mode_directory_uses_diff_directory_with_head() {
         }
     }
 
+    // Wait for the directory diff's CONTENT to actually land, not merely for the worker to have
+    // been asked. Recording the `diff_directory` call happens on the worker thread; the result is
+    // applied only when `poll()` picks it up here — asserting the content immediately after the
+    // request races that hand-off. Mirror the file-diff wait loop above and poll until the src
+    // directory diff is on screen (which implies its call was made and applied).
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         ctrl.poll();
-        if !dir_diffs.lock().unwrap().is_empty() {
+        if flatten(ctrl.content()).contains("DIRDIFF:src") {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "status mode never requested a directory working-tree diff"
+            "status-mode directory diff content never arrived: {}",
+            flatten(ctrl.content())
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -1169,10 +1175,5 @@ fn status_mode_directory_uses_diff_directory_with_head() {
             .iter()
             .any(|(p, b)| p == Path::new("src") && *b == Baseline::Head),
         "directory in status mode must call diff_directory(src, Head), got {calls:?}"
-    );
-    assert!(
-        flatten(ctrl.content()).contains("DIRDIFF:src"),
-        "content must be the directory working-tree diff: {}",
-        flatten(ctrl.content())
     );
 }

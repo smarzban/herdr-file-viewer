@@ -260,10 +260,11 @@ pub fn diff(
     capture_stdout(cmd)
 }
 
-/// Raw unified diff for every tracked change under `rel_dir` against `baseline`.
+/// Raw unified diff for every change under `rel_dir` against `baseline`.
 /// `rel_dir` is repo-root-relative; an empty path means the whole tree root (no pathspec).
-/// Untracked files are not included — `git diff` only sees the index/worktree for tracked paths
-/// (file-level untracked still uses the single-file [`diff`] `--no-index` path).
+/// Tracked changes come from one directory-scoped git diff; untracked files are appended using the
+/// same `--no-index` path used by the single-file [`diff`] query, so a status-mode directory view
+/// includes every `?` descendant as well as modified/staged/deleted tracked files.
 pub fn diff_directory(
     repo_root: &Path,
     rel_dir: &Path,
@@ -290,7 +291,43 @@ pub fn diff_directory(
     if !rel_dir.as_os_str().is_empty() {
         cmd.arg(rel_dir);
     }
-    capture_stdout(cmd)
+    let mut output = capture_stdout(cmd);
+
+    // `git diff` intentionally omits untracked paths. Add each untracked descendant through the
+    // existing single-file path, which emits a safe /dev/null-vs-file patch and already handles
+    // binary content, path confinement, and platform null-device differences.
+    //
+    // Bound the running total to the SAME hard [`MAX_DIFF_BYTES`] limit [`capture_stdout`] applies
+    // to a single git invocation, so a directory with many (or large) untracked files can never
+    // build an oversized string in memory. The final admitted patch is trimmed to the remaining
+    // budget at a UTF-8 boundary (mirroring `capture_stdout`'s own byte-cap truncation); the render
+    // layer's AC-13 preview cap already truncates the visible pane far below this, so the trimmed
+    // tail is never displayed. `status` is a `BTreeMap`, so the paths admitted before the cap are
+    // the lexicographically-first ones (deterministic), not an arbitrary subset.
+    let cap = MAX_DIFF_BYTES as usize;
+    for (path, state) in status(repo_root) {
+        if cap.saturating_sub(output.len()) == 0 {
+            break;
+        }
+        if state != Status::Untracked
+            || (!rel_dir.as_os_str().is_empty() && !path.starts_with(rel_dir))
+        {
+            continue;
+        }
+        let file_diff = diff(repo_root, &path, baseline, base_hint, false);
+        if file_diff.is_empty() {
+            continue;
+        }
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        // Append only what fits in the remaining budget, cut at a char boundary so the String
+        // stays valid UTF-8. `floor_char_boundary` returns the largest boundary <= the index.
+        let budget = cap.saturating_sub(output.len());
+        let take = file_diff.floor_char_boundary(budget.min(file_diff.len()));
+        output.push_str(&file_diff[..take]);
+    }
+    output
 }
 
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
