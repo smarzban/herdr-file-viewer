@@ -1286,9 +1286,14 @@ impl Controller {
         // width change (terminal resize or split-bar drag) must reflow it, preserving scroll and
         // search (unlike a selection-change render). When unwrapped (the `w` horizontal-scroll view)
         // glow's natural-width output is width-independent — the pane just re-clamps h-scroll, no
-        // re-render. A height-only change never affects glow's layout either.
-        if width_changed && self.effective_wrap() {
-            self.rerender_markdown_reflow();
+        // re-render. A diff reflows on every width change unconditionally — delta's own `-w` tracks
+        // the pane width regardless of the wrap toggle (see `diff_render_width`'s doc). A
+        // height-only change never affects either delegate's layout.
+        if width_changed {
+            if self.effective_wrap() {
+                self.rerender_markdown_reflow();
+            }
+            self.rerender_diff_reflow(); // a no-op unless the selection is a diff
         }
     }
 
@@ -2342,9 +2347,11 @@ impl Controller {
     /// preference applied uniformly — `Some(true)` wraps everywhere, `Some(false)` unwraps
     /// everywhere — so switching files doesn't spring a surprise wrap on the next one.
     ///
-    /// For code/diffs this is pure layout (the delegate output is unchanged, only how the Presenter
-    /// lays it out). For rendered markdown the wrap state changes glow's `-w` (fit-to-pane vs.
-    /// natural width for horizontal scroll), so the content itself is re-rendered — preserving
+    /// For code AND diffs this is pure layout (delta/bat's output is unchanged — a diff's `-w`
+    /// tracks the pane width unconditionally, never this wrap toggle, see
+    /// [`diff_render_width`](Self::diff_render_width) — only how the Presenter lays the existing
+    /// output out changes). For rendered markdown the wrap state changes glow's `-w` (fit-to-pane
+    /// vs. natural width for horizontal scroll), so the content itself is re-rendered — preserving
     /// scroll and search, like a resize reflow. The scroll clamp recomputes from the new layout.
     fn toggle_wrap(&mut self) -> Effects {
         self.wrap_override = Some(!self.effective_wrap());
@@ -2486,19 +2493,57 @@ impl Controller {
     /// markdown is effectively **wrapped** (the fit-to-pane default) so glow lays the table out to
     /// fit; `None` when unwrapped (the `w` horizontal-scroll view) so glow keeps its base `-w 0`
     /// natural-width layout and the pane scrolls to reveal the whole table, and `None` before the
-    /// first draw has measured the pane (`content_width == 0`). Only the markdown delegate uses it.
+    /// first draw has measured the pane (`content_width == 0`).
     fn md_wrap_width(&self) -> Option<u16> {
         (self.content_width > 0 && self.effective_wrap()).then_some(self.content_width)
     }
 
-    /// Re-render the current markdown selection **without** the view-state reset [`dispatch_render`]
-    /// performs — the triggers are a content-pane resize and the `w` wrap toggle, neither of which is
-    /// a selection change, so scroll position and any active search must survive. Only rendered
-    /// markdown is re-rendered: glow's layout is tied to the wrap width we pass it (fit-to-pane vs.
-    /// natural width), so a resize-while-fit or a wrap toggle must re-run glow; every other mode is
-    /// width-independent here (diffs/code re-wrap in the Presenter alone), so this is a no-op for
-    /// them. The current content stays on screen until the new render lands (no `Rendering…`
-    /// placeholder), so a live split-drag doesn't flash; the worker collapses the backlog so only the
+    /// The width to hand a diff/full-context-diff render job: the measured pane width,
+    /// unconditionally (`None` only before the first draw has measured one) — unlike
+    /// [`md_wrap_width`](Self::md_wrap_width), NOT gated on [`effective_wrap`](Self::effective_wrap).
+    /// delta sizes its own layout from the *terminal* width it detects via a tty ioctl on its own
+    /// stdout — but here stdout is a plain OS pipe (`Stdio::piped()` in
+    /// `render::renderer_command`), never a tty, so that detection always fails and delta falls back
+    /// to a fixed, tty-less width instead (observed as 80 columns for bare delta). This chiefly
+    /// matters when delta runs `side-by-side` (its own `~/.gitconfig` `[delta]` setting, read
+    /// directly since this app never passes `--no-gitconfig`): there, `-w` genuinely governs each
+    /// column's wrap width — verified against delta 0.19.2 — so without this it stays stuck at
+    /// whatever delta falls back to, not the pane, even as the pane is resized. In delta's default
+    /// (non-side-by-side) mode `-w` only changes a decorative rule's width; content isn't
+    /// wrapped by it either way (see `render_at_width`'s doc in `app.rs` for the full detail). The
+    /// wrap toggle plays no part here: it only ever governs how the *Presenter* lays
+    /// out a diff's already-rendered lines (reflow vs. h-scroll), never how wide delta itself
+    /// believes the pane to be.
+    fn diff_render_width(&self) -> Option<u16> {
+        (self.content_width > 0).then_some(self.content_width)
+    }
+
+    /// The width to hand `mode`'s render job for the delegate's own layout, at initial dispatch
+    /// ([`dispatch_render`](Self::dispatch_render)) where — unlike the two incremental reflow paths
+    /// below — there's no "did this actually change" question to optimize, so the two width sources
+    /// are simply selected by mode: [`md_wrap_width`](Self::md_wrap_width) for markdown,
+    /// [`diff_render_width`](Self::diff_render_width) for a diff, and `None` for syntax content
+    /// (bat has no `-w` flag and never wraps or pads, so it is genuinely width-independent).
+    fn render_wrap_width(&self, mode: ViewMode) -> Option<u16> {
+        match mode {
+            ViewMode::RenderedMarkdown => self.md_wrap_width(),
+            ViewMode::Diff | ViewMode::FullDiff => self.diff_render_width(),
+            ViewMode::SyntaxContent => None,
+        }
+    }
+
+    /// Re-render the current markdown selection **without** the view-state reset
+    /// [`dispatch_render`](Self::dispatch_render) performs — the triggers are a content-pane resize
+    /// (while wrapped) and the `w` wrap toggle, neither of which is a selection change, so scroll
+    /// position and any active search must survive. Only rendered markdown is re-rendered here:
+    /// glow's layout is tied to the wrap width we pass it (fit-to-pane vs. natural width), so *any*
+    /// wrap-toggle flip must re-run glow — including wrapped → unwrapped, which still needs a fresh
+    /// render to drop back to natural width, so this must NOT skip just because the resulting width
+    /// is `None`. Every other mode is a no-op here: diffs get their own reflow path
+    /// ([`rerender_diff_reflow`](Self::rerender_diff_reflow), since delta's width is independent of
+    /// this wrap toggle entirely) and syntax content never needs one (bat is width-independent). The
+    /// current content stays on screen until the new render lands (no `Rendering…` placeholder), so
+    /// a live split-drag or `w` press doesn't flash; the worker collapses the backlog so only the
     /// final state renders. [`poll`] applies the result by `seq` and, seeing it flagged in
     /// `reflow_seq`, keeps the scroll and recomputes an active search.
     fn rerender_markdown_reflow(&mut self) {
@@ -2525,6 +2570,39 @@ impl Controller {
             is_git: self.is_git_repo,
             directory_diff: false,
             wrap_width: self.md_wrap_width(),
+        });
+    }
+
+    /// Re-render the current diff/full-context-diff selection on a content-pane resize — the same
+    /// shape as [`rerender_markdown_reflow`](Self::rerender_markdown_reflow), but a diff always
+    /// re-renders on a width change (delta's width is unconditional on the wrap toggle — see
+    /// [`diff_render_width`](Self::diff_render_width)'s doc), so unlike markdown there's no wrap-
+    /// toggle path calling this: `toggle_wrap` never needs it, since a diff's delta invocation
+    /// doesn't depend on the wrap axis at all. A no-op for every other mode.
+    fn rerender_diff_reflow(&mut self) {
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        if node.kind != NodeKind::File {
+            return;
+        }
+        let mode = self.effective_mode(&node.path);
+        if !matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
+            return;
+        }
+        self.latest_seq += 1;
+        let seq = self.latest_seq;
+        self.reflow_seq = Some(seq);
+        let rel = self.rel(&node.path);
+        let _ = self.job_tx.send(RenderJob {
+            seq,
+            path: node.path,
+            rel,
+            mode,
+            baseline: self.baseline,
+            is_git: self.is_git_repo,
+            directory_diff: false,
+            wrap_width: self.diff_render_width(),
         });
     }
 
@@ -2605,7 +2683,7 @@ impl Controller {
                 baseline,
                 is_git: self.is_git_repo,
                 directory_diff,
-                wrap_width: self.md_wrap_width(),
+                wrap_width: self.render_wrap_width(mode),
             })
             .is_ok()
         {

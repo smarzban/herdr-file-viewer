@@ -10,6 +10,9 @@ All notable changes to this project are documented here. The format is based on
 ### Added
 - Git-status mode (`d`): filter the tree to current working-tree status and force working-tree diffs (file or directory-scoped); sticky until `d` again, mutually exclusive with baseline-aware `c`. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
 
+### Fixed
+- Diff and full-file-diff panes now pass the pane width to delta's `-w` on every render, keeping it in sync across resizes instead of a fixed 80 columns (delta can't auto-detect a piped stdout's width). Matters most for a `side-by-side` delta setup, where it corrects real column-wrap width; plain delta output only changes a decorative rule's width. → [configuration](docs/configuration.md)
+
 ## [1.13.0] - 2026-07-16
 
 ### Added

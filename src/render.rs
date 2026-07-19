@@ -247,11 +247,13 @@ pub fn render(
     }
 }
 
-/// Return a copy of a markdown renderer command (e.g. glow) with its wrap width set to `width`:
-/// replace the argument following the `-w` flag, or append `-w <width>` if absent. Used by the help
-/// overlay's What's New render so glow wraps the changelog to the fixed help-box body width (with its
-/// own hanging indents) instead of the default `-w 0` (no wrap → the Presenter's flat re-wrap loses
-/// the indents). The base command (and its `{name}`/`-` args) is otherwise unchanged.
+/// Return a copy of a renderer command (glow or delta — both accept `-w`/`--width <N>`) with its
+/// width set to `width`: replace the argument following the `-w` flag, or append `-w <width>` if
+/// absent. Used by the help overlay's What's New render so glow wraps the changelog to the fixed
+/// help-box body width (with its own hanging indents) instead of the default `-w 0` (no wrap → the
+/// Presenter's flat re-wrap loses the indents), and by `render_at_width` to hand delta the pane
+/// width it can't otherwise detect (its stdout is a pipe, not a tty — see `render_at_width`'s doc).
+/// The base command (and its `{name}`/`-` args) is otherwise unchanged.
 pub(crate) fn with_wrap_width(command: &[String], width: u16) -> Vec<String> {
     let mut out = command.to_vec();
     let w = width.to_string();

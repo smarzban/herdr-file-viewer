@@ -111,11 +111,17 @@ instead get the file **content on stdin** and your value **replaces** the whole 
 (flags aren't merged), so a custom renderer must read stdin (glow and bat need a trailing `-`)
 and set its own flags — the token `{name}` is substituted with the file name.
 
-**Known limitation:** the full-file-diff view derives its line-numbered gutter from the `diff`
-command by appending delta's `--line-numbers` flag; if you point `diff` at a tool that rejects
-that flag (nonzero exit or spawn failure), the full-file-diff view falls all the way back to
-plain, unrendered diff text (with a notice), not just a missing gutter. Renderer timeouts and
-other limits aren't configurable.
+**Known limitation:** both `diff` and the full-file-diff view assume a delta-compatible renderer.
+The full-file-diff view derives its line-numbered gutter from the `diff` command by appending
+delta's `--line-numbers` flag, and every diff render additionally appends `-w <pane width>`. How
+much that second one actually changes depends on delta's own mode, which this app doesn't
+control — delta reads `side-by-side` from your `~/.gitconfig` `[delta]` section directly, since
+this app never passes `--no-gitconfig`. With `side-by-side` on, `-w` genuinely sets each column's
+wrap width to the pane instead of a stuck-at-80 fallback; without it, delta's default output isn't
+wrapped by `-w` at all — only the width of its decorative underline/overline rule changes. If you
+point `diff` at a tool that rejects `-w` or `--line-numbers` (nonzero exit or spawn failure), the
+affected view falls all the way back to plain, unrendered diff text (with a notice), not just a
+missing gutter or a fixed width. Renderer timeouts and other limits aren't configurable.
 
 ## Keybindings
 

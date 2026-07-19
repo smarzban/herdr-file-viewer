@@ -455,13 +455,41 @@ impl ContentProvider for LiveContent {
         // out and wraps tables to fit the pane (columns sized, cells ellipsized, borders intact),
         // and pads every line to exactly that width — the Presenter's re-wrap is then a no-op
         // rather than shattering a natural-width `-w 0` table across the border rows. The bundled
-        // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide. Every
-        // other mode is width-independent here (delta/bat manage their own width; they h-scroll,
-        // never re-wrap), so they use the base renderers unchanged.
+        // markdown style has `margin: 0`, so glow's output lines are exactly `width` wide.
+        //
+        // delta gets the same treatment for Diff/FullDiff: both glow and delta size their own
+        // layout from the *terminal* width they detect via a tty ioctl on their own stdout — but
+        // here stdout is a plain OS pipe (`Stdio::piped()` in `renderer_command`), not a tty, so
+        // that detection always fails. glow then falls back to `-w 0` (no wrap, harmless); delta
+        // instead falls back to a fixed, tty-less width (per `delta --help`, `-w` is "the width of
+        // underline/overline decorations"; observed as 80 columns for bare delta). In delta's
+        // default (non-`side-by-side`) mode that only widens/narrows the decorative rule under a
+        // filename — diff content itself isn't wrapped by `-w`,
+        // and delta's terminal-width background-fill relies on an erase-in-line escape our AC-27
+        // neutralizer strips, so it never reaches the pane either way. With `side-by-side` enabled
+        // (delta reads `~/.gitconfig`'s `[delta]` section directly; this app never passes
+        // `--no-gitconfig`) `-w` genuinely governs each column's wrap width, which is the case this
+        // fix chiefly matters for — verified empirically against delta 0.19.2, not from its docs
+        // alone. bat is the one renderer that's genuinely width-independent (no `-w` flag; it never
+        // wraps or pads, so long lines simply h-scroll), so it's excluded.
         let (content, notice) = match (mode, width.filter(|w| *w > 0)) {
             (ViewMode::RenderedMarkdown, Some(w)) => {
                 let wrapped = Renderers {
                     markdown: render::with_wrap_width(&self.renderers.markdown, w),
+                    ..self.renderers.clone()
+                };
+                render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
+            }
+            (ViewMode::Diff, Some(w)) => {
+                let wrapped = Renderers {
+                    diff: render::with_wrap_width(&self.renderers.diff, w),
+                    ..self.renderers.clone()
+                };
+                render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
+            }
+            (ViewMode::FullDiff, Some(w)) => {
+                let wrapped = Renderers {
+                    full_diff: render::with_wrap_width(&self.renderers.full_diff, w),
                     ..self.renderers.clone()
                 };
                 render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
@@ -1312,6 +1340,92 @@ mod tests {
             "the width-less render() must keep -w 0: {:?}",
             flatten_content(&via_render)
         );
+    }
+
+    /// A `LiveContent` whose diff/full_diff delegates echo back the value that followed a literal
+    /// `-w` token among their invoked args (as `W=<n>`, empty when no `-w` was ever appended), so a
+    /// test can prove the pane width reaches delta's `-w` the same way it already reaches glow's.
+    /// Scans `"$@"` for `-w` rather than reading a fixed positional index, because `full_diff`'s
+    /// base command carries an extra `--line-numbers` token ahead of wherever `-w` lands.
+    #[cfg(unix)]
+    fn echoing_diff_content(root: &Path) -> LiveContent {
+        const SCAN: &str = "p=; for a in \"$@\"; do [ \"$p\" = -w ] && printf 'W=%s' \"$a\"; p=\"$a\"; done; cat >/dev/null";
+        // The leading `sh` is a placeholder `$0` (sh -c's convention) so real args start at `$1`
+        // and are visible in `"$@"` — otherwise an appended `-w` with nothing ahead of it would
+        // itself be swallowed as `$0` instead of showing up in `"$@"`.
+        LiveContent {
+            root: root.to_path_buf(),
+            renderers: Renderers {
+                markdown: vec!["cat".into()],
+                diff: vec!["sh".into(), "-c".into(), SCAN.into(), "sh".into()],
+                full_diff: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    SCAN.into(),
+                    "sh".into(),
+                    "--line-numbers".into(),
+                ],
+                syntax: vec!["cat".into()],
+                timeout: Duration::from_secs(5),
+            },
+            caps: Caps::default(),
+        }
+    }
+
+    /// The delta fix: a compact diff at a known pane width hands delta `-w <width>` instead of
+    /// leaving it at the fixed, tty-less fallback width delta uses when its stdout is a pipe (no
+    /// tty to auto-detect from — see `render_at_width`'s doc for what `-w` actually changes, which
+    /// depends on delta's own side-by-side setting).
+    #[cfg(unix)]
+    #[test]
+    fn render_at_width_points_diff_wrap_at_the_pane_width() {
+        let root = tmp("diff-wrap-width");
+        let file = root.join("f.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let content = echoing_diff_content(&root);
+        let out = content.render_at_width(&file, ViewMode::Diff, Some("diff\n"), Some(120));
+        assert!(
+            flatten_content(&out).contains("W=120"),
+            "the pane width must reach delta's -w: {:?}",
+            flatten_content(&out)
+        );
+    }
+
+    /// Same fix, the full-context diff variant — `-w` must reach delta even with the extra
+    /// `--line-numbers` token already ahead of it in the base `full_diff` command.
+    #[cfg(unix)]
+    #[test]
+    fn render_at_width_points_full_diff_wrap_at_the_pane_width() {
+        let root = tmp("full-diff-wrap-width");
+        let file = root.join("f.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let content = echoing_diff_content(&root);
+        let out = content.render_at_width(&file, ViewMode::FullDiff, Some("diff\n"), Some(120));
+        assert!(
+            flatten_content(&out).contains("W=120"),
+            "the pane width must reach delta's -w in the full-context diff too: {:?}",
+            flatten_content(&out)
+        );
+    }
+
+    /// No width known yet — delta's base commands (`delta` / `delta --line-numbers`) are left
+    /// unmodified, same as the pre-fix behavior, rather than injecting a `-w 0` sentinel (unlike
+    /// glow, delta has no meaningful "unbounded" width to request).
+    #[cfg(unix)]
+    #[test]
+    fn render_at_width_leaves_diff_unmodified_without_a_pane_width() {
+        let root = tmp("diff-wrap-none");
+        let file = root.join("f.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let content = echoing_diff_content(&root);
+        for w in [None, Some(0)] {
+            let out = content.render_at_width(&file, ViewMode::Diff, Some("diff\n"), w);
+            assert!(
+                !flatten_content(&out).contains("W="),
+                "width {w:?} must not inject -w: {:?}",
+                flatten_content(&out)
+            );
+        }
     }
 
     #[test]

@@ -807,11 +807,11 @@ fn a_width_reflow_preserves_scroll_and_recomputes_a_committed_search() {
     );
 }
 
-/// A resize only reflows rendered markdown — a non-markdown view (code / plain text) is
-/// width-independent here (it h-scrolls, and its delegate manages its own width), so a width change
-/// must not re-render it.
+/// A resize never reflows syntax-highlighted content — bat has no `-w` flag and never wraps or
+/// pads (it h-scrolls), so it is genuinely width-independent, unlike markdown and (see the diff
+/// tests below) diffs, both of which now do reflow on a width change.
 #[test]
-fn a_width_change_does_not_reflow_non_markdown() {
+fn a_width_change_does_not_reflow_syntax_content() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
     let widths = Arc::new(Mutex::new(Vec::new()));
@@ -829,7 +829,99 @@ fn a_width_change_does_not_reflow_non_markdown() {
     assert_eq!(
         widths.lock().unwrap().len(),
         before,
-        "a resize must not re-render a non-markdown view"
+        "a resize must not re-render syntax-highlighted content"
+    );
+}
+
+/// Components pairing [`RecordingGit`] (one changed file, so it defaults to `Diff`) with
+/// [`WidthProbe`], so a test can observe the width threaded into a diff/full-diff render job the
+/// same way [`width_probe_components`] lets one observe markdown's.
+fn changed_width_probe_components(
+    changed_path: &Path,
+    widths: Arc<Mutex<Vec<Option<u16>>>>,
+    lines: usize,
+) -> Components {
+    let mut changed = BTreeMap::new();
+    changed.insert(changed_path.to_path_buf(), Status::Modified);
+    let git: Arc<dyn GitService> = Arc::new(RecordingGit {
+        changed,
+        diff_full_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(WidthProbe {
+                widths: Arc::clone(&widths),
+                lines,
+            }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    }
+}
+
+/// The delta fix: a content-pane width change reflows a changed file's (compact) diff at the new
+/// pane width too, not just markdown — delta's own `-w` tracks the pane width unconditionally
+/// (see `diff_render_width`'s doc on the controller), since its stdout is a pipe and it can never
+/// auto-detect the real terminal size the way it would when attached to one.
+#[test]
+fn a_width_change_reflows_a_diff_at_the_new_width() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("c.rs"), "fn main() {}\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        changed_width_probe_components(Path::new("c.rs"), Arc::clone(&widths), 5),
+    );
+    await_contains(&mut ctrl, "w=None:c.rs"); // initial: pane not measured yet
+
+    ctrl.set_content_viewport(120, 10);
+    await_contains(&mut ctrl, "w=Some(120):c.rs");
+    assert!(
+        widths.lock().unwrap().contains(&Some(120)),
+        "a resize must thread the new pane width into the diff render: {:?}",
+        widths.lock().unwrap()
+    );
+
+    // A height-only change (same width) must NOT reflow — no further render is dispatched.
+    let before = widths.lock().unwrap().len();
+    ctrl.set_content_viewport(120, 14);
+    std::thread::sleep(Duration::from_millis(50));
+    ctrl.poll();
+    assert_eq!(
+        widths.lock().unwrap().len(),
+        before,
+        "a height-only change must not re-render a diff"
+    );
+}
+
+/// `w` (the wrap toggle) never resends a diff: delta's `-w` tracks the pane width unconditionally,
+/// not this toggle (only the Presenter's h-scroll layout of the already-rendered diff changes), so
+/// resending would be pure waste. Mirrors `toggle_wrap_on_a_code_file_dispatches_no_render`.
+#[test]
+fn toggle_wrap_on_a_diff_dispatches_no_render() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("c.rs"), "fn main() {}\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        changed_width_probe_components(Path::new("c.rs"), Arc::clone(&widths), 5),
+    );
+    await_contains(&mut ctrl, "w=None:c.rs");
+    ctrl.set_content_viewport(120, 10);
+    await_contains(&mut ctrl, "w=Some(120):c.rs");
+
+    let before = widths.lock().unwrap().len();
+    ctrl.handle(Intent::ToggleWrap);
+    std::thread::sleep(Duration::from_millis(50)); // give any (wrong) dispatch time to land
+    ctrl.poll();
+    assert_eq!(
+        widths.lock().unwrap().len(),
+        before,
+        "toggling wrap on a diff must not dispatch a render"
     );
 }
 
