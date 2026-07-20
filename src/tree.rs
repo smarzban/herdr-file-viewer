@@ -111,6 +111,12 @@ impl TreeModel {
         self.hide_hidden
     }
 
+    /// Whether gitignored entries are currently shown. Exposed so the controller can re-sync
+    /// its mirror after `reveal` may have relaxed this flag for an explicit launch target.
+    pub fn show_ignored(&self) -> bool {
+        self.show_ignored
+    }
+
     /// The ordered list of currently-visible nodes. In the full tree these are root's
     /// children plus the children of every expanded directory, depth-first. In changed-only
     /// mode the tree is built from the changed-set itself (so deleted files — and files
@@ -293,13 +299,17 @@ impl TreeModel {
         self.visible_nodes().into_iter().nth(self.cursor)
     }
 
-    /// Reveal `path` in the tree: expand every collapsed ancestor, relax `changed_only` or
-    /// `hide_hidden` if they would hide the target, then move the cursor to the target's
-    /// visible-row index. Returns `false` **without moving the cursor** when `path` is not a file
-    /// under `root` or does not exist on disk — these guards run before any mutation, so a missing
-    /// target leaves the selection untouched (AC-10, AC-20, AC-N5). (A path under `root` that the
-    /// finder's gitignore-respecting index would never surface — e.g. an ignored file with
-    /// `show_ignored` off — is not reachable through the finder flow.)
+    /// Reveal `path` in the tree: expand every collapsed ancestor, relax display filters
+    /// (`changed_only`, `hide_hidden`, `show_ignored`) if they would hide the target, then move the
+    /// cursor to the target's visible-row index. Returns `false` **without moving the cursor** when
+    /// `path` is not a file under `root` or does not exist on disk — these guards run before any
+    /// mutation, so a missing target leaves the selection untouched (AC-10, AC-20, AC-N5).
+    ///
+    /// An explicit caller-supplied path (launch open target, or a finder confirm for a path that
+    /// still exists on disk) is intent: filters relax only when the target remains hidden after
+    /// expansion, same condition for all three. The finder's index is still gitignore-respecting, so
+    /// ignored files are not *listed* there; `reveal` itself can surface them when given a concrete
+    /// path (e.g. `--open` on a gitignored build artifact).
     pub fn reveal(&mut self, path: &Path) -> bool {
         if !path.starts_with(&self.root) {
             return false; // above root — AC-N5
@@ -325,6 +335,10 @@ impl TreeModel {
         }
         if self.hide_hidden && !self.visible_nodes().iter().any(|n| n.path == path) {
             self.hide_hidden = false;
+        }
+        // Explicit path intent beats the default gitignore hide (launch open target / known path).
+        if !self.show_ignored && !self.visible_nodes().iter().any(|n| n.path == path) {
+            self.show_ignored = true;
         }
         // Move the cursor to the target's visible row.
         match self.visible_nodes().iter().position(|n| n.path == path) {

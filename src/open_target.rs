@@ -6,7 +6,7 @@
 //! full reference). Used once at startup from `--open` / `HERDR_FILE_VIEWER_OPEN`; not a sticky
 //! config setting.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// A parsed launch open target: the path string (as given, path part only) and an optional
 /// 1-based source line (or inclusive range) to jump to after the file renders.
@@ -41,6 +41,80 @@ impl OpenTarget {
     /// Line to scroll to (range start), if any.
     pub fn goto_line(&self) -> Option<usize> {
         self.line
+    }
+}
+
+/// What the binary should do after parsing argv (pure; no I/O, never exits).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliAction {
+    /// Print a split-launcher decision from stdin JSON, then exit.
+    LaunchDecision,
+    /// Print a tab-launcher decision from stdin JSON, then exit.
+    LaunchDecisionTab,
+    /// Start the TUI; `open` is the raw `--open` value when present (env is layered in `app::run`).
+    Run { open: Option<String> },
+}
+
+/// Parse process argv (excluding argv[0]) into a [`CliAction`].
+///
+/// Degrades, never fails:
+/// - unknown flags are ignored (herdr may append args we do not control)
+/// - a bare `--open` with no value is ignored (start with no open target)
+/// - `--launch-decision` / `--launch-decision-tab` win over a normal run (and over `--open`)
+///
+/// `--open` values must not look like flags (`-…`); a following `-x` is left for the next
+/// iteration so it can be ignored as unknown rather than treated as a path.
+pub fn parse_args<I, S>(args: I) -> CliAction
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut open_flag: Option<String> = None;
+    let mut launch_tab = false;
+    let mut launch = false;
+    let mut args = args.into_iter().peekable();
+    while let Some(arg) = args.next() {
+        let arg = arg.as_ref();
+        match arg {
+            "--launch-decision" => {
+                launch = true;
+                launch_tab = false;
+            }
+            "--launch-decision-tab" => {
+                launch = true;
+                launch_tab = true;
+            }
+            "--open" => {
+                let take = args
+                    .peek()
+                    .map(|s| {
+                        let s = s.as_ref();
+                        !s.is_empty() && !s.starts_with('-')
+                    })
+                    .unwrap_or(false);
+                if take {
+                    open_flag = Some(args.next().unwrap().as_ref().to_string());
+                }
+                // else: bare `--open` or `--open -something` → no open target
+            }
+            a if let Some(v) = a.strip_prefix("--open=")
+                && !v.is_empty() =>
+            {
+                open_flag = Some(v.to_string());
+            }
+            _ => {
+                // Unknown: ignore (degrade-don't-die).
+            }
+        }
+    }
+    if launch {
+        if launch_tab {
+            CliAction::LaunchDecisionTab
+        } else {
+            CliAction::LaunchDecision
+        }
+    } else {
+        CliAction::Run { open: open_flag }
     }
 }
 
@@ -96,18 +170,46 @@ fn parse_line_suffix(suffix: &str) -> Option<(usize, Option<usize>)> {
     }
 }
 
+/// Lexically resolve `.` and `..` with no filesystem I/O. Returns `None` if a `..` would climb
+/// above the path's root (absolute) or empty base (relative) — i.e. the path is not well-formed
+/// under a fixed root after join.
+fn lexically_normalize(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                out.push(c.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop one normal component; refuse to climb above a root / empty base.
+                match out.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    }
+                    _ => return None,
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Resolve the path part under `root`: relative paths join; absolute paths must stay under root.
-/// Returns `None` when the path would escape the tree (AC-N5). Does **not** check that the file
-/// exists — that is the caller's job via `TreeModel::reveal`.
+/// Lexically normalizes `.` / `..` **before** the containment check (AC-N5) so agent-joined path
+/// fragments and escape attempts are handled correctly. Returns `None` when the path would escape
+/// the tree. Does **not** check that the file exists — that is the caller's job via
+/// `TreeModel::reveal`. Pure: no filesystem I/O (do not `canonicalize`).
 pub fn resolve_under_root(root: &Path, path: &str) -> Option<PathBuf> {
     let p = Path::new(path);
-    let abs = if p.is_absolute() {
+    let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
         root.join(p)
     };
-    // Lexical containment: same rule `TreeModel::reveal` uses (`starts_with`).
-    abs.starts_with(root).then_some(abs)
+    let abs = lexically_normalize(&joined)?;
+    let root_norm = lexically_normalize(root).unwrap_or_else(|| root.to_path_buf());
+    abs.starts_with(&root_norm).then_some(abs)
 }
 
 /// Precedence for the raw launch string: CLI `--open` value wins over the env var; empty
@@ -183,7 +285,6 @@ mod tests {
 
     #[test]
     fn parse_line_zero_stays_on_path() {
-        // `:0` is not a valid 1-based line — keep the whole string as the path.
         assert_eq!(
             parse_open_target("src/app.rs:0"),
             Some(OpenTarget {
@@ -250,7 +351,7 @@ mod tests {
             end_line: Some(10),
         };
         assert_eq!(t.display_ref(), "a.rs:10-20");
-        assert_eq!(t.goto_line(), Some(20)); // jump still uses stored start
+        assert_eq!(t.goto_line(), Some(20));
     }
 
     #[test]
@@ -278,6 +379,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_dotdot_escape_rejected() {
+        let root = Path::new("/repo");
+        assert_eq!(resolve_under_root(root, "../../../etc/passwd"), None);
+        assert_eq!(resolve_under_root(root, "/repo/../../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn resolve_normalizes_dotdot_under_root() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            resolve_under_root(root, "src/../src/app.rs"),
+            Some(PathBuf::from("/repo/src/app.rs"))
+        );
+        assert_eq!(
+            resolve_under_root(root, "src/../src/app.rs"),
+            resolve_under_root(root, "src/app.rs")
+        );
+    }
+
+    #[test]
+    fn resolve_sibling_prefix_not_under_root() {
+        // Path component starts_with: /repo-evil is not under /repo.
+        let root = Path::new("/repo");
+        assert_eq!(resolve_under_root(root, "/repo-evil/a.rs"), None);
+    }
+
+    #[test]
     fn pick_raw_flag_wins_over_env() {
         assert_eq!(
             pick_raw_open(Some("from-flag"), Some("from-env")),
@@ -297,5 +425,74 @@ mod tests {
     fn pick_raw_both_empty_is_none() {
         assert_eq!(pick_raw_open(Some(""), Some("")), None);
         assert_eq!(pick_raw_open(None, None), None);
+    }
+
+    #[test]
+    fn parse_args_open_space_separated() {
+        assert_eq!(
+            parse_args(["--open", "src/a.rs:1"]),
+            CliAction::Run {
+                open: Some("src/a.rs:1".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_args_open_equals() {
+        assert_eq!(
+            parse_args(["--open=src/a.rs:2"]),
+            CliAction::Run {
+                open: Some("src/a.rs:2".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_args_bare_open_is_ignored() {
+        assert_eq!(parse_args(["--open"]), CliAction::Run { open: None });
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_ignored() {
+        assert_eq!(
+            parse_args(["--herdr-future-flag", "x"]),
+            CliAction::Run { open: None }
+        );
+    }
+
+    #[test]
+    fn parse_args_unknown_alongside_open_keeps_target() {
+        assert_eq!(
+            parse_args(["--weird", "--open", "src/a.rs", "--also-weird"]),
+            CliAction::Run {
+                open: Some("src/a.rs".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_args_launch_decision() {
+        assert_eq!(parse_args(["--launch-decision"]), CliAction::LaunchDecision);
+        assert_eq!(
+            parse_args(["--launch-decision-tab"]),
+            CliAction::LaunchDecisionTab
+        );
+    }
+
+    #[test]
+    fn parse_args_launch_decision_wins_over_open() {
+        assert_eq!(
+            parse_args(["--open", "src/a.rs", "--launch-decision"]),
+            CliAction::LaunchDecision
+        );
+    }
+
+    #[test]
+    fn parse_args_open_then_flag_not_eaten_as_path() {
+        // `--open --nope` must not treat `--nope` as the path.
+        assert_eq!(
+            parse_args(["--open", "--nope"]),
+            CliAction::Run { open: None }
+        );
     }
 }

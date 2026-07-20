@@ -45,7 +45,8 @@ When something **already knows** the path (and maybe the line), you can start th
 file instead of landing on the tree and navigating by hand. This is for agents, companion plugins,
 and scripts — day-to-day browsing is unchanged (`f`, `:`, the tree).
 
-The launch **open target** is a root-relative path, optionally with a 1-based line — the same shape
+The launch **open target** is a path under the tree **root** (repo-relative is the usual form;
+absolute paths under the root are also accepted), optionally with a 1-based line — the same shape
 a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open shows a
 short status notice (`Opened path`, `Opened path:N`, or `Opened path:A-B`).
 

@@ -1403,8 +1403,8 @@ impl Controller {
             self.action_notice = Some(format!("Could not open {}", target.path));
             return;
         }
-        // reveal() may have relaxed changed_only / hide_hidden — re-sync controller mirrors
-        // (same as the file finder's confirm path).
+        // reveal() may have relaxed changed_only / hide_hidden / show_ignored — re-sync controller
+        // mirrors (same as the file finder's confirm path, plus show_ignored for launch targets).
         let tree_changed_only = self.tree.changed_only();
         if !tree_changed_only {
             self.changed_only = false;
@@ -1414,6 +1414,7 @@ impl Controller {
             self.changed_only = !self.status_mode;
         }
         self.hide_hidden = self.tree.hide_hidden();
+        self.show_ignored = self.tree.show_ignored();
         // Defer zoom until the first real layout measurement (see `set_content_viewport`).
         self.pending_open_zoom = true;
         // Success notice (option 2): echo the open target as a line reference. Cleared on the

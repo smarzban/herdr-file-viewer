@@ -226,6 +226,38 @@ fn reveal_clears_changed_only_when_target_hidden_by_filter() {
     );
 }
 
+/// (c2) `show_ignored` OFF, gitignored target → `reveal` turns show_ignored on and selects it
+/// (explicit path intent, same as hide_hidden / changed_only relaxation).
+#[test]
+fn reveal_enables_show_ignored_when_target_is_gitignored() {
+    let dir = TempDir::new();
+    // Minimal git repo so the ignore crate honors .gitignore.
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    fs::write(dir.path().join(".gitignore"), "secret.log\n").unwrap();
+    fs::write(dir.path().join("secret.log"), "ignored\n").unwrap();
+    fs::write(dir.path().join("visible.rs"), "v\n").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    assert!(
+        !names(&model).contains(&"secret.log".to_string()),
+        "gitignored file hidden by default"
+    );
+
+    let target = dir.path().join("secret.log");
+    let ok = model.reveal(&target);
+    assert!(ok, "reveal of gitignored file must succeed");
+    assert!(
+        model.show_ignored(),
+        "show_ignored must relax for explicit path"
+    );
+    let selected = model.selected().expect("selected after reveal");
+    assert_eq!(selected.path, target);
+}
+
 /// (c) `hide_hidden` ON, dot-prefixed target → `reveal` clears `hide_hidden` and selects it.
 #[test]
 fn reveal_clears_hide_hidden_when_target_is_dotfile() {
