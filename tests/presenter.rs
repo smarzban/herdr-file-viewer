@@ -6,7 +6,8 @@ use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
     AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, DiscardConfirmView,
-    FinderView, Focus, HelpView, LineSelectView, PickerRowView, PickerView, ViewState, draw,
+    FinderView, FlashLine, Focus, HelpView, LineSelectView, PickerRowView, PickerView, ViewState,
+    draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -69,6 +70,7 @@ fn sample_state() -> ViewState {
             "Showing first 5000 lines (truncated)".to_string(), // AC-13
             "delta not found — showing plain diff".to_string(), // AC-25
         ],
+        flash: None,
         focus: Focus::Tree,
         width: 100,
         content_scroll: 0,
@@ -367,6 +369,27 @@ fn surfaces_truncation_and_fallback_notices() {
     assert!(
         out.contains("delta not found"),
         "fallback notice (AC-25) visible\n{out}"
+    );
+}
+
+#[test]
+fn flash_line_renders_atop_the_notices_and_does_not_hide_them() {
+    // The self-expiring flash gets its own row above the persistent notices, so the flash text
+    // and both notices are all visible at once (the strip reserves a row for it).
+    let mut state = sample_state();
+    state.flash = Some(FlashLine {
+        text: "Diff: side-by-side".to_string(),
+        dim: false,
+    });
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("Diff: side-by-side"),
+        "flash text visible\n{out}"
+    );
+    assert!(out.contains("truncated"), "notice still visible\n{out}");
+    assert!(
+        out.contains("delta not found"),
+        "notice still visible\n{out}"
     );
 }
 

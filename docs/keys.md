@@ -23,6 +23,7 @@ is additive and on by default.
 | `c` | Toggle changed-files-only (baseline-aware: follows `b`) |
 | `d` | **Git-status mode** (toggle): restrict the tree to current working-tree status (`M`/`A`/`?`/`D`) and force working-tree diffs in the content pane (file or directory-scoped). Mutually exclusive with `c`; press `d` again to leave |
 | `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) — used by `c` and normal diffs; while `d` is on, content stays working-tree |
+| `D` (Shift+`d`) | Cycle diff presentation — `delta` unified → side-by-side → plain, unstyled `git diff` text → back to unified (in Diff/FullDiff views) |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` (see [Opening in an editor](#opening-in-an-editor)) |
 | `O` (Shift+`o`) | **Open with default app**: hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |

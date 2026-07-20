@@ -47,6 +47,9 @@ pub enum Intent {
     ToggleStatusMode,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
     ToggleBaseline,
+    /// Cycle the Diff/FullDiff renderer: `delta` unified → side-by-side → plain `git diff`.
+    /// Read-only — it only changes presentation, never files or git state.
+    CycleDiffRender,
     /// Cycle the content pane's view mode over the applicable set (AC-11).
     CycleView,
     /// Hand the selected file off to an external editor (AC-19).
@@ -138,7 +141,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 36] = [
+    pub const ALL: [Intent; 37] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -150,6 +153,7 @@ impl Intent {
         Intent::ToggleChangedOnly,
         Intent::ToggleStatusMode,
         Intent::ToggleBaseline,
+        Intent::CycleDiffRender,
         Intent::CycleView,
         Intent::OpenInEditor,
         Intent::OpenWithApp,
@@ -202,6 +206,7 @@ mod tests {
                 | Intent::ToggleChangedOnly
                 | Intent::ToggleStatusMode
                 | Intent::ToggleBaseline
+                | Intent::CycleDiffRender
                 | Intent::CycleView
                 | Intent::OpenInEditor
                 | Intent::OpenWithApp
@@ -298,11 +303,19 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_36() {
+    fn all_length_is_37() {
         assert_eq!(
             Intent::ALL.len(),
-            36,
-            "Intent::ALL must have exactly 36 variants after adding ToggleStatusMode"
+            37,
+            "Intent::ALL must have exactly 37 variants"
+        );
+    }
+
+    #[test]
+    fn cycle_diff_render_is_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::CycleDiffRender),
+            "Intent::ALL must contain CycleDiffRender"
         );
     }
 

@@ -158,6 +158,7 @@ customized).
 | | `toggle_changed_only` | `c` | Restrict the tree to changed files (baseline-aware), or restore the full tree |
 | | `toggle_status_mode` | `d` | Toggle git-status mode: filter to current working-tree status and show working-tree diffs |
 | | `toggle_baseline` | `b` | Switch the diff baseline between base-branch and `HEAD` |
+| | `cycle_diff_render` | `D` | Cycle diff presentation — delta unified → side-by-side → plain `git diff` (side-by-side applies when the configured diff renderer is Delta) |
 | | `refresh` | `r` | Re-read git state and re-render |
 | **Open & copy** | `open_in_editor` | `e` | Hand the selected file off to an external editor |
 | | `open_with_app` | `O` | Open the selected entry with the OS default application |

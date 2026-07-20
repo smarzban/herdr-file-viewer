@@ -80,6 +80,10 @@ Git status is woven straight into the tree, not a separate mode:
 - **Diff baseline**: press `b` to flip what "changed" and the normal/file-cycle diffs compare against
   — the merge-base of your branch versus `HEAD`. While git-status mode (`d`) is on, content stays
   working-tree; `b` still updates the stored baseline for when you leave `d` or use `c`.
+- **Diff presentation**: in a changed file's Diff or FullDiff view, press `D` to cycle Delta's
+  unified output, Delta side-by-side output, and plain unstyled git diff. Side-by-side is applied
+  only when the configured diff renderer is Delta; custom renderers remain unchanged. The setting
+  is presentation-only and does not change the selected baseline or git data.
 - **Refresh**: the viewer re-reads git status automatically when the pane regains focus, so a merge,
   pull, or commit you make elsewhere shows up on its own; `r` forces a full refresh on demand.
 
