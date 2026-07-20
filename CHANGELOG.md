@@ -14,6 +14,9 @@ All notable changes to this project are documented here. The format is based on
 - Windows launchers now support both PowerShell and Git Bash/zsh pane shells by reading `terminal.default_shell` and emitting the matching `pane run` form; they also use a short `%USERPROFILE%\bin\hfv.exe` shim and mirror `assets/markdown-style.json` beside it so glow markdown styling still works from the shim. → [windows](docs/windows.md)
 - Documented Windows renderer install via `winget` and the Git 2.41+ requirement for status markers. → [renderers](docs/renderers.md), [windows](docs/windows.md)
 
+### Added
+- Git-status mode (`d`): filter the tree to current working-tree status and force working-tree diffs (file or directory-scoped); sticky until `d` again, mutually exclusive with baseline-aware `c`. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+
 ## [1.13.0] - 2026-07-16
 
 ### Added

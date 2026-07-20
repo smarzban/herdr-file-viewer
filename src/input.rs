@@ -202,7 +202,14 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::ToggleChangedOnly,
         name: "toggle_changed_only",
         default_keys: &[KeyCode::Char('c')],
-        description: "Restrict the tree to changed files, or restore the full tree.",
+        description: "Restrict the tree to changed files (baseline-aware), or restore the full tree.",
+        category: "Git & filters",
+    },
+    Binding {
+        intent: Intent::ToggleStatusMode,
+        name: "toggle_status_mode",
+        default_keys: &[KeyCode::Char('d')],
+        description: "Toggle git-status mode: filter to current working-tree status and show working-tree diffs.",
         category: "Git & filters",
     },
     Binding {
@@ -689,6 +696,7 @@ mod tests {
         (KeyCode::Char('i'), Intent::ToggleIgnore),
         (KeyCode::Char('.'), Intent::ToggleHidden),
         (KeyCode::Char('c'), Intent::ToggleChangedOnly),
+        (KeyCode::Char('d'), Intent::ToggleStatusMode),
         (KeyCode::Char('b'), Intent::ToggleBaseline),
         (KeyCode::Char('v'), Intent::CycleView),
         (KeyCode::Char('e'), Intent::OpenInEditor),
@@ -868,11 +876,21 @@ mod tests {
 
     #[test]
     fn modified_char_keys_do_not_trigger_intents() {
-        // Ctrl+C is the terminal interrupt, not "changed-only"; Alt-chords are unbound too.
-        // Accidental or reserved chords must not fire a viewer action.
+        // Ctrl+C is the terminal interrupt, not "changed-only"; Ctrl/Alt-d must not fire
+        // status mode either. Accidental or reserved chords must not fire a viewer action.
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             None
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            None,
+            "Ctrl-d must not fire status mode"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)),
+            None,
+            "Alt-d must not fire status mode"
         );
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)),
@@ -881,6 +899,20 @@ mod tests {
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             None
+        );
+    }
+
+    #[test]
+    fn d_maps_to_status_mode() {
+        assert_eq!(
+            map_key(k(KeyCode::Char('d'))),
+            Some(Intent::ToggleStatusMode),
+            "d toggles git-status mode"
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT)),
+            Some(Intent::ToggleStatusMode),
+            "Shift-d still toggles status mode (same as bare d)"
         );
     }
 

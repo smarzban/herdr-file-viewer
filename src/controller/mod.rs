@@ -104,6 +104,10 @@ pub trait GitService: Send + Sync {
     /// `full_context`, git emits the whole file as context (for the full-file diff view);
     /// otherwise it returns the compact hunks-only diff.
     fn diff(&self, rel_path: &Path, baseline: Baseline, full_context: bool) -> String;
+    /// Raw unified diff for every tracked change under a repo-root-relative directory against
+    /// `baseline`. Empty `rel_dir` means the whole tree root. Used by git-status mode (`d`)
+    /// when a directory is selected.
+    fn diff_directory(&self, rel_dir: &Path, baseline: Baseline) -> String;
 }
 
 /// The rendered content pane for one file: ingested text plus any non-fatal notices
@@ -271,6 +275,10 @@ struct RenderJob {
     mode: ViewMode,
     baseline: Baseline,
     is_git: bool,
+    /// When true, the worker runs [`GitService::diff_directory`] on `rel` (directory-scoped
+    /// working-tree / baseline diff) instead of a single-file [`GitService::diff`]. Used by
+    /// git-status mode when a directory is selected.
+    directory_diff: bool,
     /// The content pane's drawable text width (columns) at dispatch, or `None` when unknown
     /// (e.g. the very first render before the first draw measured the pane). Only the markdown
     /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
@@ -446,6 +454,14 @@ pub struct Controller {
     /// is the pre-confirm behavior.
     confirm_discard: bool,
     changed_only: bool,
+    /// Sticky git-status mode (`d`): tree filtered to current working-tree status and content
+    /// forced to working-tree diffs (file or directory-scoped). Mutually exclusive with
+    /// [`Self::changed_only`] (baseline-aware `c`). Cleared only by a second `d` (or by
+    /// entering `c`, which turns this off).
+    status_mode: bool,
+    /// Working-tree status (`git status`), cached separately from the baseline-dependent
+    /// [`Self::changed`] set so status mode can filter independently of `b`.
+    git_status: BTreeMap<PathBuf, Status>,
     /// The tree's horizontal scroll offset (columns), for reading long / deeply-nested rows. Like
     /// the cursor it is navigation state: reset on a re-root (AC-13), not carried.
     tree_hscroll: u16,
@@ -726,6 +742,8 @@ impl Controller {
             confirm_discard: true,
             tree_hscroll: 0,
             changed_only: false,
+            status_mode: false,
+            git_status: BTreeMap::new(),
             focus: Focus::Tree,
             width: 0,
             content_scroll: 0,
@@ -817,10 +835,17 @@ impl Controller {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let raw_diff =
                         if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
-                            let full = job.mode == ViewMode::FullDiff;
-                            job.rel
-                                .as_deref()
-                                .map(|rel| git.diff(rel, job.baseline, full))
+                            if job.directory_diff {
+                                // Status mode on a directory: pathspec-scoped working-tree/baseline
+                                // diff (rel is empty for the tree root).
+                                let rel = job.rel.as_deref().unwrap_or_else(|| Path::new(""));
+                                Some(git.diff_directory(rel, job.baseline))
+                            } else {
+                                let full = job.mode == ViewMode::FullDiff;
+                                job.rel
+                                    .as_deref()
+                                    .map(|rel| git.diff(rel, job.baseline, full))
+                            }
                         } else {
                             None
                         };
@@ -951,6 +976,7 @@ impl Controller {
             )
         });
         self.changed = BTreeMap::new();
+        self.git_status = BTreeMap::new();
         // Close whatever modal is open (one assignment, since `modal` is now a single value). A
         // re-root only fires via picker-confirm, so in practice it's the picker being torn down —
         // but a re-root also invalidates the finder's old-root candidate list and must not strand a
@@ -960,7 +986,7 @@ impl Controller {
         self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
-        // changed_only, split_pct, tree_position, tree_max_cols, split_manual, wrap_override, baseline keep their current values. The fresh
+        // changed_only, status_mode, split_pct, tree_position, tree_max_cols, split_manual, wrap_override, baseline keep their current values. The fresh
         // TreeModel starts with default filter flags. `show_ignored` and `hide_hidden` are
         // git-independent, so apply them now. The changed-only *filter* is NOT applied here: it
         // must be applied against the REAL changed-set, which `dispatch_status_refresh` computes
@@ -984,7 +1010,12 @@ impl Controller {
     /// the re-root path, where the heavier status/changed-set work must not block input.
     fn dispatch_status_refresh(&mut self) {
         if !self.is_git_repo {
-            self.tree.set_changed_only(self.changed_only, &self.changed); // self.changed is empty
+            // Non-repo: both filters collapse to empty. Prefer the active mode's set.
+            if self.status_mode {
+                self.tree.set_changed_only(true, &self.git_status);
+            } else {
+                self.tree.set_changed_only(self.changed_only, &self.changed); // empty
+            }
             self.status_rx = None;
             return;
         }
@@ -1018,6 +1049,10 @@ impl Controller {
     }
     pub fn changed_only(&self) -> bool {
         self.changed_only
+    }
+    /// Whether sticky git-status mode (`d`) is active.
+    pub fn status_mode(&self) -> bool {
+        self.status_mode
     }
     pub fn baseline(&self) -> Baseline {
         self.baseline
@@ -1086,11 +1121,16 @@ impl Controller {
     }
 
     /// The effective view mode for the selected file (override or policy default), or `None`
-    /// when nothing / a directory is selected.
+    /// when nothing is selected. Directories normally have no view mode, except in git-status
+    /// mode (`d`) where they render a directory-scoped working-tree Diff.
     pub fn selected_view_mode(&self) -> Option<ViewMode> {
         let node = self.tree.selected()?;
         if node.kind != NodeKind::File {
-            return None;
+            return if self.status_mode && self.is_git_repo {
+                Some(ViewMode::Diff)
+            } else {
+                None
+            };
         }
         Some(self.effective_mode(&node.path))
     }
@@ -1554,6 +1594,7 @@ impl Controller {
             Intent::ToggleIgnore => self.toggle_ignore(),
             Intent::ToggleHidden => self.toggle_hidden(),
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
+            Intent::ToggleStatusMode => self.toggle_status_mode(),
             Intent::ToggleBaseline => self.toggle_baseline(),
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
@@ -1887,8 +1928,37 @@ impl Controller {
         if !self.is_git_repo {
             return Effects::noop(); // inert without git (AC-26)
         }
+        // Mutually exclusive with status mode (`d`): entering baseline-aware `c` leaves `d`.
+        if !self.changed_only && self.status_mode {
+            self.status_mode = false;
+        }
         self.changed_only = !self.changed_only;
         self.tree.set_changed_only(self.changed_only, &self.changed);
+        self.dispatch_render();
+        Effects::redraw()
+    }
+
+    /// Toggle sticky git-status mode (`d`): filter the tree to current working-tree status
+    /// and force working-tree diffs. Mutually exclusive with baseline-aware `c`.
+    fn toggle_status_mode(&mut self) -> Effects {
+        // Entering status mode needs a repo (AC-26). Leaving it must stay possible even after a
+        // re-root into a non-git directory, otherwise a carried-on `status_mode` can leave the
+        // user stuck on an empty filtered tree with no way to turn `d` off.
+        if !self.is_git_repo && !self.status_mode {
+            return Effects::noop();
+        }
+        if self.status_mode {
+            self.status_mode = false;
+            // Leaving status mode: if `c` is not on, restore the full tree.
+            if !self.changed_only {
+                self.tree.set_changed_only(false, &self.changed);
+            }
+        } else {
+            // Entering status mode turns off baseline-aware changed-only.
+            self.changed_only = false;
+            self.status_mode = true;
+            self.tree.set_changed_only(true, &self.git_status);
+        }
         self.dispatch_render();
         Effects::redraw()
     }
@@ -2453,6 +2523,7 @@ impl Controller {
             mode: ViewMode::RenderedMarkdown,
             baseline: self.baseline,
             is_git: self.is_git_repo,
+            directory_diff: false,
             wrap_width: self.md_wrap_width(),
         });
     }
@@ -2494,12 +2565,23 @@ impl Controller {
             // that matched nothing. Show guidance instead of a blank pane.
             return self.clear_content(EmptyReason::NoFiles);
         };
-        if node.kind != NodeKind::File {
-            // A directory is selected — it has no content to render; show guidance so
-            // the pane is not a blank void.
+        // Git-status mode (`d`): directories render a pathspec-scoped working-tree diff instead of
+        // empty-state guidance. Files still go through the normal job path with forced Diff.
+        let (mode, directory_diff, baseline) = if self.status_mode && self.is_git_repo {
+            match node.kind {
+                NodeKind::Dir => (ViewMode::Diff, true, Baseline::Head),
+                NodeKind::File => (
+                    ViewMode::Diff,
+                    false,
+                    Baseline::Head, // status mode always diffs the working tree, not merge-base
+                ),
+            }
+        } else if node.kind != NodeKind::File {
+            // A directory is selected outside status mode — no content; show guidance.
             return self.clear_content(EmptyReason::Directory);
-        }
-        let mode = self.effective_mode(&node.path);
+        } else {
+            (self.effective_mode(&node.path), false, self.baseline)
+        };
         let rel = self.rel(&node.path);
         // a slow render used to leave the PREVIOUS file's body visible under the NEW
         // selection's title (the title is derived from the tree cursor, which moves immediately,
@@ -2520,8 +2602,9 @@ impl Controller {
                 path: node.path,
                 rel,
                 mode,
-                baseline: self.baseline,
+                baseline,
                 is_git: self.is_git_repo,
+                directory_diff,
                 wrap_width: self.md_wrap_width(),
             })
             .is_ok()
@@ -2669,7 +2752,11 @@ impl Controller {
     }
 
     /// The effective view mode for a file: the user's override, else the policy default.
+    /// Git-status mode (`d`) forces Diff regardless of override — the mode is the product.
     fn effective_mode(&self, path: &Path) -> ViewMode {
+        if self.status_mode && self.is_git_repo {
+            return ViewMode::Diff;
+        }
         self.overrides
             .get(path)
             .copied()
@@ -2677,7 +2764,8 @@ impl Controller {
     }
 
     /// The View Policy facts about a file: markdown by extension, changed by the cached
-    /// changed-set (so it tracks the active baseline).
+    /// changed-set (so it tracks the active baseline). In status mode, "changed" means present
+    /// in the working-tree status set so Diff is always the default for filtered files.
     fn descriptor(&self, path: &Path) -> FileDescriptor {
         FileDescriptor {
             path: path.to_path_buf(),
@@ -2688,7 +2776,13 @@ impl Controller {
 
     fn is_changed(&self, path: &Path) -> bool {
         self.rel(path)
-            .map(|rel| self.changed.contains_key(&rel))
+            .map(|rel| {
+                if self.status_mode {
+                    self.git_status.contains_key(&rel)
+                } else {
+                    self.changed.contains_key(&rel)
+                }
+            })
             .unwrap_or(false)
     }
 
@@ -2799,6 +2893,9 @@ mod tests {
             BTreeMap::new()
         }
         fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
+            String::new()
+        }
+        fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
             String::new()
         }
     }

@@ -20,8 +20,9 @@ is additive and on by default.
 | `Enter` | Activate the selection: expand/collapse a directory, or open a file in **zoom mode** (content full-screen) |
 | `i` | Toggle gitignored files |
 | `.` | Toggle hidden (dot-prefixed) files and folders |
-| `c` | Toggle changed-files-only |
-| `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) |
+| `c` | Toggle changed-files-only (baseline-aware: follows `b`) |
+| `d` | **Git-status mode** (toggle): restrict the tree to current working-tree status (`M`/`A`/`?`/`D`) and force working-tree diffs in the content pane (file or directory-scoped). Mutually exclusive with `c`; press `d` again to leave |
+| `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) — used by `c` and normal diffs; while `d` is on, content stays working-tree |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` (see [Opening in an editor](#opening-in-an-editor)) |
 | `O` (Shift+`o`) | **Open with default app**: hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |

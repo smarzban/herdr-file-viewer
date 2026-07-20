@@ -155,7 +155,8 @@ customized).
 | | `tree_scroll_right` | `L` | Scroll the tree pane right |
 | **Git & filters** | `toggle_ignore` | `i` | Reveal or hide gitignored files |
 | | `toggle_hidden` | `.` | Hide or reveal dot-prefixed (hidden) files and folders |
-| | `toggle_changed_only` | `c` | Restrict the tree to changed files, or restore the full tree |
+| | `toggle_changed_only` | `c` | Restrict the tree to changed files (baseline-aware), or restore the full tree |
+| | `toggle_status_mode` | `d` | Toggle git-status mode: filter to current working-tree status and show working-tree diffs |
 | | `toggle_baseline` | `b` | Switch the diff baseline between base-branch and `HEAD` |
 | | `refresh` | `r` | Re-read git state and re-render |
 | **Open & copy** | `open_in_editor` | `e` | Hand the selected file off to an external editor |
