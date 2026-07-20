@@ -161,8 +161,8 @@ impl Controller {
             return Effects::noop();
         }
         let now = Instant::now();
-        let double = is_double_click(self.last_click, (col, row), now);
-        self.last_click = Some((col, row, now));
+        let double = is_double_click(self.last_click, (col, row), now, ClickOrigin::Finder);
+        self.last_click = Some((col, row, now, ClickOrigin::Finder));
         // Set the finder cursor to the clicked row.
         if let Some(f) = self.modal.finder_mut() {
             f.set_cursor(idx);

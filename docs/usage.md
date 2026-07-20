@@ -153,7 +153,8 @@ numbers. No mode-switching, no commands.
   fit-to-pane view (wide tables sized to fit, over-long cells shown as `…`) and a wide view that
   renders tables at full width and scrolls sideways.
 - **Zoom** with `z` to hide the tree and read the file across the full pane; press again (or
-  `q`/`Esc`) to restore the split.
+  `q`/`Esc`) to restore the split. You can also **double-click the content pane title** (the
+  filename on the top border) to toggle the same zoom without the key.
 - **Full-screen** with `Z` (Shift+`z`) to open the file *and* zoom the viewer's herdr pane to fill
   the whole terminal — the file takes over the entire screen, not just the split. `Z` again (or
   `Esc`/`q`/`z`) returns to the split.

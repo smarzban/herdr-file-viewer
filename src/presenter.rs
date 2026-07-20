@@ -1317,6 +1317,11 @@ pub struct PaneGeometry {
     pub tree_hbar: Option<Rect>,
     /// The content text interior (below the notices strip, minus any reserved scrollbar gutter).
     pub content_inner: Option<Rect>,
+    /// Hit rect for the content column's top border (filename title bar), full border width inset
+    /// by the left/right border glyphs. Used for double-click → toggle zoom (hide/show tree).
+    /// Named `*_rect` to distinguish it from [`ViewState::content_title`] (the filename string).
+    /// `None` when the content column is not drawn.
+    pub content_title_rect: Option<Rect>,
     /// The content pane's in-pane scrollbar tracks (1-cell rects), present only when drawn.
     pub content_vbar: Option<Rect>,
     pub content_hbar: Option<Rect>,
@@ -1406,6 +1411,13 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 
     // Content: the SAME block `draw_content` builds (border + optional left gap), then the notices
     // split and bar layout it computes — so a click maps against the padded interior actually drawn.
+    // The title lives on the top border of the *column* rect (before `inner`), not the text rect.
+    let content_title_rect = content.map(|r| Rect {
+        x: r.x.saturating_add(1),
+        y: r.y,
+        width: r.width.saturating_sub(2),
+        height: 1,
+    });
     let (content_inner, content_vbar, content_hbar) =
         match content.map(|r| content_block(state).inner(r)) {
             Some(ci) => {
@@ -1466,6 +1478,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         tree_vbar,
         tree_hbar,
         content_inner,
+        content_title_rect,
         content_vbar,
         content_hbar,
         divider_x,
