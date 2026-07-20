@@ -8,8 +8,8 @@ mod common;
 use common::TempDir;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
+    Components, ContentProvider, Controller, DiffRenderMode, EditorHandoff, EditorOutcome,
+    GitService, RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -665,7 +665,7 @@ impl WidthProbe {
 }
 impl ContentProvider for WidthProbe {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None)
+        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
     }
     fn render_at_width(
         &self,
@@ -673,6 +673,8 @@ impl ContentProvider for WidthProbe {
         _mode: ViewMode,
         _raw_diff: Option<&str>,
         width: Option<u16>,
+        _pane_width: Option<u16>,
+        _diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         self.widths.lock().unwrap().push(width);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -906,7 +908,14 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
     let s = DefaultStub;
     let p = Path::new("/x/a.rs");
     let base = s.render(p, ViewMode::SyntaxContent, Some("d"));
-    let widthed = s.render_at_width(p, ViewMode::SyntaxContent, Some("d"), Some(42));
+    let widthed = s.render_at_width(
+        p,
+        ViewMode::SyntaxContent,
+        Some("d"),
+        Some(42),
+        None,
+        DiffRenderMode::default(),
+    );
     assert_eq!(
         flatten(&base.content),
         flatten(&widthed.content),
@@ -921,7 +930,7 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
 struct WidthDependentMatches;
 impl ContentProvider for WidthDependentMatches {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None)
+        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
     }
     fn render_at_width(
         &self,
@@ -929,6 +938,8 @@ impl ContentProvider for WidthDependentMatches {
         _mode: ViewMode,
         _raw_diff: Option<&str>,
         width: Option<u16>,
+        _pane_width: Option<u16>,
+        _diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         let n = match width {
             Some(w) if w >= 40 => 8,
@@ -1101,6 +1112,128 @@ fn status_mode_forces_working_tree_file_diff() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// A recording log of `(path, baseline)` for each `GitService::diff` call (a `StatusModeGit`
+/// recorder), shared between the stub and the test.
+type DiffLog = Arc<Mutex<Vec<(PathBuf, Baseline)>>>;
+
+/// Build a status-mode controller (session baseline = Base) with one modified file `src/a.rs`
+/// selected, wired to a `StatusModeGit` whose `file_diffs` log records every diff baseline. Waits
+/// until the first working-tree file diff is requested. The returned `TempDir` must outlive the
+/// controller.
+fn status_mode_ctrl_on_base() -> (Controller, DiffLog, TempDir) {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "a\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("src/a.rs"), Status::Modified);
+    let file_diffs = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(StatusModeGit {
+        status,
+        file_diffs: file_diffs.clone(),
+        dir_diffs: Arc::new(Mutex::new(Vec::new())),
+    });
+    let components = Components {
+        providers: Box::new(move |_r| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(EchoDiffContent),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Base, // feature-branch baseline: status mode must still force Head
+        components,
+    );
+    ctrl.handle(Intent::ToggleStatusMode);
+    let nodes = ctrl.tree().visible_nodes();
+    let file_idx = nodes
+        .iter()
+        .position(|n| n.path.ends_with("a.rs"))
+        .expect("status file visible in status mode");
+    while ctrl.tree().cursor() != file_idx {
+        if ctrl.tree().cursor() < file_idx {
+            ctrl.handle(Intent::NavDown);
+        } else {
+            ctrl.handle(Intent::NavUp);
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if !file_diffs.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status mode never requested a file diff"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    (ctrl, file_diffs, dir)
+}
+
+/// Poll `ctrl` until `file_diffs` records a NEW call (its length exceeds `from`), or fail.
+fn wait_for_new_file_diff(
+    ctrl: &mut Controller,
+    file_diffs: &DiffLog,
+    from: usize,
+    what: &str,
+) -> Vec<(PathBuf, Baseline)> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if file_diffs.lock().unwrap().len() > from {
+            return file_diffs.lock().unwrap().clone();
+        }
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn status_mode_resize_reflow_keeps_working_tree_baseline() {
+    // Regression (merge of the diff-presentation cycle into git-status mode): on a feature branch
+    // (session baseline Base), a RESIZE in status mode must re-render the file diff against Head
+    // (working tree). `dispatch_reflow` used to pass `self.baseline`, silently flipping the diff to
+    // the merge-base on a resize/wrap; it now forces Head like `dispatch_render`.
+    let (mut ctrl, file_diffs, _dir) = status_mode_ctrl_on_base();
+    let seen = file_diffs.lock().unwrap().len();
+    ctrl.set_content_viewport(40, 20); // width change → rerender_after_resize → dispatch_reflow
+    let calls = wait_for_new_file_diff(
+        &mut ctrl,
+        &file_diffs,
+        seen,
+        "a status-mode resize never re-rendered the diff",
+    );
+    assert!(
+        calls.iter().all(|(_, b)| *b == Baseline::Head),
+        "a status-mode reflow must stay on the working-tree Head baseline, got {calls:?}"
+    );
+    assert!(ctrl.status_mode(), "the resize must not leave status mode");
+}
+
+#[test]
+fn cycle_diff_render_in_status_mode_keeps_head_and_stays_in_mode() {
+    // Pressing `D` (diff presentation) while git-status mode (`d`) is active must re-render through
+    // the worker, keep the working-tree Head diff, and stay in status mode — the two coexist.
+    let (mut ctrl, file_diffs, _dir) = status_mode_ctrl_on_base();
+    let seen = file_diffs.lock().unwrap().len();
+    ctrl.handle(Intent::CycleDiffRender); // → side-by-side; re-renders
+    let calls = wait_for_new_file_diff(
+        &mut ctrl,
+        &file_diffs,
+        seen,
+        "cycling D in status mode never re-rendered",
+    );
+    assert!(ctrl.status_mode(), "cycling D must not leave status mode");
+    assert!(
+        calls.iter().all(|(_, b)| *b == Baseline::Head),
+        "D in status mode must keep the working-tree Head diff, got {calls:?}"
+    );
 }
 
 #[test]

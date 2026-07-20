@@ -86,6 +86,27 @@ const HSCROLL_STEP: u16 = 8;
 /// would let a wedged `glow` freeze input for up to 5s. On timeout the existing render path falls
 /// back to plain text + a notice (AC-15). This reconciles prerender-at-open with AC-22.
 const HELP_RENDER_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long a [`Flash`] stays at full brightness before it starts to dim.
+const FLASH_FULL: Duration = Duration::from_millis(1600);
+/// How long a [`Flash`] lingers dimmed after [`FLASH_FULL`] before it disappears entirely. The
+/// bright→dim→gone progression is the terminal-idiomatic "fade" for an auto-dismissing hint.
+const FLASH_DIM: Duration = Duration::from_millis(700);
+
+/// A self-expiring, one-line status hint (e.g. "Diff: side-by-side" after `D`). Unlike
+/// [`Controller::action_notice`] — which persists until the next intent because a failure message
+/// must not vanish on its own — a flash fades on a timer: full brightness for [`FLASH_FULL`], then
+/// dimmed for [`FLASH_DIM`], then removed. The event loop advances it via
+/// [`Controller::tick_flash`].
+struct Flash {
+    text: String,
+    /// When the flash switches from full brightness to dimmed.
+    dim_at: Instant,
+    /// When the flash disappears entirely.
+    deadline: Instant,
+    /// The phase currently reflected on screen, so [`Controller::tick_flash`] only asks for a
+    /// redraw on a real transition (full→dim, or →gone) rather than every idle tick.
+    dim: bool,
+}
 /// The help overlay's self-operating key-hints footer (AC-11) — at minimum how to switch sections
 /// and how to close. Carried in `HelpView` so the Presenter stays mode-agnostic; matches the keys
 /// `handle_help_key` actually handles (Tab/←→ switch · digits/1-9 also; Esc/q/`?` close).
@@ -108,6 +129,40 @@ pub trait GitService: Send + Sync {
     /// `baseline`. Empty `rel_dir` means the whole tree root. Used by git-status mode (`d`)
     /// when a directory is selected.
     fn diff_directory(&self, rel_dir: &Path, baseline: Baseline) -> String;
+}
+
+/// Which command the Diff/FullDiff views delegate to. Cycled by `D`:
+/// `Delta` → `DeltaSideBySide` → `Raw` → `Delta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffRenderMode {
+    /// The configured `delta` renderer, unified (delta's default layout).
+    #[default]
+    Delta,
+    /// The configured `delta` renderer with `--side-by-side` appended — old/new shown in two
+    /// columns instead of interleaved.
+    DeltaSideBySide,
+    /// A plain, unstyled `git diff` passthrough — bypasses `delta` entirely.
+    Raw,
+}
+
+impl DiffRenderMode {
+    /// The next mode in the cycle (wraps at the end).
+    pub fn next(self) -> Self {
+        match self {
+            DiffRenderMode::Delta => DiffRenderMode::DeltaSideBySide,
+            DiffRenderMode::DeltaSideBySide => DiffRenderMode::Raw,
+            DiffRenderMode::Raw => DiffRenderMode::Delta,
+        }
+    }
+
+    /// A short human label for the flash hint shown when `D` cycles to this mode.
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffRenderMode::Delta => "Diff: unified",
+            DiffRenderMode::DeltaSideBySide => "Diff: side-by-side",
+            DiffRenderMode::Raw => "Diff: raw (plain git diff)",
+        }
+    }
 }
 
 /// The rendered content pane for one file: ingested text plus any non-fatal notices
@@ -138,14 +193,28 @@ pub trait ContentProvider: Send {
     /// width into glow's `-w`.
     ///
     /// [`render`]: ContentProvider::render
+    ///
+    /// `diff_render_mode` picks which command the Diff/FullDiff modes delegate to — `delta`
+    /// unified, `delta --side-by-side`, or a plain `git diff` passthrough (`D` cycles it).
+    /// Ignored by every other mode.
+    ///
+    /// `pane_width` is the pane's drawable width whenever it's known. It is passed to delta's
+    /// `--width` because the renderer is piped rather than attached to a terminal. Ignored by
+    /// every mode except Diff/FullDiff.
+    ///
+    /// `width` remains the markdown wrap width (gated by the markdown wrap preference).
     fn render_at_width(
         &self,
         path: &Path,
         mode: ViewMode,
         raw_diff: Option<&str>,
         width: Option<u16>,
+        pane_width: Option<u16>,
+        diff_render_mode: DiffRenderMode,
     ) -> RenderResult {
         let _ = width;
+        let _ = pane_width;
+        let _ = diff_render_mode;
         self.render(path, mode, raw_diff)
     }
 }
@@ -284,6 +353,16 @@ struct RenderJob {
     /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
     /// instead of overflowing and being shattered by the Presenter's re-wrap.
     wrap_width: Option<u16>,
+    /// The content pane's drawable text width, unconditional — unlike `wrap_width` it is NOT
+    /// gated by the markdown wrap preference (`effective_wrap`), because
+    /// it feeds `delta`'s own `--width` rather than a line-wrap decision. `delta` is spawned
+    /// with stdout piped (not a real tty), so it cannot auto-detect a terminal width itself and
+    /// falls back to a fixed default, which visibly clips `DiffRenderMode::DeltaSideBySide`'s
+    /// two columns regardless of the actual pane size. `None` before the first draw has
+    /// measured the pane. Ignored by every mode except Diff/FullDiff.
+    pane_width: Option<u16>,
+    /// Which command a Diff/FullDiff render delegates to (`D`). Ignored by other modes.
+    diff_render_mode: DiffRenderMode,
 }
 
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
@@ -454,6 +533,11 @@ pub struct Controller {
     /// is the pre-confirm behavior.
     confirm_discard: bool,
     changed_only: bool,
+    /// Which command a Diff/FullDiff render delegates to (`D`, cycling Delta →
+    /// DeltaSideBySide → Raw). Carried
+    /// across a re-root like the other display preferences (`show_ignored`, `hide_hidden`,
+    /// `changed_only`, `baseline`).
+    diff_render_mode: DiffRenderMode,
     /// Sticky git-status mode (`d`): tree filtered to current working-tree status and content
     /// forced to working-tree diffs (file or directory-scoped). Mutually exclusive with
     /// [`Self::changed_only`] (baseline-aware `c`). Cleared only by a second `d` (or by
@@ -559,6 +643,9 @@ pub struct Controller {
     /// A transient notice from the last action (e.g. an editor-launch failure); shown until
     /// the next intent is handled.
     action_notice: Option<String>,
+    /// A self-expiring status hint (`D`'s diff-presentation label). Fades on a timer rather than
+    /// on the next intent — see [`Flash`].
+    flash: Option<Flash>,
     /// Session-only annotations, bound to the current root and never persisted.
     annotations: AnnotationStore,
     git: Arc<dyn GitService>,
@@ -742,6 +829,7 @@ impl Controller {
             confirm_discard: true,
             tree_hscroll: 0,
             changed_only: false,
+            diff_render_mode: DiffRenderMode::default(),
             status_mode: false,
             git_status: BTreeMap::new(),
             focus: Focus::Tree,
@@ -766,6 +854,7 @@ impl Controller {
             content_path: None,
             content_rendering: false,
             action_notice: None,
+            flash: None,
             annotations: AnnotationStore::new(),
             git,
             editor,
@@ -854,6 +943,8 @@ impl Controller {
                         job.mode,
                         raw_diff.as_deref(),
                         job.wrap_width,
+                        job.pane_width,
+                        job.diff_render_mode,
                     )
                 }))
                 .unwrap_or_else(|_| RenderResult {
@@ -977,6 +1068,9 @@ impl Controller {
         });
         self.changed = BTreeMap::new();
         self.git_status = BTreeMap::new();
+        // The diff-presentation flash is bound to the file it was raised over; drop it so a stale
+        // hint can't linger over the freshly re-rooted tree.
+        self.flash = None;
         // Close whatever modal is open (one assignment, since `modal` is now a single value). A
         // re-root only fires via picker-confirm, so in practice it's the picker being torn down —
         // but a re-root also invalidates the finder's old-root candidate list and must not strand a
@@ -1088,6 +1182,43 @@ impl Controller {
     /// to inspect it directly (e.g. the re-root failure guard, AC-16).
     pub fn action_notice(&self) -> Option<&str> {
         self.action_notice.as_deref()
+    }
+
+    /// Show a self-expiring status hint. It fades on its own (see [`Flash`]); unlike
+    /// [`action_notice`](Self::action_notice) it survives an idle screen but is replaced whenever
+    /// a newer flash is set.
+    fn set_flash(&mut self, text: impl Into<String>) {
+        let now = Instant::now();
+        self.flash = Some(Flash {
+            text: text.into(),
+            dim_at: now + FLASH_FULL,
+            deadline: now + FLASH_FULL + FLASH_DIM,
+            dim: false,
+        });
+    }
+
+    /// Advance the flash clock to `now`, expiring or dimming it as time passes. Returns `true`
+    /// only when the visible state changed (dim transition or removal) so the event loop redraws
+    /// exactly once per transition, never on every idle tick. Called from the run loop each tick.
+    pub fn tick_flash(&mut self, now: Instant) -> bool {
+        let Some(f) = self.flash.as_mut() else {
+            return false;
+        };
+        if now >= f.deadline {
+            self.flash = None;
+            return true;
+        }
+        let should_dim = now >= f.dim_at;
+        if should_dim != f.dim {
+            f.dim = should_dim;
+            return true;
+        }
+        false
+    }
+
+    /// The active flash's text, if any. Exposed for tests.
+    pub fn flash_text(&self) -> Option<&str> {
+        self.flash.as_ref().map(|f| f.text.as_str())
     }
 
     /// The open worktree picker's state, or `None` when it is closed. Exposed so the Presenter
@@ -1282,13 +1413,12 @@ impl Controller {
         // the end, leaving blank space; re-clamp both axes to the new geometry.
         self.content_scroll = self.content_scroll.min(self.max_content_scroll());
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
-        // When markdown is fit-to-pane (wrapped), glow lays the table out to the pane width, so a
-        // width change (terminal resize or split-bar drag) must reflow it, preserving scroll and
-        // search (unlike a selection-change render). When unwrapped (the `w` horizontal-scroll view)
-        // glow's natural-width output is width-independent — the pane just re-clamps h-scroll, no
-        // re-render. A height-only change never affects glow's layout either.
-        if width_changed && self.effective_wrap() {
-            self.rerender_markdown_reflow();
+        // A width-sensitive delegate (glow fit-to-pane markdown, or a non-`Raw` delta diff mode)
+        // must reflow to the new width, preserving scroll and search (unlike a selection-change
+        // render); `rerender_after_resize` gates per-mode whether that applies. A height-only
+        // change never affects either delegate's layout.
+        if width_changed {
+            self.rerender_after_resize();
         }
     }
 
@@ -1365,6 +1495,10 @@ impl Controller {
             selected,
             content: self.content.clone(),
             notices: self.notices(),
+            flash: self.flash.as_ref().map(|f| crate::presenter::FlashLine {
+                text: f.text.clone(),
+                dim: f.dim,
+            }),
             focus: self.focus,
             width: self.width,
             content_scroll: self.content_scroll,
@@ -1596,6 +1730,7 @@ impl Controller {
             Intent::ToggleChangedOnly => self.toggle_changed_only(),
             Intent::ToggleStatusMode => self.toggle_status_mode(),
             Intent::ToggleBaseline => self.toggle_baseline(),
+            Intent::CycleDiffRender => self.cycle_diff_render(),
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
             Intent::OpenWithApp => self.open_with_app(),
@@ -1983,6 +2118,25 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// Cycle the Diff/FullDiff renderer (`delta` unified → side-by-side → raw git diff).
+    /// The key is inert outside a diff view so it cannot reset unrelated content scroll/search.
+    fn cycle_diff_render(&mut self) -> Effects {
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
+        if node.kind != NodeKind::File {
+            return Effects::noop();
+        }
+        let mode = self.effective_mode(&node.path);
+        if !matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
+            return Effects::noop();
+        }
+        self.diff_render_mode = self.diff_render_mode.next();
+        self.set_flash(self.diff_render_mode.label());
+        self.dispatch_render();
+        Effects::redraw()
+    }
+
     fn cycle_view(&mut self) -> Effects {
         let Some(node) = self.tree.selected() else {
             return Effects::noop();
@@ -2352,7 +2506,7 @@ impl Controller {
         self.content_hscroll = self.content_hscroll.min(self.max_content_hscroll());
         // Markdown must re-render at the new wrap width (fit vs. natural); a no-op for other modes,
         // which only need the re-clamp above.
-        self.rerender_markdown_reflow();
+        self.rerender_after_wrap_toggle();
         Effects::redraw()
     }
 
@@ -2491,40 +2645,91 @@ impl Controller {
         (self.content_width > 0 && self.effective_wrap()).then_some(self.content_width)
     }
 
-    /// Re-render the current markdown selection **without** the view-state reset [`dispatch_render`]
-    /// performs — the triggers are a content-pane resize and the `w` wrap toggle, neither of which is
-    /// a selection change, so scroll position and any active search must survive. Only rendered
-    /// markdown is re-rendered: glow's layout is tied to the wrap width we pass it (fit-to-pane vs.
-    /// natural width), so a resize-while-fit or a wrap toggle must re-run glow; every other mode is
-    /// width-independent here (diffs/code re-wrap in the Presenter alone), so this is a no-op for
-    /// them. The current content stays on screen until the new render lands (no `Rendering…`
-    /// placeholder), so a live split-drag doesn't flash; the worker collapses the backlog so only the
-    /// final state renders. [`poll`] applies the result by `seq` and, seeing it flagged in
-    /// `reflow_seq`, keeps the scroll and recomputes an active search.
-    fn rerender_markdown_reflow(&mut self) {
+    /// The content pane's drawable text width, unconditional (unlike
+    /// [`md_wrap_width`](Self::md_wrap_width), which is gated by the markdown wrap
+    /// preference) — feeds `delta`'s own `--width` for the diff modes. `None` before the
+    /// first draw has measured the pane.
+    fn pane_width(&self) -> Option<u16> {
+        (self.content_width > 0).then_some(self.content_width)
+    }
+
+    /// `w` wrap toggle: re-render if the selection is rendered markdown, since wrap changes
+    /// glow's `-w` (fit-to-pane vs. natural width). No-op for every other mode — wrap is pure
+    /// Presenter layout there (diffs/code re-wrap in the Presenter alone; `delta`'s own output
+    /// is width-, not wrap-, sensitive — see [`rerender_after_resize`](Self::rerender_after_resize)).
+    fn rerender_after_wrap_toggle(&mut self) {
         let Some(node) = self.tree.selected() else {
             return;
         };
-        if node.kind != NodeKind::File
-            || self.effective_mode(&node.path) != ViewMode::RenderedMarkdown
+        if node.kind == NodeKind::File
+            && self.effective_mode(&node.path) == ViewMode::RenderedMarkdown
         {
+            self.dispatch_reflow(node.path, ViewMode::RenderedMarkdown);
+        }
+    }
+
+    /// Content-pane resize (a terminal resize or a split-bar drag): re-render if the selection
+    /// delegates to something width-sensitive — rendered markdown when fit-to-pane (glow lays
+    /// the table out to the pane width), or a Diff/FullDiff view whose `delta` mode isn't `Raw`
+    /// (`delta` is piped, not a real tty, so it can't auto-detect a terminal width itself and a
+    /// `DeltaSideBySide` render otherwise stays sized to its stale fallback width after a
+    /// resize — `Raw` is `cat`, unaffected by width either way). Every other case is
+    /// width-independent here and a no-op.
+    fn rerender_after_resize(&mut self) {
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        if node.kind != NodeKind::File {
             return;
         }
+        let mode = self.effective_mode(&node.path);
+        let reflow = match mode {
+            ViewMode::RenderedMarkdown => self.effective_wrap(),
+            ViewMode::Diff | ViewMode::FullDiff => self.diff_render_mode != DiffRenderMode::Raw,
+            ViewMode::SyntaxContent => false,
+        };
+        if reflow {
+            self.dispatch_reflow(node.path, mode);
+        }
+    }
+
+    /// Re-render `path` at `mode` **without** the view-state reset [`dispatch_render`] performs
+    /// — shared core for [`rerender_after_wrap_toggle`](Self::rerender_after_wrap_toggle) and
+    /// [`rerender_after_resize`](Self::rerender_after_resize), neither of which is a selection
+    /// change, so scroll position and any active search must survive. The current content stays
+    /// on screen until the new render lands (no `Rendering…` placeholder), so a live split-drag
+    /// doesn't flash; the worker collapses the backlog so only the final state renders. [`poll`]
+    /// applies the result by `seq` and, seeing it flagged in `reflow_seq`, keeps the scroll and
+    /// recomputes an active search.
+    fn dispatch_reflow(&mut self, path: PathBuf, mode: ViewMode) {
         self.latest_seq += 1;
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
-        let rel = self.rel(&node.path);
+        let rel = self.rel(&path);
+        // Status mode always diffs the working tree, so a reflow must use the SAME forced
+        // `Baseline::Head` `dispatch_render` does — otherwise a resize/wrap re-render on a
+        // feature branch (where `self.baseline` is `Base`) would silently flip a status-mode diff
+        // from the working tree to the merge-base. `dispatch_reflow` only fires for a selected
+        // FILE (rerender_after_resize/_wrap_toggle both return early for a directory), so the
+        // directory-scoped diff never routes here — `directory_diff` stays false.
+        let baseline = if self.status_mode && self.is_git_repo {
+            Baseline::Head
+        } else {
+            self.baseline
+        };
         // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
         // never receive a result for this seq, which is fine (nothing was cleared).
         let _ = self.job_tx.send(RenderJob {
             seq,
-            path: node.path,
+            path,
             rel,
-            mode: ViewMode::RenderedMarkdown,
-            baseline: self.baseline,
+            mode,
+            baseline,
             is_git: self.is_git_repo,
             directory_diff: false,
             wrap_width: self.md_wrap_width(),
+            pane_width: self.pane_width(),
+            diff_render_mode: self.diff_render_mode,
         });
     }
 
@@ -2606,6 +2811,8 @@ impl Controller {
                 is_git: self.is_git_repo,
                 directory_diff,
                 wrap_width: self.md_wrap_width(),
+                pane_width: self.pane_width(),
+                diff_render_mode: self.diff_render_mode,
             })
             .is_ok()
         {
@@ -2953,6 +3160,140 @@ mod tests {
             renderers: None,
         };
         Controller::new(resolved, Baseline::Head, components)
+    }
+
+    struct ChangedGit {
+        path: PathBuf,
+    }
+
+    impl GitService for ChangedGit {
+        fn status(&self) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::from([(self.path.clone(), Status::Modified)])
+        }
+
+        fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+            self.status()
+        }
+
+        fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
+            "- old\n+ new\n".into()
+        }
+
+        fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+            "- old\n+ new\n".into()
+        }
+    }
+
+    fn diff_cycle_controller(is_git_repo: bool) -> Controller {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-diff-cycle-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        let path = PathBuf::from("sample.rs");
+        std::fs::write(root.join(&path), "fn sample() {}\n").unwrap();
+        let git: Arc<dyn GitService> = if is_git_repo {
+            Arc::new(ChangedGit { path })
+        } else {
+            Arc::new(StubGit)
+        };
+        let resolved = Resolved {
+            repo_root: is_git_repo.then(|| root.clone()),
+            root,
+            is_git_repo,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(StubContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        Controller::new(resolved, Baseline::Head, components)
+    }
+
+    #[test]
+    fn diff_render_mode_cycles_three_states() {
+        let mut ctrl = diff_cycle_controller(true);
+        assert_eq!(
+            ctrl.effective_mode(&ctrl.tree.selected().unwrap().path),
+            ViewMode::Diff
+        );
+        assert_eq!(ctrl.diff_render_mode, DiffRenderMode::Delta);
+
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.diff_render_mode, DiffRenderMode::DeltaSideBySide);
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.diff_render_mode, DiffRenderMode::Raw);
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.diff_render_mode, DiffRenderMode::Delta);
+    }
+
+    #[test]
+    fn diff_render_cycle_is_inert_outside_diff_views() {
+        let mut ctrl = diff_cycle_controller(false);
+        assert_eq!(
+            ctrl.effective_mode(&ctrl.tree.selected().unwrap().path),
+            ViewMode::SyntaxContent
+        );
+        let seq = ctrl.latest_seq;
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.diff_render_mode, DiffRenderMode::Delta);
+        assert_eq!(ctrl.latest_seq, seq);
+    }
+
+    #[test]
+    fn diff_resize_dispatches_a_reflow_job() {
+        let mut ctrl = diff_cycle_controller(true);
+        let seq = ctrl.latest_seq;
+        ctrl.set_content_viewport(80, 20);
+        assert!(
+            ctrl.latest_seq > seq,
+            "a measured diff pane resize must re-render delta"
+        );
+    }
+
+    #[test]
+    fn cycling_diff_render_flashes_the_new_mode_label() {
+        let mut ctrl = diff_cycle_controller(true);
+        assert_eq!(ctrl.flash_text(), None, "no flash before any cycle");
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.flash_text(), Some("Diff: side-by-side"));
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.flash_text(), Some("Diff: raw (plain git diff)"));
+    }
+
+    #[test]
+    fn inert_diff_cycle_shows_no_flash() {
+        // Outside a diff view the key is a no-op, so it must not flash either.
+        let mut ctrl = diff_cycle_controller(false);
+        ctrl.handle(Intent::CycleDiffRender);
+        assert_eq!(ctrl.flash_text(), None);
+    }
+
+    #[test]
+    fn flash_dims_then_expires_over_time() {
+        let mut ctrl = diff_cycle_controller(true);
+        ctrl.handle(Intent::CycleDiffRender);
+        let start = Instant::now();
+        // Still fully shown right away: no phase change, no redraw requested.
+        assert!(!ctrl.tick_flash(start));
+        assert_eq!(ctrl.flash_text(), Some("Diff: side-by-side"));
+        // Into the dim window: one redraw for the full→dim transition, none on a repeat tick.
+        let dim = start + FLASH_FULL + Duration::from_millis(1);
+        assert!(ctrl.tick_flash(dim), "full→dim transition redraws once");
+        assert!(!ctrl.tick_flash(dim), "same phase does not redraw again");
+        assert!(ctrl.flash_text().is_some(), "still visible while dimmed");
+        // Past the deadline: one redraw as it disappears, then nothing left.
+        let gone = start + FLASH_FULL + FLASH_DIM + Duration::from_millis(1);
+        assert!(ctrl.tick_flash(gone), "expiry redraws once");
+        assert_eq!(ctrl.flash_text(), None);
+        assert!(!ctrl.tick_flash(gone), "nothing left to expire");
     }
 
     #[test]
