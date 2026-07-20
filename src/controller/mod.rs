@@ -683,8 +683,10 @@ pub struct Controller {
     /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
     /// event can be mapped to a tree row / the content pane / the divider.
     geom: PaneGeometry,
-    /// The previous left-click `(col, row, time)`, for double-click detection.
-    last_click: Option<(u16, u16, Instant)>,
+    /// The previous left-click `(col, row, time, origin)`, for double-click detection.
+    /// `origin` is a [`ClickOrigin`] so tree / title / finder pairs cannot cross-match on the same
+    /// screen row (same-row matching is intentional within one origin for touchpad column jitter).
+    last_click: Option<(u16, u16, Instant, ClickOrigin)>,
     /// What the held left button is dragging (divider resize or a scrollbar), so the release is
     /// treated as the end of the drag, not a click. `None` ⇒ no drag in progress.
     drag: Option<Drag>,
@@ -3151,6 +3153,18 @@ enum PathKind {
     Repo,
     /// The full absolute path (`Y`).
     Absolute,
+}
+
+/// Which interactive surface produced a pending left-click, for double-click pairing.
+/// Stored with [`Controller::last_click`] so same-row matching cannot cross contexts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClickOrigin {
+    /// A tree row (expand/collapse or open-in-zoom).
+    Tree,
+    /// The content column title bar (toggle zoom, GH #106).
+    ContentTitle,
+    /// A finder result row (confirm).
+    Finder,
 }
 
 /// Where a mouse cell falls in the drawn layout.

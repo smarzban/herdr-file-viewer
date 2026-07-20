@@ -1727,7 +1727,7 @@ fn wide_geometry() -> PaneGeometry {
             height: 20,
         }),
         // Top border of the content column (filename title); double-click toggles zoom (#106).
-        content_title: Some(Rect {
+        content_title_rect: Some(Rect {
             x: 41,
             y: 0,
             width: 58,
@@ -2171,7 +2171,7 @@ fn double_click_content_title_toggles_zoom() {
     ctrl.set_pane_geometry(wide_geometry());
     assert!(!ctrl.zoomed());
 
-    // Title bar is at y=0, x=41.. (see wide_geometry content_title).
+    // Title bar is at y=0, x=41.. (see wide_geometry content_title_rect).
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 0));
     assert!(!ctrl.zoomed(), "single-click title does not zoom");
     assert_eq!(ctrl.focus(), Focus::Content);
@@ -2184,6 +2184,55 @@ fn double_click_content_title_toggles_zoom() {
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 0));
     assert!(!ctrl.zoomed(), "double-click title again restores the tree");
     assert_eq!(ctrl.focus(), Focus::Tree);
+}
+
+#[test]
+fn double_click_content_title_unzooms_with_real_zoomed_geometry() {
+    // The feature exists so the title is still hit-testable when zoomed (tree + divider gone).
+    // Build geometry from the real presenter path with `zoomed = true`, not a hand-rolled fixture.
+    use herdr_file_viewer::presenter;
+    use ratatui::layout::Rect;
+
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    // Zoom first (as if the user opened a file full-width), then feed zoomed geometry.
+    ctrl.handle(Intent::ToggleZoom);
+    assert!(ctrl.zoomed());
+
+    let mut state = ctrl.view_state();
+    state.zoomed = true;
+    // Wide enough for a content column (zoomed = content full body).
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let geom = presenter::geometry(area, &state);
+    let title = geom
+        .content_title_rect
+        .expect("zoomed layout must expose a content title hit rect");
+    assert!(
+        title.width > 50 && title.height == 1,
+        "title should span most of the full-width content border: {title:?}"
+    );
+    assert!(
+        geom.tree_inner.is_none() && geom.divider_x.is_none(),
+        "zoomed geometry has no tree/divider"
+    );
+
+    ctrl.set_pane_geometry(geom);
+    // Double-click the title centre → unzoom.
+    let col = title.x + title.width / 2;
+    let row = title.y;
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
+    assert!(
+        !ctrl.zoomed(),
+        "double-click title under zoomed geometry restores tree"
+    );
 }
 
 #[test]

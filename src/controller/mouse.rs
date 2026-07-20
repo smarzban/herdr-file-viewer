@@ -242,13 +242,12 @@ impl Controller {
                     self.last_click = None; // empty area below the nodes — inert, and breaks any
                     return Effects::noop(); // pending double-click sequence
                 }
-                // A double-click is two clicks on the SAME tree row within the window. Because
-                // every non-tree-row click clears `last_click` (below), AND the finder's
-                // open/confirm/Esc paths also clear it, `last_click` only ever holds a prior
-                // tree-row click — the column-agnostic same-row match in `is_double_click`
-                // cannot be tripped by a click in a different context (another pane or the finder).
-                let double = is_double_click(self.last_click, (col, row), now);
-                self.last_click = Some((col, row, now));
+                // Double-click: same tree origin + same screen row within the window. Origin is
+                // required so a content-title click cannot pair with a tree click that happens
+                // to share a row (geometry is not the safety net). Column is ignored within the
+                // tree origin for touchpad jitter — see [`is_double_click`].
+                let double = is_double_click(self.last_click, (col, row), now, ClickOrigin::Tree);
+                self.last_click = Some((col, row, now, ClickOrigin::Tree));
                 self.action_notice = None;
                 self.focus = Focus::Tree;
                 self.tree.set_cursor(idx);
@@ -262,18 +261,19 @@ impl Controller {
                 // Double-click the content title (filename border) toggles zoom: hide/show the
                 // tree without needing `z`. Complements tree double-click on a file (zoom on) so
                 // there is a mouse path back out when the tree is hidden (GH #106).
-                let double = is_double_click(self.last_click, (col, row), now);
+                let double =
+                    is_double_click(self.last_click, (col, row), now, ClickOrigin::ContentTitle);
                 self.focus = Focus::Content;
                 if double {
                     // Consume the pair so a third click is not immediately another toggle.
                     self.last_click = None;
                     return self.toggle_zoom();
                 }
-                self.last_click = Some((col, row, now));
+                self.last_click = Some((col, row, now, ClickOrigin::ContentTitle));
                 Effects::redraw()
             }
             MouseRegion::Content => {
-                self.last_click = None; // a non-tree click breaks any pending double-click
+                self.last_click = None; // a non-title content click breaks any pending double-click
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
@@ -498,7 +498,11 @@ impl Controller {
         }
         // Title is the top border of the content column (outside `content_inner`); check before
         // the text interior so a click on the filename toggles zoom rather than only focusing.
-        if self.geom.content_title.is_some_and(|r| r.contains(pos)) {
+        if self
+            .geom
+            .content_title_rect
+            .is_some_and(|r| r.contains(pos))
+        {
             return MouseRegion::ContentTitle;
         }
         if let Some(c) = self.geom.content_inner
@@ -514,23 +518,31 @@ impl Controller {
 /// expand/collapse; a file opens in zoom mode — the editor hand-off is the `e` key).
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// Two left-clicks on the same **row** within [`DOUBLE_CLICK`] are a double-click. The column
-/// is ignored on purpose: a tree row is a single node end-to-end, so a click anywhere along it
-/// targets that node, and a touchpad double-tap commonly lands a column or two apart between
-/// taps — requiring the exact cell would silently drop those. (The column still matters for
-/// *which* node a click selects; that is the caller's hit-test, not this timing rule.) Pure over
-/// its timestamps so the timing rule is unit-testable without sleeping.
+/// Two left-clicks on the same **origin** and same **row** within [`DOUBLE_CLICK`] are a
+/// double-click. The column is ignored on purpose: a tree (or title) row is one target end-to-end,
+/// and a touchpad double-tap commonly lands a column or two apart between taps — requiring the
+/// exact cell would silently drop those. Origin is **not** ignored: tree / content-title / finder
+/// pairs must not cross-match even if they share a screen row. Pure over its timestamps so the
+/// timing rule is unit-testable without sleeping.
 pub(super) fn is_double_click(
-    prev: Option<(u16, u16, Instant)>,
+    prev: Option<(u16, u16, Instant, ClickOrigin)>,
     pos: (u16, u16),
     now: Instant,
+    origin: ClickOrigin,
 ) -> bool {
-    matches!(prev, Some((_px, py, t)) if py == pos.1 && now.saturating_duration_since(t) <= DOUBLE_CLICK)
+    matches!(
+        prev,
+        Some((_px, py, t, o))
+            if o == origin
+                && py == pos.1
+                && now.saturating_duration_since(t) <= DOUBLE_CLICK
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{DOUBLE_CLICK, is_double_click};
+    use crate::controller::ClickOrigin;
     use std::time::Instant;
 
     #[test]
@@ -538,17 +550,71 @@ mod tests {
         let t0 = Instant::now();
         let within = t0 + DOUBLE_CLICK / 2;
         let after = t0 + DOUBLE_CLICK * 2;
+        let tree = ClickOrigin::Tree;
         // Same cell, inside the window → double-click.
-        assert!(is_double_click(Some((5, 5, t0)), (5, 5), within));
+        assert!(is_double_click(
+            Some((5, 5, t0, tree)),
+            (5, 5),
+            within,
+            tree
+        ));
         // Same ROW, different column, inside the window → still a double-click. A tree row is
         // one node end-to-end, and a touchpad double-tap often lands a column or two apart, so
         // requiring the exact cell would drop legitimate double-taps.
-        assert!(is_double_click(Some((5, 5, t0)), (40, 5), within));
+        assert!(is_double_click(
+            Some((5, 5, t0, tree)),
+            (40, 5),
+            within,
+            tree
+        ));
         // Too slow → not a double-click.
-        assert!(!is_double_click(Some((5, 5, t0)), (5, 5), after));
+        assert!(!is_double_click(
+            Some((5, 5, t0, tree)),
+            (5, 5),
+            after,
+            tree
+        ));
         // A different ROW → not a double-click (it would target a different node).
-        assert!(!is_double_click(Some((5, 5, t0)), (5, 6), within));
+        assert!(!is_double_click(
+            Some((5, 5, t0, tree)),
+            (5, 6),
+            within,
+            tree
+        ));
         // No previous click → never a double-click.
-        assert!(!is_double_click(None, (5, 5), within));
+        assert!(!is_double_click(None, (5, 5), within, tree));
+    }
+
+    #[test]
+    fn is_double_click_rejects_cross_origin_same_row() {
+        // Safety is by construction: a title click cannot complete a tree double-click (or vice
+        // versa) even when both land on the same screen row inside the window.
+        let t0 = Instant::now();
+        let within = t0 + DOUBLE_CLICK / 2;
+        assert!(!is_double_click(
+            Some((10, 0, t0, ClickOrigin::Tree)),
+            (50, 0),
+            within,
+            ClickOrigin::ContentTitle,
+        ));
+        assert!(!is_double_click(
+            Some((50, 0, t0, ClickOrigin::ContentTitle)),
+            (10, 0),
+            within,
+            ClickOrigin::Tree,
+        ));
+        assert!(!is_double_click(
+            Some((10, 3, t0, ClickOrigin::Finder)),
+            (10, 3),
+            within,
+            ClickOrigin::Tree,
+        ));
+        // Same origin still pairs.
+        assert!(is_double_click(
+            Some((10, 0, t0, ClickOrigin::ContentTitle)),
+            (50, 0),
+            within,
+            ClickOrigin::ContentTitle,
+        ));
     }
 }
