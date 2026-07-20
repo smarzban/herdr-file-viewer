@@ -5,13 +5,16 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
-## [Unreleased]
+## [1.14.0] - 2026-07-20
 
 ### Added
-- Double-click the content pane title (filename border) to toggle zoom / show or hide the tree (same as `z`). Complements double-clicking a file in the tree to open zoomed. Thanks @nullbio (#106). → [keys](docs/keys.md#mouse)
-- Launch open target: open straight to a file (and optional line) via `--open <path>[:line]` or `HERDR_FILE_VIEWER_OPEN` (flag wins). Same `path:line` shape as a copied line reference. → [usage](docs/usage.md#open-at-a-known-file)
-- `D` cycles changed-file diffs through Delta unified, Delta side-by-side, and plain git diff presentation. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
-- Git-status mode (`d`): filter the tree to current working-tree status and force working-tree diffs (file or directory-scoped); sticky until `d` again, mutually exclusive with baseline-aware `c`. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+- Launch open target: open straight to a file (and optional line) via `--open <path>[:line]` or `HERDR_FILE_VIEWER_OPEN` (flag wins). Same `path:line` shape as a copied line reference. Teach your agent the flag and you can just ask it to open a file, jump to a line, or show a function in the viewer. Thanks @tieubao for the suggestion (#109). → [usage](docs/usage.md#open-at-a-known-file) · [teach your agent](docs/usage.md#teach-your-agent)
+- Double-click the content pane title (filename border) to toggle zoom / show or hide the tree (same as `z`). Complements double-clicking a file in the tree to open zoomed. Thanks @nullbio for the suggestion (#106). → [keys](docs/keys.md#mouse)
+- `D` cycles changed-file diffs through Delta unified, Delta side-by-side, and plain git diff presentation. Thanks @rrrrnmtsu (#111). → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+- Git-status mode (`d`): filter the tree to current working-tree status and force working-tree diffs (file or directory-scoped); sticky until `d` again, mutually exclusive with baseline-aware `c`. Thanks @jellydn (#110). → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+
+### Fixed
+- Diff and full-file-diff panes now pass the pane width to Delta, so side-by-side diffs size their columns to the pane instead of a fixed fallback, and re-render on resize. Thanks @rrrrnmtsu (#111).
 
 ## [1.13.0] - 2026-07-16
 
