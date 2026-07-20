@@ -195,6 +195,7 @@ fn content_geometry() -> PaneGeometry {
             width: 58,
             height: 10,
         }),
+        content_title: None,
         divider_x: Some(40),
         ..PaneGeometry::default()
     }

@@ -3158,6 +3158,8 @@ enum PathKind {
 enum MouseRegion {
     TreeRow(usize),
     Content,
+    /// The content column's top-border title (filename). Double-click toggles zoom (#106).
+    ContentTitle,
     Divider,
     /// The content pane's vertical scrollbar — drag up/down to scroll.
     ContentVBar,

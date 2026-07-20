@@ -1726,6 +1726,13 @@ fn wide_geometry() -> PaneGeometry {
             width: 58,
             height: 20,
         }),
+        // Top border of the content column (filename title); double-click toggles zoom (#106).
+        content_title: Some(Rect {
+            x: 41,
+            y: 0,
+            width: 58,
+            height: 1,
+        }),
         content_vbar: None,
         content_hbar: None,
         divider_x: Some(40),
@@ -2152,6 +2159,31 @@ fn double_click_a_file_opens_it_in_zoom_mode_single_click_does_not() {
         opened.lock().unwrap().is_empty(),
         "double-clicking a file does NOT open the editor"
     );
+}
+
+#[test]
+fn double_click_content_title_toggles_zoom() {
+    // GH #106: double-click the content pane title (filename border) toggles the tree on/off
+    // without needing `z`. Single-click only focuses content.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(!ctrl.zoomed());
+
+    // Title bar is at y=0, x=41.. (see wide_geometry content_title).
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 0));
+    assert!(!ctrl.zoomed(), "single-click title does not zoom");
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 52, 0)); // double (same row)
+    assert!(ctrl.zoomed(), "double-click title zooms (hides tree)");
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 0));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 0));
+    assert!(!ctrl.zoomed(), "double-click title again restores the tree");
+    assert_eq!(ctrl.focus(), Focus::Tree);
 }
 
 #[test]

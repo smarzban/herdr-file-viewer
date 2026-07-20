@@ -844,6 +844,7 @@ fn content_geometry() -> PaneGeometry {
             width: 58,
             height: 20,
         }),
+        content_title: None,
         divider_x: Some(40),
         ..PaneGeometry::default()
     }
@@ -1892,6 +1893,7 @@ fn drag_past_the_viewport_edge_autoscrolls_the_content() {
             width: 58,
             height: 5,
         }),
+        content_title: None,
         divider_x: Some(40),
         ..PaneGeometry::default()
     };

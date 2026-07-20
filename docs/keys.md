@@ -117,6 +117,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Click** a tree row | Select it (focus the tree) |
 | **Double-click** a folder | Expand / collapse it (same as `Enter`) |
 | **Double-click** a file | Open it in **zoom mode**: content full-screen (same as `Enter`); the editor is the `e` key |
+| **Double-click** the content title | Toggle zoom: hide or show the tree (same as `z`). The filename sits on the content pane’s top border, so this works even when the tree is already hidden |
 | **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
 | **Horizontal wheel / swipe** | Scroll the content, or the tree, sideways (terminal-dependent, see below) |
 | **Drag** a scrollbar | Scroll that pane: drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |

@@ -258,6 +258,20 @@ impl Controller {
                 }
                 Effects::redraw()
             }
+            MouseRegion::ContentTitle => {
+                // Double-click the content title (filename border) toggles zoom: hide/show the
+                // tree without needing `z`. Complements tree double-click on a file (zoom on) so
+                // there is a mouse path back out when the tree is hidden (GH #106).
+                let double = is_double_click(self.last_click, (col, row), now);
+                self.focus = Focus::Content;
+                if double {
+                    // Consume the pair so a third click is not immediately another toggle.
+                    self.last_click = None;
+                    return self.toggle_zoom();
+                }
+                self.last_click = Some((col, row, now));
+                Effects::redraw()
+            }
             MouseRegion::Content => {
                 self.last_click = None; // a non-tree click breaks any pending double-click
                 self.focus = Focus::Content;
@@ -481,6 +495,11 @@ impl Controller {
             // still exceed the node count (the empty area below the last node): the click handler
             // treats that as inert, while the wheel still scrolls the column.
             return MouseRegion::TreeRow((row - t.y) as usize + self.geom.tree_scroll as usize);
+        }
+        // Title is the top border of the content column (outside `content_inner`); check before
+        // the text interior so a click on the filename toggles zoom rather than only focusing.
+        if self.geom.content_title.is_some_and(|r| r.contains(pos)) {
+            return MouseRegion::ContentTitle;
         }
         if let Some(c) = self.geom.content_inner
             && c.contains(Position { x: col, y: row })
