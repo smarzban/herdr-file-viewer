@@ -398,6 +398,14 @@ impl GitService for LiveGit {
             full_context,
         )
     }
+    fn diff_directory(&self, rel_dir: &Path, baseline: Baseline) -> String {
+        git::diff_directory(
+            &self.repo_root,
+            rel_dir,
+            baseline,
+            self.base_hint.as_deref(),
+        )
+    }
 }
 
 /// The live Content Renderer: classify + delegate to the external renderers, with guards.
@@ -844,6 +852,9 @@ mod tests {
         }
 
         fn diff(&self, _path: &Path, _baseline: Baseline, _full_context: bool) -> String {
+            String::new()
+        }
+        fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
             String::new()
         }
     }

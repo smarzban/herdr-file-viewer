@@ -32,6 +32,9 @@ impl GitService for Git {
     fn diff(&self, _rel: &Path, _baseline: Baseline, _full: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 struct Content;

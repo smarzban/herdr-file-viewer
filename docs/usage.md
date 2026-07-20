@@ -71,9 +71,15 @@ Git status is woven straight into the tree, not a separate mode:
   deleted, `?` untracked — and a directory containing any change carries a `●`. They're **colored**
   so changes read at a glance (changed files and dirty folders red, new files green), with the glyph
   as a non-color cue so status survives a colorblind palette or a non-default terminal theme.
-- **Changed-files-only filter**: press `c` to restrict the tree to files git reports as changed.
-- **Diff baseline**: press `b` to flip what "changed" and the diff compare against — the merge-base
-  of your branch (review your whole branch) versus `HEAD` (just your uncommitted work).
+- **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
+  baseline (`b`) — useful for reviewing a whole branch (merge-base) or just uncommitted work (`HEAD`).
+- **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
+  (modified, staged, untracked, deleted — independent of baseline) and force working-tree diffs in
+  the content pane. On a directory, that means a unified diff of all tracked changes under it.
+  Press `d` again to leave. Mutually exclusive with `c` (turning one on turns the other off).
+- **Diff baseline**: press `b` to flip what "changed" and the normal/file-cycle diffs compare against
+  — the merge-base of your branch versus `HEAD`. While git-status mode (`d`) is on, content stays
+  working-tree; `b` still updates the stored baseline for when you leave `d` or use `c`.
 - **Refresh**: the viewer re-reads git status automatically when the pane regains focus, so a merge,
   pull, or commit you make elsewhere shows up on its own; `r` forces a full refresh on demand.
 

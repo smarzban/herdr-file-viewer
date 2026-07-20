@@ -41,6 +41,12 @@ const FULL_CONTEXT: &str = "-U1000000";
 /// layer's display cap (AC-13) runs. Comfortably above that display cap (render's ~1 MB), so
 /// it never reduces what the user sees — only the transient buffer and git's work.
 const MAX_DIFF_BYTES: u64 = 4 * 1024 * 1024; // 4 MB
+/// Hard cap on how many untracked descendants a directory diff will spawn a `git` process for.
+/// The byte cap ([`MAX_DIFF_BYTES`]) alone does not bound process spawns: a directory of many
+/// *small* untracked files stays under it while still spawning one process each. The render
+/// layer's AC-13 preview cap truncates the visible pane far below this, so a dropped tail is
+/// never displayed.
+const MAX_UNTRACKED_DIFF_FILES: usize = 512;
 
 /// A file's git status against the working tree (AC-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,19 +237,7 @@ pub fn diff(
     // The path is appended as a raw OsStr arg (not lossy UTF-8) so non-ASCII / non-UTF-8
     // filenames reach git verbatim and their diffs are not silently empty.
     if is_untracked(repo_root, path) {
-        let mut args = vec![
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-index",
-            "--no-color",
-        ];
-        args.extend(unified);
-        args.push("--");
-        args.push(NULL_DEVICE);
-        let mut cmd = git_command(repo_root, &args);
-        cmd.arg(path);
-        return capture_stdout(cmd);
+        return diff_untracked(repo_root, path, unified);
     }
     let against = match baseline {
         Baseline::Head => head_or_empty_tree(repo_root),
@@ -258,6 +252,105 @@ pub fn diff(
     let mut cmd = git_command(repo_root, &args);
     cmd.arg(path);
     capture_stdout(cmd)
+}
+
+/// The `/dev/null`-vs-file `--no-index` patch for a KNOWN-untracked path (all its content shown
+/// as additions). The caller guarantees `path` is untracked, so this skips the `is_untracked`
+/// probe that the general [`diff`] must run first — one `git` process, not two. `unified` is the
+/// optional full-context window. Read-only, and the same root-confinement guard [`diff`] applies
+/// (AC-N5) so a status-derived path can never resolve outside the tree.
+fn diff_untracked(repo_root: &Path, path: &Path, unified: Option<&str>) -> String {
+    if !is_within_root(repo_root, path) {
+        return String::new();
+    }
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-index",
+        "--no-color",
+    ];
+    args.extend(unified);
+    args.push("--");
+    args.push(NULL_DEVICE);
+    let mut cmd = git_command(repo_root, &args);
+    cmd.arg(path);
+    capture_stdout(cmd)
+}
+
+/// Raw unified diff for every change under `rel_dir` against `baseline`.
+/// `rel_dir` is repo-root-relative; an empty path means the whole tree root (no pathspec).
+/// Tracked changes come from one directory-scoped git diff; untracked files are appended using the
+/// same `--no-index` path used by the single-file [`diff`] query, so a status-mode directory view
+/// includes every `?` descendant as well as modified/staged/deleted tracked files.
+pub fn diff_directory(
+    repo_root: &Path,
+    rel_dir: &Path,
+    baseline: Baseline,
+    base_hint: Option<&str>,
+) -> String {
+    // Same root-bound check as [`diff`]: reject absolute paths and any `..` component so a
+    // pathspec cannot escape the tree root (AC-N5). Pass the *relative* path — joining first
+    // would make `is_within_root` see an absolute path and always reject it.
+    if !rel_dir.as_os_str().is_empty() && !is_within_root(repo_root, rel_dir) {
+        return String::new();
+    }
+    let against = match baseline {
+        Baseline::Head => head_or_empty_tree(repo_root),
+        Baseline::Base => {
+            base_fork_point(repo_root, base_hint).unwrap_or_else(|| head_or_empty_tree(repo_root))
+        }
+    };
+    // Pathspec only when scoped to a subdir; empty pathspec = whole tree.
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
+    args.push(&against);
+    args.push("--");
+    let mut cmd = git_command(repo_root, &args);
+    if !rel_dir.as_os_str().is_empty() {
+        cmd.arg(rel_dir);
+    }
+    let mut output = capture_stdout(cmd);
+
+    // `git diff` intentionally omits untracked paths. Append each untracked descendant as a safe
+    // /dev/null-vs-file patch via [`diff_untracked`] — NOT the general [`diff`], which would
+    // re-spawn `git ls-files` to re-establish untracked-ness we already have from `status` (a
+    // second, wasted process per file).
+    //
+    // Two independent bounds, because they guard different resources:
+    //   • BYTES — cap the running total at [`MAX_DIFF_BYTES`] (like [`capture_stdout`] does for a
+    //     single invocation) so the string can't grow oversized; the final admitted patch is
+    //     trimmed to the remaining budget at a UTF-8 boundary.
+    //   • COUNT — cap the number of spawned processes at [`MAX_UNTRACKED_DIFF_FILES`]; the byte cap
+    //     alone doesn't bound spawns when the untracked files are small (many stay under it).
+    // The render layer's AC-13 preview cap truncates the visible pane far below either bound, so a
+    // dropped tail is never displayed. `status` is a `BTreeMap`, so the paths admitted before a cap
+    // are the lexicographically-first ones (deterministic), not an arbitrary subset.
+    let cap = MAX_DIFF_BYTES as usize;
+    let mut spawned = 0usize;
+    for (path, state) in status(repo_root) {
+        if cap.saturating_sub(output.len()) == 0 || spawned >= MAX_UNTRACKED_DIFF_FILES {
+            break;
+        }
+        if state != Status::Untracked
+            || (!rel_dir.as_os_str().is_empty() && !path.starts_with(rel_dir))
+        {
+            continue;
+        }
+        spawned += 1;
+        let file_diff = diff_untracked(repo_root, &path, None);
+        if file_diff.is_empty() {
+            continue;
+        }
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        // Append only what fits in the remaining budget, cut at a char boundary so the String
+        // stays valid UTF-8. `floor_char_boundary` returns the largest boundary <= the index.
+        let budget = cap.saturating_sub(output.len());
+        let take = file_diff.floor_char_boundary(budget.min(file_diff.len()));
+        output.push_str(&file_diff[..take]);
+    }
+    output
 }
 
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
@@ -454,6 +547,28 @@ fn classify_name_status(code: &str) -> Option<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_directory_rejects_parent_dir_and_absolute_pathspecs() {
+        // AC-N5: pathspecs must stay inside the tree root. `..` and absolute paths are rejected
+        // before any git invocation (is_within_root rejects both).
+        let root = Path::new("/tmp/some-repo");
+        assert_eq!(
+            diff_directory(root, Path::new(".."), Baseline::Head, None),
+            "",
+            "parent-dir pathspec must not run git"
+        );
+        assert_eq!(
+            diff_directory(root, Path::new("../outside"), Baseline::Head, None),
+            "",
+            "escaped relative pathspec must not run git"
+        );
+        assert_eq!(
+            diff_directory(root, Path::new("/etc"), Baseline::Head, None),
+            "",
+            "absolute pathspec must not run git"
+        );
+    }
 
     // ---- path_from_git_bytes: platform path-decode seam (AC-5, T-1) ------------
 
