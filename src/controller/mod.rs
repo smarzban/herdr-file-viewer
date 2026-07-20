@@ -3264,6 +3264,19 @@ mod tests {
         }
     }
 
+    /// Content stub with many source-mapped lines so go-to-line / open-target scroll is observable.
+    struct MultilineContent;
+    impl ContentProvider for MultilineContent {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            let body: String = (1..=40).map(|i| format!("body line {i}\n")).collect();
+            RenderResult {
+                content: Text::raw(body),
+                notices: Vec::new(),
+                source: Some((1..=40).map(|i| format!("body line {i}")).collect()),
+            }
+        }
+    }
+
     struct StubEditor;
     impl EditorHandoff for StubEditor {
         fn open(&mut self, _file: &Path) -> EditorOutcome {
@@ -3473,6 +3486,111 @@ mod tests {
         };
         ctrl.apply_open_target(&target);
         assert!(ctrl.open_range_flash_lines().is_none());
+    }
+
+    /// Open-target with `:line` must queue goto and, after the render lands, scroll past the top.
+    #[test]
+    fn apply_open_target_line_scrolls_after_poll() {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-open-scroll-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(root.join("long.rs"), "x\n".repeat(40)).unwrap();
+        let resolved = Resolved {
+            repo_root: None,
+            root: root.clone(),
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(MultilineContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        let mut ctrl = Controller::new(resolved, Baseline::Head, components);
+        // Viewport shorter than the file so a mid-file jump produces non-zero scroll.
+        let _ = ctrl.set_content_viewport(80, 10);
+        let target = crate::open_target::OpenTarget {
+            path: "long.rs".into(),
+            line: Some(20),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert_eq!(ctrl.pending_goto_line(), Some(20));
+        // Drain the worker until the queued jump applies.
+        let mut saw = false;
+        for _ in 0..50 {
+            if ctrl.poll().is_some() && ctrl.pending_goto_line().is_none() {
+                saw = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(saw, "render+goto should land");
+        assert!(
+            ctrl.content_scroll() > 0,
+            "line 20 must scroll past the top; scroll={}",
+            ctrl.content_scroll()
+        );
+    }
+
+    #[test]
+    fn apply_open_target_resyncs_show_ignored_mirror() {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-open-ign-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status();
+        std::fs::write(root.join(".gitignore"), "secret.log\n").unwrap();
+        std::fs::write(root.join("secret.log"), "s\n").unwrap();
+        std::fs::write(root.join("ok.rs"), "ok\n").unwrap();
+        let resolved = Resolved {
+            repo_root: None,
+            root: root.clone(),
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(StubContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        let mut ctrl = Controller::new(resolved, Baseline::Head, components);
+        assert!(!ctrl.show_ignored());
+        ctrl.apply_open_target(&crate::open_target::OpenTarget {
+            path: "secret.log".into(),
+            line: None,
+            end_line: None,
+        });
+        assert!(ctrl.show_ignored(), "mirror must match tree after reveal");
+        assert_eq!(
+            ctrl.tree.selected().map(|n| n
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()),
+            Some("secret.log".into())
+        );
     }
 
     #[test]

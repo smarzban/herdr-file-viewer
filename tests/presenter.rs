@@ -3096,6 +3096,36 @@ fn selection_range_highlight_snapshot() {
 }
 
 #[test]
+fn passive_range_highlight_has_no_caret_gutter() {
+    // Launch open-target range flash: whole-line HIGHLIGHT only — no ▶/│ column (not line-select mode).
+    use herdr_file_viewer::render::to_text;
+    let mut st = sample_state();
+    st.notices = vec![];
+    st.focus = Focus::Content;
+    st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
+    st.content_rows = 6;
+    st.line_select = Some(LineSelectView {
+        marker: 2,
+        start: 2,
+        end: 4,
+        char_sel: None,
+        passive: true,
+    });
+    let out = render(&st, 100, 24);
+    // Active line-select injects the ▶ caret before source text; passive must not.
+    // (Selection bar │ collides with box-drawing borders, so caret is the reliable signal.)
+    assert!(
+        !out.contains('▶'),
+        "passive range flash must not draw ▶: {out}"
+    );
+    assert!(
+        out.contains("line two") && out.contains("line four"),
+        "{out}"
+    );
+    insta::assert_snapshot!("presenter_passive_range_flash", out);
+}
+
+#[test]
 fn line_select_marker_and_selection_carry_theme_styles() {
     // The marker row carries CURRENT_HIGHLIGHT (REVERSED+BOLD, theme-relative) and the other
     // selection rows carry HIGHLIGHT (black on cyan) — reusing the search theme seam, not raw
