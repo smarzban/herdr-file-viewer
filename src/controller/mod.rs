@@ -1068,6 +1068,9 @@ impl Controller {
         });
         self.changed = BTreeMap::new();
         self.git_status = BTreeMap::new();
+        // The diff-presentation flash is bound to the file it was raised over; drop it so a stale
+        // hint can't linger over the freshly re-rooted tree.
+        self.flash = None;
         // Close whatever modal is open (one assignment, since `modal` is now a single value). A
         // re-root only fires via picker-confirm, so in practice it's the picker being torn down —
         // but a re-root also invalidates the finder's old-root candidate list and must not strand a
@@ -2703,6 +2706,17 @@ impl Controller {
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
         let rel = self.rel(&path);
+        // Status mode always diffs the working tree, so a reflow must use the SAME forced
+        // `Baseline::Head` `dispatch_render` does — otherwise a resize/wrap re-render on a
+        // feature branch (where `self.baseline` is `Base`) would silently flip a status-mode diff
+        // from the working tree to the merge-base. `dispatch_reflow` only fires for a selected
+        // FILE (rerender_after_resize/_wrap_toggle both return early for a directory), so the
+        // directory-scoped diff never routes here — `directory_diff` stays false.
+        let baseline = if self.status_mode && self.is_git_repo {
+            Baseline::Head
+        } else {
+            self.baseline
+        };
         // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
         // never receive a result for this seq, which is fine (nothing was cleared).
         let _ = self.job_tx.send(RenderJob {
@@ -2710,7 +2724,7 @@ impl Controller {
             path,
             rel,
             mode,
-            baseline: self.baseline,
+            baseline,
             is_git: self.is_git_repo,
             directory_diff: false,
             wrap_width: self.md_wrap_width(),
