@@ -13,8 +13,8 @@ keeps focus, layout, and keyboard routing entirely in-process (no cross-pane IPC
 UX), at the cost of drawing the two-column layout ourselves.
 
 The crate is a **library + a thin binary**: `src/main.rs` is a few lines that either prints a
-launcher decision (for the shell launch scripts) or calls `lib::run()`; everything testable
-lives in the library modules.
+launcher decision (for the shell launch scripts) or calls `lib::run(open_flag)` (optional
+`--open`); everything testable lives in the library modules.
 
 ## Components
 
@@ -55,15 +55,18 @@ is unit-testable with stubs.
 | `editor` | Hand a file off to `$EDITOR`, or the config's `editor` override (launch only — never reads or writes the file). |
 | `opener` | Read-only OS hand-off for the `O` / `R` keys: a pure per-OS argv builder (open-with-default-app / reveal-in-file-manager, overridable via the config's `open` / `reveal` keys) plus an `Opener` seam over the reused editor `Spawner`, spawned **non-blocking** (no terminal takeover, stdio nulled) so the TUI keeps running. |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
+| `open_target` | Pure parse/resolve of a launch **open target** (`path` / `path:line` from CLI `--open` or `HERDR_FILE_VIEWER_OPEN`); the controller applies it once at startup via reveal + optional pending go-to-line. |
 
 ## Data flow
 
 ```
-herdr → env (HERDR_PLUGIN_CONTEXT_JSON)
+herdr → env (HERDR_PLUGIN_CONTEXT_JSON, optional HERDR_FILE_VIEWER_OPEN)
           │
    host::from_env → root::resolve → git::default_baseline
           │
    Controller::new  ── wires live GitService / ContentProvider / EditorHandoff / Clipboard behind traits
+          │
+   optional open target (CLI --open > HERDR_FILE_VIEWER_OPEN) → reveal + render [+ pending go-to-line]
           │
    event loop (app::run):  draw → poll input → handle(intent) → drain finished renders → repeat
 ```

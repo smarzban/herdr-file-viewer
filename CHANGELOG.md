@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Launch open target: open straight to a file (and optional line) via `--open <path>[:line]` or `HERDR_FILE_VIEWER_OPEN` (flag wins). Same `path:line` shape as a copied line reference. → [usage](docs/usage.md#open-at-a-known-file)
 - `D` cycles changed-file diffs through Delta unified, Delta side-by-side, and plain git diff presentation. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
 - Git-status mode (`d`): filter the tree to current working-tree status and force working-tree diffs (file or directory-scoped); sticky until `d` again, mutually exclusive with baseline-aware `c`. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
 

@@ -21,6 +21,7 @@ pub mod infile;
 pub mod input;
 pub mod intent;
 pub mod launch;
+pub mod open_target;
 pub mod opener;
 pub mod picker;
 pub mod presenter;
@@ -37,8 +38,10 @@ pub mod worktree;
 
 /// Entry point invoked by the binary. Wires the components and runs the event loop.
 ///
-/// Delegates to [`app::run`], which assembles the live components and drives the terminal
-/// loop until the user closes the viewer (AC-20).
-pub fn run() -> std::io::Result<()> {
-    app::run()
+/// `open_flag` is the value of CLI `--open` when present (flag only; the env var is still
+/// read inside [`app::run`] with flag-wins precedence). Delegates to [`app::run`], which
+/// assembles the live components and drives the terminal loop until the user closes the
+/// viewer (AC-20).
+pub fn run(open_flag: Option<String>) -> std::io::Result<()> {
+    app::run(open_flag)
 }

@@ -221,6 +221,7 @@ pub struct ContentSearch {
 pub struct LineSelectView {
     /// The marker (cursor) line — where `Enter` will anchor the reference. Rendered with a distinct
     /// caret + the stronger current-match emphasis so the user sees exactly which line is active.
+    /// Ignored when [`passive`](Self::passive) is true.
     pub marker: usize,
     /// The ascending selection start (inclusive), 1-based.
     pub start: usize,
@@ -229,7 +230,12 @@ pub struct LineSelectView {
     /// The character-granular selection (a mouse drag), or `None` for a whole-line (keyboard)
     /// selection. When `Some`, the overlay highlights only the selected characters on the boundary
     /// lines (and the full code of any interior line) instead of the whole `[start, end]` rows.
+    /// Ignored when [`passive`](Self::passive) is true.
     pub char_sel: Option<CharSelView>,
+    /// When true, paint only a soft whole-line highlight on `[start, end]` (no ▶/│ gutter, no key
+    /// modal). Used for a launch open-target range flash so the range is visible without looking
+    /// like active line-select mode.
+    pub passive: bool,
 }
 
 /// A character-granular selection for the line-select overlay. `*_col` are char carets into the
@@ -683,6 +689,34 @@ fn apply_annotation_lines(lines: &[Line<'static>], ranges: &[LineRange]) -> Vec<
 /// stay aligned. The content text itself is never mutated — spans are cloned, only their style is
 /// patched, and lines scrolled off-screen are clipped by the `Paragraph` offset (clamp-to-visible).
 fn apply_line_select(lines: &[Line<'static>], ls: &LineSelectView) -> Vec<Line<'static>> {
+    // Passive range flash: highlight only, no ▶/│ gutter and no content column shift — keys stay
+    // normal; this is display-only (launch open-target ranges).
+    if ls.passive {
+        return lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let src = i + 1;
+                if src < ls.start || src > ls.end {
+                    return line.clone();
+                }
+                let style = crate::highlight::HIGHLIGHT;
+                let spans = line
+                    .spans
+                    .iter()
+                    .map(|s| Span {
+                        content: s.content.clone(),
+                        style: s.style.patch(style),
+                    })
+                    .collect();
+                Line {
+                    spans,
+                    style: line.style,
+                    alignment: line.alignment,
+                }
+            })
+            .collect();
+    }
     lines
         .iter()
         .enumerate()
@@ -857,7 +891,8 @@ fn draw_blank_annotation_cells(frame: &mut Frame, text: Rect, state: &ViewState)
 
     let scroll = state.content_scroll as usize;
     let visible_end = scroll.saturating_add(text.height as usize);
-    let prefix = usize::from(state.line_select.is_some());
+    // Active line-select adds a ▶/│ gutter column; passive range flash does not.
+    let prefix = usize::from(state.line_select.as_ref().is_some_and(|ls| !ls.passive));
     let mut display_row = 0usize;
     let mut range_index = 0usize;
     let mut painted = Vec::with_capacity(text.height as usize);

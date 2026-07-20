@@ -3070,6 +3070,7 @@ fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
         start,
         end,
         char_sel: None,
+        passive: false,
     });
     st
 }
@@ -3936,6 +3937,7 @@ fn annotation_blank_lines_compose_exact_line_select_and_ambient_styles() {
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
     let area = Rect::new(0, 0, 30, 7);
     let text = geometry(area, &state).content_inner.unwrap();
@@ -3985,6 +3987,7 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
     let text = geometry(area, &state).content_inner.unwrap();
     let buf = render_buffer(&state, 30, 8);
@@ -4089,6 +4092,7 @@ fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_sear
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
 
     let text = geometry(area, &state).content_inner.unwrap();

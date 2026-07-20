@@ -42,7 +42,11 @@ const TICK: Duration = Duration::from_millis(50);
 const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wire the components and run the viewer until the user closes it.
-pub fn run() -> io::Result<()> {
+///
+/// `open_flag` is the CLI `--open` value when present. Combined with
+/// [`crate::open_target::OPEN_ENV`] (`HERDR_FILE_VIEWER_OPEN`) as flag > env; an absent/empty
+/// pair leaves startup selection unchanged.
+pub fn run(open_flag: Option<String>) -> io::Result<()> {
     let ctx = host::from_env();
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
@@ -125,6 +129,15 @@ pub fn run() -> io::Result<()> {
     controller.apply_tree_width(eff.tree_width);
     controller.apply_tree_position(eff.tree_position);
     controller.apply_tree_max_cols(eff.tree_max_cols);
+    // Launch open target (GH #109): CLI `--open` wins over `HERDR_FILE_VIEWER_OPEN`. Applied
+    // after layout/config wiring so reveal + render see the same filters as a live session.
+    // Soft-fails with an action notice; never aborts startup.
+    let open_env = std::env::var(crate::open_target::OPEN_ENV).ok();
+    if let Some(raw) = crate::open_target::pick_raw_open(open_flag.as_deref(), open_env.as_deref())
+        && let Some(target) = crate::open_target::parse_open_target(&raw)
+    {
+        controller.apply_open_target(&target);
+    }
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.
@@ -227,17 +240,19 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
     let mut dirty = true; // paint the first frame
     loop {
         if dirty {
+            let mut need_redraw = false;
             terminal.draw(|frame| {
                 controller.set_width(frame.area().width);
                 let view: ViewState = controller.view_state();
                 let (cw, ch) = presenter::draw(frame, &view);
                 // Feed the drawn content viewport back so content scrolling can be clamped to
                 // it on the next intent, and the hit-test geometry so a mouse event maps to the
-                // live layout.
-                controller.set_content_viewport(cw, ch);
+                // live layout. `true` means a deferred launch-open zoom just armed (narrow
+                // tree-only pane) and we must paint again so the file is actually visible.
+                need_redraw = controller.set_content_viewport(cw, ch);
                 controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
             })?;
-            dirty = false;
+            dirty = need_redraw;
         }
 
         if event::poll(TICK)? {
@@ -375,7 +390,12 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
         }
         // Advance the self-expiring status flash; it redraws once per phase change (dim / gone),
         // never on every idle tick, so a quiet screen stays quiet after it fades.
-        if controller.tick_flash(Instant::now()) {
+        let now = Instant::now();
+        if controller.tick_flash(now) {
+            dirty = true;
+        }
+        // Launch open-range passive highlight (1s); redraw once when it expires.
+        if controller.tick_open_range_flash(now) {
             dirty = true;
         }
     }
