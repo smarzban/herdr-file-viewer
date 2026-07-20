@@ -1,9 +1,10 @@
 //! Intents — the viewer's complete, closed vocabulary of user actions.
 //!
 //! The Input Dispatcher ([`crate::input::map_key`]) decodes key events into these; the
-//! Session Controller consumes them. The set is deliberately read-only: there is **no
-//! edit/write intent** (AC-N3). The only file hand-off is [`Intent::OpenInEditor`], which
-//! launches an *external* editor (Editor Launcher) — it never modifies a file in-pane.
+//! Session Controller consumes them. The set deliberately contains no file/git mutation intent
+//! (AC-N3). An annotation action may edit session-only in-memory state, but never repository data.
+//! The only file hand-off is [`Intent::OpenInEditor`], which launches an *external* editor (Editor
+//! Launcher) — it never modifies a file in-pane.
 
 /// A single user action, decoded from a key event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +41,10 @@ pub enum Intent {
     ToggleHidden,
     /// Restrict the tree to changed files / restore the full tree (AC-6).
     ToggleChangedOnly,
+    /// Toggle git-status mode: filter the tree to current working-tree status and force
+    /// working-tree diffs in the content pane (file or directory-scoped). Mutually exclusive
+    /// with [`Intent::ToggleChangedOnly`] (which stays baseline-aware for branch review).
+    ToggleStatusMode,
     /// Switch the diff baseline between base-branch and HEAD (AC-16).
     ToggleBaseline,
     /// Cycle the Diff/FullDiff renderer: `delta` unified → side-by-side → plain `git diff`.
@@ -62,6 +67,11 @@ pub enum Intent {
     /// Copy the selected node's **absolute** path to the clipboard. Read-only, like
     /// [`Intent::CopyRepoPath`] — no file contents are touched.
     CopyAbsPath,
+    /// Open the annotation editor for the selected file. Saving changes session-only in-memory
+    /// annotation state; it never writes a file or mutates git.
+    AddAnnotation,
+    /// Open the session-only annotation overview. Viewing it never touches files or git.
+    ShowAnnotations,
     /// Move focus between the tree and content columns (AC-21).
     ToggleFocus,
     /// Narrow the tree column (move the tree/content divider left).
@@ -130,8 +140,8 @@ pub enum Intent {
 
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
-    /// keyboard-completeness (AC-18) and the no-edit invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 34] = [
+    /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
+    pub const ALL: [Intent; 37] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -141,6 +151,7 @@ impl Intent {
         Intent::ToggleIgnore,
         Intent::ToggleHidden,
         Intent::ToggleChangedOnly,
+        Intent::ToggleStatusMode,
         Intent::ToggleBaseline,
         Intent::CycleDiffRender,
         Intent::CycleView,
@@ -149,6 +160,8 @@ impl Intent {
         Intent::RevealInFileManager,
         Intent::CopyRepoPath,
         Intent::CopyAbsPath,
+        Intent::AddAnnotation,
+        Intent::ShowAnnotations,
         Intent::ToggleFocus,
         Intent::ShrinkTree,
         Intent::GrowTree,
@@ -175,13 +188,13 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn no_intent_mutates_file_contents() {
-        // AC-N3: the viewer offers no in-pane editing. This exhaustive match fails to
-        // compile if a variant is ever added, forcing a conscious read-only/edit decision;
-        // every current variant is navigation, a view/filter toggle, an external hand-off,
-        // or close — none writes a file's contents.
+    fn intent_effects_never_mutate_files_or_git_and_classify_annotation_edits() {
+        // AC-N3: this exhaustive match fails to compile when a variant is added, forcing an
+        // explicit repository-mutation decision. AddAnnotation is intentionally distinguished as
+        // a possible session-only annotation edit; it still cannot write files or mutate git.
         for intent in Intent::ALL {
-            let mutates_file = match intent {
+            let (mutates_file_or_git, may_edit_in_memory_annotations) = match intent {
+                Intent::AddAnnotation => (false, true),
                 Intent::NavUp
                 | Intent::NavDown
                 | Intent::Expand
@@ -191,6 +204,7 @@ mod tests {
                 | Intent::ToggleIgnore
                 | Intent::ToggleHidden
                 | Intent::ToggleChangedOnly
+                | Intent::ToggleStatusMode
                 | Intent::ToggleBaseline
                 | Intent::CycleDiffRender
                 | Intent::CycleView
@@ -199,6 +213,7 @@ mod tests {
                 | Intent::RevealInFileManager
                 | Intent::CopyRepoPath
                 | Intent::CopyAbsPath
+                | Intent::ShowAnnotations
                 | Intent::ToggleFocus
                 | Intent::ShrinkTree
                 | Intent::GrowTree
@@ -215,11 +230,16 @@ mod tests {
                 | Intent::TreeScrollLeft
                 | Intent::TreeScrollRight
                 | Intent::ShowHelp
-                | Intent::Close => false,
+                | Intent::Close => (false, false),
             };
             assert!(
-                !mutates_file,
-                "{intent:?} must not mutate file contents (AC-N3)"
+                !mutates_file_or_git,
+                "{intent:?} must not mutate files or git (AC-N3)"
+            );
+            assert_eq!(
+                may_edit_in_memory_annotations,
+                intent == Intent::AddAnnotation,
+                "only AddAnnotation may edit session-only annotation state"
             );
         }
     }
@@ -283,11 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_34() {
+    fn all_length_is_37() {
         assert_eq!(
             Intent::ALL.len(),
-            34,
-            "Intent::ALL must have exactly 34 variants"
+            37,
+            "Intent::ALL must have exactly 37 variants"
         );
     }
 
@@ -337,5 +357,11 @@ mod tests {
             Intent::ALL.contains(&Intent::ShowHelp),
             "Intent::ALL must contain ShowHelp"
         );
+    }
+
+    #[test]
+    fn annotation_intents_are_in_all() {
+        assert!(Intent::ALL.contains(&Intent::AddAnnotation));
+        assert!(Intent::ALL.contains(&Intent::ShowAnnotations));
     }
 }

@@ -15,12 +15,68 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// The size cap: files at or above this many bytes are previewed, not shown whole (AC-13).
-const MAX_BYTES: u64 = 1024 * 1024; // 1 MB
-/// The size cap by line count (AC-13).
-const MAX_LINES: usize = 5000;
+/// The default preview line cap — mirror of [`crate::config::DEFAULT_PREVIEW_MAX_LINES`]. Used by
+/// [`Caps::default`] so a config-absent run behaves exactly as before; a config test keeps the two
+/// in lockstep.
+const DEFAULT_MAX_LINES: usize = 10000;
+/// The default preview size cap (1 MiB) — mirror of [`crate::config::DEFAULT_PREVIEW_MAX_KIB`].
+const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
 /// Cap on bytes captured from a renderer's stdout, bounding memory if it spews output.
 const MAX_RENDER_OUTPUT: u64 = 16 * 1024 * 1024; // 16 MB
+
+/// The Content Renderer's size caps: past `max_lines` lines **or** `max_bytes` bytes a file (or a
+/// large diff) is shown as a truncated preview plus a visible notice (AC-13), and `max_bytes` also
+/// bounds the actual file read so a giant/hostile file is never slurped whole (AC-N1). Injected
+/// (from the `preview_max_lines` / `preview_max_kib` config keys) so the caps are configurable while
+/// tests stay hermetic. `Copy` — it is two integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    /// Truncate the preview past this many lines.
+    pub max_lines: usize,
+    /// Truncate the preview past this many bytes; also the bounded-read ceiling.
+    pub max_bytes: u64,
+}
+
+impl Default for Caps {
+    /// The built-in caps (10000 lines / 1 MiB). Must equal what [`crate::config::resolve`] produces
+    /// for an empty config; `crate::config`'s `render_caps_default_matches_config_defaults` test
+    /// pins that so the two constants can never drift apart.
+    fn default() -> Self {
+        Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
+/// Render a cap as a short human label for a truncation notice (`1 MB`, `512 KB`). Values come from
+/// a KiB config knob, so they are whole kibibytes; MiB-round values read as `N MB` (matching the
+/// historical "1 MB" wording), everything else as `N KB`.
+fn human_bytes(n: u64) -> String {
+    let kib = n / 1024;
+    if kib >= 1024 && kib.is_multiple_of(1024) {
+        format!("{} MB", kib / 1024)
+    } else {
+        format!("{kib} KB")
+    }
+}
+
+/// Truncate `s` in place to at most `max_bytes` bytes, cutting on a UTF-8 char boundary so a
+/// multi-byte character is never split. Shared by [`classify`] and [`cap_preview`] so the byte cap
+/// bounds the *displayed* preview, not only the disk read: `from_utf8_lossy` can expand invalid
+/// bytes (each becomes a 3-byte U+FFFD), so a line-bounded-only preview of a hostile file could
+/// otherwise exceed the cap by up to ~3× before rendering.
+fn truncate_to_bytes(s: &mut String, max_bytes: u64) {
+    let max = max_bytes.min(s.len() as u64) as usize;
+    if max == s.len() {
+        return; // already within the cap — no allocation, no scan
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+}
 
 /// The guarded result of reading a file's content.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,13 +90,13 @@ pub enum Prepared {
 }
 
 /// Classify a file for display: binary vs. truncated-preview vs. full text. Reads at most
-/// `MAX_BYTES` from disk, so a huge or hostile file can never be slurped whole (AC-N1).
+/// `caps.max_bytes` from disk, so a huge or hostile file can never be slurped whole (AC-N1).
 ///
 /// Refuses to read anything that does not resolve to a **regular file inside `root`**:
 /// a symlink (or `..`) escaping the root cannot leak out-of-root content into the pane
 /// (AC-N5), and a FIFO/device/dir is never opened (no hang, no garbage). Such paths
 /// return `Binary` (a placeholder, no bytes).
-pub fn classify(root: &Path, path: &Path) -> Prepared {
+pub fn classify(root: &Path, path: &Path, caps: Caps) -> Prepared {
     let (Ok(canonical), Ok(canon_root)) = (path.canonicalize(), root.canonicalize()) else {
         return Prepared::Binary; // unresolvable / missing
     };
@@ -56,9 +112,11 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
     let Ok(file) = File::open(&canonical) else {
         return Prepared::Binary; // unreadable (e.g. permissions) → placeholder, not a misleading empty pane
     };
-    // Bounded read: at most MAX_BYTES, so a giant/hostile file is never slurped whole.
+    // Bounded read: at most caps.max_bytes, so a giant/hostile file is never slurped whole. The
+    // config resolver clamps the cap to a finite ceiling, so even a configured value keeps this
+    // guarantee (AC-N1).
     let mut buf = Vec::new();
-    if file.take(MAX_BYTES).read_to_end(&mut buf).is_err() {
+    if file.take(caps.max_bytes).read_to_end(&mut buf).is_err() {
         return Prepared::Full {
             text: String::new(),
         };
@@ -69,7 +127,7 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
         return Prepared::Binary;
     }
 
-    let over_bytes = byte_len >= MAX_BYTES;
+    let over_bytes = byte_len >= caps.max_bytes;
     // If the file fit under the cap, invalid UTF-8 means binary. If it was capped, the
     // read may have split a multi-byte char, so decode lossily rather than misclassify.
     let text = if over_bytes {
@@ -82,10 +140,21 @@ pub fn classify(root: &Path, path: &Path) -> Prepared {
     };
 
     let line_count = text.lines().count();
-    let over_lines = line_count >= MAX_LINES;
+    let over_lines = line_count >= caps.max_lines;
     if over_bytes || over_lines {
-        let preview: String = text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
-        let cap = if over_bytes { "1 MB size" } else { "5000-line" };
+        let mut preview: String = text
+            .lines()
+            .take(caps.max_lines)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Byte-bound the (possibly lossy-expanded) preview so the byte cap bounds what is *shown*,
+        // not only the disk read — matching cap_preview's guarantee for diffs.
+        truncate_to_bytes(&mut preview, caps.max_bytes);
+        let cap = if over_bytes {
+            format!("{} size", human_bytes(caps.max_bytes))
+        } else {
+            format!("{}-line", caps.max_lines)
+        };
         let notice = format!(
             "⚠ Truncated preview: showing {} lines ({} of {} bytes); file exceeds the {} cap.",
             preview.lines().count(),
@@ -127,6 +196,7 @@ pub fn render(
     mode: ViewMode,
     raw_diff: Option<&str>,
     file_name: Option<&str>,
+    caps: Caps,
 ) -> (Text<'static>, Option<String>) {
     let name = sanitize_name(file_name.unwrap_or(""));
     let name = name.as_str();
@@ -141,7 +211,7 @@ pub fn render(
         } else {
             &renderers.diff
         };
-        let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
+        let (diff, notice) = cap_preview(raw_diff.unwrap_or(""), caps);
         return delegate(
             &with_name(cmd, name),
             &diff,
@@ -179,8 +249,8 @@ pub fn render(
 
 /// Return a bounded, escape-neutralized raw diff without invoking an external renderer. This is
 /// the `D` cycle's plain-text state: the diff still comes from git, but no formatter is required.
-pub fn render_raw_diff(raw_diff: Option<&str>) -> (Text<'static>, Option<String>) {
-    let (diff, notice) = cap_preview(raw_diff.unwrap_or(""));
+pub fn render_raw_diff(raw_diff: Option<&str>, caps: Caps) -> (Text<'static>, Option<String>) {
+    let (diff, notice) = cap_preview(raw_diff.unwrap_or(""), caps);
     (to_text(&diff), notice)
 }
 
@@ -223,21 +293,17 @@ fn with_name(command: &[String], name: &str) -> Vec<String> {
 /// Bound a text block to the size cap, returning a preview plus a truncation notice when
 /// it exceeds it. Used for diff text (AC-13's bound applied to large diffs, keeping the
 /// UI path responsive regardless of how big a changed file's diff is).
-fn cap_preview(text: &str) -> (String, Option<String>) {
-    let over = text.lines().count() >= MAX_LINES || text.len() as u64 >= MAX_BYTES;
+fn cap_preview(text: &str, caps: Caps) -> (String, Option<String>) {
+    let over = text.lines().count() >= caps.max_lines || text.len() as u64 >= caps.max_bytes;
     if !over {
         return (text.to_string(), None);
     }
-    let mut preview: String = text.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
-    if preview.len() as u64 > MAX_BYTES {
-        let end = preview
-            .char_indices()
-            .take_while(|(i, _)| (*i as u64) < MAX_BYTES)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        preview.truncate(end);
-    }
+    let mut preview: String = text
+        .lines()
+        .take(caps.max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    truncate_to_bytes(&mut preview, caps.max_bytes);
     (
         preview,
         Some("⚠ Truncated diff preview: diff exceeds the size cap.".into()),
@@ -537,13 +603,16 @@ mod tests {
     #[test]
     fn nul_bytes_classify_as_binary_without_emitting_raw_bytes() {
         let p = tmp("bin", &[0x00, 0x01, 0x02, b'h', b'i']);
-        assert_eq!(classify(&std::env::temp_dir(), &p), Prepared::Binary); // AC-12
+        assert_eq!(
+            classify(&std::env::temp_dir(), &p, Caps::default()),
+            Prepared::Binary
+        ); // AC-12
         fs::remove_file(&p).ok();
     }
 
     #[test]
     fn raw_diff_is_bounded_and_neutralized_without_a_renderer_process() {
-        let (text, notice) = render_raw_diff(Some("- old\n+ new\n"));
+        let (text, notice) = render_raw_diff(Some("- old\n+ new\n"), Caps::default());
         assert_eq!(notice, None);
         assert_eq!(text.lines.len(), 2);
         assert_eq!(text.lines[0].spans[0].content.as_ref(), "- old");
@@ -587,7 +656,7 @@ mod tests {
     #[test]
     fn small_text_file_is_returned_in_full() {
         let p = tmp("small.txt", b"hello\nworld\n");
-        match classify(&std::env::temp_dir(), &p) {
+        match classify(&std::env::temp_dir(), &p, Caps::default()) {
             Prepared::Full { text } => assert!(text.contains("hello")),
             other => panic!("expected Full, got {other:?}"),
         }
@@ -596,12 +665,21 @@ mod tests {
 
     #[test]
     fn file_over_one_megabyte_is_truncated_with_a_notice() {
-        let big = vec![b'a'; (MAX_BYTES as usize) + 100];
+        let caps = Caps::default();
+        let big = vec![b'a'; (caps.max_bytes as usize) + 100];
         let p = tmp("big.txt", &big);
-        match classify(&std::env::temp_dir(), &p) {
+        match classify(&std::env::temp_dir(), &p, caps) {
             Prepared::Truncated { text, notice } => {
                 assert!(!notice.is_empty(), "AC-13: a visible truncation notice");
-                assert!(text.len() as u64 <= MAX_BYTES, "AC-13: preview is bounded");
+                assert!(
+                    text.len() as u64 <= caps.max_bytes,
+                    "AC-13: preview is bounded"
+                );
+                // Exercises human_bytes' MB branch on the default 1 MiB cap (the common path).
+                assert!(
+                    notice.contains("1 MB"),
+                    "notice names the default 1 MB size cap: {notice}"
+                );
             }
             other => panic!("expected Truncated, got {other:?}"),
         }
@@ -609,13 +687,14 @@ mod tests {
     }
 
     #[test]
-    fn file_over_five_thousand_lines_is_truncated() {
-        let many = "x\n".repeat(6000);
+    fn file_over_the_default_line_cap_is_truncated() {
+        let caps = Caps::default();
+        let many = "x\n".repeat(caps.max_lines + 1000);
         let p = tmp("many.txt", many.as_bytes());
-        match classify(&std::env::temp_dir(), &p) {
+        match classify(&std::env::temp_dir(), &p, caps) {
             Prepared::Truncated { text, notice } => {
                 assert!(
-                    text.lines().count() <= MAX_LINES,
+                    text.lines().count() <= caps.max_lines,
                     "AC-13: preview line-bounded"
                 );
                 assert!(notice.contains("line"), "notice describes the line cap");
@@ -626,10 +705,121 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_smaller_line_cap_truncates_a_file_the_default_would_show_whole() {
+        // 200 lines is well under the default line cap (would be `Full`), but a caller-supplied
+        // 100-line cap must truncate it to a bounded preview — proving the cap is injected, not fixed.
+        let text = "line\n".repeat(200);
+        let p = tmp("cfg-lines.txt", text.as_bytes());
+        let caps = Caps {
+            max_lines: 100,
+            max_bytes: DEFAULT_MAX_BYTES,
+        };
+        match classify(&std::env::temp_dir(), &p, caps) {
+            Prepared::Truncated { text, notice } => {
+                assert!(
+                    text.lines().count() <= 100,
+                    "preview honors the configured line cap"
+                );
+                assert!(
+                    notice.contains("100-line"),
+                    "notice names the configured cap: {notice}"
+                );
+            }
+            other => panic!("expected Truncated at a 100-line cap, got {other:?}"),
+        }
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn a_configured_smaller_byte_cap_truncates_and_names_the_size_in_the_notice() {
+        // 200 KiB is under the 1 MiB default, but a 64 KiB cap must truncate it and label the size.
+        let text = vec![b'a'; 200 * 1024];
+        let p = tmp("cfg-bytes.txt", &text);
+        let caps = Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: 64 * 1024,
+        };
+        match classify(&std::env::temp_dir(), &p, caps) {
+            Prepared::Truncated { text, notice } => {
+                assert!(
+                    text.len() as u64 <= caps.max_bytes,
+                    "preview honors the configured byte cap"
+                );
+                assert!(
+                    notice.contains("64 KB"),
+                    "notice names the configured size: {notice}"
+                );
+            }
+            other => panic!("expected Truncated at a 64 KiB cap, got {other:?}"),
+        }
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn classify_byte_bounds_a_lossy_expanded_single_line_preview() {
+        // A hostile over-cap file that is ONE long line of INVALID UTF-8: the line cap never trips
+        // (1 line), and from_utf8_lossy expands each 0xFF into a 3-byte U+FFFD — so a line-bounded-only
+        // preview would balloon past the cap. The byte-bound must hold the shown preview at <= the cap.
+        let cap = 64 * 1024u64;
+        let raw = vec![0xFFu8; (cap as usize) + 4096]; // over the cap, no NUL, no newline
+        let p = tmp("lossy.bin", &raw);
+        let caps = Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: cap,
+        };
+        match classify(&std::env::temp_dir(), &p, caps) {
+            Prepared::Truncated { text, .. } => {
+                assert!(
+                    text.len() as u64 <= cap,
+                    "lossy-expanded preview must still honor the byte cap: {} > {cap}",
+                    text.len()
+                );
+            }
+            other => panic!("expected Truncated, got {other:?}"),
+        }
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn truncate_to_bytes_respects_char_boundaries_and_the_cap() {
+        // Never split a multi-byte char, always land <= cap, and be a no-op under the cap.
+        let mut s = "aé…z".to_string(); // 'a'(1) 'é'(2) '…'(3) 'z'(1) = 7 bytes
+        truncate_to_bytes(&mut s, 4); // cap lands mid-'…' (bytes 3..6) → must cut back to "aé"
+        assert_eq!(s, "aé");
+        let mut whole = "hello".to_string();
+        truncate_to_bytes(&mut whole, 100); // over-cap: unchanged
+        assert_eq!(whole, "hello");
+        let mut empty = "hello".to_string();
+        truncate_to_bytes(&mut empty, 0); // zero cap: empty, no panic
+        assert_eq!(empty, "");
+    }
+
+    #[test]
+    fn cap_preview_byte_bounds_a_long_line_diff_under_the_line_cap() {
+        // A diff of few lines but many BYTES trips cap_preview's byte cap (not its line cap): the
+        // returned preview must be byte-bounded and carry a notice.
+        let caps = Caps {
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: 8 * 1024,
+        };
+        let long_line = "+".to_string() + &"x".repeat(32 * 1024); // one line, > 8 KiB
+        let (preview, notice) = cap_preview(&long_line, caps);
+        assert!(
+            preview.len() as u64 <= caps.max_bytes,
+            "cap_preview must byte-bound a long-line diff: {}",
+            preview.len()
+        );
+        assert!(
+            notice.unwrap().to_lowercase().contains("truncated"),
+            "a byte-over diff gets a truncation notice"
+        );
+    }
+
+    #[test]
     fn classify_does_not_modify_the_file() {
         let p = tmp("ro.txt", b"unchanged\n");
         let before = fs::read(&p).unwrap();
-        let _ = classify(&std::env::temp_dir(), &p);
+        let _ = classify(&std::env::temp_dir(), &p, Caps::default());
         assert_eq!(fs::read(&p).unwrap(), before); // AC-N1
         fs::remove_file(&p).ok();
     }
@@ -656,7 +846,7 @@ mod tests {
         let link = root.join("link.txt");
         symlink(&outside, &link).unwrap();
         assert_eq!(
-            classify(&root, &link),
+            classify(&root, &link, Caps::default()),
             Prepared::Binary,
             "AC-N5: no out-of-root read"
         );
@@ -673,7 +863,7 @@ mod tests {
         fs::write(&real, "hello inside").unwrap();
         let link = root.join("link.txt");
         symlink(&real, &link).unwrap();
-        match classify(&root, &link) {
+        match classify(&root, &link, Caps::default()) {
             Prepared::Full { text } => assert!(text.contains("hello inside")),
             other => panic!("expected Full, got {other:?}"),
         }
@@ -686,7 +876,7 @@ mod tests {
         // a directory is not a regular file
         let sub = root.join("subdir");
         fs::create_dir_all(&sub).unwrap();
-        assert_eq!(classify(&root, &sub), Prepared::Binary);
+        assert_eq!(classify(&root, &sub, Caps::default()), Prepared::Binary);
         fs::remove_dir_all(&root).ok();
     }
 

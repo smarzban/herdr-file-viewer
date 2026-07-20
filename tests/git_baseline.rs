@@ -6,7 +6,9 @@ mod common;
 use common::{TempDir, git};
 #[cfg(unix)]
 use herdr_file_viewer::git::status;
-use herdr_file_viewer::git::{Baseline, Status, changed_set, default_baseline, diff};
+use herdr_file_viewer::git::{
+    Baseline, Status, changed_set, default_baseline, diff, diff_directory,
+};
 use herdr_file_viewer::root::Resolved;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -219,6 +221,77 @@ fn untracked_file_diff_shows_added_content() {
         "untracked file diff shows its content as added"
     );
     assert!(d.contains("+world"));
+}
+
+#[test]
+fn directory_diff_includes_untracked_descendants() {
+    let repo = make_repo();
+    let dir = repo.path().join("demo");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("one.txt"), "one\n").unwrap();
+    fs::write(dir.join("two.txt"), "two\n").unwrap();
+
+    let d = diff_directory(repo.path(), Path::new("demo"), Baseline::Head, None);
+    assert!(d.contains("one.txt"), "first untracked child missing: {d}");
+    assert!(d.contains("+one"), "first untracked content missing: {d}");
+    assert!(d.contains("two.txt"), "second untracked child missing: {d}");
+    assert!(d.contains("+two"), "second untracked content missing: {d}");
+}
+
+#[test]
+fn directory_diff_scopes_tracked_changes_to_the_pathspec() {
+    // The tracked side of a directory diff must be pathspec-scoped: a modified tracked file
+    // INSIDE the directory appears; one OUTSIDE it does not. (The untracked path is covered
+    // separately above; this guards the `git diff <baseline> -- <dir>` branch.)
+    let repo = make_repo();
+    fs::create_dir_all(repo.path().join("sub")).unwrap();
+    fs::write(repo.path().join("sub/inside.txt"), "orig\n").unwrap();
+    fs::write(repo.path().join("outside.txt"), "orig\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "add tracked"]);
+    // Modify both tracked files; only the in-scope one may show in a `sub`-scoped diff.
+    fs::write(repo.path().join("sub/inside.txt"), "changed\n").unwrap();
+    fs::write(repo.path().join("outside.txt"), "changed\n").unwrap();
+
+    let d = diff_directory(repo.path(), Path::new("sub"), Baseline::Head, None);
+    assert!(
+        d.contains("sub/inside.txt"),
+        "in-scope tracked change missing: {d}"
+    );
+    assert!(
+        d.contains("+changed"),
+        "in-scope tracked diff content missing: {d}"
+    );
+    assert!(
+        !d.contains("outside.txt"),
+        "out-of-scope tracked change must be excluded: {d}"
+    );
+}
+
+#[test]
+fn directory_diff_bounds_untracked_accumulation() {
+    // Many large untracked files must not build an unbounded string: the accumulation is capped
+    // near the same MAX_DIFF_BYTES (4 MiB) bound `capture_stdout` applies to a single git call.
+    let repo = make_repo();
+    let dir = repo.path().join("big");
+    fs::create_dir_all(&dir).unwrap();
+    let one_mib = "x\n".repeat(512 * 1024); // exactly 1 MiB of text
+    // 8 MiB of untracked content — well past the 4 MiB cap, so an uncapped result would be ~8 MiB.
+    for i in 0..8 {
+        fs::write(dir.join(format!("f{i:02}.txt")), &one_mib).unwrap();
+    }
+
+    let d = diff_directory(repo.path(), Path::new("big"), Baseline::Head, None);
+    assert!(
+        d.len() <= 4 * 1024 * 1024,
+        "output must be bounded to the hard 4 MiB cap, got {} bytes",
+        d.len()
+    );
+    assert!(
+        d.len() >= 3 * 1024 * 1024,
+        "the cap must still admit a substantial (~4 MiB) prefix, got {} bytes",
+        d.len()
+    );
 }
 
 #[test]

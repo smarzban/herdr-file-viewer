@@ -275,9 +275,19 @@ impl Controller {
         self.last_click = None; // closing the finder resets double-click state
         if self.tree.reveal(&abs) {
             // reveal() may have relaxed the tree's changed_only/hide_hidden fields — re-sync
-            // the controller's mirror fields so a later `c`/`.` toggle stays consistent
-            // (the mirrors at controller.rs:166-168 drive those toggles).
-            self.changed_only = self.tree.changed_only();
+            // the controller's mirror fields so a later `c`/`.`/`d` toggle stays consistent.
+            // Status mode and baseline-aware changed-only both use the tree's changed_only flag;
+            // if reveal turned the filter off, both controller mirrors must clear.
+            let tree_changed_only = self.tree.changed_only();
+            if !tree_changed_only {
+                self.changed_only = false;
+                self.status_mode = false;
+            } else if self.status_mode {
+                // Status mode owns the filter while active.
+                self.changed_only = false;
+            } else {
+                self.changed_only = true;
+            }
             self.hide_hidden = self.tree.hide_hidden();
             // If the content pane isn't currently visible — the narrow, tree-only layout where the
             // last frame drew no content column (`content_width == 0`) — open the jumped-to file in

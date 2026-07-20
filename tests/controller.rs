@@ -57,6 +57,9 @@ impl GitService for StubGit {
     fn diff(&self, _rel_path: &Path, _baseline: Baseline, _full_context: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 /// A Content Renderer stub: returns fixed text and no notices, so the controller's content
@@ -146,6 +149,14 @@ fn controller(
         components,
     );
     (ctrl, changed_calls, opened)
+}
+
+fn visible_names(ctrl: &Controller) -> Vec<String> {
+    ctrl.tree()
+        .visible_nodes()
+        .iter()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
 }
 
 // ---- tests ----------------------------------------------------------------------------
@@ -339,6 +350,239 @@ fn toggle_changed_only_flips_in_a_repo() {
     assert!(
         !ctrl.changed_only(),
         "toggling again restores the full tree"
+    );
+}
+
+#[test]
+fn toggle_status_mode_filters_by_git_status_not_baseline_changed_set() {
+    // `d` filters to working-tree status even when the baseline-dependent changed-set differs.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("status_only.rs"), "s\n").unwrap();
+    std::fs::write(dir.path().join("base_only.rs"), "b\n").unwrap();
+    std::fs::write(dir.path().join("clean.rs"), "c\n").unwrap();
+
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("status_only.rs"), Status::Modified);
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("base_only.rs"), Status::Modified);
+    let git = StubGit {
+        status,
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    assert!(!ctrl.status_mode());
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "d enters git-status mode");
+    assert!(!ctrl.changed_only(), "d is not baseline-aware c");
+    assert!(fx.redraw);
+
+    let visible = visible_names(&ctrl);
+    assert!(
+        visible.iter().any(|n| n == "status_only.rs"),
+        "status mode shows working-tree status files: {visible:?}"
+    );
+    assert!(
+        !visible.iter().any(|n| n == "base_only.rs"),
+        "status mode must not show baseline-only files: {visible:?}"
+    );
+    assert!(
+        !visible.iter().any(|n| n == "clean.rs"),
+        "status mode hides clean files: {visible:?}"
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(!ctrl.status_mode(), "second d leaves status mode");
+    let restored = visible_names(&ctrl);
+    assert!(
+        restored.iter().any(|n| n == "clean.rs"),
+        "leaving d restores the full tree: {restored:?}"
+    );
+}
+
+/// A Git stub whose `status()` result CHANGES after the first call, so a test can drive the
+/// refresh path (`Refresh` / re-query) and see the tree re-filter from the new working-tree
+/// status. `changed_set` stays empty (status mode is baseline-independent).
+struct EvolvingStatusGit {
+    first: BTreeMap<PathBuf, Status>,
+    rest: BTreeMap<PathBuf, Status>,
+    calls: Arc<Mutex<usize>>,
+}
+impl GitService for EvolvingStatusGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        let mut n = self.calls.lock().unwrap();
+        *n += 1;
+        if *n <= 1 {
+            self.first.clone()
+        } else {
+            self.rest.clone()
+        }
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        BTreeMap::new()
+    }
+    fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+#[test]
+fn status_mode_refilters_from_working_tree_status_on_refresh() {
+    // In status mode, `r` (Refresh) must re-query git status and re-filter the tree from the NEW
+    // working-tree status WITHOUT leaving the mode — the `apply_git_state` status-mode branch. A
+    // single changed file at each step makes the visible set deterministic.
+    let dir = TempDir::new();
+    for f in ["a.rs", "b.rs"] {
+        std::fs::write(dir.path().join(f), "x\n").unwrap();
+    }
+    let (a, b) = (PathBuf::from("a.rs"), PathBuf::from("b.rs"));
+    let git = EvolvingStatusGit {
+        first: BTreeMap::from([(a.clone(), Status::Modified)]), // only a.rs dirty initially
+        rest: BTreeMap::from([(b.clone(), Status::Modified)]),  // after an external edit: only b.rs
+        calls: Arc::new(Mutex::new(0)),
+    };
+    let git: Arc<dyn GitService> = Arc::new(git);
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor::default()),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+    let before = visible_names(&ctrl);
+    assert!(
+        before.iter().any(|n| n == "a.rs"),
+        "initial status shows a.rs: {before:?}"
+    );
+    assert!(
+        !before.iter().any(|n| n == "b.rs"),
+        "b.rs is clean initially: {before:?}"
+    );
+
+    ctrl.handle(Intent::Refresh);
+
+    assert!(ctrl.status_mode(), "refresh must not leave status mode");
+    let after = visible_names(&ctrl);
+    assert!(
+        after.iter().any(|n| n == "b.rs"),
+        "refresh re-filters to the new status (b.rs): {after:?}"
+    );
+    assert!(
+        !after.iter().any(|n| n == "a.rs"),
+        "a.rs left the status set after refresh: {after:?}"
+    );
+}
+
+#[test]
+fn status_mode_and_changed_only_are_mutually_exclusive() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("a.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only());
+    assert!(!ctrl.status_mode());
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "d turns on status mode");
+    assert!(!ctrl.changed_only(), "d turns off c");
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only(), "c turns on changed-only");
+    assert!(!ctrl.status_mode(), "c turns off d");
+}
+
+#[test]
+fn status_mode_is_inert_without_git() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(!ctrl.status_mode());
+    assert!(!fx.redraw, "no git → d is a no-op");
+}
+
+#[test]
+fn status_mode_can_be_turned_off_after_reroot_to_non_git() {
+    // status_mode is a carried preference. Re-rooting into a non-git directory must not
+    // trap the user: `d` still turns the mode off even though entering is inert without git.
+    let repo = TempDir::new();
+    std::fs::write(repo.path().join("a.rs"), "a\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("a.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(repo.path(), true, git, false);
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode(), "precondition: status mode on");
+
+    let non_git = TempDir::new();
+    std::fs::write(non_git.path().join("plain.txt"), "x\n").unwrap();
+    ctrl.re_root(non_git.path());
+    assert!(
+        ctrl.status_mode(),
+        "status_mode is a carried preference across re-root"
+    );
+
+    let fx = ctrl.handle(Intent::ToggleStatusMode);
+    assert!(
+        !ctrl.status_mode(),
+        "d must still turn status mode off without git"
+    );
+    assert!(fx.redraw);
+}
+
+#[test]
+fn baseline_toggle_while_status_mode_keeps_status_filter() {
+    // `b` must keep working while `d` is on (stored baseline updates) without leaving status mode.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("wt.rs"), "w\n").unwrap();
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("wt.rs"), Status::Modified);
+    let git = StubGit {
+        status: status.clone(),
+        changed: status,
+        ..Default::default()
+    };
+    let (mut ctrl, calls, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+    assert_eq!(ctrl.baseline(), Baseline::Head);
+
+    ctrl.handle(Intent::ToggleBaseline);
+    assert_eq!(ctrl.baseline(), Baseline::Base, "b still flips baseline");
+    assert!(ctrl.status_mode(), "b does not leave status mode");
+    assert!(
+        visible_names(&ctrl).iter().any(|n| n == "wt.rs"),
+        "status filter stays applied after b"
+    );
+    assert!(
+        calls.lock().unwrap().contains(&Baseline::Base),
+        "b still recomputes the baseline changed-set for when c is used later"
     );
 }
 
@@ -854,6 +1098,15 @@ fn no_handled_intent_mutates_the_filesystem() {
         }
         if ctrl.picker().is_some() {
             ctrl.handle(Intent::Close);
+        }
+        if ctrl.line_select_active() {
+            ctrl.exit_line_select();
+        }
+        if ctrl.annotation_editor().is_some() {
+            ctrl.handle_annotation_editor_key(key(KeyCode::Esc));
+        }
+        if ctrl.annotation_list().is_some() {
+            ctrl.handle_annotations_key(key(KeyCode::Esc));
         }
     }
 
@@ -2767,6 +3020,9 @@ impl GitService for EvolvingGit {
     fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 /// A Content Renderer that renders the file's path, so a test can see which file the content
@@ -3914,6 +4170,9 @@ enum ModalKind {
     PromptGoToLine,
     PromptSearch,
     Help,
+    LineSelect,
+    Annotations,
+    AnnotationEditor,
 }
 
 impl ModalKind {
@@ -3924,6 +4183,9 @@ impl ModalKind {
             ModalKind::PromptGoToLine => "prompt(go-to-line)",
             ModalKind::PromptSearch => "prompt(search)",
             ModalKind::Help => "help",
+            ModalKind::LineSelect => "line-select",
+            ModalKind::Annotations => "annotations",
+            ModalKind::AnnotationEditor => "annotation-editor",
         }
     }
 
@@ -3938,6 +4200,9 @@ impl ModalKind {
                 | ModalKind::PromptGoToLine
                 | ModalKind::PromptSearch
                 | ModalKind::Help
+                | ModalKind::LineSelect
+                | ModalKind::Annotations
+                | ModalKind::AnnotationEditor
         )
     }
 
@@ -4013,6 +4278,43 @@ fn controller_with_modal_open(kind: &ModalKind) -> Controller {
             std::mem::forget(dir);
             ctrl
         }
+        ModalKind::LineSelect => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            await_marker(&mut ctrl, "stub-content");
+            ctrl.enter_line_select_at_top();
+            assert!(
+                ctrl.line_select_active(),
+                "precondition: line-select is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::Annotations => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::ShowAnnotations);
+            assert!(
+                ctrl.annotation_list().is_some(),
+                "precondition: annotations overview is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
+        ModalKind::AnnotationEditor => {
+            let dir = TempDir::new();
+            std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+            let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+            ctrl.handle(Intent::AddAnnotation);
+            assert!(
+                ctrl.annotation_editor().is_some(),
+                "precondition: annotation editor is open"
+            );
+            std::mem::forget(dir);
+            ctrl
+        }
     }
 }
 
@@ -4023,12 +4325,21 @@ fn modal_open(kind: &ModalKind, ctrl: &Controller) -> bool {
         ModalKind::Finder => ctrl.finder_open(),
         ModalKind::PromptGoToLine | ModalKind::PromptSearch => ctrl.prompt_open(),
         ModalKind::Help => ctrl.help_open(),
+        ModalKind::LineSelect => ctrl.line_select_active(),
+        ModalKind::Annotations => ctrl.annotation_list().is_some(),
+        ModalKind::AnnotationEditor => ctrl.annotation_editor().is_some(),
     }
 }
 
 /// Whether any modal at all is open on `ctrl` — used to assert no second modal opens.
 fn any_modal_open(ctrl: &Controller) -> bool {
-    ctrl.picker().is_some() || ctrl.finder_open() || ctrl.prompt_open() || ctrl.help_open()
+    ctrl.picker().is_some()
+        || ctrl.finder_open()
+        || ctrl.prompt_open()
+        || ctrl.help_open()
+        || ctrl.line_select_active()
+        || ctrl.annotation_list().is_some()
+        || ctrl.annotation_editor().is_some()
 }
 
 /// The full cross-product: for each modal × each `Intent::ALL` variant, drive `handle(intent)`
@@ -4048,6 +4359,9 @@ fn modal_intent_cross_product_isolates_the_tree() {
         ModalKind::PromptGoToLine,
         ModalKind::PromptSearch,
         ModalKind::Help,
+        ModalKind::LineSelect,
+        ModalKind::Annotations,
+        ModalKind::AnnotationEditor,
     ];
 
     for modal in modals {
@@ -4136,13 +4450,66 @@ fn modal_intent_cross_product_isolates_the_tree() {
             let finder_still = ctrl.finder_open();
             let prompt_still = ctrl.prompt_open();
             let help_still = ctrl.help_open();
+            let line_still = ctrl.line_select_active();
+            let annotations_still = ctrl.annotation_list().is_some();
+            let editor_still = ctrl.annotation_editor().is_some();
             let any_other = match &modal {
-                ModalKind::Picker => finder_still || prompt_still || help_still,
-                ModalKind::Finder => picker_still || prompt_still || help_still,
-                ModalKind::PromptGoToLine | ModalKind::PromptSearch => {
-                    picker_still || finder_still || help_still
+                ModalKind::Picker => {
+                    finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
                 }
-                ModalKind::Help => picker_still || finder_still || prompt_still,
+                ModalKind::Finder => {
+                    picker_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::PromptGoToLine | ModalKind::PromptSearch => {
+                    picker_still
+                        || finder_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::Help => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || line_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::LineSelect => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || annotations_still
+                        || editor_still
+                }
+                ModalKind::Annotations => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || editor_still
+                }
+                ModalKind::AnnotationEditor => {
+                    picker_still
+                        || finder_still
+                        || prompt_still
+                        || help_still
+                        || line_still
+                        || annotations_still
+                }
             };
             assert!(
                 !any_other,
@@ -4362,6 +4729,15 @@ fn re_root_only_reachable_via_switch_worktree_intent() {
         // so the help modal guard cannot block SwitchWorktree in Part 2.
         if ctrl.help_open() {
             ctrl.close_help();
+        }
+        if ctrl.line_select_active() {
+            ctrl.exit_line_select();
+        }
+        if ctrl.annotation_editor().is_some() {
+            ctrl.handle_annotation_editor_key(key(KeyCode::Esc));
+        }
+        if ctrl.annotation_list().is_some() {
+            ctrl.handle_annotations_key(key(KeyCode::Esc));
         }
     }
 
@@ -9378,6 +9754,9 @@ impl GitService for CountingGit {
         self.calls.lock().unwrap().push("diff");
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 /// Build a controller backed by a `CountingGit`, returning the controller and the shared call
@@ -9446,6 +9825,7 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
 #[test]
 fn open_help_appends_settings_section_when_display_is_set() {
     use herdr_file_viewer::config::{EffectiveSettings, LoadOutcome};
+    use herdr_file_viewer::help::SettingsWired;
 
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -9459,15 +9839,24 @@ fn open_help_appends_settings_section_when_display_is_set() {
         reveal: None,
         hide_dotfiles: false,
         update_check: true,
+        confirm_discard: true,
         scroll_lines: 3,
         tree_width: 30,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
         tree_max_cols: 45,
+        preview_max_lines: 5000,
+        preview_max_kib: 1024,
+    };
+    let wired = SettingsWired {
+        editor: None,
+        open: "xdg-open".to_string(),
+        reveal: "xdg-open".to_string(),
     };
     ctrl.set_settings_display(
         &eff,
         &LoadOutcome::Absent,
         std::path::Path::new("/cfg/config.toml"),
+        &wired,
     );
 
     ctrl.handle(Intent::ShowHelp);

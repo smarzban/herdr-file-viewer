@@ -74,6 +74,12 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   source-mapped **view mode** (auto-switches to it from rendered markdown / diff).
 - **line marker**: the visible indicator of the currently selected line inside
   **line-select mode**; moved by `j`/`k`, arrows, or a mouse click.
+- **annotation**: a normalized, non-empty note kept only in the current viewer session and
+  attached to one **annotation target**; it never changes the target file or git state.
+- **annotation target**: an immutable root-relative file plus, optionally, a normalized
+  inclusive 1-based line/range captured from **line-select mode**.
+- **annotation overview**: the keyboard modal that lists the current root's **annotations**
+  in deterministic order and provides edit, delete, clear-all, and copy-all actions.
 - **opener**: an injected external command that hands the selected entry off to the
   host OS; the read-only external-effect seam shared by **open with default app** and
   **reveal in file manager**, modeled on the editor launcher. Non-blocking (fire-and-
@@ -88,12 +94,18 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   **input, not state**: the app reads it and never writes it.
 - **effective setting**: the value a setting actually resolves to after precedence is
   applied: the **config file** key if present, else the environment variable, else the
-  built-in default (config > env > default).
+  **built-in default** (config > env > default).
+- **built-in default**: the value a setting has when neither the **config file** nor an
+  applicable environment variable supplies one: the viewer's shipped default (for a
+  **command override**, the wired renderer/opener/editor command; for a scalar, the
+  documented numeric or on/off default).
 - **command override**: a **config file** value that replaces a built-in external
   command (the **opener**s, the renderers, or the editor). Written as a string and split
   into argv by the same quote-aware tokenizer used for `$EDITOR`; no shell is invoked.
 - **Settings section**: the display-only section of the help overlay that lists the
-  **effective setting**s; it shows configuration, it does not edit it.
+  **effective setting**s with their real values, one row each; it shows configuration, it
+  does not edit it. The renderer commands are excluded: they are set and documented in the
+  **config file**, and their built-in argv is long enough to wreck the row layout.
 - **scroll step**: how many content lines (or **file finder** list items, or help-overlay
   lines) the mouse wheel advances per wheel event. Set by the `scroll_lines` **config file**
   key (config > default; default 3, clamped to the range 1 to 10). The directory tree is

@@ -73,6 +73,9 @@ impl GitService for NoGit {
     fn diff(&self, _: &Path, _: Baseline, _full: bool) -> String {
         String::new()
     }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
 }
 
 struct NoEditor;
@@ -102,6 +105,55 @@ impl GitService for RecordingGit {
             "FULL".into()
         } else {
             "COMPACT".into()
+        }
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+/// Records file + directory diff calls and the baseline each used — for status-mode proofs.
+struct StatusModeGit {
+    status: BTreeMap<PathBuf, Status>,
+    file_diffs: Arc<Mutex<Vec<(PathBuf, Baseline)>>>,
+    dir_diffs: Arc<Mutex<Vec<(PathBuf, Baseline)>>>,
+}
+impl GitService for StatusModeGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        self.status.clone()
+    }
+    fn changed_set(&self, _: Baseline) -> BTreeMap<PathBuf, Status> {
+        // Deliberately empty / different from status: status mode must not use this set.
+        BTreeMap::new()
+    }
+    fn diff(&self, rel: &Path, baseline: Baseline, _full: bool) -> String {
+        self.file_diffs
+            .lock()
+            .unwrap()
+            .push((rel.to_path_buf(), baseline));
+        format!("FILEDIFF:{}", rel.display())
+    }
+    fn diff_directory(&self, rel_dir: &Path, baseline: Baseline) -> String {
+        self.dir_diffs
+            .lock()
+            .unwrap()
+            .push((rel_dir.to_path_buf(), baseline));
+        format!("DIRDIFF:{}", rel_dir.display())
+    }
+}
+
+/// Content provider that surfaces the raw_diff string so tests can assert which git path ran.
+struct EchoDiffContent;
+impl ContentProvider for EchoDiffContent {
+    fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        RenderResult {
+            content: Text::raw(format!(
+                "mode={mode:?};file={name};diff={}",
+                raw_diff.unwrap_or("-")
+            )),
+            notices: Vec::new(),
+            source: None,
         }
     }
 }
@@ -967,4 +1019,172 @@ fn a_committed_search_ordinal_is_clamped_when_a_reflow_shrinks_the_match_count()
     );
     // And navigation on the clamped state does not panic.
     ctrl.handle(Intent::NextMatch);
+}
+
+#[test]
+fn status_mode_forces_working_tree_file_diff() {
+    // Entering `d` on a status file must ask git.diff with Baseline::Head (working tree),
+    // even if the session baseline is Base.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "a\n").unwrap();
+
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("src/a.rs"), Status::Modified);
+    let file_diffs = Arc::new(Mutex::new(Vec::new()));
+    let dir_diffs = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(StatusModeGit {
+        status,
+        file_diffs: file_diffs.clone(),
+        dir_diffs: dir_diffs.clone(),
+    });
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(EchoDiffContent),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Base, // session baseline is Base; status mode must still force Head
+        components,
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+
+    // Synthetic status tree expands ancestor dirs; land on the status file itself.
+    let nodes = ctrl.tree().visible_nodes();
+    let file_idx = nodes
+        .iter()
+        .position(|n| n.path.ends_with("a.rs"))
+        .expect("status file should be visible in status mode");
+    while ctrl.tree().cursor() != file_idx {
+        if ctrl.tree().cursor() < file_idx {
+            ctrl.handle(Intent::NavDown);
+        } else {
+            ctrl.handle(Intent::NavUp);
+        }
+    }
+
+    // Wait for a file-diff call under status mode.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if !file_diffs.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status mode never requested a file working-tree diff"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let calls = file_diffs.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|(p, b)| p == Path::new("src/a.rs") && *b == Baseline::Head),
+        "status mode must diff the file against Head (working tree), got {calls:?}"
+    );
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "status mode forces Diff view"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(fx) = ctrl.poll() {
+            let _ = fx;
+        }
+        if flatten(ctrl.content()).contains("FILEDIFF:src/a.rs") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status-mode file diff content never arrived: {}",
+            flatten(ctrl.content())
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn status_mode_directory_uses_diff_directory_with_head() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "a\n").unwrap();
+
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("src/a.rs"), Status::Modified);
+    let file_diffs = Arc::new(Mutex::new(Vec::new()));
+    let dir_diffs = Arc::new(Mutex::new(Vec::new()));
+    let git: Arc<dyn GitService> = Arc::new(StatusModeGit {
+        status,
+        file_diffs: file_diffs.clone(),
+        dir_diffs: dir_diffs.clone(),
+    });
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(EchoDiffContent),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), true),
+        Baseline::Base,
+        components,
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    // In changed-only/status synthetic tree, directories are expanded ancestors of status files.
+    // Navigate to the `src` directory row if needed.
+    let nodes = ctrl.tree().visible_nodes();
+    let src_idx = nodes
+        .iter()
+        .position(|n| n.path.file_name().map(|f| f == "src").unwrap_or(false))
+        .expect("src dir should be visible in status mode");
+    // Move cursor to src (cursor 0 may already be root-relative first row).
+    while ctrl.tree().cursor() != src_idx {
+        if ctrl.tree().cursor() < src_idx {
+            ctrl.handle(Intent::NavDown);
+        } else {
+            ctrl.handle(Intent::NavUp);
+        }
+    }
+
+    // Wait for the directory diff's CONTENT to actually land, not merely for the worker to have
+    // been asked. Recording the `diff_directory` call happens on the worker thread; the result is
+    // applied only when `poll()` picks it up here — asserting the content immediately after the
+    // request races that hand-off. Mirror the file-diff wait loop above and poll until the src
+    // directory diff is on screen (which implies its call was made and applied).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.poll();
+        if flatten(ctrl.content()).contains("DIRDIFF:src") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status-mode directory diff content never arrived: {}",
+            flatten(ctrl.content())
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let calls = dir_diffs.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|(p, b)| p == Path::new("src") && *b == Baseline::Head),
+        "directory in status mode must call diff_directory(src, Head), got {calls:?}"
+    );
 }

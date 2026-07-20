@@ -8,12 +8,12 @@
 
 use crate::controller::{
     Clipboard, Components, ContentProvider, Controller, DiffRenderMode, EditorHandoff,
-    EditorOutcome, GitService, RenderResult, RootProviders,
+    EditorOutcome, Effects, GitService, RenderResult, RootProviders,
 };
 use crate::editor::{EditorLauncher, SpawnError, Spawner};
 use crate::git::{self, Baseline, Status};
 use crate::presenter::{self, ViewState};
-use crate::render::{self, Prepared, Renderers};
+use crate::render::{self, Caps, Prepared, Renderers};
 use crate::view_policy::ViewMode;
 use crate::{host, input, root};
 use crossterm::event::{
@@ -60,6 +60,10 @@ pub fn run() -> io::Result<()> {
     // `Components`), so a config override is honored identically wherever the renderers are used.
     let renderers = crate::config::effective_renderers(&eff, &default_renderers());
 
+    // The Content Renderer size caps (config `preview_max_lines` / `preview_max_kib`, already clamped
+    // and byte-converted). `Copy`, so the factory closure below captures it by value.
+    let caps = eff.preview_caps();
+
     // The root-bound providers are built by a factory so a later re-root rebuilds them against
     // the new root (ADR-0004). Non-capturing — it reads the passed `Resolved`, so re-root gets
     // the new root's git/renderer rather than closing over the launch root.
@@ -78,15 +82,21 @@ pub fn run() -> io::Result<()> {
             let content: Box<dyn ContentProvider> = Box::new(LiveContent {
                 root: resolved.root.clone(),
                 renderers: factory_renderers.clone(),
+                caps,
             });
             RootProviders { git, content }
         });
     // The effective editor (AC-6): config > `$EDITOR` (already encoded in `eff.editor`) >
     // platform default (`resolve_editor(None)` — e.g. Notepad on Windows).
+    let platform_editor = resolve_editor(None);
     let editor: Box<dyn EditorHandoff> = Box::new(LiveEditor {
-        editor: crate::config::effective_editor(&eff, resolve_editor(None)),
+        editor: crate::config::effective_editor(&eff, platform_editor.clone()),
     });
     let clipboard: Box<dyn Clipboard> = Box::new(Osc52Clipboard);
+
+    // Wired values for the Settings display (AC-1..AC-4): built from the same startup resolution
+    // as the live components below so the overlay shows what's actually in effect.
+    let settings_wired = settings_wired(&eff, current_os_kind(), platform_editor);
 
     // `Controller::new` now consumes `resolved` by value; `baseline` was already built from it
     // above (`git::default_baseline(&resolved)`), so moving it here is the last use.
@@ -103,6 +113,9 @@ pub fn run() -> io::Result<()> {
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Apply the config-driven quit guard (`confirm_discard`): whether quitting with
+    // session annotations held confirms first or discards them immediately.
+    controller.apply_confirm_discard(eff.confirm_discard);
     // Apply the config-driven mouse-wheel scroll step (`scroll_lines`); already clamped to >= 1 by
     // the resolver, so the wheel always advances at least one line/item.
     controller.apply_scroll_lines(eff.scroll_lines);
@@ -115,7 +128,12 @@ pub fn run() -> io::Result<()> {
     // Format the Settings section body for the `?` overlay (AC-15, AC-18): reflects the load
     // outcome plus every effective setting, so a user can see what's actually in effect, and the
     // resolved config-file location so they know what to fix or create.
-    controller.set_settings_display(&eff, &load_outcome, &crate::config::config_path_from_env());
+    controller.set_settings_display(
+        &eff,
+        &load_outcome,
+        &crate::config::config_path_from_env(),
+        &settings_wired,
+    );
     // Resolve the effective key bindings from the registry + the config's `[keys]` table (Slice B,
     // T-6): `config > default`, defensively (a rejected entry reverts to its default key set). This
     // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
@@ -182,6 +200,24 @@ pub fn run() -> io::Result<()> {
     let _ = execute!(io::stdout(), DisableFocusChange);
     ratatui::try_restore()?;
     outcome
+}
+
+/// Route annotation-modal raw keys before configurable global decoding. Returning `Some` means
+/// the modal consumed ownership even when the particular key is an inert no-op, so no printable or
+/// fixed modal key can leak to a global quit/editor/copy action.
+fn route_annotation_key(
+    controller: &mut Controller,
+    key: crossterm::event::KeyEvent,
+) -> Option<Effects> {
+    if controller.annotation_list().is_some() {
+        Some(controller.handle_annotations_key(key))
+    } else if controller.annotation_editor().is_some() {
+        Some(controller.handle_annotation_editor_key(key))
+    } else if controller.discard_confirm_open() {
+        Some(controller.handle_discard_confirm_key(key))
+    } else {
+        None
+    }
 }
 
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat
@@ -259,6 +295,24 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     if key.kind == KeyEventKind::Press && controller.line_select_active() =>
                 {
                     let fx = controller.handle_line_select_key(key);
+                    if fx.clear {
+                        let _ = terminal.clear();
+                        dirty = true;
+                    }
+                    if fx.quit {
+                        return Ok(());
+                    }
+                    dirty |= fx.redraw;
+                }
+                // Annotation overview/editor keys are fixed modal controls/raw text. Route them
+                // before global decoding so `q`, `e`, `d`, `D`, `y`, and remapped printables cannot
+                // trigger viewer actions beneath the modal.
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && controller.annotation_raw_keys_owned() =>
+                {
+                    let fx = route_annotation_key(controller, key)
+                        .expect("an open annotation modal has a raw-key route");
                     if fx.clear {
                         let _ = terminal.clear();
                         dirty = true;
@@ -349,6 +403,14 @@ impl GitService for LiveGit {
             full_context,
         )
     }
+    fn diff_directory(&self, rel_dir: &Path, baseline: Baseline) -> String {
+        git::diff_directory(
+            &self.repo_root,
+            rel_dir,
+            baseline,
+            self.base_hint.as_deref(),
+        )
+    }
 }
 
 /// Whether a configured renderer command invokes Delta directly. Custom tools and shell
@@ -399,6 +461,9 @@ fn side_by_side_renderer(command: &[String]) -> Vec<String> {
 struct LiveContent {
     root: PathBuf,
     renderers: Renderers,
+    /// The size caps (line + byte) for classifying/previewing content, resolved from config
+    /// (`preview_max_lines` / `preview_max_kib`) at startup. `Copy`.
+    caps: Caps,
 }
 
 impl ContentProvider for LiveContent {
@@ -423,7 +488,7 @@ impl ContentProvider for LiveContent {
         let prepared = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             Prepared::Binary
         } else {
-            render::classify(&self.root, path)
+            render::classify(&self.root, path, self.caps)
         };
         let name = path.file_name().and_then(OsStr::to_str);
         // Retain the raw source lines behind a source-mapped render: `SyntaxContent` displays one
@@ -464,7 +529,7 @@ impl ContentProvider for LiveContent {
         let (content, notice) = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff)
             && diff_render_mode == DiffRenderMode::Raw
         {
-            render::render_raw_diff(raw_diff)
+            render::render_raw_diff(raw_diff, self.caps)
         } else {
             match (
                 mode,
@@ -476,7 +541,7 @@ impl ContentProvider for LiveContent {
                         markdown: render::with_wrap_width(&base_renderers.markdown, w),
                         ..base_renderers.clone()
                     };
-                    render::render(&wrapped, &prepared, mode, raw_diff, name)
+                    render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
                 }
                 (ViewMode::Diff | ViewMode::FullDiff, _, Some(w)) => {
                     // Delta is piped rather than attached to a terminal, so pass the drawable
@@ -494,9 +559,9 @@ impl ContentProvider for LiveContent {
                         },
                         ..base_renderers.clone()
                     };
-                    render::render(&wrapped, &prepared, mode, raw_diff, name)
+                    render::render(&wrapped, &prepared, mode, raw_diff, name, self.caps)
                 }
-                _ => render::render(&base_renderers, &prepared, mode, raw_diff, name),
+                _ => render::render(&base_renderers, &prepared, mode, raw_diff, name, self.caps),
             }
         };
         RenderResult {
@@ -764,6 +829,22 @@ fn bundled_style_path(exe: Option<&Path>) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// Build the [`crate::help::SettingsWired`] the Settings display reads, from the same startup
+/// resolution the live components use. Extracted from `run` (which needs a terminal) so the wiring
+/// itself is testable: the `open`/`reveal` labels must not be crossed, and the editor must follow
+/// config > `$EDITOR` > platform default.
+fn settings_wired(
+    eff: &crate::config::EffectiveSettings,
+    os: crate::opener::OsKind,
+    platform_editor: Option<std::ffi::OsString>,
+) -> crate::help::SettingsWired {
+    crate::help::SettingsWired {
+        editor: crate::config::effective_editor(eff, platform_editor),
+        open: crate::opener::default_opener_display(os, crate::opener::OpenAction::Open),
+        reveal: crate::opener::default_opener_display(os, crate::opener::OpenAction::Reveal),
+    }
+}
+
 /// The default external renderers (the documented runtime deps). Each reads the untrusted
 /// content on **stdin** (never as an argument); a missing one degrades to plain text +
 /// notice (AC-24/25). `{name}` is substituted with the sanitized file name for language
@@ -852,6 +933,251 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[derive(Default)]
+    struct RouteGit;
+
+    impl GitService for RouteGit {
+        fn status(&self) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+
+        fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+            BTreeMap::new()
+        }
+
+        fn diff(&self, _path: &Path, _baseline: Baseline, _full_context: bool) -> String {
+            String::new()
+        }
+        fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+            String::new()
+        }
+    }
+
+    struct RouteContent;
+
+    impl ContentProvider for RouteContent {
+        fn render(&self, _path: &Path, _mode: ViewMode, _diff: Option<&str>) -> RenderResult {
+            RenderResult {
+                content: ratatui::text::Text::raw("body"),
+                notices: Vec::new(),
+                source: None,
+            }
+        }
+    }
+
+    struct RouteEditor;
+
+    impl EditorHandoff for RouteEditor {
+        fn open(&mut self, _file: &Path) -> EditorOutcome {
+            EditorOutcome::NoTakeover
+        }
+    }
+
+    struct RouteClipboard;
+
+    impl Clipboard for RouteClipboard {
+        fn copy(&mut self, _text: &str) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn route_controller(tag: &str) -> (Controller, PathBuf) {
+        let root = tmp(tag);
+        std::fs::write(root.join("note.rs"), "fn main() {}\n").unwrap();
+        let resolved = crate::root::Resolved {
+            root: root.clone(),
+            is_git_repo: false,
+            repo_root: None,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let controller = Controller::new(
+            resolved,
+            Baseline::Head,
+            Components {
+                providers: Box::new(|_| RootProviders {
+                    git: Arc::new(RouteGit),
+                    content: Box::new(RouteContent),
+                }),
+                editor: Box::new(RouteEditor),
+                clipboard: Box::new(RouteClipboard),
+                renderers: None,
+            },
+        );
+        (controller, root)
+    }
+
+    fn route_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn annotation_editor_raw_printables_route_before_global_decoding() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut controller, root) = route_controller("app-route-editor");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        assert!(controller.annotation_editor().is_some());
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            controller
+                .view_state()
+                .annotation_editor
+                .expect("validation stays in the projected editor")
+                .error
+                .as_deref(),
+            Some("Annotation text cannot be empty")
+        );
+
+        for key in [
+            route_key(KeyCode::Char('q')),
+            route_key(KeyCode::Char('e')),
+            route_key(KeyCode::Char('d')),
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
+            route_key(KeyCode::Char('y')),
+        ] {
+            let effects = route_annotation_key(&mut controller, key).expect("editor owns raw key");
+            assert!(
+                !effects.quit,
+                "a printable modal key cannot leak to global quit"
+            );
+        }
+        assert_eq!(controller.annotation_editor().unwrap().text(), "qedDy");
+        let view = controller.view_state();
+        let editor = view.annotation_editor.expect("typed editor projection");
+        assert_eq!(editor.text, "qedDy");
+        assert_eq!(editor.target.path, PathBuf::from("note.rs"));
+        assert_eq!(editor.kind, crate::presenter::AnnotationEditorKind::Add);
+        assert!(view.annotation_overview.is_none());
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn annotation_overview_fixed_keys_route_before_globals_and_project_owned_rows() {
+        use crossterm::event::KeyCode;
+
+        let (mut controller, root) = route_controller("app-route-overview");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+        controller.handle(crate::intent::Intent::ShowAnnotations);
+
+        let view = controller.view_state();
+        assert_eq!(view.annotation_count, 1);
+        let overview = view.annotation_overview.expect("owned overview projection");
+        assert_eq!(overview.cursor, 0);
+        assert_eq!(overview.rows.len(), 1);
+        assert_eq!(overview.rows[0].target.path, PathBuf::from("note.rs"));
+        assert_eq!(overview.rows[0].note, "note");
+
+        route_annotation_key(&mut controller, route_key(KeyCode::Char('e')))
+            .expect("fixed edit key is routed to the overview");
+        let editor = controller
+            .view_state()
+            .annotation_editor
+            .expect("edit projection");
+        assert_eq!(editor.kind, crate::presenter::AnnotationEditorKind::Edit);
+        assert_eq!(editor.text, "note");
+        route_annotation_key(&mut controller, route_key(KeyCode::Esc))
+            .expect("editor cancel returns to overview");
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('d')))
+            .expect("overview owns fixed delete");
+        assert!(effects.redraw && !effects.quit);
+        assert!(controller.annotations().is_empty());
+        assert!(controller.annotation_list().is_some());
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('q')))
+            .expect("overview owns fixed close");
+        assert!(effects.redraw && !effects.quit, "q closes only the modal");
+        assert!(!controller.annotation_modal_open());
+        assert!(
+            route_annotation_key(&mut controller, route_key(KeyCode::Char('q'))).is_none(),
+            "without an annotation modal the key proceeds to normal global decoding"
+        );
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quit_confirm_keys_route_before_globals() {
+        use crossterm::event::KeyCode;
+
+        // The gate the event loop matches on MUST cover the quit confirm: when it only covered the
+        // overview/editor, `route_annotation_key` was never reached and `y`/`q`/`Esc` fell through
+        // to global decoding, so the dialog was drawn but inert. Controller-level tests that call
+        // `handle_discard_confirm_key` directly cannot see that hole; this drives the real gate.
+        let (mut controller, root) = route_controller("app-route-quit-confirm");
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+
+        controller.handle(crate::intent::Intent::Close);
+        assert!(
+            controller.discard_confirm_open(),
+            "the close raised the confirm"
+        );
+        assert!(
+            controller.annotation_raw_keys_owned(),
+            "the event loop's gate must own the confirm's keys"
+        );
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Esc))
+            .expect("the confirm owns esc");
+        assert!(!effects.quit, "esc cancels");
+        assert!(!controller.discard_confirm_open());
+
+        controller.handle(crate::intent::Intent::Close);
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Char('y')))
+            .expect("the confirm owns y");
+        assert!(effects.quit, "y copies and quits through the real route");
+
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn switch_confirm_enter_routes_before_globals() {
+        use crossterm::event::KeyCode;
+
+        // The SwitchRoot variant's proceed key is `Enter`, not `q`. Every switch_confirm_* test
+        // calls `handle_discard_confirm_key` directly, which cannot see whether the event loop's
+        // gate routes to it: an `Enter` falling through to global decoding would pass them all.
+        // That is exactly how the quit confirm shipped inert. (empanel round 1, lens-tests.)
+        let (mut controller, root) = route_controller("app-route-switch-confirm");
+        let second = tmp("app-route-switch-target");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("other.rs"), "fn other() {}\n").unwrap();
+
+        controller.handle(crate::intent::Intent::AddAnnotation);
+        for c in "note".chars() {
+            route_annotation_key(&mut controller, route_key(KeyCode::Char(c))).unwrap();
+        }
+        route_annotation_key(&mut controller, route_key(KeyCode::Enter)).unwrap();
+
+        controller.re_root(&second);
+        assert!(controller.discard_confirm_open(), "the switch confirmed");
+        assert!(
+            controller.annotation_raw_keys_owned(),
+            "the event loop's gate must own the switch confirm's keys too"
+        );
+
+        let effects = route_annotation_key(&mut controller, route_key(KeyCode::Enter))
+            .expect("the switch confirm owns Enter");
+        assert!(!effects.quit, "proceeding with a switch is not a quit");
+        assert!(!controller.discard_confirm_open());
+        assert!(controller.annotations().is_empty(), "the switch proceeded");
+
+        drop(controller);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(second);
     }
 
     #[test]
@@ -945,6 +1271,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_wired_maps_each_opener_to_its_own_label_and_resolves_the_editor() {
+        use crate::opener::OsKind;
+        // The wiring `run` does, minus the terminal: Open and Reveal must not be crossed, and the
+        // editor must follow config > `$EDITOR` > platform default.
+        let eff = crate::config::EffectiveSettings {
+            editor: Some(std::ffi::OsString::from("nvim")),
+            ..crate::config::resolve(&crate::config::Config::default(), |_| None)
+        };
+        let w = settings_wired(&eff, OsKind::Mac, Some(std::ffi::OsString::from("vi")));
+        assert_eq!(
+            w.editor,
+            Some(std::ffi::OsString::from("nvim")),
+            "config wins"
+        );
+        assert_eq!(
+            w.open,
+            crate::opener::default_opener_display(OsKind::Mac, crate::opener::OpenAction::Open)
+        );
+        assert_eq!(
+            w.reveal,
+            crate::opener::default_opener_display(OsKind::Mac, crate::opener::OpenAction::Reveal)
+        );
+        assert_ne!(
+            w.open, w.reveal,
+            "Open and Reveal labels must not be crossed"
+        );
+
+        // No config editor: the platform default is what the row must report.
+        let bare = crate::config::resolve(&crate::config::Config::default(), |_| None);
+        let w = settings_wired(&bare, OsKind::Linux, Some(std::ffi::OsString::from("vi")));
+        assert_eq!(w.editor, Some(std::ffi::OsString::from("vi")));
+    }
+
+    #[test]
     fn syntax_renderer_forces_color_and_line_numbers() {
         // bat, like glow, must be told to colorize since its output is piped, not a TTY; and
         // `--style=numbers` shows the line-number gutter the viewer wants for code.
@@ -987,7 +1347,47 @@ mod tests {
                 syntax: vec!["cat".into()],
                 timeout: Duration::from_secs(5),
             },
+            caps: Caps::default(),
         }
+    }
+
+    /// End-to-end wiring: a NON-default cap on `LiveContent` must reach `classify` and truncate,
+    /// guarding the `eff.preview_caps()` → `LiveContent.caps` → `render::classify(.., self.caps)`
+    /// thread that the config/render unit tests each cover only on their own side.
+    #[cfg(unix)]
+    #[test]
+    fn livecontent_threads_a_configured_cap_into_classify() {
+        let root = tmp("cfg-cap-wiring");
+        let file = root.join("many.txt");
+        std::fs::write(&file, "line\n".repeat(200)).unwrap(); // 200 lines, well under the default cap
+        let content = LiveContent {
+            root: root.clone(),
+            renderers: Renderers {
+                markdown: vec!["cat".into()],
+                diff: vec!["cat".into()],
+                full_diff: vec!["cat".into()],
+                syntax: vec!["cat".into()],
+                timeout: Duration::from_secs(5),
+            },
+            // A 50-line cap the default would never apply — proves the injected cap is what bites.
+            caps: Caps {
+                max_lines: 50,
+                max_bytes: 1024 * 1024,
+            },
+        };
+        let out = content.render_at_width(
+            &file,
+            ViewMode::SyntaxContent,
+            None,
+            None,
+            None,
+            DiffRenderMode::default(),
+        );
+        assert!(
+            out.notices.iter().any(|n| n.contains("50-line")),
+            "the configured 50-line cap must reach classify through LiveContent: {:?}",
+            out.notices
+        );
     }
 
     #[cfg(unix)]
