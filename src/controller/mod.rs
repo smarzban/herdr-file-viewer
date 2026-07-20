@@ -91,6 +91,9 @@ const FLASH_FULL: Duration = Duration::from_millis(1600);
 /// How long a [`Flash`] lingers dimmed after [`FLASH_FULL`] before it disappears entirely. The
 /// bright→dim→gone progression is the terminal-idiomatic "fade" for an auto-dismissing hint.
 const FLASH_DIM: Duration = Duration::from_millis(700);
+/// How long a launch open-target **range** keeps a passive content highlight (option 3). Display
+/// only: no line-select modal, no key capture. Cleared early on content change or Esc.
+const OPEN_RANGE_FLASH: Duration = Duration::from_secs(1);
 
 /// A self-expiring, one-line status hint (e.g. "Diff: side-by-side" after `D`). Unlike
 /// [`Controller::action_notice`] — which persists until the next intent because a failure message
@@ -106,6 +109,13 @@ struct Flash {
     /// The phase currently reflected on screen, so [`Controller::tick_flash`] only asks for a
     /// redraw on a real transition (full→dim, or →gone) rather than every idle tick.
     dim: bool,
+}
+
+/// Inclusive 1-based source-line range to highlight passively after a launch open target.
+struct OpenRangeFlash {
+    start: usize,
+    end: usize,
+    deadline: Instant,
 }
 /// The help overlay's self-operating key-hints footer (AC-11) — at minimum how to switch sections
 /// and how to close. Carried in `HelpView` so the Presenter stays mode-agnostic; matches the keys
@@ -735,6 +745,15 @@ pub struct Controller {
     /// it is queued against the dispatched render's seq and applied by [`poll`] (AC-7). `None` when no
     /// jump is pending; superseded (cleared) by any newer render dispatch.
     pending_goto: Option<(u64, usize)>,
+    /// After a successful launch **open target**, zoom on the first layout that reports a hidden
+    /// content column (`content_width == 0`, the narrow tree-only layout). Cleared on the first
+    /// [`set_content_viewport`](Self::set_content_viewport) either way so a wide pane is not forced
+    /// into zoom. At apply time no frame has been drawn yet, so content_width is always 0 then and
+    /// cannot be used as the signal directly (that would always zoom).
+    pending_open_zoom: bool,
+    /// Passive range highlight after a launch open target of the form `path:start-end`. Soft
+    /// content highlight only (no modal); expires at `deadline` or earlier on content change / Esc.
+    open_range_flash: Option<OpenRangeFlash>,
     /// A queued line-select entry awaiting its source re-render: the render seq to wait for. Set when
     /// `L` enters line-select in a **transformed** view (RenderedMarkdown / Diff / FullDiff) or while a
     /// source render is still in flight — the file is switched to the source-mapped content view and the
@@ -877,6 +896,8 @@ impl Controller {
             status_rx: None,
             modal: Modal::None,
             pending_goto: None,
+            pending_open_zoom: false,
+            open_range_flash: None,
             pending_line_select: None,
             applied_seq: 0,
             search: None,
@@ -1362,6 +1383,92 @@ impl Controller {
         self.confirm_discard = confirm;
     }
 
+    /// Apply a launch **open target** once at startup: resolve `path` under the tree **root**,
+    /// **reveal in tree**, dispatch a render, and (when a line is set) queue a **go to line** via
+    /// [`pending_goto`](Self::pending_goto) after forcing the source-mapped view when needed.
+    ///
+    /// Soft failures only: a path outside the root, or a missing / non-file path, sets a non-fatal
+    /// [`action_notice`](Self::action_notice) and leaves the selection unchanged (AC-N5, AC-20).
+    ///
+    /// Narrow-pane zoom is deferred: on success sets [`pending_open_zoom`](Self::pending_open_zoom)
+    /// so the first [`set_content_viewport`](Self::set_content_viewport) zooms only when the
+    /// content column is actually hidden (tree-only layout), matching the file finder's confirm
+    /// path without always zooming on a wide first paint.
+    pub fn apply_open_target(&mut self, target: &crate::open_target::OpenTarget) {
+        let Some(abs) = crate::open_target::resolve_under_root(&self.root, &target.path) else {
+            self.action_notice = Some(format!("Could not open {}: outside tree root", target.path));
+            return;
+        };
+        if !self.tree.reveal(&abs) {
+            self.action_notice = Some(format!("Could not open {}", target.path));
+            return;
+        }
+        // reveal() may have relaxed changed_only / hide_hidden / show_ignored — re-sync controller
+        // mirrors (same as the file finder's confirm path, plus show_ignored for launch targets).
+        let tree_changed_only = self.tree.changed_only();
+        if !tree_changed_only {
+            self.changed_only = false;
+            self.status_mode = false;
+        } else {
+            // Status mode owns the filter while active; otherwise mirror the tree flag.
+            self.changed_only = !self.status_mode;
+        }
+        self.hide_hidden = self.tree.hide_hidden();
+        self.show_ignored = self.tree.show_ignored();
+        // Defer zoom until the first real layout measurement (see `set_content_viewport`).
+        self.pending_open_zoom = true;
+        // Success notice (option 2): echo the open target as a line reference. Cleared on the
+        // next intent, same as other action notices.
+        self.action_notice = Some(format!("Opened {}", target.display_ref()));
+
+        if let Some(line) = target.goto_line() {
+            // Mirror `:` confirm: a transformed view (diff / rendered md) has no 1:1 source row,
+            // so force SyntaxContent and queue the jump for when that render lands.
+            if self.selected_view_mode() != Some(ViewMode::SyntaxContent)
+                && let Some(path) = self
+                    .tree
+                    .selected()
+                    .filter(|n| n.kind == NodeKind::File)
+                    .map(|n| n.path.clone())
+            {
+                self.overrides.insert(path, ViewMode::SyntaxContent);
+            }
+            self.dispatch_render();
+            self.pending_goto = Some((self.latest_seq, line));
+        } else {
+            self.dispatch_render();
+        }
+        // Option 3: after dispatch (which clears prior flash), arm a passive range highlight for
+        // `path:start-end` only — display-only, auto-expires, no line-select modal.
+        if let (Some(a), Some(b)) = (target.line, target.end_line) {
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            self.open_range_flash = Some(OpenRangeFlash {
+                start,
+                end,
+                deadline: Instant::now() + OPEN_RANGE_FLASH,
+            });
+        }
+    }
+
+    /// Advance the launch open-range highlight clock. Returns `true` when the highlight expired
+    /// so the event loop redraws once.
+    pub fn tick_open_range_flash(&mut self, now: Instant) -> bool {
+        let Some(f) = &self.open_range_flash else {
+            return false;
+        };
+        if now >= f.deadline {
+            self.open_range_flash = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Inclusive range of the active passive open-range flash, if any. Exposed for tests.
+    pub fn open_range_flash_lines(&self) -> Option<(usize, usize)> {
+        self.open_range_flash.as_ref().map(|f| (f.start, f.end))
+    }
+
     /// Set the mouse-wheel **scroll step** from the effective config (`scroll_lines`). Called once
     /// at startup, mirroring [`apply_hide_dotfiles`](Self::apply_hide_dotfiles). The resolver has
     /// already clamped the value to ≥ 1, so a wheel event always advances at least one line/item;
@@ -1402,9 +1509,26 @@ impl Controller {
 
     /// Record the content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
-    pub fn set_content_viewport(&mut self, width: u16, height: u16) {
+    ///
+    /// Returns `true` when the run loop should redraw immediately: a deferred launch-open zoom
+    /// just activated because this frame's content column was hidden (`width == 0`). The current
+    /// frame already painted tree-only; the next paint shows the zoomed file.
+    pub fn set_content_viewport(&mut self, width: u16, height: u16) -> bool {
+        // Launch open target (narrow pane): first real measurement decides zoom. Must run even
+        // when width/height are unchanged from the initial (0, 0), otherwise a tree-only first
+        // frame would never trigger the zoom.
+        let mut need_redraw = false;
+        if self.pending_open_zoom {
+            self.pending_open_zoom = false;
+            if width == 0 {
+                // Same as finder confirm / tree Enter on a file when content is not visible.
+                self.zoomed = true;
+                self.focus = Focus::Content;
+                need_redraw = true;
+            }
+        }
         if width == self.content_width && height == self.content_height {
-            return; // unchanged — avoid recomputing the clamp on every (mostly idle) draw
+            return need_redraw; // unchanged — avoid recomputing the clamp on every idle draw
         }
         let width_changed = width != self.content_width;
         self.content_width = width;
@@ -1420,6 +1544,7 @@ impl Controller {
         if width_changed {
             self.rerender_after_resize();
         }
+        need_redraw
     }
 
     /// Receive the hit-test geometry the Presenter drew this frame (fed back from the draw
@@ -1555,31 +1680,44 @@ impl Controller {
                 current: s.current,
             }),
             // Populate the line-select overlay from the active modal so the Presenter draws the
-            // marker + selection highlight (AC-1, AC-7). `None` when the modal is closed → the
-            // content path is byte-identical to the prior render (no other snapshot moves).
-            line_select: self.modal.line_select().map(|s| {
-                let (start, end) = s.selection();
-                // A mouse drag carries character carets → the overlay highlights just those chars;
-                // a keyboard selection has none → the whole-line highlight.
-                let char_sel = if s.is_char_mode() {
-                    let ((sl, sc), (el, ec)) = s.char_span();
-                    Some(CharSelView {
-                        start_line: sl,
-                        start_col: sc,
-                        end_line: el,
-                        end_col: ec,
-                        gutter: sel_gutter,
+            // marker + selection highlight (AC-1, AC-7). When the modal is closed, a launch
+            // open-range flash (if any) reuses the same view slot as a *passive* highlight only.
+            line_select: self
+                .modal
+                .line_select()
+                .map(|s| {
+                    let (start, end) = s.selection();
+                    // A mouse drag carries character carets → the overlay highlights just those chars;
+                    // a keyboard selection has none → the whole-line highlight.
+                    let char_sel = if s.is_char_mode() {
+                        let ((sl, sc), (el, ec)) = s.char_span();
+                        Some(CharSelView {
+                            start_line: sl,
+                            start_col: sc,
+                            end_line: el,
+                            end_col: ec,
+                            gutter: sel_gutter,
+                        })
+                    } else {
+                        None
+                    };
+                    LineSelectView {
+                        marker: s.marker(),
+                        start,
+                        end,
+                        char_sel,
+                        passive: false,
+                    }
+                })
+                .or_else(|| {
+                    self.open_range_flash.as_ref().map(|f| LineSelectView {
+                        marker: f.start,
+                        start: f.start,
+                        end: f.end,
+                        char_sel: None,
+                        passive: true,
                     })
-                } else {
-                    None
-                };
-                LineSelectView {
-                    marker: s.marker(),
-                    start,
-                    end,
-                    char_sel,
-                }
-            }),
+                }),
             // Snapshot the ambient selection only when non-collapsed, so a bare click never paints a
             // zero-width highlight (`draw_content` gives `line_select` precedence if both were set).
             content_selection: self
@@ -2327,6 +2465,10 @@ impl Controller {
         if self.content_selection.take().is_some() {
             return Effects::redraw();
         }
+        // Same layer: dismiss a launch open-range flash without quitting.
+        if self.open_range_flash.take().is_some() {
+            return Effects::redraw();
+        }
         // A committed search (prompt closed, highlights persisting) is dismissed first — Esc/q
         // "come out of the search" before they unzoom or close (layered like unzoom). (owner UX)
         if self.search.is_some() && !self.prompt_open() {
@@ -2764,6 +2906,9 @@ impl Controller {
         // something against the body it was dragged over, so a stale highlight (and copy) must not
         // carry onto new content. Scrolling keeps it — it doesn't dispatch, and the coords stay valid.
         self.content_selection = None;
+        // Launch open-range flash is also content-bound: a new file/view must not keep the old
+        // range painted. (apply_open_target re-arms it after its own dispatch.)
+        self.open_range_flash = None;
 
         let Some(node) = self.tree.selected() else {
             // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
@@ -3119,6 +3264,19 @@ mod tests {
         }
     }
 
+    /// Content stub with many source-mapped lines so go-to-line / open-target scroll is observable.
+    struct MultilineContent;
+    impl ContentProvider for MultilineContent {
+        fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            let body: String = (1..=40).map(|i| format!("body line {i}\n")).collect();
+            RenderResult {
+                content: Text::raw(body),
+                notices: Vec::new(),
+                source: Some((1..=40).map(|i| format!("body line {i}")).collect()),
+            }
+        }
+    }
+
     struct StubEditor;
     impl EditorHandoff for StubEditor {
         fn open(&mut self, _file: &Path) -> EditorOutcome {
@@ -3215,6 +3373,291 @@ mod tests {
             renderers: None,
         };
         Controller::new(resolved, Baseline::Head, components)
+    }
+
+    /// Controller over a temp tree with `src/deep/file.rs` for open-target apply tests.
+    fn open_target_controller() -> (Controller, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-open-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(root.join("src/deep"));
+        std::fs::write(root.join("src/deep/file.rs"), "line1\nline2\nline3\n").unwrap();
+        std::fs::write(root.join("other.rs"), "x\n").unwrap();
+        let resolved = Resolved {
+            repo_root: None,
+            root: root.clone(),
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(StubContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        (Controller::new(resolved, Baseline::Head, components), root)
+    }
+
+    #[test]
+    fn apply_open_target_reveals_file() {
+        let (mut ctrl, root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: None,
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        let selected = ctrl.tree.selected().expect("selected after open");
+        assert_eq!(selected.path, root.join("src/deep/file.rs"));
+        assert_eq!(ctrl.action_notice(), Some("Opened src/deep/file.rs"));
+        assert!(ctrl.pending_goto_line().is_none());
+    }
+
+    #[test]
+    fn apply_open_target_queues_goto_line() {
+        let (mut ctrl, root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: Some(3),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        let selected = ctrl.tree.selected().expect("selected after open");
+        assert_eq!(selected.path, root.join("src/deep/file.rs"));
+        assert_eq!(ctrl.pending_goto_line(), Some(3));
+        assert_eq!(ctrl.action_notice(), Some("Opened src/deep/file.rs:3"));
+    }
+
+    #[test]
+    fn apply_open_target_range_notice_and_jumps_to_start() {
+        let (mut ctrl, root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: Some(1),
+            end_line: Some(3),
+        };
+        ctrl.apply_open_target(&target);
+        let selected = ctrl.tree.selected().expect("selected after open");
+        assert_eq!(selected.path, root.join("src/deep/file.rs"));
+        assert_eq!(ctrl.pending_goto_line(), Some(1));
+        assert_eq!(ctrl.action_notice(), Some("Opened src/deep/file.rs:1-3"));
+        assert_eq!(ctrl.open_range_flash_lines(), Some((1, 3)));
+        // Passive highlight appears in view_state (not a modal).
+        let vs = ctrl.view_state();
+        let ls = vs.line_select.expect("passive range flash in view");
+        assert!(ls.passive);
+        assert_eq!((ls.start, ls.end), (1, 3));
+        assert!(
+            ctrl.modal.line_select().is_none(),
+            "must not enter line-select modal"
+        );
+    }
+
+    #[test]
+    fn apply_open_target_range_flash_expires() {
+        let (mut ctrl, _root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: Some(1),
+            end_line: Some(2),
+        };
+        ctrl.apply_open_target(&target);
+        assert!(ctrl.open_range_flash_lines().is_some());
+        let now = Instant::now();
+        assert!(!ctrl.tick_open_range_flash(now));
+        assert!(ctrl.tick_open_range_flash(now + OPEN_RANGE_FLASH + Duration::from_millis(1)));
+        assert!(ctrl.open_range_flash_lines().is_none());
+    }
+
+    #[test]
+    fn apply_open_target_single_line_has_no_range_flash() {
+        let (mut ctrl, _root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: Some(2),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert!(ctrl.open_range_flash_lines().is_none());
+    }
+
+    /// Open-target with `:line` must queue goto and, after the render lands, scroll past the top.
+    #[test]
+    fn apply_open_target_line_scrolls_after_poll() {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-open-scroll-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(root.join("long.rs"), "x\n".repeat(40)).unwrap();
+        let resolved = Resolved {
+            repo_root: None,
+            root: root.clone(),
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(MultilineContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        let mut ctrl = Controller::new(resolved, Baseline::Head, components);
+        // Viewport shorter than the file so a mid-file jump produces non-zero scroll.
+        let _ = ctrl.set_content_viewport(80, 10);
+        let target = crate::open_target::OpenTarget {
+            path: "long.rs".into(),
+            line: Some(20),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert_eq!(ctrl.pending_goto_line(), Some(20));
+        // Drain the worker until the queued jump applies.
+        let mut saw = false;
+        for _ in 0..50 {
+            if ctrl.poll().is_some() && ctrl.pending_goto_line().is_none() {
+                saw = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(saw, "render+goto should land");
+        assert!(
+            ctrl.content_scroll() > 0,
+            "line 20 must scroll past the top; scroll={}",
+            ctrl.content_scroll()
+        );
+    }
+
+    #[test]
+    fn apply_open_target_resyncs_show_ignored_mirror() {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-open-ign-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status();
+        std::fs::write(root.join(".gitignore"), "secret.log\n").unwrap();
+        std::fs::write(root.join("secret.log"), "s\n").unwrap();
+        std::fs::write(root.join("ok.rs"), "ok\n").unwrap();
+        let resolved = Resolved {
+            repo_root: None,
+            root: root.clone(),
+            is_git_repo: false,
+            is_worktree: false,
+            base_branch: None,
+        };
+        let git: Arc<dyn GitService> = Arc::new(StubGit);
+        let components = Components {
+            providers: Box::new(move |_r: &Resolved| RootProviders {
+                git: Arc::clone(&git),
+                content: Box::new(StubContent),
+            }),
+            editor: Box::new(StubEditor),
+            clipboard: Box::new(StubClipboard),
+            renderers: None,
+        };
+        let mut ctrl = Controller::new(resolved, Baseline::Head, components);
+        assert!(!ctrl.show_ignored());
+        ctrl.apply_open_target(&crate::open_target::OpenTarget {
+            path: "secret.log".into(),
+            line: None,
+            end_line: None,
+        });
+        assert!(ctrl.show_ignored(), "mirror must match tree after reveal");
+        assert_eq!(
+            ctrl.tree.selected().map(|n| n
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()),
+            Some("secret.log".into())
+        );
+    }
+
+    #[test]
+    fn apply_open_target_missing_file_is_soft_notice() {
+        let (mut ctrl, _root) = open_target_controller();
+        let before = ctrl.tree.selected().map(|n| n.path.clone());
+        let target = crate::open_target::OpenTarget {
+            path: "no/such.rs".into(),
+            line: Some(1),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert_eq!(ctrl.tree.selected().map(|n| n.path.clone()), before);
+        assert!(
+            ctrl.action_notice()
+                .is_some_and(|n| n.contains("Could not open")),
+            "expected soft notice, got {:?}",
+            ctrl.action_notice()
+        );
+        assert!(ctrl.pending_goto_line().is_none());
+    }
+
+    #[test]
+    fn apply_open_target_outside_root_is_soft_notice() {
+        let (mut ctrl, _root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "/tmp/escape.rs".into(),
+            line: None,
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert!(
+            ctrl.action_notice()
+                .is_some_and(|n| n.contains("outside tree root")),
+            "expected outside-root notice, got {:?}",
+            ctrl.action_notice()
+        );
+    }
+
+    #[test]
+    fn apply_open_target_zooms_when_first_layout_hides_content() {
+        let (mut ctrl, _root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: Some(2),
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        assert!(!ctrl.zoomed(), "must not zoom before first layout measure");
+        // Narrow / tree-only first frame: content column width 0 → zoom so the file is visible.
+        assert!(ctrl.set_content_viewport(0, 24));
+        assert!(ctrl.zoomed());
+        assert_eq!(ctrl.focus(), Focus::Content);
+    }
+
+    #[test]
+    fn apply_open_target_does_not_zoom_when_content_column_visible() {
+        let (mut ctrl, _root) = open_target_controller();
+        let target = crate::open_target::OpenTarget {
+            path: "src/deep/file.rs".into(),
+            line: None,
+            end_line: None,
+        };
+        ctrl.apply_open_target(&target);
+        // Wide two-column first frame: leave layout alone.
+        assert!(!ctrl.set_content_viewport(60, 24));
+        assert!(!ctrl.zoomed());
     }
 
     #[test]

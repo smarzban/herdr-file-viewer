@@ -289,6 +289,7 @@ impl Controller {
                 self.changed_only = true;
             }
             self.hide_hidden = self.tree.hide_hidden();
+            self.show_ignored = self.tree.show_ignored();
             // If the content pane isn't currently visible — the narrow, tree-only layout where the
             // last frame drew no content column (`content_width == 0`) — open the jumped-to file in
             // zoom mode so the user actually SEES the file they jumped to, instead of landing on a

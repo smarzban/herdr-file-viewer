@@ -6,6 +6,7 @@ customize it see [configuration](configuration.md).
 
 - [The tree](#the-tree)
 - [Finding a file fast](#finding-a-file-fast)
+- [Open at a known file](#open-at-a-known-file) (incl. [Teach your agent](#teach-your-agent))
 - [Viewing a file](#viewing-a-file)
 - [Git awareness](#git-awareness)
 - [Navigating within a file](#navigating-within-a-file)
@@ -37,6 +38,104 @@ starting split, the tree's side, and a column cap are all [configurable](configu
 Press `f` to open a **fuzzy finder** over every file in the tree (`.gitignore`-aware). Type to
 filter, `↑`/`↓` to move, `Enter` to open, `Esc` to cancel — far faster than scrolling the tree in a
 large repo.
+
+## Open at a known file
+
+When something **already knows** the path (and maybe the line), you can start the viewer on that
+file instead of landing on the tree and navigating by hand. This is for agents, companion plugins,
+and scripts — day-to-day browsing is unchanged (`f`, `:`, the tree).
+
+The launch **open target** is a path under the tree **root** (repo-relative is the usual form;
+absolute paths under the root are also accepted), optionally with a 1-based line — the same shape
+a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open shows a
+short status notice (`Opened path`, `Opened path:N`, or `Opened path:A-B`).
+
+A **range** form (`src/app.rs:10-20`) also:
+
+- jumps to the **start** line
+- paints a soft highlight on lines 10–20 for about **1 second**
+
+Path-only and single-line opens do not use that highlight (scroll + notice is enough).
+
+Two ways to pass it (the flag wins if both are set):
+
+| Surface | Example |
+| --- | --- |
+| CLI flag | `herdr-file-viewer --open src/app.rs:42` |
+| Environment | `HERDR_FILE_VIEWER_OPEN=src/app.rs:42` |
+
+### Companion or agent (usual case)
+
+Ask an agent (or a small companion plugin) to open a place in the **file viewer** instead of
+pasting a path into chat. Once the agent knows how (see [Teach your agent](#teach-your-agent)
+below), natural requests work when it can resolve a real path:
+
+- “Open the file that’s breaking in the file viewer.” (needs an error/log in context)
+- “Show me line 210 of `src/app.rs` in the file viewer.”
+- “Open `handle_finder_click` in the file viewer.”
+- “Show me the `render` function in the file viewer.”
+- “Open the failing test at `tests/tree.rs:149`.”
+- “Jump to this range in the viewer: `src/controller/finder.rs:141-150`.”
+
+The agent resolves that to a repo-relative `path` or `path:line` (or range), then launches the
+viewer with `HERDR_FILE_VIEWER_OPEN` (no fuzzy-finder key-scripting). You get a Files pane on that
+file, content loaded, viewport on the line. If the pane is too narrow to show the content column
+(tree-only layout), the viewer **zooms** the file automatically — same as confirming the fuzzy
+finder in a narrow split.
+
+### Teach your agent
+
+Agents do **not** know this surface by default. Paste a short block into your project’s
+`AGENTS.md` (preferred: every agent reads it) or `CLAUDE.md` / agent skill so “open in the file
+viewer” means something concrete:
+
+````markdown
+## File viewer (herdr-file-viewer)
+
+When the user asks to open something "in the file viewer" / "in Files":
+1. Resolve to a repo-relative path (and line if known) from errors, grep, chat, or a line reference.
+2. Launch (do not key-script the TUI):
+
+```bash
+herdr plugin pane open \
+  --plugin herdr-file-viewer \
+  --entrypoint file-viewer \
+  --placement split \
+  --focus \
+  --env HERDR_FILE_VIEWER_OPEN=<path>[:line]
+```
+
+Examples: `src/app.rs`, `src/app.rs:42`, `src/app.rs:10-20`.
+Outside herdr: `herdr-file-viewer --open <path>[:line]`.
+````
+
+Without that (or an equivalent skill), a vague “open it in the file viewer” is only a wish: the
+agent has no standard way to discover `--open` / `HERDR_FILE_VIEWER_OPEN`.
+
+### Run the binary yourself
+
+Useful for a local `cargo run`, a shell alias, or a Windows-style `pane run`:
+
+```bash
+herdr-file-viewer --open src/app.rs:42
+# or
+HERDR_FILE_VIEWER_OPEN=src/app.rs:42 herdr-file-viewer
+# path only (open at the top of the file)
+herdr-file-viewer --open docs/usage.md
+```
+
+### Round-trip with the viewer
+
+Copy a location with `L` (a `path:line` or `path:start-end` line reference), then later pass that
+string as `--open` or `HERDR_FILE_VIEWER_OPEN` to land on the same place.
+
+### When the path is wrong
+
+A missing file, a non-file, or a path outside the tree root does **not** crash the viewer: it still
+opens, shows a short notice (e.g. `Could not open …`), and leaves the tree selection unchanged.
+
+This is launch-only. It does not retarget a Files pane that is already running; open a fresh pane
+(or close and reopen) when you need a new target.
 
 ## Viewing a file
 

@@ -48,6 +48,12 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   the **file finder** ranks files.
 - **reveal in tree**: expand a path's ancestor folders, set the **tree** cursor to it,
   and scroll it into view; how the **file finder** jumps to a chosen file.
+- **open target**: an optional file (and optional 1-based line) the viewer may open to at
+  launch, given once as a path under the tree **root** (usually repo-relative; absolute
+  paths under the root are also accepted) or a **line reference** shape (`path` /
+  `path:line` / `path:start-end`). Applied via **reveal in tree** and, when a line is
+  present, **go to line**. Distinct from the interactive **file finder** and from sticky
+  **config file** settings: one-shot launch input only.
 - **search scope**: which files the **file finder** indexes: gitignore-respecting by
   default (skips ignored files and `.git/`), a single knob a future setting can widen to
   include ignored / hidden files.

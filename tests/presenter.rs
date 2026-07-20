@@ -3070,6 +3070,7 @@ fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
         start,
         end,
         char_sel: None,
+        passive: false,
     });
     st
 }
@@ -3092,6 +3093,36 @@ fn selection_range_highlight_snapshot() {
         "presenter_line_select_range",
         render(&line_select_state(4, 2, 4), 100, 24)
     );
+}
+
+#[test]
+fn passive_range_highlight_has_no_caret_gutter() {
+    // Launch open-target range flash: whole-line HIGHLIGHT only — no ▶/│ column (not line-select mode).
+    use herdr_file_viewer::render::to_text;
+    let mut st = sample_state();
+    st.notices = vec![];
+    st.focus = Focus::Content;
+    st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
+    st.content_rows = 6;
+    st.line_select = Some(LineSelectView {
+        marker: 2,
+        start: 2,
+        end: 4,
+        char_sel: None,
+        passive: true,
+    });
+    let out = render(&st, 100, 24);
+    // Active line-select injects the ▶ caret before source text; passive must not.
+    // (Selection bar │ collides with box-drawing borders, so caret is the reliable signal.)
+    assert!(
+        !out.contains('▶'),
+        "passive range flash must not draw ▶: {out}"
+    );
+    assert!(
+        out.contains("line two") && out.contains("line four"),
+        "{out}"
+    );
+    insta::assert_snapshot!("presenter_passive_range_flash", out);
 }
 
 #[test]
@@ -3936,6 +3967,7 @@ fn annotation_blank_lines_compose_exact_line_select_and_ambient_styles() {
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
     let area = Rect::new(0, 0, 30, 7);
     let text = geometry(area, &state).content_inner.unwrap();
@@ -3985,6 +4017,7 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
     let text = geometry(area, &state).content_inner.unwrap();
     let buf = render_buffer(&state, 30, 8);
@@ -4089,6 +4122,7 @@ fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_sear
         start: 1,
         end: 2,
         char_sel: None,
+        passive: false,
     });
 
     let text = geometry(area, &state).content_inner.unwrap();
