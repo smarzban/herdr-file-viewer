@@ -23,12 +23,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 viewer_bin="$script_dir/../target/release/herdr-file-viewer"
 
 open_pane() {
-  exec "$herdr_bin" plugin pane open \
+  # herdr only accepts split --direction right|down. Open on the right, then swap left so the
+  # Files pane lands to the left of the work pane (same placement as the Windows launcher).
+  "$herdr_bin" plugin pane open \
     --plugin herdr-file-viewer \
     --entrypoint file-viewer \
     --placement split \
     --direction right \
-    --focus
+    --focus || exit $?
+  exec "$herdr_bin" pane swap --direction left
 }
 
 decision="OPEN"

@@ -26,11 +26,13 @@ Summon it by invoking the action:
 herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
 ```
 
-It opens the viewer in a **split** pane beside your current work. The launcher
-(`scripts/open-file-viewer.sh`, used by both the action and any keybinding) is **idempotent**,
-scoped to the current tab, so invoking it repeatedly is *launch-or-focus-or-toggle*:
+It opens the viewer in a **split** pane to the **left** of your current work. (herdr only accepts
+`split --direction right|down`, so the launchers open on the right and immediately
+`pane swap --direction left`.) The launcher (`scripts/open-file-viewer.sh`, used by both the
+action and any keybinding) is **idempotent**, scoped to the current tab, so invoking it repeatedly
+is *launch-or-focus-or-toggle*:
 
-- no viewer pane open in this tab → open a split (focused)
+- no viewer pane open in this tab → open a left split (focused)
 - a viewer pane open but not focused → focus it
 - the viewer pane already focused → close it (herdr has no hide-without-close; reopening just
   re-walks the tree)

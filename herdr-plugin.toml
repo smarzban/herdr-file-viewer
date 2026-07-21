@@ -61,14 +61,14 @@ command = ["./target/release/herdr-file-viewer"]
 id = "open-file-viewer"
 platforms = ["linux", "macos"]
 title = "Open file viewer"
-description = "Open the git-aware file viewer in a split pane beside the current work."
+description = "Open the git-aware file viewer in a split pane to the left of the current work."
 command = ["bash", "scripts/open-file-viewer.sh"]
 
 [[actions]]
 id = "open-file-viewer-windows"
 platforms = ["windows"]
 title = "Open file viewer"
-description = "Open the git-aware file viewer in a split pane beside the current work."
+description = "Open the git-aware file viewer in a split pane to the left of the current work."
 # Locate the launcher by asking herdr for its own plugin root (the action's cwd is unreliable on
 # Windows), forcing UTF-8 before parsing that JSON, stripping the `\\?\` verbatim prefix herdr
 # reports, then run the .ps1 by absolute path.
