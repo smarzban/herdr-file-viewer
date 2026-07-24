@@ -67,15 +67,17 @@ brew install glow git-delta bat     # macOS, or use your package manager
 Then **bind a key** in your herdr config (`~/.config/herdr/config.toml`) so one press summons it:
 
 ```toml
-[[keys.command]]              # open in a split beside your work
+[[keys.command]]
 key = "prefix+f"
 type = "plugin_action"
 command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
+description = "open file viewer in split"
 
-[[keys.command]]              # …or in its own tab
+[[keys.command]]
 key = "prefix+shift+f"
 type = "plugin_action"
 command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
+description = "open file viewer in tab"
 ```
 
 Run `herdr server reload-config`, then press your key. That's the whole setup: the split-pane
