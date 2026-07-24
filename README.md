@@ -69,12 +69,12 @@ Then **bind a key** in your herdr config (`~/.config/herdr/config.toml`) so one 
 ```toml
 [[keys.command]]              # open in a split beside your work
 key = "prefix+f"
-type = "shell"
+type = "plugin_action"
 command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
 
 [[keys.command]]              # …or in its own tab
 key = "prefix+shift+f"
-type = "shell"
+type = "plugin_action"
 command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
 ```
 
