@@ -22,6 +22,7 @@ fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Nod
         expanded: true,
         status,
         dir_dirty: false,
+        label: None,
     }
 }
 

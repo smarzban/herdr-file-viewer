@@ -39,9 +39,9 @@ normal case — every key falls back to its default.
 A config key always wins. Only two keys also have an environment-variable fallback tier below the
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
-other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `confirm_discard`,
-`scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`, `preview_max_lines`,
-`preview_max_kib`) has no
+other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `compact_dirs`,
+`confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`,
+`preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -59,6 +59,7 @@ open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-ma
 reveal = "nautilus"
 
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
+compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
 update_check = true         # false to disable the once-a-day update check
 confirm_discard = true      # false to discard annotations without confirming (on quit / worktree switch)
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
@@ -92,6 +93,19 @@ either to view bigger files (`preview_max_lines` up to `100000`, `preview_max_ki
 One caveat for **diffs**: a diff is additionally bounded at ~4 MB by the git-capture step, independent
 of `preview_max_kib`. So raising `preview_max_kib` above ~4 MB widens how much *file content* is shown
 but not how much of a very large *diff* is (a diff past that bound is shown up to ~4 MB).
+
+`compact_dirs` changes the tree's **shape**, not what it shows. With it on, a chain of directories
+that each hold nothing but one subdirectory is drawn as a single row — `src/main/java/br/com` instead
+of six rows, each indented two columns further than the last. The row leads into the deepest
+directory of the chain, so expanding, collapsing, status colors, and the changed-file jump all act on
+that one. A chain stops the moment a directory holds a file or a second entry, and it follows what
+the tree is currently *showing*: a directory whose other entries are gitignored (or hidden, under
+`.`) folds like the single-child directory it appears to be.
+
+It is off by default because the trade depends on the repo. On a deep Java/Maven or nested monorepo
+layout — where the per-segment tree spends most of a narrow column on indentation and truncates the
+file names that matter — it wins outright. On a shallow repo it mostly costs you the 1:1 "one row is
+one directory" reading of the tree. Turn it on if your paths are deeper than your pane is wide.
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either

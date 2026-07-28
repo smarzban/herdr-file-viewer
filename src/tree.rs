@@ -27,6 +27,11 @@ pub struct Node {
     /// For a directory: whether any file under it has a git status (so the Presenter can
     /// color a folder that contains changes). Always `false` for files.
     pub dir_dirty: bool,
+    /// The row's display name when it is not simply the path's final component: a **compacted
+    /// chain** of single-child directories drawn as one row (`src/main/java`), whose `path` is the
+    /// deepest directory of the chain (`…/java`). `None` on every ordinary row, so the Presenter
+    /// falls back to the file name and an uncompacted tree renders exactly as before.
+    pub label: Option<String>,
 }
 
 /// Order tree entries: directories first, then files; alphabetical within each group.
@@ -38,6 +43,22 @@ fn sort_entries(entries: &mut [(PathBuf, NodeKind)]) {
     });
 }
 
+/// A path's final component as a display string; the whole path when it has none (a root).
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The members of `set` whose parent is exactly `parent` — the synthesized changed-only tree's
+/// "immediate children of", shared by the emitter and the chain fold.
+fn children_of<'a>(set: &'a BTreeSet<PathBuf>, parent: &Path) -> Vec<&'a PathBuf> {
+    set.iter()
+        .filter(|p| p.parent().unwrap_or(Path::new("")) == parent)
+        .collect()
+}
+
 /// The browsable file tree rooted at `root`.
 pub struct TreeModel {
     root: PathBuf,
@@ -46,6 +67,9 @@ pub struct TreeModel {
     show_ignored: bool,
     hide_hidden: bool,
     changed_only: bool,
+    /// Draw a chain of single-child directories as one row (`src/main/java`) instead of one row
+    /// per segment. Off by default; seeded once at startup from the `compact_dirs` config key.
+    compact_dirs: bool,
     /// Per-file status for tree markers (AC-7), keyed by root-relative path. Set
     /// independently of the filter (`set_status`) so the two can never overwrite each
     /// other.
@@ -63,9 +87,17 @@ impl TreeModel {
             show_ignored: false,
             hide_hidden: false,
             changed_only: false,
+            compact_dirs: false,
             markers: BTreeMap::new(),
             changed_filter: BTreeMap::new(),
         }
+    }
+
+    /// Draw a chain of single-child directories as one row (the `compact_dirs` config key).
+    /// A startup setting, not a runtime toggle: it changes the tree's shape, not what it shows.
+    pub fn set_compact_dirs(&mut self, on: bool) {
+        self.compact_dirs = on;
+        self.clamp_cursor();
     }
 
     /// Reveal gitignored/all files (AC-5).
@@ -132,6 +164,14 @@ impl TreeModel {
 
     fn collect(&self, dir: &Path, depth: usize, out: &mut Vec<Node>) {
         for (path, kind) in self.entries(dir) {
+            // Under `compact_dirs`, a directory that only ever contains one subdirectory is folded
+            // into that chain: one row, `path` the DEEPEST directory, so expand/collapse, status,
+            // and the child walk below all act on the directory the row actually leads into.
+            let (path, label) = if kind == NodeKind::Dir && self.compact_dirs {
+                self.compact_chain(&path)
+            } else {
+                (path, None)
+            };
             let expanded = kind == NodeKind::Dir && self.expanded.contains(&path);
             let dir_dirty = kind == NodeKind::Dir && self.dir_contains_change(&path);
             out.push(Node {
@@ -141,11 +181,42 @@ impl TreeModel {
                 expanded,
                 status: self.status_for(&path),
                 dir_dirty,
+                label,
             });
             if expanded {
                 self.collect(&path, depth + 1, out);
             }
         }
+    }
+
+    /// Follow a chain of single-child directories down from `dir`, returning the deepest directory
+    /// of the chain and its display label (`src/main/java`), or `(dir, None)` when there is nothing
+    /// to fold.
+    ///
+    /// The chain extends only while a directory's **sole visible entry** is one subdirectory: a
+    /// directory holding a file, more than one entry, or nothing ends it. "Visible" is the point —
+    /// it walks [`entries`](Self::entries), so the fold follows the same gitignore / hidden filters
+    /// the tree is drawing under, and a row never merges past something the user can see.
+    /// Separators in the label are always `/`, so a compacted row reads the same on every platform.
+    fn compact_chain(&self, dir: &Path) -> (PathBuf, Option<String>) {
+        let mut deepest = dir.to_path_buf();
+        let mut segments: Vec<String> = Vec::new();
+        loop {
+            let children = self.entries(&deepest);
+            let [(only, NodeKind::Dir)] = children.as_slice() else {
+                break; // a file, several entries, or an empty directory ends the chain
+            };
+            segments.push(file_name_of(only));
+            deepest = only.clone();
+        }
+        if segments.is_empty() {
+            return (deepest, None);
+        }
+        let label = std::iter::once(file_name_of(dir))
+            .chain(segments)
+            .collect::<Vec<_>>()
+            .join("/");
+        (deepest, Some(label))
     }
 
     /// Build the changed-only tree from the changed-set's paths (not the filesystem), so
@@ -176,14 +247,22 @@ impl TreeModel {
         files: &BTreeSet<PathBuf>,
         out: &mut Vec<Node>,
     ) {
-        let is_child = |rel: &Path| rel.parent().unwrap_or(Path::new("")) == parent_rel;
-        let mut child_dirs: Vec<&PathBuf> = dirs.iter().filter(|d| is_child(d)).collect();
-        let mut child_files: Vec<&PathBuf> = files.iter().filter(|f| is_child(f)).collect();
+        let mut child_dirs = children_of(dirs, parent_rel);
+        let mut child_files = children_of(files, parent_rel);
         child_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
         child_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
         for d in child_dirs {
-            let abs = self.root.join(d);
+            // Same fold as the full tree, over the synthesized set instead of the filesystem: while
+            // a directory's only child is one directory and it holds no changed file of its own,
+            // the chain becomes a single row. This is where it pays most — a changed-set tree is
+            // all path, so `src/main/java/br/com/…` is otherwise one row per segment.
+            let (d, label) = if self.compact_dirs {
+                self.compact_synthetic_chain(d, dirs, files)
+            } else {
+                (d.clone(), None)
+            };
+            let abs = self.root.join(&d);
             out.push(Node {
                 path: abs.clone(),
                 kind: NodeKind::Dir,
@@ -191,8 +270,9 @@ impl TreeModel {
                 expanded: true,
                 status: self.status_for(&abs),
                 dir_dirty: self.dir_contains_change(&abs),
+                label,
             });
-            self.emit_synthetic(d, depth + 1, dirs, files, out);
+            self.emit_synthetic(&d, depth + 1, dirs, files, out);
         }
         for f in child_files {
             let abs = self.root.join(f);
@@ -203,8 +283,38 @@ impl TreeModel {
                 expanded: false,
                 status: self.status_for(&abs),
                 dir_dirty: false,
+                label: None,
             });
         }
+    }
+
+    /// [`compact_chain`](Self::compact_chain) for the synthesized changed-only tree: fold `start`
+    /// down while its only child is a single directory and it holds no changed file directly, and
+    /// return the deepest directory plus its `a/b/c` label (`None` when nothing folded).
+    fn compact_synthetic_chain(
+        &self,
+        start: &Path,
+        dirs: &BTreeSet<PathBuf>,
+        files: &BTreeSet<PathBuf>,
+    ) -> (PathBuf, Option<String>) {
+        let mut deepest = start.to_path_buf();
+        let mut segments: Vec<String> = Vec::new();
+        loop {
+            let sub_dirs = children_of(dirs, &deepest);
+            if sub_dirs.len() != 1 || !children_of(files, &deepest).is_empty() {
+                break;
+            }
+            deepest = sub_dirs[0].clone();
+            segments.push(file_name_of(&deepest));
+        }
+        if segments.is_empty() {
+            return (deepest, None);
+        }
+        let label = std::iter::once(file_name_of(start))
+            .chain(segments)
+            .collect::<Vec<_>>()
+            .join("/");
+        (deepest, Some(label))
     }
 
     /// The node's git status (AC-7): the dedicated marker map, falling back to the

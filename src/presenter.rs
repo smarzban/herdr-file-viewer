@@ -370,8 +370,12 @@ fn status_marker(node: &Node) -> char {
     }
 }
 
-/// The display name of a node — its final path component, or the whole path for a root.
+/// The display name of a node — its explicit label when it carries one (a compacted directory
+/// chain, `src/main/java`), else its final path component, or the whole path for a root.
 fn node_name(node: &Node) -> String {
+    if let Some(label) = &node.label {
+        return label.clone();
+    }
     node.path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

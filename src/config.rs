@@ -117,6 +117,11 @@ pub struct Config {
     pub open: Option<String>,
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
+    /// Whether a chain of single-child directories is drawn as ONE row (`src/main/java`) instead of
+    /// one row per segment. `None` falls back to `false` — the per-segment tree, unchanged. Worth
+    /// turning on for a deeply-nested layout (a Java/Maven `src/main/java/...`, a nested monorepo),
+    /// where the per-segment tree spends most of the column on indentation.
+    pub compact_dirs: Option<bool>,
     pub update_check: Option<bool>,
     /// Whether quitting with unexported session annotations confirms first. `None` falls back to
     /// `true`: annotations are session-only, so quitting destroys them, and the confirm is the only
@@ -266,6 +271,9 @@ pub struct EffectiveSettings {
     pub open: Option<Vec<String>>,
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
+    /// The effective **compact directory chains** switch: the config `compact_dirs` when present,
+    /// else `false`. Seeds the tree at startup. Config-or-default (no env var).
+    pub compact_dirs: bool,
     pub update_check: bool,
     /// The effective **confirm-before-discarding-annotations** switch: the config
     /// `confirm_discard` when present, else `true`. Config-or-default (no env var).
@@ -340,6 +348,11 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
 
     let hide_dotfiles = config.hide_dotfiles.unwrap_or(false);
 
+    // Config > default; no env var. Defaults OFF so the tree's shape is unchanged for everyone who
+    // does not ask for it: compaction is a real trade (fewer rows and far less indentation, but a
+    // row no longer maps 1:1 to a directory), and which side wins depends on how deep the repo is.
+    let compact_dirs = config.compact_dirs.unwrap_or(false);
+
     // Config > default; no env var. Defaults ON: the confirm only fires when annotations are held,
     // so a session that never annotates never sees it, and the one that does has work to lose.
     let confirm_discard = config.confirm_discard.unwrap_or(true);
@@ -413,6 +426,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         open,
         reveal,
         hide_dotfiles,
+        compact_dirs,
         update_check,
         confirm_discard,
         scroll_lines,
@@ -594,6 +608,27 @@ mod tests {
         assert_eq!(config.hide_dotfiles, Some(true));
         assert_eq!(config.update_check, Some(false));
         assert_eq!(config.confirm_discard, Some(false));
+    }
+
+    #[test]
+    fn compact_dirs_resolves_config_over_default() {
+        let (config, _outcome) = parse_config("compact_dirs = true\n");
+        assert_eq!(config.compact_dirs, Some(true));
+
+        let off = resolve(&Config::default(), |_| None);
+        assert!(
+            !off.compact_dirs,
+            "absent falls back to off — the tree's shape is unchanged unless asked for"
+        );
+
+        let on = resolve(
+            &Config {
+                compact_dirs: Some(true),
+                ..Config::default()
+            },
+            |_| None,
+        );
+        assert!(on.compact_dirs, "config wins");
     }
 
     #[test]

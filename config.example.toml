@@ -68,6 +68,15 @@
 # toggles this at runtime. Default:
 #hide_dotfiles = false
 
+# Draw a chain of single-child directories as ONE row -- `src/main/java/br/com`
+# instead of six rows, each indented two columns further than the last. The row
+# leads into the DEEPEST directory of the chain, so expand/collapse and status
+# act on that one; a chain stops as soon as a directory holds a file or a second
+# entry. Worth turning on when your paths are deeper than your pane is wide (a
+# Java/Maven layout, a nested monorepo). A startup setting -- no runtime key
+# toggles it. Default:
+#compact_dirs = false
+
 # Once-a-day check for a newer release. Set false to disable (or set the
 # $HERDR_FILE_VIEWER_NO_UPDATE_CHECK environment variable). Default:
 #update_check = true

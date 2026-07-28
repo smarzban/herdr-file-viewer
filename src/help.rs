@@ -269,6 +269,7 @@ pub fn settings_text(
          open              = {open}\n\
          reveal            = {reveal}\n\
          hide_dotfiles     = {hide_dotfiles}\n\
+         compact_dirs      = {compact_dirs}\n\
          update_check      = {update_check}\n\
          confirm_discard   = {confirm_discard}\n\
          scroll_lines      = {scroll_lines}\n\
@@ -280,6 +281,7 @@ pub fn settings_text(
         open = open,
         reveal = reveal,
         hide_dotfiles = eff.hide_dotfiles,
+        compact_dirs = eff.compact_dirs,
         update_check = update_check,
         confirm_discard = confirm_discard,
         scroll_lines = eff.scroll_lines,
@@ -774,6 +776,7 @@ mod tests {
             open: None,
             reveal: None,
             hide_dotfiles: true,
+            compact_dirs: true,
             update_check: false,
             confirm_discard: false,
             scroll_lines: 7,

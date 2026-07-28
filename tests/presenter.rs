@@ -24,6 +24,7 @@ fn node(path: &str, kind: NodeKind, depth: usize, expanded: bool, status: Option
         expanded,
         status,
         dir_dirty: false,
+        label: None,
     }
 }
 
@@ -247,6 +248,7 @@ fn dirty_directory_carries_a_non_color_glyph_marker() {
             expanded: true,
             status: None,
             dir_dirty: true,
+            label: None,
         },
         Node {
             path: PathBuf::from("/r/clean"),
@@ -255,6 +257,7 @@ fn dirty_directory_carries_a_non_color_glyph_marker() {
             expanded: true,
             status: None,
             dir_dirty: false,
+            label: None,
         },
     ];
     state.selected = 1; // the clean dir, so the dirty dir row isn't REVERSED
@@ -292,6 +295,7 @@ fn dirty_directory_glyph_snapshot() {
             expanded: true,
             status: None,
             dir_dirty: true,
+            label: None,
         },
         node(
             "/r/changed/a.rs",
@@ -314,6 +318,7 @@ fn dirty_directory_glyph_snapshot() {
             expanded: false,
             status: None,
             dir_dirty: false,
+            label: None,
         },
         node(
             "/r/gone.txt",
@@ -1108,6 +1113,7 @@ fn tree_rows_are_colored_by_git_status() {
             expanded: true,
             status: None,
             dir_dirty: true,
+            label: None,
         },
         node(
             "/r/src/mod.rs",
@@ -4526,4 +4532,40 @@ fn discard_confirm_names_the_pending_action_not_always_quit() {
         "a worktree switch must never offer to quit\n{out}"
     );
     insta::assert_snapshot!("presenter_discard_confirm_switch", out);
+}
+
+#[test]
+fn a_compacted_directory_row_renders_its_chain_label() {
+    // `compact_dirs` folds a run of single-child directories into one row whose Node carries a
+    // `label` (`src/main/java`); the tree must draw THAT, not the path's last component alone.
+    let mut state = sample_state();
+    state.notices = vec![];
+    state.selected = 1;
+    state.nodes = vec![
+        Node {
+            path: PathBuf::from("/r/src/main/java"),
+            kind: NodeKind::Dir,
+            depth: 0,
+            expanded: true,
+            status: None,
+            dir_dirty: false,
+            label: Some("src/main/java".to_string()),
+        },
+        node(
+            "/r/src/main/java/App.java",
+            NodeKind::File,
+            1,
+            false,
+            Some(Status::Modified),
+        ),
+    ];
+    let frame = render(&state, 100, 12);
+    assert!(
+        frame.contains("src/main/java"),
+        "the chain label is drawn in full\n{frame}"
+    );
+    assert!(
+        frame.contains("App.java"),
+        "its child still renders one level in\n{frame}"
+    );
 }

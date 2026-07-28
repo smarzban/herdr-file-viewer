@@ -33,6 +33,13 @@ names — reachable by keyboard with `H` / `L` when the tree is focused. A scrol
 there's more than fits. Narrow or widen the tree column with `<` / `>`, or drag the divider; the
 starting split, the tree's side, and a column cap are all [configurable](configuration.md).
 
+On a **deeply nested** layout the per-segment tree spends most of a narrow column on indentation, and
+the file names — the part you came for — are what gets truncated. Set
+[`compact_dirs = true`](configuration.md) to draw a chain of single-child directories as one row:
+`src/main/java/br/com` instead of six rows, each indented two columns further than the last. The row
+leads into the deepest directory of the chain, so expanding, collapsing, and status colors all act on
+that one, and the chain stops the moment a directory holds a file or a second entry.
+
 ## Finding a file fast
 
 Press `f` to open a **fuzzy finder** over every file in the tree (`.gitignore`-aware). Type to

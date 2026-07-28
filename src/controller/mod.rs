@@ -542,6 +542,10 @@ pub struct Controller {
     /// `confirm_discard`, default `true`). When `false`, `q` quits and discards, which
     /// is the pre-confirm behavior.
     confirm_discard: bool,
+    /// Whether a chain of single-child directories is drawn as one row (config `compact_dirs`,
+    /// default `false`). A session preference carried across a re-root (like `show_ignored` /
+    /// `hide_hidden`), so the new root's fresh tree is rebuilt with the same shape.
+    compact_dirs: bool,
     changed_only: bool,
     /// Which command a Diff/FullDiff render delegates to (`D`, cycling Delta →
     /// DeltaSideBySide → Raw). Carried
@@ -848,6 +852,7 @@ impl Controller {
             hide_hidden: false,
             // Defaults ON, matching the resolver: a Controller built without config still guards.
             confirm_discard: true,
+            compact_dirs: false,
             tree_hscroll: 0,
             changed_only: false,
             diff_render_mode: DiffRenderMode::default(),
@@ -1058,6 +1063,7 @@ impl Controller {
         self.root = resolved.root.clone();
         self.is_git_repo = resolved.is_git_repo;
         self.tree = TreeModel::new(resolved.root.clone());
+        self.tree.set_compact_dirs(self.compact_dirs); // a carried session preference (AC-12)
         // Recompute the cached branch for the new root's bottom-border title. Cheap and
         // synchronous: a single `git rev-parse` against the already-resolved repo root, done once
         // per re-root (not per-frame). `None` when the new root is outside a repo / detached.
@@ -1383,6 +1389,17 @@ impl Controller {
     /// Apply the config-driven `confirm_discard` switch. Pure in-memory wiring.
     pub fn apply_confirm_discard(&mut self, confirm: bool) {
         self.confirm_discard = confirm;
+    }
+
+    /// Apply the config-driven `compact_dirs` tree shape: draw a chain of single-child directories
+    /// as one row. Called once by `app::run` right after construction, before the first draw, and
+    /// re-applied on a re-root (the tree is rebuilt, but this is a session preference). Compaction
+    /// changes only how rows are grouped and labelled — never which files the tree shows — so
+    /// unlike `apply_hide_dotfiles` it cannot move the selection onto a different file and needs no
+    /// re-render.
+    pub fn apply_compact_dirs(&mut self, on: bool) {
+        self.compact_dirs = on;
+        self.tree.set_compact_dirs(on);
     }
 
     /// Apply a launch **open target** once at startup: resolve `path` under the tree **root**,

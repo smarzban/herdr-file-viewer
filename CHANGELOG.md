@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Added
+- `compact_dirs`: draw a chain of single-child directories as one row (`src/main/java/br/com` instead of six indented rows), in both the full tree and the changed-only view. Off by default; worth turning on when your paths are deeper than your pane is wide. → [configuration](docs/configuration.md) · [usage](docs/usage.md#the-tree)
+
 ## [1.14.0] - 2026-07-20
 
 ### Added

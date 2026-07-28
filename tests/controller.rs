@@ -9919,6 +9919,7 @@ fn open_help_appends_settings_section_when_display_is_set() {
         open: None,
         reveal: None,
         hide_dotfiles: false,
+        compact_dirs: false,
         update_check: true,
         confirm_discard: true,
         scroll_lines: 3,
