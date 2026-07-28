@@ -75,11 +75,33 @@ pub(crate) fn default_bindings() -> EffectiveBindings {
 /// (e.g. Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
 /// typing — not a chord. Some Windows terminals report `Shift+d` as lowercase `d` plus the Shift
 /// modifier, so lowercase ASCII is normalized before the lookup.
+///
+/// **AltGr is typing, not a chord.** Windows reports AltGr as `Ctrl+Alt`, and on many keyboard
+/// layouts AltGr is how you type a character the viewer binds: `?` on a Brazilian ABNT2 layout, `[`
+/// and `]` on German and Spanish ones. The event still carries the resolved character, so a
+/// `Ctrl+Alt` **character** event is accepted and those two modifiers are dropped before the
+/// lookup. Without this the affected keys are silently dead for everyone on such a layout, with no
+/// way to tell a broken binding from a broken keyboard.
+///
+/// The exception is deliberately narrow. It applies only to [`KeyCode::Char`], so `Ctrl+Alt+Up`
+/// stays inert, and a chord carrying only Ctrl **or** only Alt is still ignored — every reserved
+/// terminal combo (`Ctrl+C`) passes straight through as before. Windows cannot distinguish a real
+/// `Ctrl+Alt+x` from `AltGr+x`, so anyone who wants that chord left alone can rebind the action off
+/// that character.
 pub(crate) fn decode(key: KeyEvent, bindings: &EffectiveBindings) -> Option<Intent> {
-    if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
+    let altgr = matches!(key.code, KeyCode::Char(_))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.modifiers.contains(KeyModifiers::ALT);
+    let modifiers = if altgr {
+        key.modifiers
+            .difference(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    } else {
+        key.modifiers
+    };
+    if modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
-    let code = if key.modifiers.contains(KeyModifiers::SHIFT) {
+    let code = if modifiers.contains(KeyModifiers::SHIFT) {
         match key.code {
             KeyCode::Char(c) if c.is_ascii_lowercase() => KeyCode::Char(c.to_ascii_uppercase()),
             other => other,
@@ -844,6 +866,47 @@ mod tests {
         assert_eq!(map_key(k(KeyCode::Char('x'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);
+    }
+
+    #[test]
+    fn altgr_typed_characters_reach_their_action() {
+        // Windows reports AltGr as Ctrl+Alt. On a Brazilian ABNT2 layout `?` IS AltGr+w, and on
+        // German/Spanish layouts `[` and `]` are AltGr keys too — dropping those events makes the
+        // bound actions unreachable, with no feedback at all.
+        let altgr =
+            |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(
+            map_key(altgr('?')),
+            Some(Intent::ShowHelp),
+            "AltGr+? must open the help overlay"
+        );
+        // With Shift also held (some layouts need it), the character still decodes.
+        assert_eq!(
+            map_key(KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )),
+            Some(Intent::ShowHelp)
+        );
+    }
+
+    #[test]
+    fn real_control_and_alt_chords_stay_inert() {
+        // The AltGr exception must not open the door to ordinary chords: only Ctrl AND Alt
+        // together, and only on a character key.
+        let m = |code, mods| map_key(KeyEvent::new(code, mods));
+        assert_eq!(
+            m(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            None,
+            "Ctrl+C must still pass through to the terminal"
+        );
+        assert_eq!(m(KeyCode::Char('q'), KeyModifiers::ALT), None, "Alt+q");
+        assert_eq!(m(KeyCode::Char('j'), KeyModifiers::SUPER), None, "Super+j");
+        assert_eq!(
+            m(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT),
+            None,
+            "Ctrl+Alt on a NON-character key is a chord, not typing"
+        );
     }
 
     #[test]

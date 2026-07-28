@@ -70,6 +70,14 @@ never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `a`/
 `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the annotation
 overview).
 
+**AltGr** is treated as typing, not as a chord. On many layouts AltGr is how you produce a character
+the viewer binds — `?` on a Brazilian ABNT2 keyboard, `[` and `]` on German and Spanish ones — so an
+`AltGr`+character event runs its action normally. Windows reports AltGr as `Ctrl+Alt`, which means a
+genuine `Ctrl+Alt`+character chord is indistinguishable from it and will also fire that action;
+`Ctrl` alone, `Alt` alone, and `Ctrl+Alt` on a non-character key (`Ctrl+Alt+↑`) all stay inert. If
+you need a particular `Ctrl+Alt` chord left to your terminal, rebind the action off that character
+in [`[keys]`](configuration.md#keybindings).
+
 ### Copy a path (`y` / `Y`)
 
 `y` copies the selected file's repo-relative path; `Y` copies its absolute path, handy for pasting

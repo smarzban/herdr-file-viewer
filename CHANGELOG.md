@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Fixed
+- Keys typed with **AltGr** now reach their action instead of being dropped. Windows reports AltGr as `Ctrl+Alt`, which the dispatcher discarded as a chord, so a character that needs AltGr on your layout was a dead key — `?` (help) on a Brazilian ABNT2 keyboard, `[` / `]` on German and Spanish ones. Only `Ctrl+Alt` on a character key is accepted; `Ctrl` alone, `Alt` alone, and `Ctrl+Alt+↑` stay inert. → [keys](docs/keys.md)
+
 ## [1.14.0] - 2026-07-20
 
 ### Added
