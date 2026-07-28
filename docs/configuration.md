@@ -172,6 +172,8 @@ customized).
 | | `open_search` | `/` | Open the in-file search prompt |
 | | `next_match` | `n` | Jump to the next search match (wraps) |
 | | `prev_match` | `N` | Jump to the previous search match (wraps) |
+| | `next_changed` | `]` | Jump the tree cursor to the next changed file (wraps) |
+| | `prev_changed` | `[` | Jump the tree cursor to the previous changed file (wraps) |
 | **Session** | `dismiss_update` | `u` | Dismiss the update-available banner for this session |
 | | `switch_worktree` | `W` | Open the worktree picker to re-root at another git worktree |
 | | `show_help` | `?` | Open the in-app help overlay (What's New and About) |

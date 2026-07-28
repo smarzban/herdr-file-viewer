@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Added
+- `]` / `[` jump the tree cursor to the next / previous changed file, wrapping at the ends with a notice — `n`/`N` for the tree instead of arrowing past directory rows. Walks the set the tree is filtered by (working-tree status under `d`, else the baseline-aware set behind `c` / `b`) and expands a collapsed directory to reach a changed file inside it. → [usage](docs/usage.md#git-awareness) · [keys](docs/keys.md)
+
 ## [1.14.0] - 2026-07-20
 
 ### Added

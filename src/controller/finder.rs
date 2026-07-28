@@ -276,20 +276,7 @@ impl Controller {
         if self.tree.reveal(&abs) {
             // reveal() may have relaxed the tree's changed_only/hide_hidden fields — re-sync
             // the controller's mirror fields so a later `c`/`.`/`d` toggle stays consistent.
-            // Status mode and baseline-aware changed-only both use the tree's changed_only flag;
-            // if reveal turned the filter off, both controller mirrors must clear.
-            let tree_changed_only = self.tree.changed_only();
-            if !tree_changed_only {
-                self.changed_only = false;
-                self.status_mode = false;
-            } else if self.status_mode {
-                // Status mode owns the filter while active.
-                self.changed_only = false;
-            } else {
-                self.changed_only = true;
-            }
-            self.hide_hidden = self.tree.hide_hidden();
-            self.show_ignored = self.tree.show_ignored();
+            self.resync_filter_mirrors();
             // If the content pane isn't currently visible — the narrow, tree-only layout where the
             // last frame drew no content column (`content_width == 0`) — open the jumped-to file in
             // zoom mode so the user actually SEES the file they jumped to, instead of landing on a

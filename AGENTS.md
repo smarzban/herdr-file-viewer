@@ -162,7 +162,7 @@ never wire them in two places or let the docs drift.
 
 **A new keybinding / action.** `REGISTRY` in `src/input.rs` is the source of truth: the dispatcher,
 the `?` overlay's Keybindings section, and `[keys]` remapping all derive from it.
-1. Add the variant to the `Intent` enum in `src/intent.rs` (it lives in `Intent::ALL`, 33 today).
+1. Add the variant to the `Intent` enum in `src/intent.rs` (it lives in `Intent::ALL`, 39 today).
 2. Add a `Binding { intent, name, default_keys, description, category }` row to `REGISTRY`
    (`category` must be one of `CATEGORY_ORDER`).
 3. Handle the intent in the session controller (`src/controller/`).

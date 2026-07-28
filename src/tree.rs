@@ -350,6 +350,81 @@ impl TreeModel {
         }
     }
 
+    /// Move the cursor to the next (`forward`) or previous **changed file** in `changed`, and
+    /// report whether the move wrapped around the ends. Returns `None` — leaving the cursor
+    /// untouched — when `changed` is empty or no candidate could be selected.
+    ///
+    /// Traversal order is the changed-set's own path order, so it matches the order the files are
+    /// listed in under the changed-only filter. Candidates come from the changed-set rather than
+    /// the visible rows, so a changed file inside a **collapsed** directory is still reachable:
+    /// each candidate is first looked up among the visible nodes and, failing that,
+    /// [`reveal`](Self::reveal)ed, which expands its ancestors. A candidate that can be neither
+    /// found nor revealed — a deleted file has no node on disk outside changed-only mode — is
+    /// skipped, so the jump never lands on nothing. Read-only navigation: it moves the cursor and
+    /// expansion state only (AC-N1, AC-N3).
+    pub fn select_changed(
+        &mut self,
+        forward: bool,
+        changed: &BTreeMap<PathBuf, Status>,
+    ) -> Option<bool> {
+        let candidates: Vec<&PathBuf> = changed.keys().collect();
+        let len = candidates.len();
+        if len == 0 {
+            return None;
+        }
+        // Where the cursor sits within the changed-set's order. A cursor on a directory, on an
+        // unchanged file, or on nothing still has a well-defined neighbour: `partition_point`
+        // finds the insertion point, so the jump goes to the next / previous changed file in path
+        // order either way.
+        let current = self
+            .selected()
+            .and_then(|n| n.path.strip_prefix(&self.root).map(Path::to_path_buf).ok());
+        let (start, start_wrapped) = match &current {
+            Some(rel) if forward => {
+                let i = candidates.partition_point(|c| c.as_path() <= rel.as_path());
+                if i < len { (i, false) } else { (0, true) }
+            }
+            Some(rel) => {
+                let i = candidates.partition_point(|c| c.as_path() < rel.as_path());
+                if i > 0 {
+                    (i - 1, false)
+                } else {
+                    (len - 1, true)
+                }
+            }
+            None if forward => (0, false),
+            None => (len - 1, false),
+        };
+        let mut idx = start;
+        let mut wrapped = start_wrapped;
+        for step in 0..len {
+            if step > 0 {
+                // Step past a candidate that could not be selected, tracking the wrap.
+                if forward {
+                    idx += 1;
+                    if idx == len {
+                        idx = 0;
+                        wrapped = true;
+                    }
+                } else if idx == 0 {
+                    idx = len - 1;
+                    wrapped = true;
+                } else {
+                    idx -= 1;
+                }
+            }
+            let abs = self.root.join(candidates[idx]);
+            if let Some(pos) = self.visible_nodes().iter().position(|n| n.path == abs) {
+                self.cursor = pos;
+                return Some(wrapped);
+            }
+            if self.reveal(&abs) {
+                return Some(wrapped);
+            }
+        }
+        None
+    }
+
     /// Keep the cursor within the (possibly shrunken) visible list after a structural or
     /// filter change, so indexing by `cursor` can never run past the end.
     fn clamp_cursor(&mut self) {

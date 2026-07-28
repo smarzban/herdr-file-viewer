@@ -1407,16 +1407,7 @@ impl Controller {
         }
         // reveal() may have relaxed changed_only / hide_hidden / show_ignored — re-sync controller
         // mirrors (same as the file finder's confirm path, plus show_ignored for launch targets).
-        let tree_changed_only = self.tree.changed_only();
-        if !tree_changed_only {
-            self.changed_only = false;
-            self.status_mode = false;
-        } else {
-            // Status mode owns the filter while active; otherwise mirror the tree flag.
-            self.changed_only = !self.status_mode;
-        }
-        self.hide_hidden = self.tree.hide_hidden();
-        self.show_ignored = self.tree.show_ignored();
+        self.resync_filter_mirrors();
         // Defer zoom until the first real layout measurement (see `set_content_viewport`).
         self.pending_open_zoom = true;
         // Success notice (option 2): echo the open target as a line reference. Cleared on the
@@ -1892,6 +1883,8 @@ impl Controller {
             Intent::OpenSearch => self.open_search(),
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
+            Intent::NextChanged => self.navigate_changed(true),
+            Intent::PrevChanged => self.navigate_changed(false),
             Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
             // `L` is focus-gated (ADR-0010, copy-line-reference): on tree focus it is unchanged
             // (AC-2, still `scroll_tree_h_focus`); on content focus it instead enters line-select
@@ -1935,6 +1928,63 @@ impl Controller {
                 Effects::redraw()
             }
         }
+    }
+
+    /// Jump the tree cursor to the next / previous **changed file** (`]` / `[`), wrapping at the
+    /// ends with a notice — the tree-level counterpart to `n`/`N` over search matches. Reviewing a
+    /// branch is a walk over the changed files, and in a deep tree that walk costs a lot of `j`
+    /// presses through directory rows; this makes it one key.
+    ///
+    /// The set walked is the one the tree is filtered by: the working-tree status while status
+    /// mode (`d`) is on, else the baseline-aware changed-set that `c` and `b` drive. Focus-blind
+    /// on purpose — it moves the *tree*, so it works while reading the content pane too. Inert
+    /// without git (AC-26) or with nothing changed, which gets a notice rather than silence so the
+    /// key never looks broken. Selecting re-renders, so the jump lands on the file's diff.
+    fn navigate_changed(&mut self, forward: bool) -> Effects {
+        if !self.is_git_repo {
+            return Effects::noop(); // inert without git (AC-26)
+        }
+        // Borrowing two disjoint fields: `tree` mutably, the changed-set immutably.
+        let set = if self.status_mode {
+            &self.git_status
+        } else {
+            &self.changed
+        };
+        let Some(wrapped) = self.tree.select_changed(forward, set) else {
+            self.action_notice = Some("No changed files".into());
+            return Effects::redraw();
+        };
+        // `select_changed` may have revealed a candidate under a collapsed directory, and reveal()
+        // can relax the tree's filters — re-sync the controller's mirrors, as the finder does.
+        self.resync_filter_mirrors();
+        if wrapped {
+            self.action_notice = Some(if forward {
+                "Changed files: wrapped to the first".into()
+            } else {
+                "Changed files: wrapped to the last".into()
+            });
+        }
+        self.dispatch_render(); // new selection → re-render (and reset the scroll)
+        Effects::redraw()
+    }
+
+    /// Re-sync the controller's filter mirrors (`changed_only`, `status_mode`, `hide_hidden`,
+    /// `show_ignored`) from the tree after a [`TreeModel::reveal`], which relaxes a filter that
+    /// would otherwise hide the revealed target. Without this a later `c` / `.` / `i` / `d` toggle
+    /// would flip against a stale mirror and appear to do nothing.
+    ///
+    /// Status mode and baseline-aware changed-only share the tree's single `changed_only` flag, so
+    /// a relaxed filter must clear both mirrors; while status mode is on it owns the flag, which
+    /// leaves `changed_only` false.
+    pub(super) fn resync_filter_mirrors(&mut self) {
+        if self.tree.changed_only() {
+            self.changed_only = !self.status_mode;
+        } else {
+            self.changed_only = false;
+            self.status_mode = false;
+        }
+        self.hide_hidden = self.tree.hide_hidden();
+        self.show_ignored = self.tree.show_ignored();
     }
 
     /// Scroll the content pane by `delta` lines, clamped to `[0, max]` so it can never run

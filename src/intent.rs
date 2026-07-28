@@ -125,6 +125,18 @@ pub enum Intent {
     /// navigation — scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when there
     /// is no committed search with ≥1 match. Bound to `N` only — no event hook (AC-N6).
     PrevMatch,
+    /// Jump the tree cursor to the **next changed file**, wrapping at the end of the changed-set
+    /// with a notice. Traverses the active changed-set (baseline-aware, or the working-tree status
+    /// while status mode is on) in path order, expanding a collapsed directory when the next
+    /// changed file is inside one — so a review can step file to file without hunting the tree.
+    /// Read-only navigation: cursor and expansion state only, no file or git mutation (AC-N1,
+    /// AC-N3). A no-op outside a git repository or with an empty changed-set. Bound to `]` only —
+    /// no event hook (AC-N6).
+    NextChanged,
+    /// Jump the tree cursor to the **previous changed file**, wrapping at the start of the
+    /// changed-set with a notice — the mirror of [`Intent::NextChanged`], same set, same order,
+    /// same read-only guarantees. Bound to `[` only — no event hook (AC-N6).
+    PrevChanged,
     /// Scroll the tree pane left by the horizontal step (AC-18: the tree's h-scroll was
     /// mouse-only; this key makes it keyboard-reachable). Read-only navigation — it only
     /// adjusts an in-memory scroll offset; no file or git mutation (AC-N1, AC-N3). Bound to
@@ -141,7 +153,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 37] = [
+    pub const ALL: [Intent; 39] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::Expand,
@@ -175,6 +187,8 @@ impl Intent {
         Intent::OpenSearch,
         Intent::NextMatch,
         Intent::PrevMatch,
+        Intent::NextChanged,
+        Intent::PrevChanged,
         Intent::TreeScrollLeft,
         Intent::TreeScrollRight,
         Intent::ShowHelp,
@@ -227,6 +241,8 @@ mod tests {
                 | Intent::OpenSearch
                 | Intent::NextMatch
                 | Intent::PrevMatch
+                | Intent::NextChanged
+                | Intent::PrevChanged
                 | Intent::TreeScrollLeft
                 | Intent::TreeScrollRight
                 | Intent::ShowHelp
@@ -303,11 +319,23 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_37() {
+    fn all_length_is_39() {
         assert_eq!(
             Intent::ALL.len(),
-            37,
-            "Intent::ALL must have exactly 37 variants"
+            39,
+            "Intent::ALL must have exactly 39 variants"
+        );
+    }
+
+    #[test]
+    fn changed_file_jump_intents_are_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::NextChanged),
+            "Intent::ALL must contain NextChanged"
+        );
+        assert!(
+            Intent::ALL.contains(&Intent::PrevChanged),
+            "Intent::ALL must contain PrevChanged"
         );
     }
 

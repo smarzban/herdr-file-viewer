@@ -10369,3 +10369,151 @@ fn reveal_non_zero_exit_sets_a_non_fatal_notice() {
     );
     assert!(!fx.quit, "AC-8: a non-zero exit does not end the session");
 }
+
+// ---- next / previous changed file (`]` / `[`) --------------------------------------------
+
+/// The file name the tree cursor sits on, or `""` with nothing selected.
+fn selected_name(ctrl: &Controller) -> String {
+    ctrl.tree()
+        .selected()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn next_changed_walks_the_changed_set_and_notices_the_wrap() {
+    // `]` is the tree's `n`: step to the next changed file, wrapping with a notice so the key
+    // never looks dead at the end of the list.
+    let dir = TempDir::new();
+    for name in ["a.rs", "b.rs", "clean.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("a.rs"), Status::Modified);
+    changed.insert(PathBuf::from("b.rs"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_eq!(selected_name(&ctrl), "a.rs", "precondition");
+
+    let fx = ctrl.handle(Intent::NextChanged);
+    assert!(fx.redraw);
+    assert_eq!(selected_name(&ctrl), "b.rs", "] skips the clean file");
+    assert!(
+        ctrl.action_notice().is_none(),
+        "no wrap yet, so no notice: {:?}",
+        ctrl.action_notice()
+    );
+
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(selected_name(&ctrl), "a.rs", "] wraps to the first");
+    let notice = ctrl.action_notice().unwrap_or("");
+    assert!(
+        notice.contains("wrapped"),
+        "the wrap is surfaced, got: {notice:?}"
+    );
+}
+
+#[test]
+fn prev_changed_walks_backward_and_notices_the_wrap() {
+    let dir = TempDir::new();
+    for name in ["a.rs", "b.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("a.rs"), Status::Modified);
+    changed.insert(PathBuf::from("b.rs"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_eq!(selected_name(&ctrl), "a.rs", "precondition");
+
+    ctrl.handle(Intent::PrevChanged);
+    assert_eq!(selected_name(&ctrl), "b.rs", "[ wraps to the last");
+    assert!(
+        ctrl.action_notice().unwrap_or("").contains("wrapped"),
+        "the wrap is surfaced"
+    );
+
+    ctrl.handle(Intent::PrevChanged);
+    assert_eq!(selected_name(&ctrl), "a.rs");
+}
+
+#[test]
+fn changed_jump_uses_the_working_tree_status_while_status_mode_is_on() {
+    // `d` filters by working-tree status, so `]` must walk THAT set, not the baseline one —
+    // otherwise the jump would land on a file the filtered tree isn't even showing.
+    let dir = TempDir::new();
+    for name in ["base_only.rs", "status_only.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("status_only.rs"), Status::Modified);
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("base_only.rs"), Status::Modified);
+    let git = StubGit {
+        status,
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(
+        selected_name(&ctrl),
+        "status_only.rs",
+        "status mode walks the working-tree status set"
+    );
+}
+
+#[test]
+fn changed_jump_notices_an_empty_changed_set_and_is_inert_without_git() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+
+    // In a repo with nothing changed the key says so rather than doing nothing visible.
+    let (mut ctrl, _, _) = controller(dir.path(), true, StubGit::default(), false);
+    ctrl.handle(Intent::NextChanged);
+    assert!(
+        ctrl.action_notice().unwrap_or("").contains("No changed"),
+        "an empty changed-set is surfaced, got: {:?}",
+        ctrl.action_notice()
+    );
+
+    // Outside a repo there is no changed-set at all: inert (AC-26).
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let fx = ctrl.handle(Intent::NextChanged);
+    assert!(!fx.redraw, "inert without git (AC-26)");
+    assert!(ctrl.action_notice().is_none());
+}
+
+#[test]
+fn changed_jump_expands_a_collapsed_directory_to_reach_the_file() {
+    // The deep-tree case the feature exists for: the changed file is several collapsed levels
+    // down, and `]` must still reach it from the unfiltered tree.
+    let dir = TempDir::new();
+    let deep = dir.path().join("src/main/java");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Deep.java"), "x\n").unwrap();
+
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("src/main/java/Deep.java"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_ne!(selected_name(&ctrl), "Deep.java", "precondition: collapsed");
+
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(
+        selected_name(&ctrl),
+        "Deep.java",
+        "] expands the collapsed ancestors and lands on the changed file"
+    );
+}
