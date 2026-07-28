@@ -10370,3 +10370,51 @@ fn reveal_non_zero_exit_sets_a_non_fatal_notice() {
     );
     assert!(!fx.quit, "AC-8: a non-zero exit does not end the session");
 }
+
+#[test]
+fn apply_compact_dirs_folds_the_tree_and_survives_a_reroot() {
+    // The config path: `app::run` resolves `compact_dirs` and calls this. Tested here because the
+    // TreeModel tests set the flag directly and would not catch a broken wiring.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/main/java")).unwrap();
+    std::fs::write(dir.path().join("src/main/java/App.java"), "x\n").unwrap();
+
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    assert!(
+        ctrl.tree()
+            .visible_nodes()
+            .iter()
+            .all(|n| n.label.is_none()),
+        "off by default"
+    );
+
+    ctrl.apply_compact_dirs(true);
+    let labels: Vec<String> = ctrl
+        .tree()
+        .visible_nodes()
+        .iter()
+        .filter_map(|n| n.label.clone())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["src/main/java".to_string()],
+        "the chain is folded into one labelled row"
+    );
+
+    // A re-root builds a fresh TreeModel; the preference must be carried onto it (AC-12).
+    let other = TempDir::new();
+    std::fs::create_dir_all(other.path().join("a/b/c")).unwrap();
+    std::fs::write(other.path().join("a/b/c/f.txt"), "x\n").unwrap();
+    ctrl.re_root(other.path());
+    let labels: Vec<String> = ctrl
+        .tree()
+        .visible_nodes()
+        .iter()
+        .filter_map(|n| n.label.clone())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["a/b/c".to_string()],
+        "compaction survives a worktree switch"
+    );
+}
