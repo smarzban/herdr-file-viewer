@@ -191,8 +191,9 @@ pub fn parse_config(s: &str) -> (Config, LoadOutcome) {
 ///
 /// Precedence: `HERDR_PLUGIN_CONFIG_DIR` (non-empty) wins outright; otherwise fall back to the
 /// XDG-style `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, or `$HOME/.config/herdr-file-viewer/config.toml`,
-/// or (no HOME) the relative `.config/herdr-file-viewer/config.toml` as a last resort. Empty-string
-/// env values are treated as absent, same as `host::parse_context` does for its context fields.
+/// or `%USERPROFILE%\.config\herdr-file-viewer\config.toml` on Windows, or (none of them set) the
+/// relative `.config/herdr-file-viewer/config.toml` as a last resort. Empty-string env values are
+/// treated as absent, same as `host::parse_context` does for its context fields.
 pub fn config_path(get: impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
     if let Some(dir) = get("HERDR_PLUGIN_CONFIG_DIR").filter(|s| !s.is_empty()) {
         return std::path::PathBuf::from(dir).join("config.toml");
@@ -201,6 +202,13 @@ pub fn config_path(get: impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
         std::path::PathBuf::from(xdg)
     } else if let Some(home) = get("HOME").filter(|s| !s.is_empty()) {
         std::path::PathBuf::from(home).join(".config")
+    } else if let Some(profile) = get("USERPROFILE").filter(|s| !s.is_empty()) {
+        // Windows sets neither XDG_CONFIG_HOME nor HOME, so without this the next arm is a
+        // RELATIVE path — which `load_config` refuses to read — and a standalone Windows run has
+        // no way to have a config file at all. `USERPROFILE` is the platform's own answer to the
+        // question `HOME` answers elsewhere; the `.config` layout is kept so the file sits where
+        // the docs already say it does.
+        std::path::PathBuf::from(profile).join(".config")
     } else {
         std::path::PathBuf::from(".config")
     };
@@ -515,6 +523,35 @@ mod tests {
     fn home_fallback_when_config_dir_and_xdg_absent() {
         let get = |k: &str| match k {
             "HOME" => Some("/home/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from("/home/u/.config/herdr-file-viewer/config.toml")
+        );
+    }
+
+    #[test]
+    fn userprofile_fallback_when_config_dir_xdg_and_home_absent() {
+        // The Windows case: neither XDG_CONFIG_HOME nor HOME is set, so without this arm the path
+        // is relative and `load_config` refuses to read it — no config file is reachable at all.
+        let get = |k: &str| match k {
+            "USERPROFILE" => Some(r"C:\Users\u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_path(get),
+            std::path::PathBuf::from(r"C:\Users\u").join(".config/herdr-file-viewer/config.toml")
+        );
+    }
+
+    #[test]
+    fn home_wins_over_userprofile() {
+        // A cross-platform shell (Git Bash, WSL interop) can set both. HOME is the more specific
+        // signal — it was chosen by the environment, not defaulted by the OS — so it stays ahead.
+        let get = |k: &str| match k {
+            "HOME" => Some("/home/u".to_string()),
+            "USERPROFILE" => Some(r"C:\Users\u".to_string()),
             _ => None,
         };
         assert_eq!(

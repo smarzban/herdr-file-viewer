@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Fixed
+- Windows: `config.toml` is read again. The Windows launchers spawn the viewer by absolute path (they cannot use the manifest's relative pane command), so the pane never received `HERDR_PLUGIN_CONFIG_DIR`; the viewer then fell back to `$XDG_CONFIG_HOME` / `$HOME`, which Windows does not set, resolved a relative path, and correctly refused to read it. Every key — `editor`, `tree_width`, `tree_max_cols`, the lot — was silently ignored. The launchers now pass the directory through, and a standalone run falls back to `%USERPROFILE%\.config\herdr-file-viewer\config.toml`. → [configuration](docs/configuration.md#file-location)
+
 ## [1.14.0] - 2026-07-20
 
 ### Added

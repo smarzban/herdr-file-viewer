@@ -79,3 +79,28 @@ fn assert_utf8_before_json(label: &str, text: &str) {
         "{label} must use BOM-less UTF-8 before ConvertFrom-Json"
     );
 }
+
+#[test]
+fn windows_launchers_pass_the_plugin_config_dir() {
+    // herdr injects HERDR_PLUGIN_CONFIG_DIR only into a pane it spawns from the manifest. These
+    // launchers spawn the viewer themselves (by absolute path, GH #58), so unless they pass the
+    // variable on, the viewer looks for config.toml under $XDG_CONFIG_HOME / $HOME — neither of
+    // which Windows sets — resolves a RELATIVE path, and refuses to read it. The user's config
+    // file is then ignored with no error, which reads as "the setting does nothing".
+    for name in ["open-file-viewer.ps1", "open-file-viewer-tab.ps1"] {
+        let s = read_script(name);
+        assert!(
+            s.contains("plugin config-dir herdr-file-viewer"),
+            "{name} must ask herdr for the plugin config directory"
+        );
+        assert!(
+            s.contains("HERDR_PLUGIN_CONFIG_DIR="),
+            "{name} must pass HERDR_PLUGIN_CONFIG_DIR to the pane it spawns, or config.toml is \
+             silently ignored on Windows"
+        );
+        assert!(
+            s.contains("--env"),
+            "{name} must pass it via herdr's --env flag on the pane/tab it creates"
+        );
+    }
+}
