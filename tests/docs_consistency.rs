@@ -271,6 +271,28 @@ fn readme_links_to_the_reference_docs() {
 }
 
 #[test]
+fn keys_doc_documents_altgr_windows_scope() {
+    // The AltGr explanation must retain: the term "AltGr" itself, that the inference is
+    // Windows-only in scope, and the Crossterm 0.29 Windows-input rationale for why the chord is
+    // ambiguous: the three facts a reader needs to trust the behavior on their platform. A
+    // positive-content check (not a negative/brittle prose assertion), so future wording edits are
+    // free as long as these three facts stay documented.
+    assert!(
+        KEYS_DOC.contains("AltGr"),
+        "docs/keys.md must mention AltGr"
+    );
+    assert!(
+        KEYS_DOC.contains("On Windows only") || KEYS_DOC.contains("Windows only"),
+        "docs/keys.md must state the AltGr inference is Windows-only in scope"
+    );
+    assert!(
+        KEYS_DOC.contains("Crossterm 0.29"),
+        "docs/keys.md must explain the Crossterm 0.29 Windows-input behavior behind the AltGr \
+         ambiguity"
+    );
+}
+
+#[test]
 fn changelog_documents_line_reference_release() {
     // The feature shipped in `[1.9.0]`; that section is its permanent CHANGELOG home. Slice from
     // its heading to the next release heading so the check stays anchored to this release's block.

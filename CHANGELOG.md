@@ -10,6 +10,14 @@ All notable changes to this project are documented here. The format is based on
 ### Added
 - Page-wise scrolling: `Space` / `PageDown` move down one screenful and `PageUp` moves up one, paging the content pane when it is focused and the tree cursor otherwise. The step is the live content-pane height, so it follows a resize. `Space` follows the pager convention (`less`, `more`, `man`, and so `bat`); both are remappable as `page_down` / `page_up`. → [keys](docs/keys.md) · [configuration](docs/configuration.md#keybindings)
 
+### Fixed
+- Windows: `config.toml` is read again. The Windows launchers spawn the viewer by absolute path (they cannot use the manifest's relative pane command), so the pane never received `HERDR_PLUGIN_CONFIG_DIR`; the viewer then fell back to `$XDG_CONFIG_HOME` / `$HOME`, which Windows does not set, resolved a relative path, and correctly refused to read it. Every key — `editor`, `tree_width`, `tree_max_cols`, the lot — was silently ignored. The launchers now pass the directory through, and a standalone run falls back to `%USERPROFILE%\.config\herdr-file-viewer\config.toml`. → [configuration](docs/configuration.md#file-location)
+
+- Tree rows now indent by depth alone. A file row reserved no space for the expand arrow, so a file sat two columns left of a directory at the same depth — putting every file in the exact column of its parent directory's name, and every top-level file two columns left of the directory beside it. Files now reserve the arrow's width, so siblings line up and a child always reads one level in from its parent. → [usage](docs/usage.md#the-tree)
+
+- **Windows only:** AltGr characters now trigger their bound actions; only `Ctrl+Alt` plus optional `Shift` on character keys is inferred as AltGr. → [keys](docs/keys.md)
+
+
 ## [1.14.0] - 2026-07-20
 
 ### Added

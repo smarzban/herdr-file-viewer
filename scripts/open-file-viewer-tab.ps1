@@ -52,11 +52,27 @@ function Get-PaneId([string]$json) {
     return ([regex]'"pane_id":"([^"]+)"').Match($json).Groups[1].Value
 }
 
+# The plugin's config directory, to pass as HERDR_PLUGIN_CONFIG_DIR. herdr injects that variable
+# only into a pane IT spawns from the manifest, and these launchers spawn the viewer themselves
+# (see the note at the top). Without it the viewer falls back to $XDG_CONFIG_HOME / $HOME, neither
+# of which Windows sets, lands on a RELATIVE path, and refuses to read it — so config.toml was
+# silently ignored on Windows. Empty on failure: the launch proceeds with built-in defaults.
+function Get-ConfigDir {
+    try {
+        $d = (& $HerdrBin plugin config-dir herdr-file-viewer | Out-String).Trim()
+        if ($d) { return Strip-Verbatim $d }
+    } catch {}
+    return ''
+}
+
 function Open-Tab {
     $cwd = Get-UserCwd
     # `tab create` makes a new tab with a shell pane (its `root_pane`); run the viewer into it by
     # absolute path and label the pane "Files" so a later launch-decision recognises it.
-    $out = (& $HerdrBin tab create --cwd $cwd --label Files --focus | Out-String)
+    $createArgs = @('tab', 'create', '--cwd', $cwd, '--label', 'Files', '--focus')
+    $cfg = Get-ConfigDir
+    if ($cfg) { $createArgs += @('--env', "HERDR_PLUGIN_CONFIG_DIR=$cfg") }
+    $out = (& $HerdrBin @createArgs | Out-String)
     $np = Get-PaneId $out
     if ($np) {
         # Call operator + quoted absolute path so a spaced install path still launches — see
