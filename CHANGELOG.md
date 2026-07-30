@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
-- Keys typed with **AltGr** now reach their action instead of being dropped. Windows reports AltGr as `Ctrl+Alt`, which the dispatcher discarded as a chord, so a character that needs AltGr on your layout was a dead key — `?` (help) on a Brazilian ABNT2 keyboard, `[` / `]` on German and Spanish ones. Only `Ctrl+Alt` on a character key is accepted; `Ctrl` alone, `Alt` alone, and `Ctrl+Alt+↑` stay inert. → [keys](docs/keys.md)
+- **Windows only:** AltGr characters now trigger their bound actions; only `Ctrl+Alt` plus optional `Shift` on character keys is inferred as AltGr. → [keys](docs/keys.md)
 
 ## [1.14.0] - 2026-07-20
 
