@@ -333,6 +333,75 @@ fn apply_hide_dotfiles_at_startup_re_renders_so_content_matches_the_new_selectio
 }
 
 #[test]
+fn apply_show_ignored_sets_the_tree_startup_default_and_mirrors_the_toggle_state() {
+    // Issue #119 (Settings Applier): a config-driven startup default for the `i` show-ignored
+    // filter -- applied once after construction, distinct from the interactive ToggleIgnore
+    // intent. Both the tree's own filter and the controller's `show_ignored()` mirror (what the
+    // later `i` toggle reads/flips) must reflect it.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".gitignore"), "secret.log\n").unwrap();
+    std::fs::write(dir.path().join("secret.log"), "s").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    assert!(
+        !ctrl.tree().show_ignored(),
+        "off by default before applying"
+    );
+    assert!(!ctrl.show_ignored(), "controller mirror off by default too");
+    assert!(
+        !visible_names(&ctrl).contains(&"secret.log".to_string()),
+        "ignored file hidden before applying"
+    );
+
+    ctrl.apply_show_ignored(true);
+    assert!(ctrl.tree().show_ignored(), "the tree's filter is now on");
+    assert!(ctrl.show_ignored(), "the controller's mirror is now on too");
+    assert!(
+        visible_names(&ctrl).contains(&"secret.log".to_string()),
+        "the ignored file is now shown, exactly as if `i` had been pressed once"
+    );
+
+    ctrl.apply_show_ignored(false);
+    assert!(
+        !ctrl.tree().show_ignored(),
+        "the tree's filter is off again"
+    );
+    assert!(
+        !ctrl.show_ignored(),
+        "the controller's mirror is off again too"
+    );
+}
+
+#[test]
+fn apply_show_ignored_true_then_the_first_interactive_toggle_flips_it_off() {
+    // Issue #119 end-to-end: a config default of `show_ignored = true` must survive startup and
+    // be flipped OFF (not back to true) by the very next interactive `i` press -- mirrors
+    // `apply_hide_dotfiles_true_then_the_first_interactive_toggle_flips_it_off`.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join(".gitignore"), "secret.log\n").unwrap();
+    std::fs::write(dir.path().join("secret.log"), "s").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.apply_show_ignored(true);
+    assert!(ctrl.show_ignored(), "config default on at startup");
+    assert!(visible_names(&ctrl).contains(&"secret.log".to_string()));
+
+    ctrl.handle(Intent::ToggleIgnore);
+    assert!(
+        !ctrl.show_ignored(),
+        "the first `i` press flips the configured-on default OFF, not back to true"
+    );
+    assert!(
+        !visible_names(&ctrl).contains(&"secret.log".to_string()),
+        "the ignored file is hidden again after the toggle"
+    );
+
+    // `i` keeps toggling normally afterward.
+    ctrl.handle(Intent::ToggleIgnore);
+    assert!(ctrl.show_ignored(), "a further `i` press reveals it again");
+}
+
+#[test]
 fn toggle_changed_only_flips_in_a_repo() {
     // AC-6: restrict the tree to the changed-set, then restore the full tree.
     let dir = TempDir::new();
@@ -10076,6 +10145,7 @@ fn open_help_appends_settings_section_when_display_is_set() {
         open: None,
         reveal: None,
         hide_dotfiles: false,
+        show_ignored: false,
         compact_dirs: false,
         update_check: true,
         confirm_discard: true,

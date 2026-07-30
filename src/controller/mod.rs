@@ -1386,6 +1386,27 @@ impl Controller {
         self.dispatch_render();
     }
 
+    /// Apply the startup show-ignored default from config (issue #119). Called once by `app::run`
+    /// right after construction, before the first draw. Mirrors `apply_hide_dotfiles`'s two-field
+    /// update (the controller's own `show_ignored` mirror plus the tree's filter) so the later
+    /// interactive `i` toggle reads a value already in sync with what it's revealing, rather than
+    /// re-applying (or silently undoing) the configured default on the very first press. `.git/`
+    /// is unaffected either way -- the tree never browses into it regardless of this filter.
+    pub fn apply_show_ignored(&mut self, show: bool) {
+        if show == self.show_ignored {
+            // No change from the current (startup) state -- `Controller::new`'s initial render
+            // already reflects it, so re-rendering would be redundant. This is the common
+            // no-config case, where `show` is the default `false`.
+            return;
+        }
+        self.show_ignored = show;
+        self.tree.set_show_ignored(show);
+        // Revealing ignored entries can shift which node the cursor lands on, so re-render the
+        // content pane for the (possibly) new selection -- mirrors `toggle_ignore`'s own
+        // post-filter re-render, and `apply_hide_dotfiles`'s same reasoning.
+        self.dispatch_render();
+    }
+
     /// Apply the config-driven `confirm_discard` switch. Pure in-memory wiring.
     pub fn apply_confirm_discard(&mut self, confirm: bool) {
         self.confirm_discard = confirm;

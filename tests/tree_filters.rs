@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::TempDir;
+use common::{TempDir, init_repo_with_commit};
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::tree::TreeModel;
 use std::collections::BTreeMap;
@@ -36,6 +36,38 @@ fn show_ignored_toggle_reveals_then_hides_ignored_files() {
     assert!(
         !names(&model).contains(&"secret.log".to_string()),
         "AC-5: restored"
+    );
+}
+
+#[test]
+fn show_ignored_reveals_git_excludes_but_never_dot_git() {
+    // Issue #119: Git's repository-local excludes follow the same startup filter as `.gitignore`,
+    // while `.git/` itself remains unconditionally hidden.
+    let dir = TempDir::new();
+    init_repo_with_commit(dir.path());
+    fs::write(dir.path().join(".git/info/exclude"), "local.cache\n").unwrap();
+    fs::write(dir.path().join("local.cache"), "generated").unwrap();
+    fs::write(dir.path().join("keep.txt"), "k").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    assert!(!names(&model).contains(&"local.cache".to_string()));
+    assert!(
+        !names(&model).contains(&".git".to_string()),
+        ".git hidden by default"
+    );
+
+    model.set_show_ignored(true);
+    assert!(
+        names(&model).contains(&"local.cache".to_string()),
+        "repository-local Git excludes become visible"
+    );
+    assert!(
+        !names(&model).contains(&".git".to_string()),
+        ".git must stay hidden even with show_ignored on"
+    );
+    assert!(
+        names(&model).contains(&"keep.txt".to_string()),
+        "ordinary files remain visible"
     );
 }
 

@@ -22,8 +22,10 @@ customize it see [configuration](configuration.md).
 
 The left column is a recursive, expandable directory tree, **rooted at the worktree root** when you
 launch inside a git repo, otherwise at the launch directory. It honors `.gitignore` (press `i` to
-reveal ignored files), and a separate toggle (`.`) hides dot-prefixed "hidden" files and folders
-when a directory is full of them. The tree's **top border names the root** directory and its
+reveal ignored files, or set [`show_ignored = true`](configuration.md) to start with them visible),
+and a separate toggle (`.`) hides dot-prefixed "hidden" files and folders when a directory is full
+of them. Ignored paths often contain local credentials or generated secrets, so keep the startup
+setting off unless you need it; `.git/` itself always stays hidden. The tree's **top border names the root** directory and its
 **bottom border shows the current branch**, so you always know *where* and *on what branch* you're
 looking.
 

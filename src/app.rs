@@ -117,6 +117,9 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.
     controller.apply_hide_dotfiles(eff.hide_dotfiles);
+    // Apply the config-driven startup show-ignored default (issue #119): seed the tree exactly
+    // as if `i` had already been pressed once. The interactive `i` toggle still flips it later.
+    controller.apply_show_ignored(eff.show_ignored);
     // Apply the config-driven tree shape (`compact_dirs`): fold a chain of single-child
     // directories into one row. A startup setting — there is no runtime toggle for it.
     controller.apply_compact_dirs(eff.compact_dirs);

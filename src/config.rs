@@ -117,6 +117,11 @@ pub struct Config {
     pub open: Option<String>,
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
+    /// Whether gitignored (and git-excluded) entries are shown at startup, exactly as if `i` had
+    /// already been pressed once. `None` falls back to `false` (the default: ignored entries
+    /// hidden). `.git/` itself is never browsed regardless of this setting. The interactive `i`
+    /// toggle still flips the state during the session, starting from whichever value this seeds.
+    pub show_ignored: Option<bool>,
     /// Whether a chain of single-child directories is drawn as ONE row (`src/main/java`) instead of
     /// one row per segment. `None` falls back to `false` — the per-segment tree, unchanged. Worth
     /// turning on for a deeply-nested layout (a Java/Maven `src/main/java/...`, a nested monorepo),
@@ -279,6 +284,10 @@ pub struct EffectiveSettings {
     pub open: Option<Vec<String>>,
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
+    /// The effective **show-ignored-at-startup** switch: the config `show_ignored` when present,
+    /// else `false`. Seeds the tree exactly as if `i` had already been pressed once; the
+    /// interactive `i` toggle still flips it during the session. Config-or-default (no env var).
+    pub show_ignored: bool,
     /// The effective **compact directory chains** switch: the config `compact_dirs` when present,
     /// else `false`. Seeds the tree at startup. Config-or-default (no env var).
     pub compact_dirs: bool,
@@ -355,6 +364,10 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .map(crate::editor::tokenize_command);
 
     let hide_dotfiles = config.hide_dotfiles.unwrap_or(false);
+
+    // Config > default; no env var. Defaults OFF: ignored (and git-excluded) entries stay hidden
+    // unless asked for, matching the interactive `i` toggle's own default state.
+    let show_ignored = config.show_ignored.unwrap_or(false);
 
     // Config > default; no env var. Defaults OFF so the tree's shape is unchanged for everyone who
     // does not ask for it: compaction is a real trade (fewer rows and far less indentation, but a
@@ -434,6 +447,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         open,
         reveal,
         hide_dotfiles,
+        show_ignored,
         compact_dirs,
         update_check,
         confirm_discard,
@@ -600,6 +614,7 @@ mod tests {
         assert_eq!(config.update_check, None);
         assert_eq!(config.confirm_discard, None);
         assert_eq!(config.scroll_lines, None);
+        assert_eq!(config.show_ignored, None);
         assert_eq!(outcome, LoadOutcome::Loaded);
     }
 
@@ -640,11 +655,44 @@ mod tests {
 
     #[test]
     fn bool_fields_parse() {
-        let (config, _outcome) =
-            parse_config("hide_dotfiles = true\nupdate_check = false\nconfirm_discard = false\n");
+        let (config, _outcome) = parse_config(
+            "hide_dotfiles = true\nupdate_check = false\nconfirm_discard = false\nshow_ignored = true\n",
+        );
         assert_eq!(config.hide_dotfiles, Some(true));
         assert_eq!(config.update_check, Some(false));
         assert_eq!(config.confirm_discard, Some(false));
+        assert_eq!(config.show_ignored, Some(true));
+    }
+
+    #[test]
+    fn show_ignored_resolves_config_over_default() {
+        // Issue #119: `show_ignored` seeds the tree's `i` filter at startup, same shape as
+        // `compact_dirs`/`confirm_discard` above -- absent falls to off, config wins when set.
+        let (config, _outcome) = parse_config("show_ignored = true\n");
+        assert_eq!(config.show_ignored, Some(true));
+
+        let off = resolve(&Config::default(), |_| None);
+        assert!(
+            !off.show_ignored,
+            "absent falls back to off — ignored entries stay hidden unless asked for"
+        );
+
+        let on = resolve(
+            &Config {
+                show_ignored: Some(true),
+                ..Config::default()
+            },
+            |_| None,
+        );
+        assert!(on.show_ignored, "config wins");
+
+        // No env tier: like confirm_discard, this is a config-or-default UI preference, so a stray
+        // environment variable must not reach it.
+        let env_ignored = resolve(&Config::default(), |_| Some("1".to_string()));
+        assert!(
+            !env_ignored.show_ignored,
+            "no environment variable participates in this key"
+        );
     }
 
     #[test]
@@ -917,6 +965,7 @@ mod tests {
         assert_eq!(effective.editor, None);
         assert!(effective.update_check);
         assert!(!effective.hide_dotfiles);
+        assert!(!effective.show_ignored, "ignored entries hidden by default");
         assert!(
             effective.confirm_discard,
             "the quit guard defaults ON: annotations are session-only, so the confirm is the only \
@@ -942,6 +991,7 @@ mod tests {
         assert_eq!(effective.editor, Some(std::ffi::OsString::from("code")));
         assert!(effective.update_check);
         assert!(!effective.hide_dotfiles);
+        assert!(!effective.show_ignored);
         assert_eq!(effective.markdown, None);
         assert_eq!(effective.diff, None);
         assert_eq!(effective.syntax, None);

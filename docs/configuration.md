@@ -46,8 +46,8 @@ than sourced from whatever repository you happen to have open.
 A config key always wins. Only two keys also have an environment-variable fallback tier below the
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
-other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `compact_dirs`,
-`confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`,
+other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
+`compact_dirs`, `confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`,
 `preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
@@ -66,6 +66,7 @@ open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-ma
 reveal = "nautilus"
 
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
+show_ignored = false        # true to show gitignored files at startup (the `i` key still toggles)
 compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
 update_check = true         # false to disable the once-a-day update check
 confirm_discard = true      # false to discard annotations without confirming (on quit / worktree switch)

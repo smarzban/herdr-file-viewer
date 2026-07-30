@@ -68,6 +68,11 @@
 # toggles this at runtime. Default:
 #hide_dotfiles = false
 
+# Show gitignored (and git-excluded) files and folders at startup -- exactly as
+# if the `i` key had already been pressed once. `.git/` itself is never browsed
+# either way. The `i` key still toggles this at runtime. Default:
+#show_ignored = false
+
 # Draw a chain of single-child directories as ONE row -- `src/main/java/br/com`
 # instead of six rows, each indented two columns further than the last. The row
 # leads into the DEEPEST directory of the chain, so expand/collapse and status
