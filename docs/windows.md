@@ -10,15 +10,21 @@ PowerShell launcher scripts.
 - **On Windows, bind the `-windows` action ids.** herdr requires every action id to be unique, so
   the Windows launchers register as **`open-file-viewer-windows`** and
   **`open-file-viewer-tab-windows`** (the unqualified `open-file-viewer` / `open-file-viewer-tab`
-  ids are the Linux/macOS variants). Point your herdr keybinding at the `-windows` id:
-  `command = "herdr plugin action invoke open-file-viewer-windows --plugin herdr-file-viewer"`.
-- **A `prefix+f` keybinding needs herdr v0.7.2 or newer.** herdr runs custom-command
-  (`[[keys.command]]`) keybindings through the platform shell; before v0.7.2 that was `/bin/sh`,
-  absent on Windows, so the binding silently did nothing there. herdr **v0.7.2** runs them through
-  `cmd.exe /d /c`, so the `prefix+f` binding fires normally. On older herdr, summon the viewer
-  by invoking the action **directly** (`herdr plugin action invoke open-file-viewer-windows
-  --plugin herdr-file-viewer` from a shell, or via herdr's action menu) rather than through a
-  keybinding.
+  ids are the Linux/macOS variants). Point `plugin_action` bindings at the qualified Windows ids:
+
+  ```toml
+  [[keys.command]]
+  key = "prefix+f"
+  type = "plugin_action"
+  command = "herdr-file-viewer.open-file-viewer-windows"
+  description = "open file viewer in split"
+
+  [[keys.command]]
+  key = "prefix+shift+f"
+  type = "plugin_action"
+  command = "herdr-file-viewer.open-file-viewer-tab-windows"
+  description = "open file viewer in tab"
+  ```
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
 - **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing

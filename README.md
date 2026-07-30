@@ -102,8 +102,8 @@ help overlay's **Settings** section.
 ## Windows
 
 Native Windows is supported as a **preview** (install works the same way; the open actions use
-`-windows` action ids and a `prefix+f` keybinding needs herdr v0.7.2+). WSL works today with zero
-extra setup. See [docs/windows.md](docs/windows.md).
+`-windows` action ids and herdr's preview channel). WSL works today with zero extra setup. See
+[docs/windows.md](docs/windows.md).
 
 ## Documentation
 
