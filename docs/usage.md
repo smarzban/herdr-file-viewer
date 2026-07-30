@@ -180,6 +180,15 @@ Git status is woven straight into the tree, not a separate mode:
   as a non-color cue so status survives a colorblind palette or a non-default terminal theme.
 - **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
   baseline (`b`) — useful for reviewing a whole branch (merge-base) or just uncommitted work (`HEAD`).
+- **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next
+  or previous changed file, wrapping at the ends with a notice. It walks whichever set the tree is
+  filtered by — the working-tree status while `d` is on, else the baseline-aware set behind `c` and
+  `b` — in the order the tree lists those files top-to-bottom, and expands a collapsed directory
+  when the next changed file lives inside one, so it works in the full tree as well as under `c`.
+  It stays inside the tree you have filtered to: a changed file hidden by `.` (hidden files) or `i`
+  (gitignored) is skipped rather than revealed, so the jump never switches a filter off behind your
+  back. This is `n`/`N` for the tree: reviewing a branch is a walk over the changed files, and in a
+  deeply nested repo that walk is otherwise a long run of `j` presses past directory rows.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
   (modified, staged, untracked, deleted — independent of baseline) and force working-tree diffs in
   the content pane. On a directory, that means a unified diff of all tracked changes under it.

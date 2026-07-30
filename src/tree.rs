@@ -6,7 +6,9 @@
 
 use crate::git::Status;
 use crate::index::walk_builder;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Whether a tree node is a directory or a file.
@@ -34,12 +36,84 @@ pub struct Node {
     pub label: Option<String>,
 }
 
+/// The tree's sibling order, and the **single source of truth** for it: directories before
+/// files, alphabetical within each group.
+///
+/// Every ordering in this module routes through here — the filesystem rows ([`sort_entries`]),
+/// the synthesized changed-only rows ([`TreeModel::emit_synthetic`]), and the `]` / `[` jump's
+/// traversal ([`cmp_visual`]) — so a change to how siblings sort can never leave one of them
+/// behind.
+fn cmp_sibling(a: (&OsStr, NodeKind), b: (&OsStr, NodeKind)) -> Ordering {
+    (b.1 == NodeKind::Dir)
+        .cmp(&(a.1 == NodeKind::Dir))
+        .then_with(|| a.0.cmp(b.0))
+}
+
+/// Compare two root-relative paths by the order their rows appear in the tree, given the
+/// [`NodeKind`] of each path's own last component (interior components are directories by
+/// construction).
+///
+/// Walks components from the common prefix and, at the first divergence, defers to
+/// [`cmp_sibling`] — so a path that continues (a directory at that level) orders before one that
+/// ends there, and same-kind siblings use the tree's name ordering. When one path is an ancestor
+/// of the other the ancestor's row comes first, matching the depth-first render.
+///
+/// This is why `Cargo.toml` is the *last* row next to `docs/` and `src/` even though it is the
+/// *first* key in a `BTreeMap` keyed by path: lexicographic key order is not row order.
+fn cmp_visual(a: (&Path, NodeKind), b: (&Path, NodeKind)) -> Ordering {
+    let (mut ac, mut bc) = (a.0.components(), b.0.components());
+    loop {
+        match (ac.next(), bc.next()) {
+            (Some(x), Some(y)) => {
+                // A component is a directory when another follows it; the last one carries the
+                // caller-supplied kind (a cursor may sit on a directory row).
+                let xk = if ac.clone().next().is_some() {
+                    NodeKind::Dir
+                } else {
+                    a.1
+                };
+                let yk = if bc.clone().next().is_some() {
+                    NodeKind::Dir
+                } else {
+                    b.1
+                };
+                match cmp_sibling((x.as_os_str(), xk), (y.as_os_str(), yk)) {
+                    Ordering::Equal => continue, // same node at this level — descend
+                    ord => return ord,
+                }
+            }
+            (Some(_), None) => return Ordering::Greater, // `b` is an ancestor: its row is first
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return Ordering::Equal,
+        }
+    }
+}
+
+/// The row order of a root-relative path, for a caller outside this module (the jump's tests).
+/// Both paths are treated as files, which is what a changed-set holds.
+pub fn cmp_file_rows(a: &Path, b: &Path) -> Ordering {
+    cmp_visual((a, NodeKind::File), (b, NodeKind::File))
+}
+
+/// The visible-row index of the **file** node at `path`, if it has one.
+///
+/// Kind-checked rather than path-only: a file replaced by a directory of the same name puts one
+/// path into both halves of the changed-set's synthesized tree — the file list and the ancestor
+/// directory set — so changed-only mode emits a `Dir` row AND a `File` row for it, the directory
+/// first. A path-only lookup would land the jump on the directory row and never show the file's
+/// diff.
+fn file_row(rows: &[Node], path: &Path) -> Option<usize> {
+    rows.iter()
+        .position(|n| n.path == path && n.kind == NodeKind::File)
+}
+
 /// Order tree entries: directories first, then files; alphabetical within each group.
 fn sort_entries(entries: &mut [(PathBuf, NodeKind)]) {
     entries.sort_by(|a, b| {
-        (b.1 == NodeKind::Dir)
-            .cmp(&(a.1 == NodeKind::Dir))
-            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+        cmp_sibling(
+            (a.0.file_name().unwrap_or_default(), a.1),
+            (b.0.file_name().unwrap_or_default(), b.1),
+        )
     });
 }
 
@@ -166,7 +240,8 @@ impl TreeModel {
         for (path, kind) in self.entries(dir) {
             // Under `compact_dirs`, a directory that only ever contains one subdirectory is folded
             // into that chain: one row, `path` the DEEPEST directory, so expand/collapse, status,
-            // and the child walk below all act on the directory the row actually leads into.
+            // and the child walk below all act on the directory the row actually leads into. The
+            // row keeps the position its own name sorted into, so the fold never reorders siblings.
             let (path, label) = if kind == NodeKind::Dir && self.compact_dirs {
                 self.compact_chain(&path)
             } else {
@@ -247,44 +322,47 @@ impl TreeModel {
         files: &BTreeSet<PathBuf>,
         out: &mut Vec<Node>,
     ) {
-        let mut child_dirs = children_of(dirs, parent_rel);
-        let mut child_files = children_of(files, parent_rel);
-        child_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        child_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        let mut children: Vec<(&PathBuf, NodeKind)> = children_of(dirs, parent_rel)
+            .into_iter()
+            .map(|d| (d, NodeKind::Dir))
+            .chain(
+                children_of(files, parent_rel)
+                    .into_iter()
+                    .map(|f| (f, NodeKind::File)),
+            )
+            .collect();
+        // Sorted BEFORE the fold below, on each child's own name — so compaction can only ever
+        // change a row's label and where it leads, never where it sits among its siblings.
+        children.sort_by(|a, b| {
+            cmp_sibling(
+                (a.0.file_name().unwrap_or_default(), a.1),
+                (b.0.file_name().unwrap_or_default(), b.1),
+            )
+        });
 
-        for d in child_dirs {
+        for (rel, kind) in children {
             // Same fold as the full tree, over the synthesized set instead of the filesystem: while
             // a directory's only child is one directory and it holds no changed file of its own,
             // the chain becomes a single row. This is where it pays most — a changed-set tree is
             // all path, so `src/main/java/br/com/…` is otherwise one row per segment.
-            let (d, label) = if self.compact_dirs {
-                self.compact_synthetic_chain(d, dirs, files)
+            let (rel, label) = if kind == NodeKind::Dir && self.compact_dirs {
+                self.compact_synthetic_chain(rel, dirs, files)
             } else {
-                (d.clone(), None)
+                (rel.clone(), None)
             };
-            let abs = self.root.join(&d);
+            let abs = self.root.join(&rel);
             out.push(Node {
                 path: abs.clone(),
-                kind: NodeKind::Dir,
+                kind,
                 depth,
-                expanded: true,
+                expanded: kind == NodeKind::Dir,
                 status: self.status_for(&abs),
-                dir_dirty: self.dir_contains_change(&abs),
+                dir_dirty: kind == NodeKind::Dir && self.dir_contains_change(&abs),
                 label,
             });
-            self.emit_synthetic(&d, depth + 1, dirs, files, out);
-        }
-        for f in child_files {
-            let abs = self.root.join(f);
-            out.push(Node {
-                path: abs.clone(),
-                kind: NodeKind::File,
-                depth,
-                expanded: false,
-                status: self.status_for(&abs),
-                dir_dirty: false,
-                label: None,
-            });
+            if kind == NodeKind::Dir {
+                self.emit_synthetic(&rel, depth + 1, dirs, files, out);
+            }
         }
     }
 
@@ -409,6 +487,36 @@ impl TreeModel {
         self.visible_nodes().into_iter().nth(self.cursor)
     }
 
+    /// Expand every ancestor directory of `path`, from its parent up to and including the root, so
+    /// a target buried in collapsed directories can get a row.
+    ///
+    /// Expansion state only — it never touches a display filter. That split is what lets the
+    /// `]` / `[` jump reuse this while still honoring its promise to change nothing but the cursor
+    /// and expansion state; [`reveal`](Self::reveal) layers the filter relaxation on top.
+    ///
+    /// Returns the directories it **newly** expanded, so a caller that is only probing can tell
+    /// whether it changed anything and undo exactly what it did. An empty result means the tree
+    /// already looked like this — which is what lets the `]` / `[` jump skip a redundant walk.
+    ///
+    /// The root is deliberately not expanded: its children always render, so its membership in
+    /// `expanded` is never read (only a *child* directory's is), and inserting it would make every
+    /// root-level target look like a state change to that probe.
+    fn expand_ancestors(&mut self, path: &Path) -> Vec<PathBuf> {
+        let mut newly = Vec::new();
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            if d == self.root || !d.starts_with(&self.root) {
+                break;
+            }
+            if !self.expanded.contains(d) {
+                self.expand(d);
+                newly.push(d.to_path_buf());
+            }
+            dir = d.parent();
+        }
+        newly
+    }
+
     /// Reveal `path` in the tree: expand every collapsed ancestor, relax display filters
     /// (`changed_only`, `hide_hidden`, `show_ignored`) if they would hide the target, then move the
     /// cursor to the target's visible-row index. Returns `false` **without moving the cursor** when
@@ -427,18 +535,7 @@ impl TreeModel {
         if !path.is_file() {
             return false; // missing or not a regular file — AC-20
         }
-        // Expand every ancestor directory from the file's parent up to and including root.
-        let mut dir = path.parent();
-        while let Some(d) = dir {
-            if !d.starts_with(&self.root) {
-                break;
-            }
-            self.expand(d);
-            if d == self.root {
-                break;
-            }
-            dir = d.parent();
-        }
+        self.expand_ancestors(path);
         // Relax a filter only if it still hides the target after expansion.
         if self.changed_only && !self.visible_nodes().iter().any(|n| n.path == path) {
             self.changed_only = false;
@@ -458,6 +555,129 @@ impl TreeModel {
             }
             None => false,
         }
+    }
+
+    /// Move the cursor to the next (`forward`) or previous **changed file** in `changed`, and
+    /// report whether the move wrapped around the ends. Returns `None` — leaving the cursor
+    /// untouched — when `changed` is empty or no candidate could be selected.
+    ///
+    /// Traversal order is the order the candidates' **rows** appear in the tree ([`cmp_visual`]),
+    /// not the changed-set's lexicographic key order — the tree renders directories before files
+    /// at each level, so `Cargo.toml` beside `docs/` and `src/` is the last row while sorting
+    /// first as a key. That is what makes the reported wrap mean exactly "moved past the last
+    /// candidate row to the first" (and the reverse). Candidates come from the changed-set rather
+    /// than the visible rows, so a changed file inside a **collapsed** directory is still reachable:
+    /// each candidate is first looked up among the visible rows and, failing that, has its
+    /// ancestors expanded ([`expand_ancestors`](Self::expand_ancestors)) and is looked up again.
+    ///
+    /// A candidate that still has no row is **skipped** — a deleted file has none on disk outside
+    /// changed-only mode, and neither does one hidden by `hide_hidden`, `show_ignored`, or
+    /// `changed_only`. Unlike [`reveal`](Self::reveal), the jump never relaxes a display filter to
+    /// force a target into view: `]` is navigation, not an explicit request for one path, so it
+    /// stays inside the tree the user has filtered to and keeps its promise below. A skipped
+    /// candidate leaves no trace — any expansion done while probing it is rolled back.
+    ///
+    /// Read-only navigation: it moves the cursor and expansion state only (AC-N1, AC-N3).
+    pub fn select_changed(
+        &mut self,
+        forward: bool,
+        changed: &BTreeMap<PathBuf, Status>,
+    ) -> Option<bool> {
+        // Sorted once per jump — never per frame; the changed-set is a map, so its keys arrive in
+        // lexicographic order and have to be put into row order here.
+        let mut candidates: Vec<&PathBuf> = changed.keys().collect();
+        candidates.sort_by(|a, b| cmp_visual((a, NodeKind::File), (b, NodeKind::File)));
+        let len = candidates.len();
+        if len == 0 {
+            return None;
+        }
+        // Where the cursor sits within that order. A cursor on a directory, on an unchanged file,
+        // or on nothing still has a well-defined neighbour: `partition_point` finds the insertion
+        // point, so the jump goes to the next / previous changed file either way. The cursor's own
+        // kind is passed through, so a directory row compares as the parent of its children rather
+        // than as a file sharing their name.
+        // The visible rows, walked ONCE for the whole jump: in the full tree this is a filesystem
+        // enumeration, so calling it per candidate turned a jump over a run of deleted files into a
+        // run of full walks on the input thread. Every branch below either returns or rolls its
+        // mutation back, so this snapshot stays accurate for the entire loop.
+        let rows = self.visible_nodes();
+        let current = rows.get(self.cursor).and_then(|n| {
+            n.path
+                .strip_prefix(&self.root)
+                .map(|rel| (rel.to_path_buf(), n.kind))
+                .ok()
+        });
+        let at = |c: &Path, rel: &Path, kind| cmp_visual((c, NodeKind::File), (rel, kind));
+        let (start, start_wrapped) = match &current {
+            Some((rel, kind)) if forward => {
+                let i = candidates.partition_point(|c| at(c, rel, *kind) != Ordering::Greater);
+                if i < len { (i, false) } else { (0, true) }
+            }
+            Some((rel, kind)) => {
+                let i = candidates.partition_point(|c| at(c, rel, *kind) == Ordering::Less);
+                if i > 0 {
+                    (i - 1, false)
+                } else {
+                    (len - 1, true)
+                }
+            }
+            None if forward => (0, false),
+            None => (len - 1, false),
+        };
+        let mut idx = start;
+        let mut wrapped = start_wrapped;
+        for step in 0..len {
+            if step > 0 {
+                // Step past a candidate that could not be selected, tracking the wrap.
+                if forward {
+                    idx += 1;
+                    if idx == len {
+                        idx = 0;
+                        wrapped = true;
+                    }
+                } else if idx == 0 {
+                    idx = len - 1;
+                    wrapped = true;
+                } else {
+                    idx -= 1;
+                }
+            }
+            let abs = self.root.join(candidates[idx]);
+            // Already on screen: no mutation, and no second walk.
+            if let Some(pos) = file_row(&rows, &abs) {
+                self.cursor = pos;
+                return Some(wrapped);
+            }
+            // No file on disk (a deletion, or a path now taken by a directory) can gain a row
+            // outside changed-only mode, which the lookup above already covers. Skipping on a
+            // cheap `stat` keeps a run of deleted candidates off the walk path entirely.
+            if !abs.is_file() {
+                continue;
+            }
+            // Buried under collapsed directories: expanding is the one mutation the jump is
+            // allowed, so it is worth a fresh walk. If nothing was NEWLY expanded, the tree is
+            // exactly what `rows` was taken from — the invariant holds because every earlier
+            // iteration either returned or rolled its expansion back, and the jump never touches a
+            // filter — so a fresh walk could only reproduce `rows`, which the lookup above already
+            // searched. The candidate is hidden by a filter, not by a collapsed ancestor: skip it
+            // without walking, or a run of filtered-out changed files costs a walk apiece.
+            let newly_expanded = self.expand_ancestors(&abs);
+            if newly_expanded.is_empty() {
+                continue;
+            }
+            let expanded_rows = self.visible_nodes();
+            if let Some(pos) = file_row(&expanded_rows, &abs) {
+                self.cursor = pos;
+                return Some(wrapped);
+            }
+            // Still hidden — by `hide_hidden`, `show_ignored`, or `changed_only`. The jump does
+            // not relax filters to reach it, so treat it as unselectable and undo exactly what the
+            // probe expanded. Not `collapse`, which re-clamps the cursor and costs another walk.
+            for d in &newly_expanded {
+                self.expanded.remove(d);
+            }
+        }
+        None
     }
 
     /// Keep the cursor within the (possibly shrunken) visible list after a structural or

@@ -1,16 +1,15 @@
 ---
 source: tests/presenter.rs
-assertion_line: 2981
 expression: "render(&state, 100, 24)"
 ---
 "┌r─────────────────────────────────────┐┌Content───────────────────────────────────────────────────┐"
 "│  ▾ src                               ││Rendering…                                                │"
-"│M   main.rs                           ││                                                          │"
+"│M     main.rs                         ││                                                          │"
 "│    ▾ inner                           ││                                                          │"
-"│A     added.rs                        ││                                                          │"
-"│  README.md                           ││                                                          │"
-"│D gone.txt                            ││                                                          │"
-"│? scratch.log                         ││                                                          │"
+"│A       added.rs                      ││                                                          │"
+"│    README.md                         ││                                                          │"
+"│D   gone.txt                          ││                                                          │"
+"│?   scratch.log                       ││                                                          │"
 "│                                      ││                                                          │"
 "│                                      ││                                                          │"
 "│                                      ││                                                          │"

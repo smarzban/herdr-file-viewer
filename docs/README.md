@@ -22,7 +22,7 @@ TUI pane. New here? Start with the [README](../README.md) for what it is and a q
 | [Keys & mouse](keys.md) | The complete key table, mouse gestures, and the editor hand-off (`$EDITOR` troubleshooting). |
 | [Configuration](configuration.md) | The full `config.toml` reference — editor/renderer/opener commands, startup toggles, tree layout, and `[keys]` remapping. |
 | [External renderers](renderers.md) | The optional `glow` / `delta` / `bat` integrations and the plain-text fallback when they're absent. |
-| [Windows (preview)](windows.md) | Native-Windows specifics: the `-windows` action ids, the herdr v0.7.2 keybinding requirement, and WSL. |
+| [Windows (preview)](windows.md) | Native-Windows specifics: the `-windows` action ids, preview-channel requirement, and WSL. |
 
 ## Beyond the essentials
 

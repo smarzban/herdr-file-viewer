@@ -67,15 +67,17 @@ brew install glow git-delta bat     # macOS, or use your package manager
 Then **bind a key** in your herdr config (`~/.config/herdr/config.toml`) so one press summons it:
 
 ```toml
-[[keys.command]]              # open in a split beside your work
+[[keys.command]]
 key = "prefix+f"
-type = "shell"
-command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer"
+description = "open file viewer in split"
 
-[[keys.command]]              # …or in its own tab
+[[keys.command]]
 key = "prefix+shift+f"
-type = "shell"
-command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-tab"
+description = "open file viewer in tab"
 ```
 
 Run `herdr server reload-config`, then press your key. That's the whole setup: the split-pane
@@ -100,8 +102,8 @@ help overlay's **Settings** section.
 ## Windows
 
 Native Windows is supported as a **preview** (install works the same way; the open actions use
-`-windows` action ids and a `prefix+f` keybinding needs herdr v0.7.2+). WSL works today with zero
-extra setup. See [docs/windows.md](docs/windows.md).
+`-windows` action ids and herdr's preview channel). WSL works today with zero extra setup. See
+[docs/windows.md](docs/windows.md).
 
 ## Documentation
 

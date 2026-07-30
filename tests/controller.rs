@@ -1267,6 +1267,112 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
 }
 
 #[test]
+fn page_keys_scroll_the_content_pane_by_one_viewport_and_clamp() {
+    // Space/PageDown/PageUp move a screenful of the pane they act on. With the content focused
+    // that is the content viewport — the tree is 20 rows here, so a step of 10 also shows the
+    // page is taken from the focused pane, not whichever pane happens to be taller.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll = 40
+    ctrl.set_pane_geometry(wide_geometry()); // tree interior: 20 rows
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        10,
+        "PageDown advances one content viewport"
+    );
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(ctrl.view_state().content_scroll, 20, "and another");
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        10,
+        "PageUp returns the same distance"
+    );
+
+    for _ in 0..5 {
+        ctrl.handle(Intent::PageUp);
+    }
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        0,
+        "cannot page above the first line"
+    );
+    for _ in 0..20 {
+        ctrl.handle(Intent::PageDown);
+    }
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        40,
+        "cannot page past the last screenful"
+    );
+}
+
+#[test]
+fn page_keys_move_the_tree_cursor_by_the_tree_height() {
+    // Tree focused: a page is the tree's own drawn height (20 rows), NOT the content pane's 10.
+    let dir = TempDir::new();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry()); // tree interior: 20 rows
+
+    assert_eq!(ctrl.focus(), Focus::Tree);
+    assert_eq!(ctrl.tree().cursor(), 0);
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(ctrl.tree().cursor(), 20, "one screenful of tree rows down");
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(ctrl.tree().cursor(), 0, "and back up");
+
+    for _ in 0..5 {
+        ctrl.handle(Intent::PageDown);
+    }
+    assert_eq!(ctrl.tree().cursor(), 39, "clamped at the last row");
+}
+
+#[test]
+fn narrow_layout_pages_the_tree_by_its_own_height_not_one_row() {
+    // Regression: under 80 columns the Presenter draws only the FOCUSED column, so while the tree
+    // holds focus the content viewport is fed back as (0, 0) on every frame — not just before the
+    // first one. Paging off the content height made PageDown a one-row step for as long as that
+    // layout held; the tree must still page by the rows it actually drew.
+    let dir = TempDir::new();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_content_viewport(0, 0); // tree-only frame: no content column was drawn
+    ctrl.set_pane_geometry(PaneGeometry {
+        area_x: 0,
+        area_width: 60,
+        tree_inner: Some(Rect {
+            x: 1,
+            y: 1,
+            width: 58,
+            height: 20,
+        }),
+        ..PaneGeometry::default()
+    });
+
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(
+        ctrl.tree().cursor(),
+        20,
+        "a page stays a screenful of tree rows when the content column is not drawn"
+    );
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(ctrl.tree().cursor(), 0, "and PageUp returns a full page");
+}
+
+#[test]
 fn scroll_to_line_brings_the_target_line_into_view_and_clamps_out_of_range() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
@@ -10416,5 +10522,153 @@ fn apply_compact_dirs_folds_the_tree_and_survives_a_reroot() {
         labels,
         vec!["a/b/c".to_string()],
         "compaction survives a worktree switch"
+    );
+}
+
+// ---- next / previous changed file (`]` / `[`) --------------------------------------------
+
+/// The file name the tree cursor sits on, or `""` with nothing selected.
+fn selected_name(ctrl: &Controller) -> String {
+    ctrl.tree()
+        .selected()
+        .map(|n| n.path.file_name().unwrap().to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn next_changed_walks_the_changed_set_and_notices_the_wrap() {
+    // `]` is the tree's `n`: step to the next changed file, wrapping with a notice so the key
+    // never looks dead at the end of the list.
+    let dir = TempDir::new();
+    for name in ["a.rs", "b.rs", "clean.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("a.rs"), Status::Modified);
+    changed.insert(PathBuf::from("b.rs"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_eq!(selected_name(&ctrl), "a.rs", "precondition");
+
+    let fx = ctrl.handle(Intent::NextChanged);
+    assert!(fx.redraw);
+    assert_eq!(selected_name(&ctrl), "b.rs", "] skips the clean file");
+    assert!(
+        ctrl.action_notice().is_none(),
+        "no wrap yet, so no notice: {:?}",
+        ctrl.action_notice()
+    );
+
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(selected_name(&ctrl), "a.rs", "] wraps to the first");
+    let notice = ctrl.action_notice().unwrap_or("");
+    assert!(
+        notice.contains("wrapped"),
+        "the wrap is surfaced, got: {notice:?}"
+    );
+}
+
+#[test]
+fn prev_changed_walks_backward_and_notices_the_wrap() {
+    let dir = TempDir::new();
+    for name in ["a.rs", "b.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("a.rs"), Status::Modified);
+    changed.insert(PathBuf::from("b.rs"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_eq!(selected_name(&ctrl), "a.rs", "precondition");
+
+    ctrl.handle(Intent::PrevChanged);
+    assert_eq!(selected_name(&ctrl), "b.rs", "[ wraps to the last");
+    assert!(
+        ctrl.action_notice().unwrap_or("").contains("wrapped"),
+        "the wrap is surfaced"
+    );
+
+    ctrl.handle(Intent::PrevChanged);
+    assert_eq!(selected_name(&ctrl), "a.rs");
+}
+
+#[test]
+fn changed_jump_uses_the_working_tree_status_while_status_mode_is_on() {
+    // `d` filters by working-tree status, so `]` must walk THAT set, not the baseline one —
+    // otherwise the jump would land on a file the filtered tree isn't even showing.
+    let dir = TempDir::new();
+    for name in ["base_only.rs", "status_only.rs"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    let mut status = BTreeMap::new();
+    status.insert(PathBuf::from("status_only.rs"), Status::Modified);
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("base_only.rs"), Status::Modified);
+    let git = StubGit {
+        status,
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(
+        selected_name(&ctrl),
+        "status_only.rs",
+        "status mode walks the working-tree status set"
+    );
+}
+
+#[test]
+fn changed_jump_notices_an_empty_changed_set_and_is_inert_without_git() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+
+    // In a repo with nothing changed the key says so rather than doing nothing visible.
+    let (mut ctrl, _, _) = controller(dir.path(), true, StubGit::default(), false);
+    ctrl.handle(Intent::NextChanged);
+    assert!(
+        ctrl.action_notice().unwrap_or("").contains("No changed"),
+        "an empty changed-set is surfaced, got: {:?}",
+        ctrl.action_notice()
+    );
+
+    // Outside a repo there is no changed-set at all: inert (AC-26).
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let fx = ctrl.handle(Intent::NextChanged);
+    assert!(!fx.redraw, "inert without git (AC-26)");
+    assert!(ctrl.action_notice().is_none());
+}
+
+#[test]
+fn changed_jump_expands_a_collapsed_directory_to_reach_the_file() {
+    // The deep-tree case the feature exists for: the changed file is several collapsed levels
+    // down, and `]` must still reach it from the unfiltered tree.
+    let dir = TempDir::new();
+    let deep = dir.path().join("src/main/java");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Deep.java"), "x\n").unwrap();
+
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("src/main/java/Deep.java"), Status::Modified);
+    let git = StubGit {
+        changed,
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert_ne!(selected_name(&ctrl), "Deep.java", "precondition: collapsed");
+
+    ctrl.handle(Intent::NextChanged);
+    assert_eq!(
+        selected_name(&ctrl),
+        "Deep.java",
+        "] expands the collapsed ancestors and lands on the changed file"
     );
 }

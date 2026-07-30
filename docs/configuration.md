@@ -31,8 +31,15 @@ that directory (on Linux it is
 `~/.config/herdr/plugins/config/herdr-file-viewer/`, so the file is that path plus `config.toml`).
 Run standalone (outside herdr), it
 falls back to `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, defaulting to
-`~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. A missing file is the
-normal case — every key falls back to its default.
+`~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. On **Windows**, where
+neither `XDG_CONFIG_HOME` nor `HOME` is set, that resolves to
+`%USERPROFILE%\.config\herdr-file-viewer\config.toml`. A missing file is the normal case — every key
+falls back to its default.
+
+Print the herdr-managed directory at any time with `herdr plugin config-dir herdr-file-viewer`. The
+path has to resolve to an **absolute** location: a config file is trusted input (it can set the
+`editor` command), so a path that would resolve relative to the working directory is refused rather
+than sourced from whatever repository you happen to have open.
 
 ## Precedence
 
@@ -155,6 +162,8 @@ customized).
 | --- | --- | --- | --- |
 | **Navigation** | `nav_up` | `Up`, `k` | Move the tree cursor up one row |
 | | `nav_down` | `Down`, `j` | Move the tree cursor down one row |
+| | `page_up` | `PageUp` | Move up one screenful (content pane when focused, else the tree cursor) |
+| | `page_down` | `PageDown`, `Space` | Move down one screenful (content pane when focused, else the tree cursor) |
 | | `expand` | `Right`, `l` | Expand the selected directory |
 | | `collapse` | `Left`, `h` | Collapse the selected directory |
 | | `activate` | `Enter` | Activate the selection: expand/collapse a directory, or open a file |
@@ -186,6 +195,8 @@ customized).
 | | `open_search` | `/` | Open the in-file search prompt |
 | | `next_match` | `n` | Jump to the next search match (wraps) |
 | | `prev_match` | `N` | Jump to the previous search match (wraps) |
+| | `next_changed` | `]` | Jump the tree cursor to the next changed file (wraps) |
+| | `prev_changed` | `[` | Jump the tree cursor to the previous changed file (wraps) |
 | **Session** | `dismiss_update` | `u` | Dismiss the update-available banner for this session |
 | | `switch_worktree` | `W` | Open the worktree picker to re-root at another git worktree |
 | | `show_help` | `?` | Open the in-app help overlay (What's New and About) |

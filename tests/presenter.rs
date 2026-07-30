@@ -3744,14 +3744,17 @@ fn annotation_tree_markers_preserve_git_width_foregrounds_and_selection_style() 
     let area = Rect::new(0, 0, 100, 12);
     let annotated_width = geometry(area, &state).tree_content_width;
     let buf = render_buffer(&state, 100, 12);
+    // A file row reserves the expand arrow's two columns as blanks so its name lines up with a
+    // directory's at the same depth, so the markers sit that much further left of the name.
+    const GLYPH_W: u16 = 2;
     for (name, git, foreground) in [
         ("clean.rs", " ", Color::Reset),
         ("modified.rs", "M", Color::LightRed),
     ] {
         let (x, y) = find_cell(&buf, name);
-        assert_eq!(buf.cell((x - 2, y)).unwrap().symbol(), git);
-        assert_eq!(buf.cell((x - 1, y)).unwrap().symbol(), "@");
-        assert_eq!(buf.cell((x - 1, y)).unwrap().bg, Color::Reset);
+        assert_eq!(buf.cell((x - GLYPH_W - 2, y)).unwrap().symbol(), git);
+        assert_eq!(buf.cell((x - GLYPH_W - 1, y)).unwrap().symbol(), "@");
+        assert_eq!(buf.cell((x - GLYPH_W - 1, y)).unwrap().bg, Color::Reset);
         for offset in 0..name.len() as u16 {
             let cell = buf.cell((x + offset, y)).unwrap();
             assert_eq!(
@@ -3763,7 +3766,7 @@ fn annotation_tree_markers_preserve_git_width_foregrounds_and_selection_style() 
         }
     }
     let (x, y) = find_cell(&buf, "selected.rs");
-    assert_eq!(buf.cell((x - 1, y)).unwrap().symbol(), "@");
+    assert_eq!(buf.cell((x - GLYPH_W - 1, y)).unwrap().symbol(), "@");
     assert_eq!(buf.cell((x, y)).unwrap().bg, Color::Reset);
     assert!(
         buf.cell((x, y))

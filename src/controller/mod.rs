@@ -1424,16 +1424,7 @@ impl Controller {
         }
         // reveal() may have relaxed changed_only / hide_hidden / show_ignored — re-sync controller
         // mirrors (same as the file finder's confirm path, plus show_ignored for launch targets).
-        let tree_changed_only = self.tree.changed_only();
-        if !tree_changed_only {
-            self.changed_only = false;
-            self.status_mode = false;
-        } else {
-            // Status mode owns the filter while active; otherwise mirror the tree flag.
-            self.changed_only = !self.status_mode;
-        }
-        self.hide_hidden = self.tree.hide_hidden();
-        self.show_ignored = self.tree.show_ignored();
+        self.resync_filter_mirrors();
         // Defer zoom until the first real layout measurement (see `set_content_viewport`).
         self.pending_open_zoom = true;
         // Success notice (option 2): echo the open target as a line reference. Cleared on the
@@ -1878,6 +1869,10 @@ impl Controller {
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
+            // One screenful, measured from the focused pane's live height so it follows a resize.
+            // navigate() already routes by focus and scroll_content() clamps to [0, max].
+            Intent::PageUp => self.navigate(-self.page_step()),
+            Intent::PageDown => self.navigate(self.page_step()),
             Intent::Expand => self.expand(),
             Intent::Collapse => self.collapse(),
             Intent::Activate => self.activate(),
@@ -1909,6 +1904,8 @@ impl Controller {
             Intent::OpenSearch => self.open_search(),
             Intent::NextMatch => self.next_match(),
             Intent::PrevMatch => self.prev_match(),
+            Intent::NextChanged => self.navigate_changed(true),
+            Intent::PrevChanged => self.navigate_changed(false),
             Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
             // `L` is focus-gated (ADR-0010, copy-line-reference): on tree focus it is unchanged
             // (AC-2, still `scroll_tree_h_focus`); on content focus it instead enters line-select
@@ -1936,6 +1933,20 @@ impl Controller {
         }
     }
 
+    /// One screenful of movement, in rows: the drawn height of the pane [`navigate`](Self::navigate)
+    /// will move, so each pane pages by its own viewport. The panes differ in height, and in the
+    /// narrow (< 80 column) layout only the focused one is drawn at all — the content viewport
+    /// stays `(0, 0)` for as long as the tree holds focus there, so paging by `content_height`
+    /// would step the tree cursor a single row per press. Falls back to one row while the focused
+    /// pane has no measured geometry (before the first layout pass), so a page key is never a no-op.
+    fn page_step(&self) -> isize {
+        let rows = match self.focus {
+            Focus::Content => self.content_height,
+            Focus::Tree => self.geom.tree_inner.map_or(0, |inner| inner.height),
+        };
+        (rows as isize).max(1)
+    }
+
     /// Up/down navigation is focus-aware: it moves the tree cursor when the tree is focused
     /// (selecting a file, which re-renders the content), and scrolls the content pane when the
     /// content is focused (`Tab` switches focus). This reads each pane's natural keys without
@@ -1952,6 +1963,65 @@ impl Controller {
                 Effects::redraw()
             }
         }
+    }
+
+    /// Jump the tree cursor to the next / previous **changed file** (`]` / `[`), wrapping at the
+    /// ends with a notice — the tree-level counterpart to `n`/`N` over search matches. Reviewing a
+    /// branch is a walk over the changed files, and in a deep tree that walk costs a lot of `j`
+    /// presses through directory rows; this makes it one key.
+    ///
+    /// The set walked is the one the tree is filtered by: the working-tree status while status
+    /// mode (`d`) is on, else the baseline-aware changed-set that `c` and `b` drive. Focus-blind
+    /// on purpose — it moves the *tree*, so it works while reading the content pane too. Inert
+    /// without git (AC-26) or with nothing changed, which gets a notice rather than silence so the
+    /// key never looks broken — as does a set whose every file the current filters hide, since the
+    /// jump skips those rather than unfiltering the tree to reach them. Selecting re-renders, so
+    /// the jump lands on the file's diff.
+    fn navigate_changed(&mut self, forward: bool) -> Effects {
+        if !self.is_git_repo {
+            return Effects::noop(); // inert without git (AC-26)
+        }
+        // Borrowing two disjoint fields: `tree` mutably, the changed-set immutably.
+        let set = if self.status_mode {
+            &self.git_status
+        } else {
+            &self.changed
+        };
+        let Some(wrapped) = self.tree.select_changed(forward, set) else {
+            self.action_notice = Some("No changed files".into());
+            return Effects::redraw();
+        };
+        // No filter-mirror re-sync here, unlike the finder confirm and the launch open target:
+        // `select_changed` expands ancestors but never relaxes a filter, so the mirrors cannot go
+        // stale. A candidate the current filters hide is skipped instead of forced into view.
+        if wrapped {
+            self.action_notice = Some(if forward {
+                "Changed files: wrapped to the first".into()
+            } else {
+                "Changed files: wrapped to the last".into()
+            });
+        }
+        self.dispatch_render(); // new selection → re-render (and reset the scroll)
+        Effects::redraw()
+    }
+
+    /// Re-sync the controller's filter mirrors (`changed_only`, `status_mode`, `hide_hidden`,
+    /// `show_ignored`) from the tree after a [`TreeModel::reveal`], which relaxes a filter that
+    /// would otherwise hide the revealed target. Without this a later `c` / `.` / `i` / `d` toggle
+    /// would flip against a stale mirror and appear to do nothing.
+    ///
+    /// Status mode and baseline-aware changed-only share the tree's single `changed_only` flag, so
+    /// a relaxed filter must clear both mirrors; while status mode is on it owns the flag, which
+    /// leaves `changed_only` false.
+    pub(super) fn resync_filter_mirrors(&mut self) {
+        if self.tree.changed_only() {
+            self.changed_only = !self.status_mode;
+        } else {
+            self.changed_only = false;
+            self.status_mode = false;
+        }
+        self.hide_hidden = self.tree.hide_hidden();
+        self.show_ignored = self.tree.show_ignored();
     }
 
     /// Scroll the content pane by `delta` lines, clamped to `[0, max]` so it can never run
@@ -3353,6 +3423,46 @@ mod tests {
         Controller::new(resolved, Baseline::Head, components)
     }
 
+    #[test]
+    fn page_step_is_the_focused_pane_viewport_and_never_zero() {
+        // A page is the drawn height of the pane the key will actually move, so paging follows a
+        // resize instead of using a fixed stride — and the tree keeps paging by tree rows even in
+        // the narrow layout, where the undrawn content column reports a (0, 0) viewport. The floor
+        // of 1 covers a key pressed before the first layout pass, when neither pane is measured.
+        let mut ctrl = wiring_controller();
+        assert_eq!(
+            ctrl.page_step(),
+            1,
+            "nothing measured yet → still move a row"
+        );
+
+        ctrl.set_content_viewport(80, 20);
+        assert_eq!(
+            ctrl.page_step(),
+            1,
+            "tree focused, no tree drawn yet → a row"
+        );
+        ctrl.set_pane_geometry(PaneGeometry {
+            tree_inner: Some(ratatui::layout::Rect {
+                x: 1,
+                y: 1,
+                width: 30,
+                height: 12,
+            }),
+            ..PaneGeometry::default()
+        });
+        assert_eq!(ctrl.page_step(), 12, "a page is the tree's own height");
+
+        ctrl.focus = Focus::Content;
+        assert_eq!(
+            ctrl.page_step(),
+            20,
+            "content focus pages by the content pane"
+        );
+        ctrl.set_content_viewport(80, 7);
+        assert_eq!(ctrl.page_step(), 7, "and it tracks a resize");
+    }
+
     struct ChangedGit {
         path: PathBuf,
     }
@@ -3871,6 +3981,73 @@ mod tests {
         assert!(
             body.contains("Re-read git state"),
             "the appended Keybindings section body must carry the registry descriptions, got: {body}"
+        );
+    }
+
+    // ---- AltGr closes an already-open help overlay on Windows (matches opening) ----------
+
+    #[test]
+    fn normalized_altgr_question_mark_closes_open_help_overlay() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        let altgr = crate::input::normalize_altgr(
+            KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            true,
+        );
+
+        ctrl.handle_help_key(altgr);
+
+        assert!(ctrl.help_state().is_none());
+    }
+
+    /// Ctrl+Alt(+Shift)+`?` while help is open: on Windows this must close the overlay, exactly
+    /// mirroring how it opens one via `Intent::ShowHelp` (AC parity, no drift between open/close).
+    #[test]
+    #[cfg(windows)]
+    fn altgr_question_mark_closes_open_help_overlay_on_windows() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        assert!(
+            ctrl.help_state().is_some(),
+            "help must be open before the AltGr key"
+        );
+
+        let altgr_close = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        ctrl.handle_help_key(altgr_close);
+
+        assert!(
+            ctrl.help_state().is_none(),
+            "AltGr+? must close the open help overlay on Windows"
+        );
+    }
+
+    /// Off Windows the same chord is a genuine Ctrl+Alt chord, not AltGr typing, so it must stay
+    /// inert and leave the overlay open (consumed no-op, nothing leaks past the modal).
+    #[test]
+    #[cfg(not(windows))]
+    fn ctrl_alt_question_mark_leaves_help_overlay_open_off_windows() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        assert!(
+            ctrl.help_state().is_some(),
+            "help must be open before the chord"
+        );
+
+        let ctrl_alt = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        ctrl.handle_help_key(ctrl_alt);
+
+        assert!(
+            ctrl.help_state().is_some(),
+            "off Windows, Ctrl+Alt+? must not close the help overlay"
         );
     }
 }

@@ -460,11 +460,18 @@ const ANNOTATION_STYLE: Style = Style::new().bg(Color::DarkGray);
 
 /// Render one tree row: `<git><annotation><indent><glyph><name>`. The annotation marker replaces
 /// the reserved blank prefix cell, so git coexistence and row geometry stay unchanged.
+///
+/// A file's glyph is two BLANKS, not an empty string. The expand arrow is two columns wide, so
+/// without that placeholder a file's name starts two columns left of where a directory's name
+/// starts at the same depth — which puts a file at depth `d+1` in exactly the column of its parent
+/// directory at depth `d`, and puts a top-level file two columns left of the directory it sits
+/// beside. Reserving the width makes the column a node's name starts in a true function of its
+/// depth, so siblings line up and a child is always one level in from its parent.
 fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
     let glyph = match node.kind {
         NodeKind::Dir if node.expanded => "▾ ",
         NodeKind::Dir => "▸ ",
-        NodeKind::File => "",
+        NodeKind::File => "  ",
     };
     let annotated = annotated && node.kind == NodeKind::File;
     let mut row_style = Style::new();

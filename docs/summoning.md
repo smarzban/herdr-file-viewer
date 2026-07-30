@@ -35,19 +35,20 @@ scoped to the current tab, so invoking it repeatedly is *launch-or-focus-or-togg
 - the viewer pane already focused → close it (herdr has no hide-without-close; reopening just
   re-walks the tree)
 
-**One-press access: bind a key.** herdr's `config.toml` binds keys to commands; point one at the
-action so it runs with the plugin's working directory (no hard-coded paths):
+**One-press access: bind a key.** herdr's `config.toml` binds keys to commands; point a
+`plugin_action` binding at the installed plugin's qualified action id. herdr invokes the action
+directly, so no detached shell or hard-coded path is involved:
 
 ```toml
 [[keys.command]]
 key = "prefix+f"   # any herdr key syntax, e.g. ctrl+b then f
-type = "shell"     # run detached; do NOT use "pane" (it would close when the command exits)
-command = "herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer"
+description = "open file viewer in split"
 ```
 
 Reload with `herdr server reload-config`. Pressing the key then opens / focuses / hides the
-viewer via the same idempotent launcher. (Alternatively, `command` may invoke
-`scripts/open-file-viewer.sh` directly using the absolute install path from `herdr plugin list`.)
+viewer via the same idempotent launcher.
 
 ## Open in a tab instead of a split
 
@@ -69,20 +70,20 @@ Bind it to its own key, e.g. `prefix+shift+f` alongside `prefix+f` for the split
 ```toml
 [[keys.command]]
 key = "prefix+shift+f"
-type = "shell"
-command = "herdr plugin action invoke open-file-viewer-tab --plugin herdr-file-viewer"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-tab"
+description = "open file viewer in tab"
 ```
 
 ## Limitation over `herdr --remote`
 
-`--remote` attaches with **local** keybindings by default, and herdr has no way to fire a plugin
-action into the *attached* (remote) session from a local key: a `type = "shell"` command runs
-against your **local** herdr (wrong session), and a `type = "pane"` command runs in a throwaway
-pane that closes the instant it exits (so the viewer doesn't persist). To drive the viewer on the
-remote, attach with **`herdr --remote <host> --remote-keybindings server`**. The binding then
-lives in the *server's* `config.toml` and behaves fully (open / focus / close-toggle).
+`--remote` attaches with **local** keybindings by default, but herdr does not send local custom
+command bindings, including `plugin_action`, to the remote host. To drive the viewer on the remote,
+put the binding in the remote server's `config.toml` and attach with
+**`herdr --remote <host> --remote-keybindings server`**. The qualified id then resolves against the
+plugin installed on that server.
 
-This is a herdr keybinding/remote limitation, not the plugin's. The action and launcher work
-the same locally and remotely; it's only *which* keymap fires them across `--remote` that differs.
+This is a herdr keybinding/remote limitation, not the plugin's. The action and launcher work the
+same locally and remotely; only which config supplies the binding differs.
 
 On Windows the action ids and keybinding requirements differ slightly — see [Windows](windows.md).
