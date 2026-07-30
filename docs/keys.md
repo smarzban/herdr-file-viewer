@@ -32,7 +32,7 @@ is additive and on by default.
 | `:` | **Go to line**: open a prompt and jump the content pane to a source line by number (`Enter` jumps, `Esc` cancels; out-of-range clamps to the last line). Works in any view; in a rendered-markdown or diff view, confirming switches to the line-numbered content view and jumps there |
 | `/` | **Search in file**: open a prompt and highlight every match in the content pane as you type; `Enter` commits the search (highlights persist), `Esc` clears it and restores the scroll. Smartcase (a lowercase query is case-insensitive; a capital makes it case-sensitive). Works in any view |
 | `n` / `N` (Shift+`n`) | After a committed search, jump to the **next** / **previous** match and scroll it into view, wrapping at the ends with a notice |
-| `]` / `[` | Jump the tree cursor to the **next** / **previous** changed file, wrapping at the ends with a notice — step through a review one file at a time instead of arrowing past directory rows. Walks the same set the tree filters by (working-tree status while `d` is on, else the baseline-aware set behind `c` / `b`), in path order, and expands a collapsed directory to reach a changed file inside it. Inert outside a git repo; with nothing changed it says so |
+| `]` / `[` | Jump the tree cursor to the **next** / **previous** changed file, wrapping at the ends with a notice — step through a review one file at a time instead of arrowing past directory rows. Walks the same set the tree filters by (working-tree status while `d` is on, else the baseline-aware set behind `c` / `b`), in the order the tree lists them top-to-bottom, and expands a collapsed directory to reach a changed file inside it. Inert outside a git repo; with nothing changed it says so |
 | `y` | Copy the selected file's **repo-relative** path to the clipboard (e.g. `src/app.rs`) |
 | `Y` | Copy the selected file's **absolute** path to the clipboard |
 | `a` | **Add annotation**: open the annotation editor for the selected file (`←`/`→` or `Home`/`End` move the text cursor, `Enter` saves, `Esc` cancels). Annotations live only for this viewer session and never modify the file |
@@ -66,10 +66,22 @@ changes you make outside it (a merge, pull, or commit in another pane) show up a
 forces a full refresh on demand. (Focus-refresh updates the tree's status without disturbing your
 content scroll.)
 
-Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `a`/`A`, `y`/`Y`,
-`W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the annotation
-overview).
+Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
+not trigger a viewer action; `Shift` is permitted for keys such as `<` and `>` (and `a`/`A`,
+`y`/`Y`, `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the
+annotation overview).
+
+**On Windows only**, `Ctrl+Alt`+character (with optional `Shift`) is treated as typing (AltGr), not
+as a chord. Crossterm 0.29's Windows input path reports AltGr as the generic `Ctrl+Alt` combination,
+so a genuine Windows `Ctrl+Alt`+character chord is ambiguous with AltGr typing a bound character:
+pressing AltGr+`?` on a Brazilian ABNT2 keyboard still opens (or closes) the help overlay, and the
+same applies to whatever character any of your bindings use, including a custom `[keys]` remap.
+(Some layouts produce other characters via AltGr too, e.g. `[`/`]` on German and Spanish ones; those
+are unbound by default, so they trigger nothing unless you bind them yourself.) `Ctrl` alone, `Alt`
+alone, `Ctrl+Alt` on a non-character key (`Ctrl+Alt+↑`), and `Ctrl+Alt` plus any modifier other than
+optional `Shift` stay inert. Linux and macOS decoding is unchanged. To prevent a particular Windows
+`Ctrl+Alt` chord from triggering its viewer action, rebind that action off the character in
+[`[keys]`](configuration.md#keybindings).
 
 ### Copy a path (`y` / `Y`)
 

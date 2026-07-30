@@ -125,17 +125,19 @@ pub enum Intent {
     /// navigation — scroll/highlight only, no mutation (AC-19, AC-N1, AC-N3). A no-op when there
     /// is no committed search with ≥1 match. Bound to `N` only — no event hook (AC-N6).
     PrevMatch,
-    /// Jump the tree cursor to the **next changed file**, wrapping at the end of the changed-set
-    /// with a notice. Traverses the active changed-set (baseline-aware, or the working-tree status
-    /// while status mode is on) in path order, expanding a collapsed directory when the next
-    /// changed file is inside one — so a review can step file to file without hunting the tree.
+    /// Jump the tree cursor to the **next changed file**, wrapping past the last one with a
+    /// notice. Traverses the active changed-set (baseline-aware, or the working-tree status while
+    /// status mode is on) in the order the tree renders those files — directories before files at
+    /// each level, so the wrap notice means exactly "past the last row, back to the first" —
+    /// expanding a collapsed directory when the next changed file is inside one, so a review can
+    /// step file to file without hunting the tree.
     /// Read-only navigation: cursor and expansion state only, no file or git mutation (AC-N1,
     /// AC-N3). A no-op outside a git repository or with an empty changed-set. Bound to `]` only —
     /// no event hook (AC-N6).
     NextChanged,
-    /// Jump the tree cursor to the **previous changed file**, wrapping at the start of the
-    /// changed-set with a notice — the mirror of [`Intent::NextChanged`], same set, same order,
-    /// same read-only guarantees. Bound to `[` only — no event hook (AC-N6).
+    /// Jump the tree cursor to the **previous changed file**, wrapping past the first one with a
+    /// notice — the mirror of [`Intent::NextChanged`], same set, same order, same read-only
+    /// guarantees. Bound to `[` only — no event hook (AC-N6).
     PrevChanged,
     /// Scroll the tree pane left by the horizontal step (AC-18: the tree's h-scroll was
     /// mouse-only; this key makes it keyboard-reachable). Read-only navigation — it only

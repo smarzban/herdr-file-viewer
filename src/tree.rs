@@ -6,7 +6,9 @@
 
 use crate::git::Status;
 use crate::index::walk_builder;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Whether a tree node is a directory or a file.
@@ -29,12 +31,72 @@ pub struct Node {
     pub dir_dirty: bool,
 }
 
+/// The tree's sibling order, and the **single source of truth** for it: directories before
+/// files, alphabetical within each group.
+///
+/// Every ordering in this module routes through here — the filesystem rows ([`sort_entries`]),
+/// the synthesized changed-only rows ([`TreeModel::emit_synthetic`]), and the `]` / `[` jump's
+/// traversal ([`cmp_visual`]) — so a change to how siblings sort can never leave one of them
+/// behind.
+fn cmp_sibling(a: (&OsStr, NodeKind), b: (&OsStr, NodeKind)) -> Ordering {
+    (b.1 == NodeKind::Dir)
+        .cmp(&(a.1 == NodeKind::Dir))
+        .then_with(|| a.0.cmp(b.0))
+}
+
+/// Compare two root-relative paths by the order their rows appear in the tree, given the
+/// [`NodeKind`] of each path's own last component (interior components are directories by
+/// construction).
+///
+/// Walks components from the common prefix and, at the first divergence, defers to
+/// [`cmp_sibling`] — so a path that continues (a directory at that level) orders before one that
+/// ends there, and same-kind siblings use the tree's name ordering. When one path is an ancestor
+/// of the other the ancestor's row comes first, matching the depth-first render.
+///
+/// This is why `Cargo.toml` is the *last* row next to `docs/` and `src/` even though it is the
+/// *first* key in a `BTreeMap` keyed by path: lexicographic key order is not row order.
+fn cmp_visual(a: (&Path, NodeKind), b: (&Path, NodeKind)) -> Ordering {
+    let (mut ac, mut bc) = (a.0.components(), b.0.components());
+    loop {
+        match (ac.next(), bc.next()) {
+            (Some(x), Some(y)) => {
+                // A component is a directory when another follows it; the last one carries the
+                // caller-supplied kind (a cursor may sit on a directory row).
+                let xk = if ac.clone().next().is_some() {
+                    NodeKind::Dir
+                } else {
+                    a.1
+                };
+                let yk = if bc.clone().next().is_some() {
+                    NodeKind::Dir
+                } else {
+                    b.1
+                };
+                match cmp_sibling((x.as_os_str(), xk), (y.as_os_str(), yk)) {
+                    Ordering::Equal => continue, // same node at this level — descend
+                    ord => return ord,
+                }
+            }
+            (Some(_), None) => return Ordering::Greater, // `b` is an ancestor: its row is first
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return Ordering::Equal,
+        }
+    }
+}
+
+/// The row order of a root-relative path, for a caller outside this module (the jump's tests).
+/// Both paths are treated as files, which is what a changed-set holds.
+pub fn cmp_file_rows(a: &Path, b: &Path) -> Ordering {
+    cmp_visual((a, NodeKind::File), (b, NodeKind::File))
+}
+
 /// Order tree entries: directories first, then files; alphabetical within each group.
 fn sort_entries(entries: &mut [(PathBuf, NodeKind)]) {
     entries.sort_by(|a, b| {
-        (b.1 == NodeKind::Dir)
-            .cmp(&(a.1 == NodeKind::Dir))
-            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+        cmp_sibling(
+            (a.0.file_name().unwrap_or_default(), a.1),
+            (b.0.file_name().unwrap_or_default(), b.1),
+        )
     });
 }
 
@@ -177,33 +239,37 @@ impl TreeModel {
         out: &mut Vec<Node>,
     ) {
         let is_child = |rel: &Path| rel.parent().unwrap_or(Path::new("")) == parent_rel;
-        let mut child_dirs: Vec<&PathBuf> = dirs.iter().filter(|d| is_child(d)).collect();
-        let mut child_files: Vec<&PathBuf> = files.iter().filter(|f| is_child(f)).collect();
-        child_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        child_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        let mut children: Vec<(&PathBuf, NodeKind)> = dirs
+            .iter()
+            .filter(|d| is_child(d))
+            .map(|d| (d, NodeKind::Dir))
+            .chain(
+                files
+                    .iter()
+                    .filter(|f| is_child(f))
+                    .map(|f| (f, NodeKind::File)),
+            )
+            .collect();
+        children.sort_by(|a, b| {
+            cmp_sibling(
+                (a.0.file_name().unwrap_or_default(), a.1),
+                (b.0.file_name().unwrap_or_default(), b.1),
+            )
+        });
 
-        for d in child_dirs {
-            let abs = self.root.join(d);
+        for (rel, kind) in children {
+            let abs = self.root.join(rel);
             out.push(Node {
                 path: abs.clone(),
-                kind: NodeKind::Dir,
+                kind,
                 depth,
-                expanded: true,
+                expanded: kind == NodeKind::Dir,
                 status: self.status_for(&abs),
-                dir_dirty: self.dir_contains_change(&abs),
+                dir_dirty: kind == NodeKind::Dir && self.dir_contains_change(&abs),
             });
-            self.emit_synthetic(d, depth + 1, dirs, files, out);
-        }
-        for f in child_files {
-            let abs = self.root.join(f);
-            out.push(Node {
-                path: abs.clone(),
-                kind: NodeKind::File,
-                depth,
-                expanded: false,
-                status: self.status_for(&abs),
-                dir_dirty: false,
-            });
+            if kind == NodeKind::Dir {
+                self.emit_synthetic(rel, depth + 1, dirs, files, out);
+            }
         }
     }
 
@@ -354,9 +420,12 @@ impl TreeModel {
     /// report whether the move wrapped around the ends. Returns `None` — leaving the cursor
     /// untouched — when `changed` is empty or no candidate could be selected.
     ///
-    /// Traversal order is the changed-set's own path order, so it matches the order the files are
-    /// listed in under the changed-only filter. Candidates come from the changed-set rather than
-    /// the visible rows, so a changed file inside a **collapsed** directory is still reachable:
+    /// Traversal order is the order the candidates' **rows** appear in the tree ([`cmp_visual`]),
+    /// not the changed-set's lexicographic key order — the tree renders directories before files
+    /// at each level, so `Cargo.toml` beside `docs/` and `src/` is the last row while sorting
+    /// first as a key. That is what makes the reported wrap mean exactly "moved past the last
+    /// candidate row to the first" (and the reverse). Candidates come from the changed-set rather
+    /// than the visible rows, so a changed file inside a **collapsed** directory is still reachable:
     /// each candidate is first looked up among the visible nodes and, failing that,
     /// [`reveal`](Self::reveal)ed, which expands its ancestors. A candidate that can be neither
     /// found nor revealed — a deleted file has no node on disk outside changed-only mode — is
@@ -367,25 +436,33 @@ impl TreeModel {
         forward: bool,
         changed: &BTreeMap<PathBuf, Status>,
     ) -> Option<bool> {
-        let candidates: Vec<&PathBuf> = changed.keys().collect();
+        // Sorted once per jump — never per frame; the changed-set is a map, so its keys arrive in
+        // lexicographic order and have to be put into row order here.
+        let mut candidates: Vec<&PathBuf> = changed.keys().collect();
+        candidates.sort_by(|a, b| cmp_visual((a, NodeKind::File), (b, NodeKind::File)));
         let len = candidates.len();
         if len == 0 {
             return None;
         }
-        // Where the cursor sits within the changed-set's order. A cursor on a directory, on an
-        // unchanged file, or on nothing still has a well-defined neighbour: `partition_point`
-        // finds the insertion point, so the jump goes to the next / previous changed file in path
-        // order either way.
-        let current = self
-            .selected()
-            .and_then(|n| n.path.strip_prefix(&self.root).map(Path::to_path_buf).ok());
+        // Where the cursor sits within that order. A cursor on a directory, on an unchanged file,
+        // or on nothing still has a well-defined neighbour: `partition_point` finds the insertion
+        // point, so the jump goes to the next / previous changed file either way. The cursor's own
+        // kind is passed through, so a directory row compares as the parent of its children rather
+        // than as a file sharing their name.
+        let current = self.selected().and_then(|n| {
+            n.path
+                .strip_prefix(&self.root)
+                .map(|rel| (rel.to_path_buf(), n.kind))
+                .ok()
+        });
+        let at = |c: &Path, rel: &Path, kind| cmp_visual((c, NodeKind::File), (rel, kind));
         let (start, start_wrapped) = match &current {
-            Some(rel) if forward => {
-                let i = candidates.partition_point(|c| c.as_path() <= rel.as_path());
+            Some((rel, kind)) if forward => {
+                let i = candidates.partition_point(|c| at(c, rel, *kind) != Ordering::Greater);
                 if i < len { (i, false) } else { (0, true) }
             }
-            Some(rel) => {
-                let i = candidates.partition_point(|c| c.as_path() < rel.as_path());
+            Some((rel, kind)) => {
+                let i = candidates.partition_point(|c| at(c, rel, *kind) == Ordering::Less);
                 if i > 0 {
                     (i - 1, false)
                 } else {

@@ -176,8 +176,8 @@ Git status is woven straight into the tree, not a separate mode:
 - **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next
   or previous changed file, wrapping at the ends with a notice. It walks whichever set the tree is
   filtered by — the working-tree status while `d` is on, else the baseline-aware set behind `c` and
-  `b` — in path order, and expands a collapsed directory when the next changed file lives inside
-  one, so it works in the full tree as well as under `c`. This is `n`/`N` for the tree: reviewing a
+  `b` — in the order the tree lists those files top-to-bottom, and expands a collapsed directory
+  when the next changed file lives inside one, so it works in the full tree as well as under `c`. This is `n`/`N` for the tree: reviewing a
   branch is a walk over the changed files, and in a deeply nested repo that walk is otherwise a long
   run of `j` presses past directory rows.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
