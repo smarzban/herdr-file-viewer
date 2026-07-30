@@ -164,6 +164,88 @@ fn jump_skips_a_candidate_with_no_selectable_node() {
 }
 
 #[test]
+fn jump_skips_a_filtered_out_candidate_without_relaxing_any_filter() {
+    // `]` is navigation, not an explicit request for one path: it stays inside the tree the user
+    // filtered to. A changed file the current filters hide is skipped like any other unselectable
+    // candidate — the jump must never turn a filter off to reach it.
+    let dir = TempDir::new();
+    for name in [".hidden.rs", "a.rs", "b.rs"] {
+        fs::write(dir.path().join(name), "x").unwrap();
+    }
+    let set = changed(&[".hidden.rs", "a.rs", "b.rs"]);
+    let mut model = TreeModel::new(dir.path());
+    model.set_status(&set);
+    model.set_hide_hidden(true);
+    assert_eq!(
+        rows(&model),
+        ["a.rs", "b.rs"],
+        "precondition: the dotfile is hidden"
+    );
+
+    // From the last row, forward wraps onto `.hidden.rs` — the first candidate in row order, but
+    // one with no row. It is skipped, landing on the first candidate that has one.
+    let idx = model
+        .visible_nodes()
+        .iter()
+        .position(|n| n.path.ends_with("b.rs"))
+        .unwrap();
+    model.set_cursor(idx);
+    assert_eq!(model.select_changed(true, &set), Some(true));
+    assert_eq!(
+        selected(&model).as_deref(),
+        Some("a.rs"),
+        "the hidden candidate is skipped, not revealed"
+    );
+
+    assert!(model.hide_hidden(), "hide-hidden must survive the jump");
+    assert!(
+        !model.show_ignored(),
+        "the gitignore filter must survive it"
+    );
+    assert!(
+        !model.changed_only(),
+        "the changed-only filter must survive it"
+    );
+    assert_eq!(rows(&model), ["a.rs", "b.rs"], "the tree is unchanged");
+}
+
+#[test]
+fn jump_lands_on_the_file_row_when_a_directory_replaced_a_file() {
+    // A file replaced by a directory of the same name puts one path into both halves of the
+    // changed-only tree — the file list and the ancestor directory set — so `x` is rendered twice,
+    // as a directory (first) and as the deleted file. A path-only lookup would stop on the
+    // directory row and the file's diff would never show.
+    let set = changed(&["x", "x/y.rs"]); // `x` deleted as a file, re-added as a directory
+    let dir = TempDir::new();
+    let mut model = TreeModel::new(dir.path());
+    model.set_status(&set);
+    model.set_changed_only(true, &set);
+
+    let kinds: Vec<NodeKind> = model.visible_nodes().iter().map(|n| n.kind).collect();
+    assert_eq!(
+        (rows(&model), kinds),
+        (
+            vec!["x".to_string(), "y.rs".to_string(), "x".to_string()],
+            vec![NodeKind::Dir, NodeKind::File, NodeKind::File]
+        ),
+        "precondition: `x` renders twice, the directory row first"
+    );
+
+    model.set_cursor(0); // the `x` directory row
+    assert_eq!(model.select_changed(true, &set), Some(false));
+    assert_eq!(model.selected().unwrap().kind, NodeKind::File, "→ x/y.rs");
+
+    // The next candidate is `x` itself, whose directory row sits ABOVE its file row.
+    assert_eq!(model.select_changed(true, &set), Some(false));
+    let landed = model.selected().unwrap();
+    assert_eq!(
+        (landed.kind, model.cursor()),
+        (NodeKind::File, 2),
+        "the jump must land on the deleted FILE row, not the directory sharing its path"
+    );
+}
+
+#[test]
 fn jump_is_inert_with_an_empty_changed_set() {
     let dir = TempDir::new();
     fs::write(dir.path().join("a.rs"), "x").unwrap();

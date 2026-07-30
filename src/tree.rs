@@ -90,6 +90,18 @@ pub fn cmp_file_rows(a: &Path, b: &Path) -> Ordering {
     cmp_visual((a, NodeKind::File), (b, NodeKind::File))
 }
 
+/// The visible-row index of the **file** node at `path`, if it has one.
+///
+/// Kind-checked rather than path-only: a file replaced by a directory of the same name puts one
+/// path into both halves of the changed-set's synthesized tree — the file list and the ancestor
+/// directory set — so changed-only mode emits a `Dir` row AND a `File` row for it, the directory
+/// first. A path-only lookup would land the jump on the directory row and never show the file's
+/// diff.
+fn file_row(rows: &[Node], path: &Path) -> Option<usize> {
+    rows.iter()
+        .position(|n| n.path == path && n.kind == NodeKind::File)
+}
+
 /// Order tree entries: directories first, then files; alphabetical within each group.
 fn sort_entries(entries: &mut [(PathBuf, NodeKind)]) {
     entries.sort_by(|a, b| {
@@ -365,6 +377,26 @@ impl TreeModel {
         self.visible_nodes().into_iter().nth(self.cursor)
     }
 
+    /// Expand every ancestor directory of `path`, from its parent up to and including the root, so
+    /// a target buried in collapsed directories can get a row.
+    ///
+    /// Expansion state only — it never touches a display filter. That split is what lets the
+    /// `]` / `[` jump reuse this while still honoring its promise to change nothing but the cursor
+    /// and expansion state; [`reveal`](Self::reveal) layers the filter relaxation on top.
+    fn expand_ancestors(&mut self, path: &Path) {
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(&self.root) {
+                break;
+            }
+            self.expand(d);
+            if d == self.root {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+
     /// Reveal `path` in the tree: expand every collapsed ancestor, relax display filters
     /// (`changed_only`, `hide_hidden`, `show_ignored`) if they would hide the target, then move the
     /// cursor to the target's visible-row index. Returns `false` **without moving the cursor** when
@@ -383,18 +415,7 @@ impl TreeModel {
         if !path.is_file() {
             return false; // missing or not a regular file — AC-20
         }
-        // Expand every ancestor directory from the file's parent up to and including root.
-        let mut dir = path.parent();
-        while let Some(d) = dir {
-            if !d.starts_with(&self.root) {
-                break;
-            }
-            self.expand(d);
-            if d == self.root {
-                break;
-            }
-            dir = d.parent();
-        }
+        self.expand_ancestors(path);
         // Relax a filter only if it still hides the target after expansion.
         if self.changed_only && !self.visible_nodes().iter().any(|n| n.path == path) {
             self.changed_only = false;
@@ -426,11 +447,17 @@ impl TreeModel {
     /// first as a key. That is what makes the reported wrap mean exactly "moved past the last
     /// candidate row to the first" (and the reverse). Candidates come from the changed-set rather
     /// than the visible rows, so a changed file inside a **collapsed** directory is still reachable:
-    /// each candidate is first looked up among the visible nodes and, failing that,
-    /// [`reveal`](Self::reveal)ed, which expands its ancestors. A candidate that can be neither
-    /// found nor revealed — a deleted file has no node on disk outside changed-only mode — is
-    /// skipped, so the jump never lands on nothing. Read-only navigation: it moves the cursor and
-    /// expansion state only (AC-N1, AC-N3).
+    /// each candidate is first looked up among the visible rows and, failing that, has its
+    /// ancestors expanded ([`expand_ancestors`](Self::expand_ancestors)) and is looked up again.
+    ///
+    /// A candidate that still has no row is **skipped** — a deleted file has none on disk outside
+    /// changed-only mode, and neither does one hidden by `hide_hidden`, `show_ignored`, or
+    /// `changed_only`. Unlike [`reveal`](Self::reveal), the jump never relaxes a display filter to
+    /// force a target into view: `]` is navigation, not an explicit request for one path, so it
+    /// stays inside the tree the user has filtered to and keeps its promise below. A skipped
+    /// candidate leaves no trace — any expansion done while probing it is rolled back.
+    ///
+    /// Read-only navigation: it moves the cursor and expansion state only (AC-N1, AC-N3).
     pub fn select_changed(
         &mut self,
         forward: bool,
@@ -449,7 +476,12 @@ impl TreeModel {
         // point, so the jump goes to the next / previous changed file either way. The cursor's own
         // kind is passed through, so a directory row compares as the parent of its children rather
         // than as a file sharing their name.
-        let current = self.selected().and_then(|n| {
+        // The visible rows, walked ONCE for the whole jump: in the full tree this is a filesystem
+        // enumeration, so calling it per candidate turned a jump over a run of deleted files into a
+        // run of full walks on the input thread. Every branch below either returns or rolls its
+        // mutation back, so this snapshot stays accurate for the entire loop.
+        let rows = self.visible_nodes();
+        let current = rows.get(self.cursor).and_then(|n| {
             n.path
                 .strip_prefix(&self.root)
                 .map(|rel| (rel.to_path_buf(), n.kind))
@@ -491,13 +523,29 @@ impl TreeModel {
                 }
             }
             let abs = self.root.join(candidates[idx]);
-            if let Some(pos) = self.visible_nodes().iter().position(|n| n.path == abs) {
+            // Already on screen: no mutation, and no second walk.
+            if let Some(pos) = file_row(&rows, &abs) {
                 self.cursor = pos;
                 return Some(wrapped);
             }
-            if self.reveal(&abs) {
+            // No file on disk (a deletion, or a path now taken by a directory) can gain a row
+            // outside changed-only mode, which the lookup above already covers. Skipping on a
+            // cheap `stat` keeps a run of deleted candidates off the walk path entirely.
+            if !abs.is_file() {
+                continue;
+            }
+            // Buried under collapsed directories: expanding is the one mutation the jump is
+            // allowed, so it is worth a fresh walk.
+            let collapsed = self.expanded.clone();
+            self.expand_ancestors(&abs);
+            let expanded_rows = self.visible_nodes();
+            if let Some(pos) = file_row(&expanded_rows, &abs) {
+                self.cursor = pos;
                 return Some(wrapped);
             }
+            // Still hidden — by `hide_hidden`, `show_ignored`, or `changed_only`. The jump does
+            // not relax filters to reach it, so treat it as unselectable and undo the probe.
+            self.expanded = collapsed;
         }
         None
     }

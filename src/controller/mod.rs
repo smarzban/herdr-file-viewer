@@ -1957,7 +1957,9 @@ impl Controller {
     /// mode (`d`) is on, else the baseline-aware changed-set that `c` and `b` drive. Focus-blind
     /// on purpose — it moves the *tree*, so it works while reading the content pane too. Inert
     /// without git (AC-26) or with nothing changed, which gets a notice rather than silence so the
-    /// key never looks broken. Selecting re-renders, so the jump lands on the file's diff.
+    /// key never looks broken — as does a set whose every file the current filters hide, since the
+    /// jump skips those rather than unfiltering the tree to reach them. Selecting re-renders, so
+    /// the jump lands on the file's diff.
     fn navigate_changed(&mut self, forward: bool) -> Effects {
         if !self.is_git_repo {
             return Effects::noop(); // inert without git (AC-26)
@@ -1972,9 +1974,9 @@ impl Controller {
             self.action_notice = Some("No changed files".into());
             return Effects::redraw();
         };
-        // `select_changed` may have revealed a candidate under a collapsed directory, and reveal()
-        // can relax the tree's filters — re-sync the controller's mirrors, as the finder does.
-        self.resync_filter_mirrors();
+        // No filter-mirror re-sync here, unlike the finder confirm and the launch open target:
+        // `select_changed` expands ancestors but never relaxes a filter, so the mirrors cannot go
+        // stale. A candidate the current filters hide is skipped instead of forced into view.
         if wrapped {
             self.action_notice = Some(if forward {
                 "Changed files: wrapped to the first".into()
