@@ -53,11 +53,19 @@ impl Controller {
     }
 
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
-    /// against the active baseline (AC-16), updating the tree caches. No-op without a repo
-    /// (AC-26). Runs on the calling thread, but only on deliberate, infrequent actions —
-    /// launch, editor return, baseline toggle, the `r` refresh key, and focus-gain — never the
-    /// hot navigation path, where the diff is fetched off-thread (AC-23).
+    /// against the active baseline (AC-16), updating the tree caches. Without a repo only the
+    /// tree's listing memo is dropped (AC-26 — no git is queried). Runs on the calling thread, but
+    /// only on deliberate, infrequent actions — launch, editor return, baseline toggle, the `r`
+    /// refresh key, and focus-gain — never the hot navigation path, where the diff is fetched
+    /// off-thread (AC-23).
     pub(super) fn refresh_git_state(&mut self) {
+        // Before the repo guard: this is the viewer's "the world may have moved" moment, and a
+        // directory without a repo still gains and loses files. Under `compact_dirs` the tree
+        // memoizes its directory listings (a compacted row has to look inside a COLLAPSED
+        // directory, which is far too much walking to redo per frame), so these deliberate,
+        // infrequent occasions are where it re-reads the filesystem. A no-op with compaction off,
+        // where the tree already walks live on every frame.
+        self.tree.invalidate_listings();
         if !self.is_git_repo {
             return;
         }

@@ -814,6 +814,7 @@ mod tests {
             "open",
             "reveal",
             "hide_dotfiles",
+            "compact_dirs",
             "update_check",
             "scroll_lines",
             "tree_width",
@@ -879,6 +880,7 @@ mod tests {
             "open              = xdg-open",
             "reveal            = xdg-open",
             "hide_dotfiles     = true",
+            "compact_dirs      = true",
             "update_check      = off",
             "scroll_lines      = 7",
         ] {
@@ -955,6 +957,7 @@ mod tests {
         );
         for row in [
             "hide_dotfiles     = false",
+            "compact_dirs      = false",
             "update_check      = on",
             "confirm_discard   = on",
             &format!(
