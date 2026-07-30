@@ -1861,6 +1861,10 @@ impl Controller {
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
+            // One screenful, measured from the live content height so it follows a resize.
+            // navigate() already routes by focus and scroll_content() clamps to [0, max].
+            Intent::PageUp => self.navigate(-self.page_step()),
+            Intent::PageDown => self.navigate(self.page_step()),
             Intent::Expand => self.expand(),
             Intent::Collapse => self.collapse(),
             Intent::Activate => self.activate(),
@@ -1923,6 +1927,12 @@ impl Controller {
     /// (selecting a file, which re-renders the content), and scrolls the content pane when the
     /// content is focused (`Tab` switches focus). This reads each pane's natural keys without
     /// adding a separate scroll intent.
+    /// One screenful of movement, in rows. Falls back to a single row before the first layout
+    /// pass, when `content_height` is still 0, so a page key can never become a no-op.
+    fn page_step(&self) -> isize {
+        (self.content_height as isize).max(1)
+    }
+
     fn navigate(&mut self, delta: isize) -> Effects {
         match self.focus {
             Focus::Content => {
@@ -3334,6 +3344,19 @@ mod tests {
             renderers: None,
         };
         Controller::new(resolved, Baseline::Head, components)
+    }
+
+    #[test]
+    fn page_step_is_one_viewport_and_never_zero() {
+        // PageUp/PageDown move by the live content height, so paging follows a resize instead of
+        // using a fixed stride. The floor of 1 matters because startup runs before the first
+        // layout pass, when content_height is still 0 — a page key must never be a silent no-op.
+        let mut ctrl = wiring_controller();
+        assert_eq!(ctrl.page_step(), 1, "no viewport yet → still move a row");
+        ctrl.set_content_viewport(80, 20);
+        assert_eq!(ctrl.page_step(), 20, "a page is the content-pane height");
+        ctrl.set_content_viewport(80, 7);
+        assert_eq!(ctrl.page_step(), 7, "and it tracks a resize");
     }
 
     struct ChangedGit {

@@ -141,6 +141,8 @@ customized).
 | --- | --- | --- | --- |
 | **Navigation** | `nav_up` | `Up`, `k` | Move the tree cursor up one row |
 | | `nav_down` | `Down`, `j` | Move the tree cursor down one row |
+| | `page_up` | `PageUp` | Move up one screenful (content pane when focused, else the tree cursor) |
+| | `page_down` | `PageDown`, `Space` | Move down one screenful (content pane when focused, else the tree cursor) |
 | | `expand` | `Right`, `l` | Expand the selected directory |
 | | `collapse` | `Left`, `h` | Collapse the selected directory |
 | | `activate` | `Enter` | Activate the selection: expand/collapse a directory, or open a file |

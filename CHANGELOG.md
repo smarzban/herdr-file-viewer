@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
+## [Unreleased]
+
+### Added
+- Page-wise scrolling: `Space` / `PageDown` move down one screenful and `PageUp` moves up one, paging the content pane when it is focused and the tree cursor otherwise. The step is the live content-pane height, so it follows a resize. `Space` follows the pager convention (`less`, `more`, `man`, and so `bat`); both are remappable as `page_down` / `page_up`. → [keys](docs/keys.md) · [configuration](docs/configuration.md#keybindings)
+
 ## [1.14.0] - 2026-07-20
 
 ### Added
