@@ -2,8 +2,11 @@
 //!
 //! Keyboard-complete: every viewer function has at least one key. Unbound keys are a no-op
 //! (`None`). Char bindings fire only with no active modifier, so a chord like Ctrl+C (the
-//! terminal interrupt) never trips an intent. No key yields a file/git mutation action; annotation
-//! actions edit session-only in-memory state (AC-N3).
+//! terminal interrupt) never trips an intent. The one exception is Windows-only: a
+//! `Ctrl+Alt`+character chord (with optional `Shift`) is inferred as AltGr typing and still
+//! decodes (see [`decode`]); Ctrl+C carries no `Alt`, so it is unaffected and stays clear on
+//! every platform. No key yields a file/git mutation action; annotation actions edit
+//! session-only in-memory state (AC-N3).
 
 use crate::config::KeySpec;
 use crate::intent::Intent;
@@ -71,11 +74,61 @@ pub(crate) fn default_bindings() -> EffectiveBindings {
 /// Decode a key event into an [`Intent`] against a set of effective bindings, or `None` if the
 /// key is unbound.
 ///
-/// Pure (AC-24). Control-style chords (Ctrl/Alt/Super/…) never fire an intent so reserved combos
-/// (e.g. Ctrl+C) stay clear; Shift is allowed, because shifted characters (`<` / `>`) are ordinary
-/// typing — not a chord. Some Windows terminals report `Shift+d` as lowercase `d` plus the Shift
-/// modifier, so lowercase ASCII is normalized before the lookup.
+/// Pure (AC-24). Control-style chords normally do not fire an intent, so reserved combos (for
+/// example Ctrl+C) stay clear; Shift is allowed because shifted characters (`<` / `>`) are ordinary
+/// typing. Some Windows terminals report `Shift+d` as lowercase `d` plus the Shift modifier, so
+/// lowercase ASCII is normalized before lookup. Rejected events decode to `None` and stay inert.
+///
+/// **Windows-only: infer AltGr from `Ctrl+Alt+Char`.** Crossterm 0.29's Windows input path reports
+/// AltGr as the generic `CONTROL|ALT` combination. A genuine Windows `Ctrl+Alt+<char>` chord is
+/// therefore ambiguous with AltGr typing a bound character (`?` on Brazilian ABNT2 keyboards, or
+/// any character a custom `[keys]` binding uses), and also fires that action. Production
+/// normalization is gated by `cfg!(windows)`; non-Windows decoding is unchanged.
+///
+/// [`decode_with_altgr_policy`] is the private pure seam that tests both policies on every host.
 pub(crate) fn decode(key: KeyEvent, bindings: &EffectiveBindings) -> Option<Intent> {
+    decode_with_altgr_policy(key, bindings, cfg!(windows))
+}
+
+/// Normalize a Windows AltGr chord so [`decode`] and the help overlay's key handler
+/// ([`crate::controller::Controller::handle_help_key`]) treat it identically: with
+/// `windows_altgr` set and `key` an exact [`KeyCode::Char`] carrying `CONTROL|ALT` (optionally also
+/// `SHIFT`, and no other modifier), strip the `CONTROL`/`ALT` bits so downstream code sees only the
+/// character (plus any `Shift`), matching ordinary typing on every other host. Any other shape (a
+/// non-char code, a bare `Ctrl` or `Alt`, `Super`, `Ctrl+Alt` on a non-char key, or an extra
+/// modifier) is returned unchanged, and so is every event when `windows_altgr` is `false`.
+///
+/// Pure and total (AC-24): the single event-normalization seam both call sites reuse, so "open help
+/// with AltGr" and "close help with AltGr" can never drift apart.
+pub(crate) fn normalize_altgr(key: KeyEvent, windows_altgr: bool) -> KeyEvent {
+    let exact_ctrl_alt_char = matches!(key.code, KeyCode::Char(_))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && key
+            .modifiers
+            .difference(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT)
+            == KeyModifiers::NONE;
+    if windows_altgr && exact_ctrl_alt_char {
+        KeyEvent {
+            modifiers: key
+                .modifiers
+                .difference(KeyModifiers::CONTROL | KeyModifiers::ALT),
+            ..key
+        }
+    } else {
+        key
+    }
+}
+
+/// The pure decode seam behind [`decode`]. With `windows_altgr`, only [`KeyCode::Char`] events
+/// carrying `CONTROL|ALT`, optional `SHIFT`, and no other modifiers are normalized as AltGr (via
+/// [`normalize_altgr`]).
+fn decode_with_altgr_policy(
+    key: KeyEvent,
+    bindings: &EffectiveBindings,
+    windows_altgr: bool,
+) -> Option<Intent> {
+    let key = normalize_altgr(key, windows_altgr);
     if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
         return None;
     }
@@ -844,6 +897,158 @@ mod tests {
         assert_eq!(map_key(k(KeyCode::Char('x'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);
+    }
+
+    #[test]
+    fn altgr_policy_only_normalizes_exact_ctrl_alt_char() {
+        let bindings = default_bindings();
+        for (windows_altgr, expected) in [(true, Some(Intent::ShowHelp)), (false, None)] {
+            for modifiers in [
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ] {
+                assert_eq!(
+                    decode_with_altgr_policy(
+                        KeyEvent::new(KeyCode::Char('?'), modifiers),
+                        &bindings,
+                        windows_altgr,
+                    ),
+                    expected,
+                    "Ctrl+Alt(+Shift)+Char, policy={windows_altgr}"
+                );
+            }
+            for (code, modifiers) in [
+                (KeyCode::Char('c'), KeyModifiers::CONTROL),
+                (KeyCode::Char('q'), KeyModifiers::ALT),
+                (KeyCode::Char('j'), KeyModifiers::SUPER),
+                (KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT),
+                (
+                    KeyCode::Char('?'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ),
+            ] {
+                assert_eq!(
+                    decode_with_altgr_policy(
+                        KeyEvent::new(code, modifiers),
+                        &bindings,
+                        windows_altgr,
+                    ),
+                    None,
+                    "non-AltGr modifier shape, policy={windows_altgr}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn altgr_policy_applies_to_custom_bindings() {
+        // The AltGr inference policy applies to a customized binding, not just registry defaults:
+        // enabled normalizes Ctrl+Alt+<custom key> to the remapped intent; disabled leaves the same
+        // chord inert (None), on the identical bindings and event.
+        let (bindings, out) = resolve_with(&[("refresh", one("g"))]);
+        assert!(out.is_empty());
+        let event = KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(
+            decode_with_altgr_policy(event, &bindings, true),
+            Some(Intent::Refresh),
+            "enabled: Ctrl+Alt+g decodes to the customized Refresh binding"
+        );
+        assert_eq!(
+            decode_with_altgr_policy(event, &bindings, false),
+            None,
+            "disabled: the same Ctrl+Alt+g chord stays inert"
+        );
+    }
+
+    #[test]
+    fn normalize_altgr_is_a_cross_host_pure_seam() {
+        // normalize_altgr is the single event-normalization helper decode_with_altgr_policy and
+        // handle_help_key both reuse; test it directly, on every host, via its explicit bool param.
+        let chord = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        let shifted_chord = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+
+        // Enabled: an exact Ctrl+Alt(+Shift)+Char chord is stripped down to the bare character.
+        assert_eq!(
+            normalize_altgr(chord, true),
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            normalize_altgr(shifted_chord, true),
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT)
+        );
+
+        // Disabled: the identical events pass through untouched.
+        assert_eq!(normalize_altgr(chord, false), chord);
+        assert_eq!(normalize_altgr(shifted_chord, false), shifted_chord);
+
+        // Normalization changes only modifiers; event kind/state survive intact.
+        let repeated = KeyEvent {
+            code: KeyCode::Char('?'),
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::ALT,
+            kind: crossterm::event::KeyEventKind::Repeat,
+            state: crossterm::event::KeyEventState::CAPS_LOCK,
+        };
+        assert_eq!(
+            normalize_altgr(repeated, true),
+            KeyEvent {
+                modifiers: KeyModifiers::NONE,
+                ..repeated
+            }
+        );
+
+        // Enabled, but not the exact AltGr shape: passes through untouched (inert modifier shapes
+        // are preserved: Ctrl-only, Alt-only, Super, Ctrl+Alt on a non-char key, and an extra
+        // modifier alongside Ctrl+Alt).
+        let inert = [
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::SUPER),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT),
+            KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+            ),
+        ];
+        for event in inert {
+            assert_eq!(
+                normalize_altgr(event, true),
+                event,
+                "{event:?} must pass through"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn map_key_enables_altgr_inference_on_windows() {
+        assert_eq!(
+            map_key(KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )),
+            Some(Intent::ShowHelp)
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn map_key_leaves_ctrl_alt_char_inert_off_windows() {
+        assert_eq!(
+            map_key(KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )),
+            None
+        );
     }
 
     #[test]
