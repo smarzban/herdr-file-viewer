@@ -210,6 +210,53 @@ fn jump_skips_a_filtered_out_candidate_without_relaxing_any_filter() {
 }
 
 #[test]
+fn jump_skips_a_run_of_filtered_candidates_whose_ancestors_are_already_expanded() {
+    // The walk-gating case: every hidden candidate here sits under an ancestor that is ALREADY
+    // expanded (`sub`), or directly under the root, so probing one cannot change the tree. The
+    // jump sees that nothing was newly expanded and skips without re-walking the filesystem —
+    // otherwise a run of filtered-out changed files costs a full walk apiece on the input thread.
+    let dir = TempDir::new();
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join(".hidden.rs"), "x").unwrap();
+    fs::write(sub.join("keep.rs"), "x").unwrap();
+    for name in [".h1.rs", "a.rs", "z.rs"] {
+        fs::write(dir.path().join(name), "x").unwrap();
+    }
+
+    let set = changed(&[".h1.rs", "a.rs", "sub/.hidden.rs", "z.rs"]);
+    let mut model = TreeModel::new(dir.path());
+    model.set_status(&set);
+    model.set_hide_hidden(true);
+    model.expand(&sub);
+    assert_eq!(
+        rows(&model),
+        ["sub", "keep.rs", "a.rs", "z.rs"],
+        "precondition: `sub` is expanded and both dotfiles are hidden"
+    );
+
+    // From the last row, forward wraps onto `sub/.hidden.rs` and then `.h1.rs` — both hidden, both
+    // with nothing left to expand — before reaching the first candidate that has a row.
+    model.set_cursor(3);
+    assert_eq!(model.select_changed(true, &set), Some(true));
+    assert_eq!(
+        selected(&model).as_deref(),
+        Some("a.rs"),
+        "the hidden run is skipped, landing on the next candidate that has a row"
+    );
+    assert!(model.hide_hidden(), "hide-hidden must survive the jump");
+    assert!(
+        !model.show_ignored(),
+        "the gitignore filter must survive it"
+    );
+    assert_eq!(
+        rows(&model),
+        ["sub", "keep.rs", "a.rs", "z.rs"],
+        "and the probes leave no expansion behind"
+    );
+}
+
+#[test]
 fn jump_lands_on_the_file_row_when_a_directory_replaced_a_file() {
     // A file replaced by a directory of the same name puts one path into both halves of the
     // changed-only tree — the file list and the ancestor directory set — so `x` is rendered twice,

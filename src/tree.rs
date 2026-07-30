@@ -383,18 +383,28 @@ impl TreeModel {
     /// Expansion state only — it never touches a display filter. That split is what lets the
     /// `]` / `[` jump reuse this while still honoring its promise to change nothing but the cursor
     /// and expansion state; [`reveal`](Self::reveal) layers the filter relaxation on top.
-    fn expand_ancestors(&mut self, path: &Path) {
+    ///
+    /// Returns the directories it **newly** expanded, so a caller that is only probing can tell
+    /// whether it changed anything and undo exactly what it did. An empty result means the tree
+    /// already looked like this — which is what lets the `]` / `[` jump skip a redundant walk.
+    ///
+    /// The root is deliberately not expanded: its children always render, so its membership in
+    /// `expanded` is never read (only a *child* directory's is), and inserting it would make every
+    /// root-level target look like a state change to that probe.
+    fn expand_ancestors(&mut self, path: &Path) -> Vec<PathBuf> {
+        let mut newly = Vec::new();
         let mut dir = path.parent();
         while let Some(d) = dir {
-            if !d.starts_with(&self.root) {
+            if d == self.root || !d.starts_with(&self.root) {
                 break;
             }
-            self.expand(d);
-            if d == self.root {
-                break;
+            if !self.expanded.contains(d) {
+                self.expand(d);
+                newly.push(d.to_path_buf());
             }
             dir = d.parent();
         }
+        newly
     }
 
     /// Reveal `path` in the tree: expand every collapsed ancestor, relax display filters
@@ -535,17 +545,27 @@ impl TreeModel {
                 continue;
             }
             // Buried under collapsed directories: expanding is the one mutation the jump is
-            // allowed, so it is worth a fresh walk.
-            let collapsed = self.expanded.clone();
-            self.expand_ancestors(&abs);
+            // allowed, so it is worth a fresh walk. If nothing was NEWLY expanded, the tree is
+            // exactly what `rows` was taken from — the invariant holds because every earlier
+            // iteration either returned or rolled its expansion back, and the jump never touches a
+            // filter — so a fresh walk could only reproduce `rows`, which the lookup above already
+            // searched. The candidate is hidden by a filter, not by a collapsed ancestor: skip it
+            // without walking, or a run of filtered-out changed files costs a walk apiece.
+            let newly_expanded = self.expand_ancestors(&abs);
+            if newly_expanded.is_empty() {
+                continue;
+            }
             let expanded_rows = self.visible_nodes();
             if let Some(pos) = file_row(&expanded_rows, &abs) {
                 self.cursor = pos;
                 return Some(wrapped);
             }
             // Still hidden — by `hide_hidden`, `show_ignored`, or `changed_only`. The jump does
-            // not relax filters to reach it, so treat it as unselectable and undo the probe.
-            self.expanded = collapsed;
+            // not relax filters to reach it, so treat it as unselectable and undo exactly what the
+            // probe expanded. Not `collapse`, which re-clamps the cursor and costs another walk.
+            for d in &newly_expanded {
+                self.expanded.remove(d);
+            }
         }
         None
     }
