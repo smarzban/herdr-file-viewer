@@ -6,16 +6,15 @@
 use super::*;
 
 impl Controller {
-    /// The pane regained focus (the run loop forwards herdr's focus events): re-read git state
-    /// so external changes show in the tree. No-op without a repo (AC-26) — so an external
-    /// change to a non-git directory costs nothing. In **changed-only** mode the refresh
+    /// The pane regained focus (the run loop forwards herdr's focus events): re-read the world so
+    /// external changes show in the tree. Still queries no git without a repo (AC-26), but it is no
+    /// longer a bare no-op there: `refresh_git_state` also drops the tree's cached fold shapes, and
+    /// a directory outside a repo gains and loses files just the same. Returning early here left a
+    /// compacted non-git tree stale until the user hit `r`. In **changed-only** mode the refresh
     /// re-filters the visible list, which can move the cursor to a different file; if the
     /// selection actually changed, re-render so the content pane matches the highlighted row —
     /// otherwise the content (and its scroll) is left untouched, the common case.
     pub fn handle_focus_gained(&mut self) -> Effects {
-        if !self.is_git_repo {
-            return Effects::noop();
-        }
         let before = self.tree.selected().map(|n| n.path);
         self.refresh_git_state();
         if self.tree.selected().map(|n| n.path) != before {
@@ -54,18 +53,18 @@ impl Controller {
 
     /// Re-query git for the working-tree status (tree markers, AC-7) and the changed-set
     /// against the active baseline (AC-16), updating the tree caches. Without a repo only the
-    /// tree's listing memo is dropped (AC-26 — no git is queried). Runs on the calling thread, but
-    /// only on deliberate, infrequent actions — launch, editor return, baseline toggle, the `r`
-    /// refresh key, and focus-gain — never the hot navigation path, where the diff is fetched
-    /// off-thread (AC-23).
+    /// tree's cached fold shapes are dropped (AC-26 — no git is queried). Runs on the calling
+    /// thread, but only on deliberate, infrequent actions — launch, editor return, baseline toggle,
+    /// the `r` refresh key, and focus-gain — never the hot navigation path, where the diff is
+    /// fetched off-thread (AC-23).
     pub(super) fn refresh_git_state(&mut self) {
         // Before the repo guard: this is the viewer's "the world may have moved" moment, and a
         // directory without a repo still gains and loses files. Under `compact_dirs` the tree
-        // memoizes its directory listings (a compacted row has to look inside a COLLAPSED
-        // directory, which is far too much walking to redo per frame), so these deliberate,
-        // infrequent occasions are where it re-reads the filesystem. A no-op with compaction off,
-        // where the tree already walks live on every frame.
-        self.tree.invalidate_listings();
+        // caches which directories fold (a compacted row has to look inside a COLLAPSED directory,
+        // which is too much to redo per frame), so these deliberate, infrequent occasions are where
+        // it re-reads. Not a walk storm to schedule around: a fold probe stops after two entries,
+        // and the listings themselves were never cached. A no-op with compaction off.
+        self.tree.invalidate_compaction();
         if !self.is_git_repo {
             return;
         }

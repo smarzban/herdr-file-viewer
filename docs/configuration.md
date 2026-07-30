@@ -114,12 +114,12 @@ layout — where the per-segment tree spends most of a narrow column on indentat
 file names that matter — it wins outright. On a shallow repo it mostly costs you the 1:1 "one row is
 one directory" reading of the tree. Turn it on if your paths are deeper than your pane is wide.
 
-One behavior difference to know about: deciding whether a row folds means reading inside directories
-the tree has *not* opened, so a compacted tree reads the directory listings once and reuses them
-rather than re-reading on every frame. It re-reads them on the same occasions it re-reads git —
-launch, `r`, returning from the editor, switching baseline, and regaining focus — so a file created
-outside the viewer shows up on the next `r` rather than instantly. With `compact_dirs` off the tree
-reads live, exactly as it always has.
+One small behavior difference: deciding whether a row folds means peeking inside directories the
+tree has not opened, so a compacted tree remembers which directories fold instead of re-checking
+every frame. Listings themselves are still read live — a new file appears as immediately as it
+always did — but the *span* of a folded row can lag. If a file created outside the viewer is what
+ends a chain, the row keeps its old span until the viewer re-checks, which it does on launch, `r`,
+returning from the editor, switching baseline, and regaining focus.
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either

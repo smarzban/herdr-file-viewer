@@ -352,88 +352,132 @@ fn the_jump_agrees_with_the_compacted_changed_only_tree() {
 // ---- walk discipline ----------------------------------------------------------------------
 
 #[test]
-fn a_build_walks_each_directory_once_and_a_rebuild_walks_nothing() {
-    // Compaction has to look INSIDE a directory to know whether its row folds — including a
-    // COLLAPSED one, which the uncompacted tree never opens. Done naively that is one `ignore` walk
-    // per visible directory row on the per-frame `visible_nodes` path: a collapsed root of twenty
-    // directories costs twenty-one walks per frame instead of one. The memoized listings are what
-    // bound it, and this is the meter.
-    let dir = deep_repo();
+fn a_collapsed_row_costs_a_two_entry_probe_not_a_full_listing() {
+    // The shape of the whole design. Compaction asks "does this fold?" of every visible directory
+    // row, including COLLAPSED ones the uncompacted tree never opens — but the answer needs at most
+    // two entries, so a collapsed row must never materialize its children. Only the directories the
+    // tree actually descends into get a full listing, which is exactly the set the uncompacted tree
+    // reads on every frame.
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("alpha/one")).unwrap(); // folds: a lone subdirectory
+    fs::create_dir_all(dir.path().join("beta")).unwrap(); // empty — no fold
+    fs::create_dir_all(dir.path().join("gamma")).unwrap();
+    fs::write(dir.path().join("gamma/x.txt"), "x").unwrap(); // holds a file — no fold
+    fs::write(dir.path().join("top.txt"), "x").unwrap();
+
     let mut model = TreeModel::new(dir.path());
-    assert_eq!(
-        model.listed_dirs(),
-        0,
-        "nothing is read before compaction is on"
-    );
-
-    // `set_compact_dirs` re-clamps the cursor, which is itself a build — so the first listings are
-    // taken here rather than by the `rows` call below.
+    // `set_compact_dirs` re-clamps the cursor, which is one build — so these are that build's
+    // reads, taken before anything else asks for the rows.
     model.set_compact_dirs(true);
-    assert_eq!(rows(&model), vec!["src/main/java", "README.md"]);
     assert_eq!(
-        model.listed_dirs(),
-        4,
-        "the root plus the three links of the chain — each read once, whatever asked for it"
+        model.walk_counts(),
+        (1, 4),
+        "one build: ONE full listing (the root, the only directory descended into) and a two-entry \
+         probe each for alpha, alpha/one, beta and gamma — no collapsed row materialized"
     );
 
-    for _ in 0..5 {
-        let _ = model.visible_nodes();
-    }
+    assert_eq!(rows(&model), vec!["alpha/one", "beta", "gamma", "top.txt"]);
     assert_eq!(
-        model.listed_dirs(),
-        4,
-        "and every frame after the first walks nothing at all"
-    );
-
-    // Cold again, this time with the chain EXPANDED: descending into the deepest directory wants
-    // exactly the listing the fold already took, so it is still four walks and not five.
-    model.expand(&dir.path().join("src/main/java"));
-    model.invalidate_listings();
-    assert_eq!(model.listed_dirs(), 0, "invalidation drops the lot");
-    assert_eq!(rows(&model), vec!["src/main/java", "App.java", "README.md"]);
-    assert_eq!(
-        model.listed_dirs(),
-        4,
-        "the fold and the descent into it share one listing of the deepest directory"
+        model.walk_counts(),
+        (2, 4),
+        "the second build lists the root again — live, as always — and re-probes nothing"
     );
 }
 
 #[test]
-fn a_compacted_tree_re_reads_the_disk_when_its_listings_are_invalidated() {
-    // The other half of the bound: because a rebuild walks nothing, a compacted tree is a coherent
-    // SNAPSHOT rather than a live per-frame read, and the controller re-takes it wherever it
-    // re-reads git — launch, `r`, editor return, baseline toggle, focus-gain. Both halves are
-    // asserted here observationally, which is the strongest statement of "the frame did no
-    // filesystem work": a change on disk cannot show up in a build that never looked.
+fn a_rebuild_re_probes_nothing_and_lists_only_what_the_uncompacted_tree_lists() {
+    // The per-frame invariant: drawing a compacted frame does no more filesystem work than drawing
+    // an uncompacted one. The fold shapes are cached, so a rebuild re-probes nothing; the listings
+    // are not, so a rebuild reads the same directories an uncompacted rebuild would — and the
+    // contents a compacted tree draws are never stale.
+    let dir = deep_repo();
+    let mut model = TreeModel::new(dir.path());
+    model.set_compact_dirs(true);
+    model.expand(&dir.path().join("src/main/java"));
+    assert_eq!(rows(&model), vec!["src/main/java", "App.java", "README.md"]);
+
+    let (full, probes) = model.walk_counts();
+    for _ in 0..5 {
+        let _ = model.visible_nodes();
+    }
+    let (full_after, probes_after) = model.walk_counts();
+    assert_eq!(
+        probes_after - probes,
+        0,
+        "five more frames, not one re-probe"
+    );
+    assert_eq!(
+        (full_after - full) / 5,
+        2,
+        "each frame lists the root and the expanded chain end, and nothing else"
+    );
+
+    // The same five frames on the same tree with compaction off — the bound the invariant is
+    // stated against. Uncompacted, all three chain segments are expanded to show the same file.
+    let mut plain = TreeModel::new(dir.path());
+    for sub in ["src", "src/main", "src/main/java"] {
+        plain.expand(&dir.path().join(sub));
+    }
+    let (plain_full, _) = plain.walk_counts();
+    for _ in 0..5 {
+        let _ = plain.visible_nodes();
+    }
+    let (plain_full_after, plain_probes) = plain.walk_counts();
+    assert_eq!(plain_probes, 0, "compaction off probes nothing, ever");
+    assert!(
+        full_after - full <= plain_full_after - plain_full,
+        "a compacted frame reads no more than an uncompacted one ({} vs {})",
+        full_after - full,
+        plain_full_after - plain_full
+    );
+}
+
+#[test]
+fn re_probing_after_an_invalidation_picks_up_a_changed_fold_shape() {
+    // What the cache can lag, and what clears it. Only the fold SHAPE is cached, so a file added
+    // inside a folded chain does not shorten the chain until something re-probes — which the
+    // controller does wherever it re-reads git (launch, `r`, editor return, baseline toggle,
+    // focus-gain). The row's contents were never cached, so nothing else is stale.
     let dir = deep_repo();
     let mut model = TreeModel::new(dir.path());
     model.set_compact_dirs(true);
     assert_eq!(rows(&model), vec!["src/main/java", "README.md"]);
 
-    // Two changes a rebuild would have to walk to notice: a new root entry (the collect walk) and
-    // a new file inside the chain, which ends the fold two segments earlier (the fold's walk, on a
-    // collapsed directory).
-    fs::create_dir_all(dir.path().join("vendor")).unwrap();
     fs::write(dir.path().join("src/main/Extra.java"), "x").unwrap();
     assert_eq!(
         rows(&model),
         vec!["src/main/java", "README.md"],
-        "neither shows: the rebuild read no directory"
+        "the cached shape still folds past the new file"
     );
 
-    model.invalidate_listings();
+    model.invalidate_compaction();
     assert_eq!(
         rows(&model),
-        vec!["src/main", "vendor", "README.md"],
-        "and the next build sees both — the new root entry, and the chain stopping early"
+        vec!["src/main", "README.md"],
+        "re-probed: the chain now stops where the new file lives"
     );
 }
 
 #[test]
-fn with_compaction_off_the_tree_still_walks_live_on_every_build() {
-    // The memo is the price of compaction and is charged to nobody else. With `compact_dirs` off
-    // nothing is cached, so the default tree keeps picking up on-disk changes with no refresh —
-    // exactly as it did before the feature existed.
+fn a_new_root_entry_shows_without_any_invalidation_even_under_compaction() {
+    // Contents are read live under compaction too — only the fold shape is cached. A directory
+    // added beside the chain appears on the very next frame, no refresh needed.
+    let dir = deep_repo();
+    let mut model = TreeModel::new(dir.path());
+    model.set_compact_dirs(true);
+    assert_eq!(rows(&model), vec!["src/main/java", "README.md"]);
+
+    fs::create_dir_all(dir.path().join("vendor")).unwrap();
+    assert_eq!(
+        rows(&model),
+        vec!["src/main/java", "vendor", "README.md"],
+        "the root is listed live on every build"
+    );
+}
+
+#[test]
+fn with_compaction_off_nothing_is_probed_or_cached() {
+    // The cache is the price of compaction and is charged to nobody else.
     let dir = deep_repo();
     let model = TreeModel::new(dir.path());
     assert_eq!(rows(&model), vec!["src", "README.md"], "precondition");
@@ -444,7 +488,39 @@ fn with_compaction_off_the_tree_still_walks_live_on_every_build() {
         vec!["src", "vendor", "README.md"],
         "the new directory appears with no invalidation"
     );
-    assert_eq!(model.listed_dirs(), 0, "and nothing was memoized");
+    assert_eq!(model.walk_counts().1, 0, "and not one probe was taken");
+}
+
+#[test]
+fn reveal_decides_against_a_live_read_not_a_stale_fold() {
+    // A relaxation `reveal` performs is PERMANENT, so it must never be triggered by a cached fold
+    // shape that predates the target. Here the new file ends the chain two segments early — but
+    // under the stale shape it has no row, which would look exactly like "a filter is hiding it"
+    // and flip `show_ignored` on for the rest of the session. `reveal` re-probes first.
+    let dir = deep_repo();
+    let mut model = TreeModel::new(dir.path());
+    model.set_compact_dirs(true);
+    assert_eq!(rows(&model), vec!["src/main/java", "README.md"]);
+
+    let added = dir.path().join("src/main/Extra.java");
+    fs::write(&added, "x").unwrap();
+    assert!(
+        !model.visible_nodes().iter().any(|n| n.path == added),
+        "precondition: the cached shape still hides the new file"
+    );
+
+    assert!(model.reveal(&added), "reveal lands on it");
+    assert!(
+        !model.show_ignored(),
+        "a visible file must not switch the gitignore filter on"
+    );
+    assert!(!model.hide_hidden(), "nor flip hide-hidden");
+    assert!(!model.changed_only(), "nor changed-only");
+    assert_eq!(
+        model.selected().unwrap().path,
+        added,
+        "and the cursor is on the target"
+    );
 }
 
 #[test]

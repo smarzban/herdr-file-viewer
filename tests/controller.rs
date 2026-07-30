@@ -3174,13 +3174,64 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
 }
 
 #[test]
-fn focus_gained_without_a_repo_is_inert() {
-    // No repo → nothing to refresh (AC-26); focus-gain must not force a redraw or a git query.
+fn focus_gained_without_a_repo_queries_no_git_but_still_re_reads_the_tree() {
+    // No repo → no git query (AC-26). It is NOT inert beyond that, though: a directory outside a
+    // repo gains and loses files like any other, and focus-gain is the moment the viewer re-reads
+    // the world. It used to return before `refresh_git_state` altogether, which left a compacted
+    // tree's cached fold shapes stale until the user hit `r`.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
-    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let git = StubGit::default();
+    let changed_calls = git.changed_calls.clone();
+    let (mut ctrl, _, _) = controller(dir.path(), false, git, false);
+
     let fx = ctrl.handle_focus_gained();
-    assert!(!fx.redraw && !fx.quit, "no repo → focus-gain is a no-op");
+    assert!(!fx.quit);
+    assert!(
+        changed_calls.lock().unwrap().is_empty(),
+        "AC-26: no repo, so no git is queried"
+    );
+}
+
+#[test]
+fn focus_gained_without_a_repo_un_stales_a_compacted_tree() {
+    // The regression the early return caused. With `compact_dirs` on, the tree caches which
+    // directories fold; in a non-git directory nothing ever dropped that cache, so a chain that
+    // stopped folding on disk kept rendering its old shape — and the file that ended it stayed
+    // invisible — until a manual `r`.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/main/java")).unwrap();
+    std::fs::write(dir.path().join("src/main/java/App.java"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.apply_compact_dirs(true);
+
+    let labels = |c: &Controller| -> Vec<String> {
+        c.tree()
+            .visible_nodes()
+            .iter()
+            .filter_map(|n| n.label.clone())
+            .collect()
+    };
+    assert_eq!(
+        labels(&ctrl),
+        vec!["src/main/java".to_string()],
+        "precondition: the whole chain folds into one row"
+    );
+
+    // A file added outside the viewer ends the chain two segments early.
+    std::fs::write(dir.path().join("src/main/Extra.java"), "x").unwrap();
+    assert_eq!(
+        labels(&ctrl),
+        vec!["src/main/java".to_string()],
+        "the cached shape has not noticed yet"
+    );
+
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        labels(&ctrl),
+        vec!["src/main".to_string()],
+        "focus-gain re-probes even without a repo, so the new file's directory gets its row back"
+    );
 }
 
 /// A Git stub whose changed-set flips from `first` to `rest` after the first query — so a
