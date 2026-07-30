@@ -1861,7 +1861,7 @@ impl Controller {
         match intent {
             Intent::NavUp => self.navigate(-1),
             Intent::NavDown => self.navigate(1),
-            // One screenful, measured from the live content height so it follows a resize.
+            // One screenful, measured from the focused pane's live height so it follows a resize.
             // navigate() already routes by focus and scroll_content() clamps to [0, max].
             Intent::PageUp => self.navigate(-self.page_step()),
             Intent::PageDown => self.navigate(self.page_step()),
@@ -1923,16 +1923,24 @@ impl Controller {
         }
     }
 
+    /// One screenful of movement, in rows: the drawn height of the pane [`navigate`](Self::navigate)
+    /// will move, so each pane pages by its own viewport. The panes differ in height, and in the
+    /// narrow (< 80 column) layout only the focused one is drawn at all — the content viewport
+    /// stays `(0, 0)` for as long as the tree holds focus there, so paging by `content_height`
+    /// would step the tree cursor a single row per press. Falls back to one row while the focused
+    /// pane has no measured geometry (before the first layout pass), so a page key is never a no-op.
+    fn page_step(&self) -> isize {
+        let rows = match self.focus {
+            Focus::Content => self.content_height,
+            Focus::Tree => self.geom.tree_inner.map_or(0, |inner| inner.height),
+        };
+        (rows as isize).max(1)
+    }
+
     /// Up/down navigation is focus-aware: it moves the tree cursor when the tree is focused
     /// (selecting a file, which re-renders the content), and scrolls the content pane when the
     /// content is focused (`Tab` switches focus). This reads each pane's natural keys without
     /// adding a separate scroll intent.
-    /// One screenful of movement, in rows. Falls back to a single row before the first layout
-    /// pass, when `content_height` is still 0, so a page key can never become a no-op.
-    fn page_step(&self) -> isize {
-        (self.content_height as isize).max(1)
-    }
-
     fn navigate(&mut self, delta: isize) -> Effects {
         match self.focus {
             Focus::Content => {
@@ -3347,14 +3355,41 @@ mod tests {
     }
 
     #[test]
-    fn page_step_is_one_viewport_and_never_zero() {
-        // PageUp/PageDown move by the live content height, so paging follows a resize instead of
-        // using a fixed stride. The floor of 1 matters because startup runs before the first
-        // layout pass, when content_height is still 0 — a page key must never be a silent no-op.
+    fn page_step_is_the_focused_pane_viewport_and_never_zero() {
+        // A page is the drawn height of the pane the key will actually move, so paging follows a
+        // resize instead of using a fixed stride — and the tree keeps paging by tree rows even in
+        // the narrow layout, where the undrawn content column reports a (0, 0) viewport. The floor
+        // of 1 covers a key pressed before the first layout pass, when neither pane is measured.
         let mut ctrl = wiring_controller();
-        assert_eq!(ctrl.page_step(), 1, "no viewport yet → still move a row");
+        assert_eq!(
+            ctrl.page_step(),
+            1,
+            "nothing measured yet → still move a row"
+        );
+
         ctrl.set_content_viewport(80, 20);
-        assert_eq!(ctrl.page_step(), 20, "a page is the content-pane height");
+        assert_eq!(
+            ctrl.page_step(),
+            1,
+            "tree focused, no tree drawn yet → a row"
+        );
+        ctrl.set_pane_geometry(PaneGeometry {
+            tree_inner: Some(ratatui::layout::Rect {
+                x: 1,
+                y: 1,
+                width: 30,
+                height: 12,
+            }),
+            ..PaneGeometry::default()
+        });
+        assert_eq!(ctrl.page_step(), 12, "a page is the tree's own height");
+
+        ctrl.focus = Focus::Content;
+        assert_eq!(
+            ctrl.page_step(),
+            20,
+            "content focus pages by the content pane"
+        );
         ctrl.set_content_viewport(80, 7);
         assert_eq!(ctrl.page_step(), 7, "and it tracks a resize");
     }

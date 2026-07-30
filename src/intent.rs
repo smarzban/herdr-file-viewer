@@ -14,7 +14,7 @@ pub enum Intent {
     /// Move the tree cursor down one row.
     NavDown,
     /// Move up by one screenful: the content pane scrolls back a page when focused, otherwise the
-    /// tree cursor jumps a page. The distance is the live content-pane height, so it tracks the
+    /// tree cursor jumps a page. The distance is the focused pane's live height, so it tracks that
     /// pane as it is resized. Read-only movement, like [`Intent::NavUp`].
     PageUp,
     /// Move down by one screenful, the counterpart to [`Intent::PageUp`]. Bound to `Space` as well
