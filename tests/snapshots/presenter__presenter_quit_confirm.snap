@@ -4,12 +4,12 @@ expression: out
 ---
 "┌r─────────────────────────────────────┐┌main.rs───────────────────────────────────────────────────┐"
 "│  ▾ src                               ││Showing first 5000 lines (truncated)                      │"
-"│M   main.rs                           ││delta not found — showing plain diff                      │"
+"│M     main.rs                         ││delta not found — showing plain diff                      │"
 "│    ▾ inner                           ││fn main() {                                               │"
-"│A     added┌Discard annotations?──────────────────────────────────────────────────────┐           │"
-"│  README.md│                                                                          │           │"
-"│D gone.txt │ 3 annotations will be lost:                                              │           │"
-"│? scratch.l│   README.md — Clarify the fallback.                                      │           │"
+"│A       add┌Discard annotations?──────────────────────────────────────────────────────┐           │"
+"│    README.│                                                                          │           │"
+"│D   gone.tx│ 3 annotations will be lost:                                              │           │"
+"│?   scratch│   README.md — Clarify the fallback.                                      │           │"
 "│           │   src/app.rs:42 — Explain the ignored result.                            │           │"
 "│           │   src/界[2J.rs:42-47 — Unicode 🙂 note with a very long tail that must … │           │" Hidden by multi-width symbols: [(21, " "), (46, " ")]
 "│           │                                                                          │           │"

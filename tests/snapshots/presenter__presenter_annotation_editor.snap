@@ -4,12 +4,12 @@ expression: out
 ---
 "┌r─────────────────────────────────────┐┌main.rs───────────────────────────────────────────────────┐"
 "│  ▾ src                               ││Showing first 5000 lines (truncated)                      │"
-"│M   main.rs                           ││delta not found — showing plain diff                      │"
+"│M     main.rs                         ││delta not found — showing plain diff                      │"
 "│    ▾ inner                           ││fn main() {                                               │"
-"│A     added.rs       ┌Edit annotation───────────────────────────────────────┐                     │"
-"│  README.md          │                                                      │                     │"
-"│D gone.txt           │ Target: src/hostile/very-long-component-name.rs:8-12 │                     │"
-"│? scratch.log        │  long-prefix long-prefix long-prefix Unicode note 界 │                     │" Hidden by multi-width symbols: [(75, " ")]
+"│A       added.rs     ┌Edit annotation───────────────────────────────────────┐                     │"
+"│    README.md        │                                                      │                     │"
+"│D   gone.txt         │ Target: src/hostile/very-long-component-name.rs:8-12 │                     │"
+"│?   scratch.log      │  long-prefix long-prefix long-prefix Unicode note 界 │                     │" Hidden by multi-width symbols: [(75, " ")]
 "│                     │ Annotation text cannot be empty[2J                   │                     │"
 "│                     │                                                      │                     │"
 "│                     └──────←→/Home/End move · Enter save · Esc cancel──────┘                     │"

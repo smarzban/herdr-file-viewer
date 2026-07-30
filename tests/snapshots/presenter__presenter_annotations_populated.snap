@@ -4,12 +4,12 @@ expression: out
 ---
 "┌r─────────────────────────────────────┐┌main.rs───────────────────────────────────────────────────┐"
 "│  ▾ src                               ││Showing first 5000 lines (truncated)                      │"
-"│M   main.rs                           ││delta not found — showing plain diff                      │"
+"│M     main.rs                         ││delta not found — showing plain diff                      │"
 "│    ▾ inner                           ││fn main() {                                               │"
-"│A     added.rs                        ││    println!("hello");                                    │"
-"│  README.md┌Annotations (3)───────────────────────────────────────────────────────────┐           │"
-"│D gone.txt │                                                                          │           │"
-"│? scratch.l│ README.md — Clarify the fallback.                                        │           │"
+"│A       added.rs                      ││    println!("hello");                                    │"
+"│    README.┌Annotations (3)───────────────────────────────────────────────────────────┐           │"
+"│D   gone.tx│                                                                          │           │"
+"│?   scratch│ README.md — Clarify the fallback.                                        │           │"
 "│           │ src/app.rs:42 — Explain the ignored result.                              │           │"
 "│           │ src/界[2J.rs:42-47 — Unicode 🙂 note with a very long tail that must tr… │           │" Hidden by multi-width symbols: [(19, " "), (44, " ")]
 "│           │                                                                          │           │"

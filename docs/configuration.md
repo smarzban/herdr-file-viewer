@@ -31,8 +31,15 @@ that directory (on Linux it is
 `~/.config/herdr/plugins/config/herdr-file-viewer/`, so the file is that path plus `config.toml`).
 Run standalone (outside herdr), it
 falls back to `$XDG_CONFIG_HOME/herdr-file-viewer/config.toml`, defaulting to
-`~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. A missing file is the
-normal case — every key falls back to its default.
+`~/.config/herdr-file-viewer/config.toml` when `XDG_CONFIG_HOME` isn't set. On **Windows**, where
+neither `XDG_CONFIG_HOME` nor `HOME` is set, that resolves to
+`%USERPROFILE%\.config\herdr-file-viewer\config.toml`. A missing file is the normal case — every key
+falls back to its default.
+
+Print the herdr-managed directory at any time with `herdr plugin config-dir herdr-file-viewer`. The
+path has to resolve to an **absolute** location: a config file is trusted input (it can set the
+`editor` command), so a path that would resolve relative to the working directory is refused rather
+than sourced from whatever repository you happen to have open.
 
 ## Precedence
 
