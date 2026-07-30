@@ -3856,4 +3856,71 @@ mod tests {
             "the appended Keybindings section body must carry the registry descriptions, got: {body}"
         );
     }
+
+    // ---- AltGr closes an already-open help overlay on Windows (matches opening) ----------
+
+    #[test]
+    fn normalized_altgr_question_mark_closes_open_help_overlay() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        let altgr = crate::input::normalize_altgr(
+            KeyEvent::new(
+                KeyCode::Char('?'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            true,
+        );
+
+        ctrl.handle_help_key(altgr);
+
+        assert!(ctrl.help_state().is_none());
+    }
+
+    /// Ctrl+Alt(+Shift)+`?` while help is open: on Windows this must close the overlay, exactly
+    /// mirroring how it opens one via `Intent::ShowHelp` (AC parity, no drift between open/close).
+    #[test]
+    #[cfg(windows)]
+    fn altgr_question_mark_closes_open_help_overlay_on_windows() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        assert!(
+            ctrl.help_state().is_some(),
+            "help must be open before the AltGr key"
+        );
+
+        let altgr_close = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        ctrl.handle_help_key(altgr_close);
+
+        assert!(
+            ctrl.help_state().is_none(),
+            "AltGr+? must close the open help overlay on Windows"
+        );
+    }
+
+    /// Off Windows the same chord is a genuine Ctrl+Alt chord, not AltGr typing, so it must stay
+    /// inert and leave the overlay open (consumed no-op, nothing leaks past the modal).
+    #[test]
+    #[cfg(not(windows))]
+    fn ctrl_alt_question_mark_leaves_help_overlay_open_off_windows() {
+        let mut ctrl = wiring_controller();
+        ctrl.open_help();
+        assert!(
+            ctrl.help_state().is_some(),
+            "help must be open before the chord"
+        );
+
+        let ctrl_alt = KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        ctrl.handle_help_key(ctrl_alt);
+
+        assert!(
+            ctrl.help_state().is_some(),
+            "off Windows, Ctrl+Alt+? must not close the help overlay"
+        );
+    }
 }

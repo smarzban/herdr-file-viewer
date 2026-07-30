@@ -65,10 +65,22 @@ changes you make outside it (a merge, pull, or commit in another pane) show up a
 forces a full refresh on demand. (Focus-refresh updates the tree's status without disturbing your
 content scroll.)
 
-Character keys act only when no control chord is held (so terminal chords like `Ctrl+C` are
-never intercepted); `Shift` is permitted, for keys such as `<` and `>` (and `a`/`A`, `y`/`Y`,
-`W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the annotation
-overview).
+Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
+not trigger a viewer action; `Shift` is permitted for keys such as `<` and `>` (and `a`/`A`,
+`y`/`Y`, `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the
+annotation overview).
+
+**On Windows only**, `Ctrl+Alt`+character (with optional `Shift`) is treated as typing (AltGr), not
+as a chord. Crossterm 0.29's Windows input path reports AltGr as the generic `Ctrl+Alt` combination,
+so a genuine Windows `Ctrl+Alt`+character chord is ambiguous with AltGr typing a bound character:
+pressing AltGr+`?` on a Brazilian ABNT2 keyboard still opens (or closes) the help overlay, and the
+same applies to whatever character any of your bindings use, including a custom `[keys]` remap.
+(Some layouts produce other characters via AltGr too, e.g. `[`/`]` on German and Spanish ones; those
+are unbound by default, so they trigger nothing unless you bind them yourself.) `Ctrl` alone, `Alt`
+alone, `Ctrl+Alt` on a non-character key (`Ctrl+Alt+↑`), and `Ctrl+Alt` plus any modifier other than
+optional `Shift` stay inert. Linux and macOS decoding is unchanged. To prevent a particular Windows
+`Ctrl+Alt` chord from triggering its viewer action, rebind that action off the character in
+[`[keys]`](configuration.md#keybindings).
 
 ### Copy a path (`y` / `Y`)
 

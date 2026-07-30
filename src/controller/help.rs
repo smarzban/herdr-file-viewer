@@ -225,6 +225,10 @@ impl Controller {
     ///
     /// When the overlay is not open, all keys are a defensive no-op.
     pub fn handle_help_key(&mut self, key: KeyEvent) -> Effects {
+        // Normalize a Windows AltGr chord (Ctrl+Alt(+Shift)+Char) via the SAME seam `input::decode`
+        // uses, so AltGr+`?` closes an already-open overlay on Windows exactly as it opens one;
+        // opening and closing can never drift apart. On non-Windows hosts this is a no-op passthrough.
+        let key = crate::input::normalize_altgr(key, cfg!(windows));
         // Ignore Ctrl/Alt chords (mirrors input::map_key): Shift is allowed (Shift+Tab = BackTab
         // retreats), but a Ctrl+'?' / Alt+1 must NOT close or switch — consume it as a no-op so it
         // neither acts here nor leaks past the modal. (R3 item 3, consistency with map_key.)
