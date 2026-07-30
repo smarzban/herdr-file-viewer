@@ -12,6 +12,7 @@ is additive and on by default.
 | Key | Action |
 | --- | --- |
 | `↑` / `k`, `↓` / `j` | Move the tree cursor, or **scroll the content pane** vertically when it is focused |
+| `Space` / `PageDown`, `PageUp` | Move **one screenful** — page the content pane when it is focused, otherwise jump the tree cursor a page. The step is the focused pane's live height, so it follows a resize and stays a screenful in the narrow single-column layout. `Space` for page-down matches the pager convention (`less`, `more`, `man`, and so `bat`); `less`'s page-up `b` is unavailable here because it is `toggle_baseline`, so remap `page_up` if you want it |
 | `→` / `l` | Expand the selected directory, or **scroll the content pane right** when it is focused |
 | `←` / `h` | Collapse the selected directory, or **scroll the content pane left** when it is focused |
 | `H` (Shift+`h`) | Scroll the **tree** pane left (long / deeply-nested rows), inert unless the tree is focused |

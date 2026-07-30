@@ -1267,6 +1267,112 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
 }
 
 #[test]
+fn page_keys_scroll_the_content_pane_by_one_viewport_and_clamp() {
+    // Space/PageDown/PageUp move a screenful of the pane they act on. With the content focused
+    // that is the content viewport — the tree is 20 rows here, so a step of 10 also shows the
+    // page is taken from the focused pane, not whichever pane happens to be taller.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll = 40
+    ctrl.set_pane_geometry(wide_geometry()); // tree interior: 20 rows
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        10,
+        "PageDown advances one content viewport"
+    );
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(ctrl.view_state().content_scroll, 20, "and another");
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        10,
+        "PageUp returns the same distance"
+    );
+
+    for _ in 0..5 {
+        ctrl.handle(Intent::PageUp);
+    }
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        0,
+        "cannot page above the first line"
+    );
+    for _ in 0..20 {
+        ctrl.handle(Intent::PageDown);
+    }
+    assert_eq!(
+        ctrl.view_state().content_scroll,
+        40,
+        "cannot page past the last screenful"
+    );
+}
+
+#[test]
+fn page_keys_move_the_tree_cursor_by_the_tree_height() {
+    // Tree focused: a page is the tree's own drawn height (20 rows), NOT the content pane's 10.
+    let dir = TempDir::new();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry()); // tree interior: 20 rows
+
+    assert_eq!(ctrl.focus(), Focus::Tree);
+    assert_eq!(ctrl.tree().cursor(), 0);
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(ctrl.tree().cursor(), 20, "one screenful of tree rows down");
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(ctrl.tree().cursor(), 0, "and back up");
+
+    for _ in 0..5 {
+        ctrl.handle(Intent::PageDown);
+    }
+    assert_eq!(ctrl.tree().cursor(), 39, "clamped at the last row");
+}
+
+#[test]
+fn narrow_layout_pages_the_tree_by_its_own_height_not_one_row() {
+    // Regression: under 80 columns the Presenter draws only the FOCUSED column, so while the tree
+    // holds focus the content viewport is fed back as (0, 0) on every frame — not just before the
+    // first one. Paging off the content height made PageDown a one-row step for as long as that
+    // layout held; the tree must still page by the rows it actually drew.
+    let dir = TempDir::new();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x").unwrap();
+    }
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.set_content_viewport(0, 0); // tree-only frame: no content column was drawn
+    ctrl.set_pane_geometry(PaneGeometry {
+        area_x: 0,
+        area_width: 60,
+        tree_inner: Some(Rect {
+            x: 1,
+            y: 1,
+            width: 58,
+            height: 20,
+        }),
+        ..PaneGeometry::default()
+    });
+
+    ctrl.handle(Intent::PageDown);
+    assert_eq!(
+        ctrl.tree().cursor(),
+        20,
+        "a page stays a screenful of tree rows when the content column is not drawn"
+    );
+    ctrl.handle(Intent::PageUp);
+    assert_eq!(ctrl.tree().cursor(), 0, "and PageUp returns a full page");
+}
+
+#[test]
 fn scroll_to_line_brings_the_target_line_into_view_and_clamps_out_of_range() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();

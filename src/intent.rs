@@ -13,6 +13,13 @@ pub enum Intent {
     NavUp,
     /// Move the tree cursor down one row.
     NavDown,
+    /// Move up by one screenful: the content pane scrolls back a page when focused, otherwise the
+    /// tree cursor jumps a page. The distance is the focused pane's live height, so it tracks that
+    /// pane as it is resized. Read-only movement, like [`Intent::NavUp`].
+    PageUp,
+    /// Move down by one screenful, the counterpart to [`Intent::PageUp`]. Bound to `Space` as well
+    /// as `PageDown`, following the pager convention (`less`, `more`, `man`, and so `bat`).
+    PageDown,
     /// Expand the selected directory (AC-3).
     Expand,
     /// Collapse the selected directory (AC-3).
@@ -155,9 +162,11 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 39] = [
+    pub const ALL: [Intent; 41] = [
         Intent::NavUp,
         Intent::NavDown,
+        Intent::PageUp,
+        Intent::PageDown,
         Intent::Expand,
         Intent::Collapse,
         Intent::Activate,
@@ -213,6 +222,8 @@ mod tests {
                 Intent::AddAnnotation => (false, true),
                 Intent::NavUp
                 | Intent::NavDown
+                | Intent::PageUp
+                | Intent::PageDown
                 | Intent::Expand
                 | Intent::Collapse
                 | Intent::Activate
@@ -321,11 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_39() {
+    fn all_length_is_41() {
         assert_eq!(
             Intent::ALL.len(),
-            39,
-            "Intent::ALL must have exactly 39 variants"
+            41,
+            "Intent::ALL must have exactly 41 variants"
         );
     }
 
@@ -338,6 +349,18 @@ mod tests {
         assert!(
             Intent::ALL.contains(&Intent::PrevChanged),
             "Intent::ALL must contain PrevChanged"
+        );
+    }
+
+    #[test]
+    fn page_intents_are_in_all() {
+        assert!(
+            Intent::ALL.contains(&Intent::PageUp),
+            "Intent::ALL must contain PageUp"
+        );
+        assert!(
+            Intent::ALL.contains(&Intent::PageDown),
+            "Intent::ALL must contain PageDown"
         );
     }
 
