@@ -74,16 +74,34 @@ pub fn decide(disabled: bool, now_unix: u64, cache: &Option<Cache>) -> Decision 
     }
 }
 
-/// Initial banner state + a one-shot receiver for the background check's result.
+/// The complete remote-notice state visible to one controller frame.
+///
+/// The controller replaces this value only as a whole, so a completed background result cannot
+/// apply a new release while leaving an old spotlight behind. The writer is a handle only: it
+/// queues bounded cache work on its own worker and never waits during a redraw.
+#[derive(Clone, Default)]
+pub struct NoticeSnapshot {
+    /// The latest stable release detected for the fixed official repository, if it is newer than
+    /// the running build.
+    pub detected_release: Option<Version>,
+    /// The current project spotlight state. The compatibility release-only probe leaves this at
+    /// its cached/default value until T-10 installs the unified refresh pipeline.
+    pub spotlight: spotlight_policy::SpotlightCache,
+    /// Best-effort cache persistence for future notice intents. `None` when no cache directory
+    /// is available or when update checks are disabled.
+    pub cache_writer: Option<cache::CacheWriter>,
+}
+
+/// Initial notice state + a one-shot receiver for the background check's replacement snapshot.
 pub struct UpdateState {
-    pub initial: Option<Version>,
-    pub rx: Option<mpsc::Receiver<Option<Version>>>,
+    pub initial: NoticeSnapshot,
+    pub rx: Option<mpsc::Receiver<NoticeSnapshot>>,
 }
 
 impl UpdateState {
     pub fn disabled() -> Self {
         UpdateState {
-            initial: None,
+            initial: NoticeSnapshot::default(),
             rx: None,
         }
     }
@@ -99,10 +117,10 @@ pub struct StartDeps {
 }
 
 /// Decide, then (if warranted) spawn the background probe. On a **successful** probe the thread
-/// persists the throttle cache (advancing the 24h window + the latest version seen) and sends the
-/// "version to show" (`Some` when newer, `None` when nothing newer) over the channel. On a probe
-/// **failure** it leaves the cache untouched — so the check simply retries next launch — and sends
-/// nothing (the receiver then disconnects, which `Controller::poll` cleans up).
+/// persists the throttle cache (advancing the 24h window + the latest version seen) and sends a
+/// release-only [`NoticeSnapshot`] (`Some` when newer, `None` when nothing newer) over the channel.
+/// On a probe **failure** it leaves the cache untouched, so the check simply retries next launch
+/// and sends nothing (the receiver then disconnects, which `Controller::poll` cleans up).
 pub fn start_with(deps: StartDeps) -> UpdateState {
     let StartDeps {
         disabled,
@@ -112,12 +130,24 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         run,
     } = deps;
     let decision = decide(disabled, now_unix, &cache);
+    let initial = NoticeSnapshot {
+        detected_release: decision.initial,
+        spotlight: spotlight_policy::SpotlightCache::default(),
+        cache_writer: if disabled {
+            None
+        } else {
+            cache_dir
+                .as_ref()
+                .map(|dir| cache::CacheWriter::new(dir.clone()))
+        },
+    };
     if !decision.should_check {
-        return UpdateState {
-            initial: decision.initial,
-            rx: None,
-        };
+        return UpdateState { initial, rx: None };
     }
+    // The compatibility probe remains release-only until T-10. It returns a complete replacement
+    // snapshot so later spotlight-capable work cannot update one notice independently of another.
+    let replacement_spotlight = initial.spotlight.clone();
+    let replacement_writer = initial.cache_writer.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         // An unavailable source leaves the cache as-is (retry next launch) and sends nothing.
@@ -130,11 +160,15 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
                     &next_cache(cache.unwrap_or_default(), now_unix, latest),
                 );
             }
-            let _ = tx.send(latest.and_then(newer_than_current));
+            let _ = tx.send(NoticeSnapshot {
+                detected_release: latest.and_then(newer_than_current),
+                spotlight: replacement_spotlight,
+                cache_writer: replacement_writer,
+            });
         }
     });
     UpdateState {
-        initial: decision.initial,
+        initial,
         rx: Some(rx),
     }
 }
@@ -228,7 +262,7 @@ mod tests {
             run: Box::new(|_| panic!("must not probe when the cache is fresh")),
         });
         assert_eq!(
-            state.initial,
+            state.initial.detected_release,
             Version::parse(&newer),
             "banner shown from cache"
         );
@@ -278,8 +312,9 @@ mod tests {
     }
 
     #[test]
-    fn start_with_delivers_a_newer_version_over_the_channel() {
-        // A fake probe reporting a newer tag → the receiver yields it; no real network.
+    fn start_with_delivers_a_release_only_notice_snapshot_over_the_channel() {
+        // A fake probe reporting a newer tag → the receiver yields a complete replacement
+        // snapshot; the compatibility loop leaves spotlight handling for T-10.
         let newer = current().major + 1;
         let detected = Version::parse(&format!("{newer}.0.0")).unwrap();
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
@@ -301,7 +336,19 @@ mod tests {
         let got = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("result arrives");
-        assert_eq!(got, Version::parse(&format!("{newer}.0.0")));
+        assert_eq!(
+            got.detected_release,
+            Version::parse(&format!("{newer}.0.0"))
+        );
+        assert_eq!(
+            got.spotlight.status_title(),
+            None,
+            "the compatibility loop emits a release-only snapshot"
+        );
+        assert!(
+            got.cache_writer.is_some(),
+            "the snapshot carries the optional async cache writer for later notice intents"
+        );
         let persisted = cache::load(&dir).expect("successful probe writes the cache");
         assert_eq!(
             persisted.spotlight.as_deref(),
@@ -322,7 +369,11 @@ mod tests {
             cache_dir: None,
             run: Box::new(|_| panic!("must not probe when disabled")),
         });
-        assert!(state.initial.is_none() && state.rx.is_none());
+        assert!(
+            state.initial.detected_release.is_none()
+                && state.initial.cache_writer.is_none()
+                && state.rx.is_none()
+        );
     }
 
     #[test]
@@ -336,7 +387,9 @@ mod tests {
         // config `update_check = true`.
         let state = start_default_with(true);
         assert!(
-            state.initial.is_none() && state.rx.is_none(),
+            state.initial.detected_release.is_none()
+                && state.initial.cache_writer.is_none()
+                && state.rx.is_none(),
             "disabled=true → the disabled sentinel, regardless of the env"
         );
     }

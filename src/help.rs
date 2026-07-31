@@ -170,8 +170,10 @@ impl HelpState {
 ///    whose double-width mis-renders in the TUI)
 ///
 /// (AC-16, AC-17, AC-18, AC-19)
-pub fn about_text(update: Option<crate::update::version::Version>) -> String {
-    let status = match update {
+/// `detected_release` is the controller's temporary T-8 projection from its complete notice
+/// snapshot. Keeping this release-only argument preserves the legacy status seam until T-13.
+pub fn about_text(detected_release: Option<crate::update::version::Version>) -> String {
+    let status = match detected_release {
         Some(v) => format!("Update available: v{v}"),
         None => "Up to date".to_owned(),
     };

@@ -12,7 +12,10 @@ use herdr_file_viewer::controller::{
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
-use herdr_file_viewer::update::{UpdateState, Version};
+use herdr_file_viewer::update::spotlight_policy::{
+    SpotlightCache, SpotlightInput, cache_delta, project,
+};
+use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
@@ -80,12 +83,29 @@ fn v(major: u32, minor: u32, patch: u32) -> Version {
     }
 }
 
+fn snapshot(detected_release: Option<Version>, spotlight_title: Option<&str>) -> NoticeSnapshot {
+    let mut spotlight = SpotlightCache::default();
+    if let Some(title) = spotlight_title {
+        spotlight.apply(cache_delta(
+            project(SpotlightInput::Available(
+                format!("# {title}\nbody\n").into_bytes(),
+            )),
+            1,
+        ));
+    }
+    NoticeSnapshot {
+        detected_release,
+        spotlight,
+        cache_writer: None,
+    }
+}
+
 #[test]
 fn initial_cached_version_shows_a_banner() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: Some(v(9, 9, 9)),
+        initial: snapshot(Some(v(9, 9, 9)), None),
         rx: None,
     });
     assert!(
@@ -101,7 +121,7 @@ fn no_update_means_no_banner() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: None,
+        initial: snapshot(None, None),
         rx: None,
     });
     assert!(c.view_state().update_banner.is_none());
@@ -113,7 +133,7 @@ fn background_result_turns_the_banner_on() {
     let (tx, rx) = mpsc::channel();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: None,
+        initial: snapshot(None, None),
         rx: Some(rx),
     });
     assert!(
@@ -121,7 +141,7 @@ fn background_result_turns_the_banner_on() {
         "nothing until the check returns"
     );
 
-    tx.send(Some(v(2, 0, 0))).unwrap();
+    tx.send(snapshot(Some(v(2, 0, 0)), None)).unwrap();
     let fx = c.poll().expect("poll applies the background update result");
     assert!(fx.redraw, "a fresh verdict triggers a repaint");
     assert!(
@@ -139,12 +159,12 @@ fn background_up_to_date_clears_a_stale_cached_banner() {
     let (tx, rx) = mpsc::channel();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: Some(v(9, 9, 9)),
+        initial: snapshot(Some(v(9, 9, 9)), None),
         rx: Some(rx),
     });
     assert!(c.view_state().update_banner.is_some());
 
-    tx.send(None).unwrap();
+    tx.send(snapshot(None, None)).unwrap();
     c.poll().expect("poll applies the result");
     assert!(
         c.view_state().update_banner.is_none(),
@@ -153,11 +173,63 @@ fn background_up_to_date_clears_a_stale_cached_banner() {
 }
 
 #[test]
+fn background_notice_snapshot_replaces_release_and_spotlight_together() {
+    let dir = TempDir::new();
+    let (tx, rx) = mpsc::channel();
+    let mut c = controller_in(dir.path());
+    c.set_update(UpdateState {
+        initial: snapshot(Some(v(9, 9, 9)), Some("Before")),
+        rx: Some(rx),
+    });
+
+    tx.send(snapshot(Some(v(2, 0, 0)), Some("After"))).unwrap();
+    c.poll().expect("the completed snapshot redraws");
+
+    assert!(
+        c.view_state()
+            .update_banner
+            .is_some_and(|banner| banner.contains("2.0.0")),
+        "the new snapshot replaces the detected release"
+    );
+    assert_eq!(
+        c.notice_snapshot().spotlight.status_title(),
+        Some("After"),
+        "the same channel message replaces the spotlight, not only the release"
+    );
+}
+
+#[test]
+fn disconnected_notice_channel_preserves_last_snapshot() {
+    let dir = TempDir::new();
+    let (tx, rx) = mpsc::channel();
+    let mut c = controller_in(dir.path());
+    c.set_update(UpdateState {
+        initial: snapshot(Some(v(9, 9, 9)), Some("Cached")),
+        rx: Some(rx),
+    });
+
+    drop(tx);
+    c.poll();
+
+    assert!(
+        c.view_state()
+            .update_banner
+            .is_some_and(|banner| banner.contains("9.9.9")),
+        "a disconnected probe keeps the last detected release"
+    );
+    assert_eq!(
+        c.notice_snapshot().spotlight.status_title(),
+        Some("Cached"),
+        "a disconnected probe keeps the last spotlight in the same snapshot"
+    );
+}
+
+#[test]
 fn dismiss_hides_the_banner_for_the_session() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: Some(v(9, 9, 9)),
+        initial: snapshot(Some(v(9, 9, 9)), None),
         rx: None,
     });
     let fx = c.handle(Intent::DismissUpdate);

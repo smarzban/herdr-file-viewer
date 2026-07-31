@@ -47,7 +47,7 @@ use crate::presenter::{
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
-use crate::update::{self, UpdateState, Version};
+use crate::update::{self, NoticeSnapshot, UpdateState};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -701,9 +701,9 @@ pub struct Controller {
     /// exclusive with L line-select mode by construction: created only in `handle_column_mouse`,
     /// which runs only for `Modal::None`. Auto-copied on release.
     content_selection: Option<LineSelectState>,
-    /// The newer version to advertise, if any (set from the cached value at startup and
-    /// refreshed by the background check). `None` ⇒ up-to-date / unknown.
-    update_available: Option<Version>,
+    /// The last complete remote-notice state. Background results replace this value atomically,
+    /// so release and spotlight state never land on different redraws.
+    notice_snapshot: NoticeSnapshot,
     /// The pre-formatted Settings section body (AC-15, AC-18), or `None` before
     /// [`set_settings_display`](Self::set_settings_display) is called. Injected post-construction
     /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
@@ -717,8 +717,8 @@ pub struct Controller {
     /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
     /// next launch while still behind.
     update_dismissed: bool,
-    /// One-shot receiver for the background update check's result (`None` when no check ran).
-    update_rx: Option<mpsc::Receiver<Option<Version>>>,
+    /// One-shot receiver for a background notice replacement (`None` when no check ran).
+    notice_rx: Option<mpsc::Receiver<NoticeSnapshot>>,
     /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
     /// `Some` between a re-root and the tick that applies the result; `None` otherwise.
     status_rx: Option<mpsc::Receiver<StatusResult>>,
@@ -895,11 +895,11 @@ impl Controller {
             last_click: None,
             drag: None,
             content_selection: None,
-            update_available: None,
+            notice_snapshot: NoticeSnapshot::default(),
             settings_display: None,
             keybindings_display: None,
             update_dismissed: false,
-            update_rx: None,
+            notice_rx: None,
             status_rx: None,
             modal: Modal::None,
             pending_goto: None,
@@ -1300,12 +1300,18 @@ impl Controller {
         self.width = width;
     }
 
-    /// Install the update-check result: the initial (cached) banner value plus the receiver the
-    /// background probe will deliver a refreshed result on. Called once by the run loop after
-    /// construction; absent ⇒ no banner (so existing call sites/tests are unaffected).
+    /// Install the initial remote-notice snapshot plus the receiver a background probe uses to
+    /// deliver one complete replacement. Called once by the run loop after construction; the
+    /// default snapshot keeps every existing no-update call site inert.
     pub fn set_update(&mut self, state: UpdateState) {
-        self.update_available = state.initial;
-        self.update_rx = state.rx;
+        self.notice_snapshot = state.initial;
+        self.notice_rx = state.rx;
+    }
+
+    /// The last complete remote-notice state applied by the controller. Exposed for integration
+    /// tests and the later notice presenters; callers receive the same atomic unit `poll` applies.
+    pub fn notice_snapshot(&self) -> &NoticeSnapshot {
+        &self.notice_snapshot
     }
 
     /// Install the formatted Settings section body (AC-15, AC-18), so [`open_help`](Self::open_help)
@@ -2781,7 +2787,7 @@ impl Controller {
     /// Hide the update banner for this session (the `u` key). Inert when no banner is showing,
     /// so the key does nothing (no wasted repaint) until an update is actually available.
     fn dismiss_update(&mut self) -> Effects {
-        if self.update_available.is_some() && !self.update_dismissed {
+        if self.notice_snapshot.detected_release.is_some() && !self.update_dismissed {
             self.update_dismissed = true;
             return Effects::redraw();
         }
@@ -2793,7 +2799,10 @@ impl Controller {
         if self.update_dismissed {
             return None;
         }
-        self.update_available.as_ref().map(update::banner_text)
+        self.notice_snapshot
+            .detected_release
+            .as_ref()
+            .map(update::banner_text)
     }
 
     /// Whether the go-to-file finder overlay is currently open.
@@ -3195,18 +3204,17 @@ impl Controller {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        // A finished background update check (one-shot): adopt its verdict and drop the receiver.
-        // `Some(v)` shows/refreshes the banner; `None` (a successful check that found nothing
-        // newer) clears a now-stale cached banner. A *disconnected* channel means the probe failed
-        // and sent nothing — drop the receiver too, so we stop polling a dead channel every tick.
-        if let Some(rx) = &self.update_rx {
+        // A finished background probe replaces the whole notice state and drops the receiver.
+        // A disconnected channel sent no replacement, so retain the last applied snapshot and stop
+        // polling the dead receiver.
+        if let Some(rx) = &self.notice_rx {
             match rx.try_recv() {
-                Ok(version) => {
-                    self.update_available = version;
-                    self.update_rx = None;
+                Ok(snapshot) => {
+                    self.notice_snapshot = snapshot;
+                    self.notice_rx = None;
                     applied = true;
                 }
-                Err(mpsc::TryRecvError::Disconnected) => self.update_rx = None,
+                Err(mpsc::TryRecvError::Disconnected) => self.notice_rx = None,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }

@@ -10234,8 +10234,8 @@ fn help_path_issues_no_git_command() {
 // or required an update probe (the absence of an `update_rx` is undisturbed — help reads the cached
 // field directly, it does not start a check).
 #[test]
-fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
-    use herdr_file_viewer::update::{UpdateState, Version};
+fn help_path_derives_about_status_from_cached_notice_snapshot_without_network_probe() {
+    use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
 
     let dir = TempDir::new();
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
@@ -10249,12 +10249,15 @@ fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
         patch: 7,
     };
     ctrl.set_update(UpdateState {
-        initial: Some(cached),
+        initial: NoticeSnapshot {
+            detected_release: Some(cached),
+            ..Default::default()
+        },
         rx: None,
     });
 
-    // Open help → the About section body is assembled from `self.update_available` (the cached
-    // value), never a fresh probe. Section index 1 is About.
+    // Open help → the About section body projects the snapshot's cached detected release, never
+    // a fresh probe. Section index 1 is About.
     ctrl.handle(Intent::ShowHelp);
     let state = ctrl.help_state().expect("help_state() Some after ShowHelp");
     let about = flatten_text(&state.sections[1].body);
@@ -10271,7 +10274,7 @@ fn help_path_reads_cached_update_status_and_issues_no_network_probe() {
     // Re-open with the cached value cleared to None → "Up to date", again from the cached field
     // only. This double-check pins that the line is a pure projection of the cached status.
     ctrl.set_update(UpdateState {
-        initial: None,
+        initial: NoticeSnapshot::default(),
         rx: None,
     });
     ctrl.handle(Intent::ShowHelp);

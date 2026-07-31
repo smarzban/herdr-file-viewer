@@ -159,7 +159,10 @@ impl Controller {
             body: whats_new_body,
             scroll: 0,
         };
-        let about_body = crate::help::about_text(self.update_available);
+        // T-8 keeps About's release-only status seam while the controller owns the broader
+        // snapshot. T-13 replaces this temporary projection with the complete notice policy.
+        let detected_release = self.notice_snapshot().detected_release;
+        let about_body = crate::help::about_text(detected_release);
         let about = HelpSectionState {
             label: HelpSection::About.label(),
             body: crate::render::to_text(&about_body),
