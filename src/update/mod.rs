@@ -6,39 +6,28 @@
 //! `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
 
 pub mod cache;
+pub mod gateway;
 pub mod release_policy;
 pub mod spotlight_policy;
 pub mod version;
 
+pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source};
 pub use version::Version;
 
 use cache::{Cache, next_cache, should_check};
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
-use version::{latest_stable, newer_than_current};
+use version::newer_than_current;
 
 /// Setting this env var (to anything) disables the update check and banner entirely.
 pub const DISABLE_ENV: &str = "HERDR_FILE_VIEWER_NO_UPDATE_CHECK";
 
-/// The injected probe runner: given the repo URL, returns `git ls-remote`-style stdout. Boxed
-/// + `Send` so the background thread owns it; a type alias keeps signatures readable.
-pub type ProbeRunner = Box<dyn Fn(&str) -> io::Result<String> + Send>;
+/// The only authority the public-source gateway may query (and the source of [`repo_slug`]).
+const OFFICIAL_REPOSITORY_URL: &str = "https://github.com/smarzban/herdr-file-viewer";
 
-/// How long `git ls-remote` may stall mid-transfer before git itself aborts (seconds).
-const PROBE_LOW_SPEED_TIME: &str = "5";
-
-/// Hard wall-clock bound on the whole `git ls-remote` invocation. The low-speed settings only
-/// cover a stalled HTTP *transfer*, not TCP connect / DNS — so a black-holed network could
-/// otherwise hang (and orphan) the `git` child indefinitely. On overrun the child is killed and
-/// the probe fails (→ no banner), matching the fail-silent contract.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The repository URL the probe queries (and the source of [`repo_slug`]).
+/// The fixed official repository HTTPS URL.
 pub fn repo_url() -> &'static str {
-    env!("CARGO_PKG_REPOSITORY")
+    OFFICIAL_REPOSITORY_URL
 }
 
 /// The `owner/repo` slug for the install command, derived from [`repo_url`].
@@ -55,126 +44,6 @@ pub fn banner_text(v: &Version) -> String {
         "↑ v{v} available · herdr plugin install {} · u to dismiss",
         repo_slug()
     )
-}
-
-/// Apply the security boundary for invoking `git` against an untrusted environment.
-///
-/// The viewed repository is **untrusted**, and `git` reads the repo-local `.git/config` of
-/// whatever working directory it is in (URL `insteadOf` rewrites, credential helpers, …) — so an
-/// attacker-planted `.git/config` could otherwise redirect or hijack this once-a-day probe. We:
-/// - run in `run_dir`, which the caller guarantees is a **freshly-created private empty dir**
-///   (so it cannot itself contain a `.git/config`), and ceiling discovery to it
-///   (`GIT_CEILING_DIRECTORIES`) so git never walks up to find one — no repo-local config is read,
-///   regardless of where herdr launched the pane;
-/// - pin the transport to `https` (`GIT_ALLOW_PROTOCOL`), so even a (user-global) URL rewrite
-///   can't redirect to a command-capable transport like `ext::` or `file://`;
-/// - never prompt (`GIT_TERMINAL_PROMPT=0`).
-///
-/// The user's own global/system config is intentionally kept — it carries legitimate proxy / CA
-/// settings and is in the user's own trust domain (only the *viewed repo* is untrusted).
-fn harden_git(cmd: &mut Command, run_dir: &Path) {
-    cmd.current_dir(run_dir)
-        .env("GIT_CEILING_DIRECTORIES", run_dir)
-        .env("GIT_ALLOW_PROTOCOL", "https")
-        .env("GIT_TERMINAL_PROMPT", "0");
-}
-
-/// Build the hardened `git ls-remote --tags <url>` command, run from `run_dir` (see
-/// [`harden_git`]). Constructed separately from [`run_git_ls_remote`] so the security boundary is
-/// unit-testable without shelling out.
-fn ls_remote_command(repo_url: &str, run_dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(["ls-remote", "--tags", repo_url]);
-    harden_git(&mut cmd, run_dir);
-    cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
-        .env("GIT_HTTP_LOW_SPEED_TIME", PROBE_LOW_SPEED_TIME)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    cmd
-}
-
-/// Production probe runner. Runs the hardened `git ls-remote` from a **freshly-created private,
-/// empty directory** — git reads a `.git/config` in its own cwd, so even the system temp dir
-/// could (in principle) carry one; a directory we just made cannot. The directory is removed
-/// afterwards. The whole invocation is bounded by [`PROBE_TIMEOUT`] so a connect/DNS hang can't
-/// wedge or orphan the `git` child. `Err` on any failure — all of which degrade to "no banner".
-pub fn run_git_ls_remote(repo_url: &str) -> io::Result<String> {
-    let probe_dir = make_private_dir()?; // fresh, exclusively-created, empty, owned by us
-    let result = run_ls_remote_in(repo_url, &probe_dir);
-    let _ = std::fs::remove_dir_all(&probe_dir);
-    result
-}
-
-/// Create a fresh, private, empty directory under the system temp dir and return its path.
-///
-/// Uses **exclusive** creation (`create_dir`, which fails if the path already exists) with an
-/// unpredictable, never-reused name (pid + a nanosecond stamp + a probe counter), retrying on the
-/// rare collision. So the returned directory is guaranteed to be one we just created — never a
-/// pre-existing or attacker-planted path (which `create_dir_all` would silently reuse, letting a
-/// `.git/config` in it influence the probe). The caller removes it when done. `Err` (→ no banner)
-/// if no fresh directory can be made.
-fn make_private_dir() -> io::Result<PathBuf> {
-    let base = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    for attempt in 0..1024 {
-        let dir = base.join(format!(
-            "herdr-fv-probe-{}-{nanos}-{seq}-{attempt}",
-            std::process::id()
-        ));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return Ok(dir),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(io::Error::other(
-        "could not create a private probe directory",
-    ))
-}
-
-/// Distinguishes successive private-probe-dir names within one process.
-static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Spawn the hardened `ls-remote` in `run_dir` and read its stdout, bounded by [`PROBE_TIMEOUT`].
-fn run_ls_remote_in(repo_url: &str, run_dir: &Path) -> io::Result<String> {
-    let mut child = ls_remote_command(repo_url, run_dir).spawn()?;
-    // Read stdout on a worker thread so the wait can be bounded (a hung connect never writes).
-    let stdout = child.stdout.take();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut out) = stdout {
-            let _ = out.read_to_end(&mut buf);
-        }
-        let _ = tx.send(buf);
-    });
-    // A SINGLE combined wall-clock deadline for the whole probe (matching the renderer
-    // call-site): `recv_timeout` can consume most of `PROBE_TIMEOUT` waiting for stdout, so bound
-    // the child wait by what's LEFT — otherwise a `ls-remote` that closes stdout near the deadline
-    // then hangs before exit could spend a second full budget (~2× `PROBE_TIMEOUT` total).
-    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
-    match rx.recv_timeout(PROBE_TIMEOUT) {
-        Ok(buf) => match crate::proc::wait_bounded(
-            &mut child,
-            deadline.saturating_duration_since(std::time::Instant::now()),
-        ) {
-            Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
-            Some(status) => Err(io::Error::other(format!(
-                "git ls-remote exited with {status}"
-            ))),
-            None => Err(io::Error::other("git ls-remote did not exit")),
-        },
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(io::Error::other("git ls-remote timed out"))
-        }
-    }
 }
 
 /// The startup decision: what to show immediately (from cache) and whether to hit the network.
@@ -226,8 +95,7 @@ pub struct StartDeps {
     pub now_unix: u64,
     pub cache: Option<Cache>,
     pub cache_dir: Option<PathBuf>,
-    pub repo_url: String,
-    pub run: ProbeRunner,
+    pub run: DiscoveryRunner,
 }
 
 /// Decide, then (if warranted) spawn the background probe. On a **successful** probe the thread
@@ -241,7 +109,6 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         now_unix,
         cache,
         cache_dir,
-        repo_url,
         run,
     } = deps;
     let decision = decide(disabled, now_unix, &cache);
@@ -253,9 +120,10 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        // A probe failure leaves the cache as-is (retry next launch) and sends nothing.
-        if let Ok(stdout) = run(&repo_url) {
-            let latest = latest_stable(&stdout);
+        // An unavailable source leaves the cache as-is (retry next launch) and sends nothing.
+        let deadline = std::time::Instant::now() + gateway::DISCOVERY_TIMEOUT;
+        if let Source::Available(state) = run(deadline) {
+            let latest = state.latest_release().map(|release| release.version);
             if let Some(dir) = &cache_dir {
                 cache::store(
                     dir,
@@ -296,8 +164,7 @@ pub fn start_default_with(disabled: bool) -> UpdateState {
         now_unix,
         cache,
         cache_dir,
-        repo_url: repo_url().to_string(),
-        run: Box::new(run_git_ls_remote),
+        run: Box::new(gateway::discover_release_state),
     })
 }
 
@@ -306,6 +173,20 @@ mod tests {
     use super::*;
     use cache::CHECK_INTERVAL_SECS;
     use version::current;
+
+    fn available_release(version: Version) -> Source<ReleaseState> {
+        Source::Available(
+            ReleaseState::new(
+                RemoteRef::parse("refs/heads/main").unwrap(),
+                ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
+                vec![ReleaseTag::new(
+                    version,
+                    ObjectId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+                )],
+            )
+            .unwrap(),
+        )
+    }
 
     #[test]
     fn repo_slug_is_owner_repo() {
@@ -330,128 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn ls_remote_command_is_hardened_against_untrusted_repo_config() {
-        // Security regression: the probe must not let the (untrusted) viewed repo's git config
-        // influence it. It runs from the given private run-dir with repo discovery ceilinged to
-        // it, pins the transport to https, and never prompts — so no repo-local `.git/config` is
-        // read (and the run-dir itself is a fresh empty dir, so it can't carry one either).
-        use std::ffi::OsStr;
-        let run_dir = std::path::Path::new("/some/private/probe-dir");
-        let cmd = ls_remote_command(repo_url(), run_dir);
-        let env: std::collections::HashMap<_, _> = cmd
-            .get_envs()
-            .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
-            .collect();
-        assert_eq!(
-            cmd.get_current_dir(),
-            Some(run_dir),
-            "probe runs from its private run-dir, never the viewed repo / process cwd"
-        );
-        assert_eq!(
-            env.get(OsStr::new("GIT_CEILING_DIRECTORIES"))
-                .map(|v| v.as_os_str()),
-            Some(run_dir.as_os_str()),
-            "git must not walk up out of the run-dir to discover (and read) any repo's config"
-        );
-        assert_eq!(
-            env.get(OsStr::new("GIT_ALLOW_PROTOCOL"))
-                .map(|v| v.to_str().unwrap_or("")),
-            Some("https"),
-            "transport pinned to https so a URL rewrite can't reach ext::/file://"
-        );
-        assert_eq!(
-            env.get(OsStr::new("GIT_TERMINAL_PROMPT"))
-                .map(|v| v.to_str().unwrap_or("")),
-            Some("0"),
-            "a credential prompt must never block the probe"
-        );
-    }
-
-    #[test]
-    fn make_private_dir_is_fresh_empty_and_unique() {
-        // The probe dir must be freshly created (exclusive), empty, and never the same path twice
-        // — so a pre-existing/planted directory can't be reused as the probe cwd.
-        let a = make_private_dir().expect("first private dir");
-        let b = make_private_dir().expect("second private dir");
-        assert_ne!(a, b, "successive calls return distinct, never-reused paths");
-        for d in [&a, &b] {
-            assert!(d.is_dir(), "exists as a directory: {d:?}");
-            assert_eq!(
-                std::fs::read_dir(d).unwrap().count(),
-                0,
-                "freshly created → empty (no planted .git): {d:?}"
-            );
-        }
-        // Exclusive creation: creating the same path again must fail, not silently reuse it.
-        assert_eq!(
-            std::fs::create_dir(&a).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        let _ = std::fs::remove_dir_all(&a);
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    #[test]
-    fn hardened_git_ignores_a_malicious_repo_local_insteadof() {
-        // Round-2 regression: a malicious repo-local `url.*.insteadOf` must NOT rewrite the probe
-        // URL when git runs under `harden_git` (fresh private dir + ceiling). `git ls-remote
-        // --get-url` resolves the URL *without any network*, so this is hermetic.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "hfv-insteadof-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        let evil = base.join("evil-repo");
-        let clean = base.join("clean");
-        std::fs::create_dir_all(&evil).unwrap();
-        std::fs::create_dir_all(&clean).unwrap();
-
-        // Make `evil` a repo whose config rewrites our GitHub URL to an attacker host.
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&evil)
-            .status();
-        if init.map(|s| !s.success()).unwrap_or(true) {
-            let _ = std::fs::remove_dir_all(&base);
-            return; // git unavailable → the construction test still covers the boundary
-        }
-        let _ = Command::new("git")
-            .args([
-                "config",
-                "url.https://evil.invalid/.insteadOf",
-                "https://github.com/",
-            ])
-            .current_dir(&evil)
-            .status();
-
-        let url = repo_url();
-        let get_url = |cmd: &mut Command| -> String {
-            cmd.args(["ls-remote", "--get-url", url]);
-            let out = cmd.output().expect("git --get-url");
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        // Precondition: run *inside* the evil repo with no hardening → the rewrite DOES apply.
-        let mut unhardened = Command::new("git");
-        unhardened.current_dir(&evil);
-        assert!(
-            get_url(&mut unhardened).contains("evil.invalid"),
-            "precondition: the malicious repo-local insteadOf rewrites the URL"
-        );
-        // Hardened (fresh private dir): the rewrite must NOT apply — the URL is unchanged.
-        let mut hardened = Command::new("git");
-        harden_git(&mut hardened, &clean);
-        assert_eq!(
-            get_url(&mut hardened),
-            url,
-            "harden_git must ignore the repo-local insteadOf and keep the trusted URL"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
     fn fresh_cache_shows_the_banner_without_probing() {
         // AC-U4: a fresh cache (within 24h) shows the cached banner and performs NO network call —
         // the probe runner must never be invoked, and no background check is scheduled.
@@ -466,7 +225,6 @@ mod tests {
             now_unix: 1_000 + 10, // well within the 24h window
             cache,
             cache_dir: None,
-            repo_url: "x".into(),
             run: Box::new(|_| panic!("must not probe when the cache is fresh")),
         });
         assert_eq!(
@@ -523,7 +281,7 @@ mod tests {
     fn start_with_delivers_a_newer_version_over_the_channel() {
         // A fake probe reporting a newer tag → the receiver yields it; no real network.
         let newer = current().major + 1;
-        let stdout = format!("aaa\trefs/tags/v{newer}.0.0\n");
+        let detected = Version::parse(&format!("{newer}.0.0")).unwrap();
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let spotlight = b"# Project\nexact spotlight bytes\n".to_vec();
@@ -537,8 +295,7 @@ mod tests {
                 ..Cache::default()
             }),
             cache_dir: Some(dir.clone()),
-            repo_url: "fake-url".to_string(),
-            run: Box::new(move |_url| Ok(stdout.clone())),
+            run: Box::new(move |_| available_release(detected)),
         });
         let rx = state.rx.expect("a check was scheduled");
         let got = rx
@@ -563,7 +320,6 @@ mod tests {
             now_unix: 0,
             cache: None,
             cache_dir: None,
-            repo_url: "x".into(),
             run: Box::new(|_| panic!("must not probe when disabled")),
         });
         assert!(state.initial.is_none() && state.rx.is_none());
