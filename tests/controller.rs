@@ -10796,3 +10796,111 @@ fn changed_jump_expands_a_collapsed_directory_to_reach_the_file() {
         "] expands the collapsed ancestors and lands on the changed file"
     );
 }
+
+// ---- remote-notice status-hint labels (AC-42) -----------------------------------------
+
+#[test]
+fn status_hint_labels_use_default_help_and_dismiss_bindings() {
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::ShowHelp, None),
+        "?",
+        "the details hint uses Help's default binding"
+    );
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::DismissUpdate, None),
+        "u",
+        "the dismiss hint uses DismissUpdate's default binding"
+    );
+}
+
+#[test]
+fn status_hint_labels_use_custom_help_and_dismiss_bindings() {
+    let keys = BTreeMap::from([
+        (
+            "show_help".to_string(),
+            herdr_file_viewer::config::KeySpec::Many(vec!["F2".into(), "F3".into()]),
+        ),
+        (
+            "dismiss_update".to_string(),
+            herdr_file_viewer::config::KeySpec::One("d".into()),
+        ),
+    ]);
+
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::ShowHelp, Some(&keys)),
+        "F2 / F3",
+        "the details hint joins Help's effective custom keys"
+    );
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(
+            Intent::DismissUpdate,
+            Some(&keys)
+        ),
+        "d",
+        "the dismiss hint uses DismissUpdate's effective custom key"
+    );
+}
+
+#[test]
+fn status_hint_label_marks_help_unbound_when_another_custom_binding_claims_its_key() {
+    let keys = BTreeMap::from([(
+        "refresh".to_string(),
+        herdr_file_viewer::config::KeySpec::One("?".into()),
+    )]);
+
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::ShowHelp, Some(&keys)),
+        "(unbound)",
+        "a custom binding that claims '?' displaces Help instead of falling back to its default"
+    );
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(
+            Intent::DismissUpdate,
+            Some(&keys)
+        ),
+        "u",
+        "the unrelated dismiss binding stays effective"
+    );
+}
+
+#[test]
+fn status_hint_label_uses_default_when_custom_entry_is_rejected() {
+    let keys = BTreeMap::from([(
+        "show_help".to_string(),
+        herdr_file_viewer::config::KeySpec::One("F13".into()),
+    )]);
+
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::ShowHelp, Some(&keys)),
+        "?",
+        "a rejected custom entry leaves Help's default binding effective"
+    );
+}
+
+#[test]
+fn status_hint_labels_mark_help_and_dismiss_unbound_when_both_default_keys_are_claimed() {
+    let keys = BTreeMap::from([
+        (
+            "refresh".to_string(),
+            herdr_file_viewer::config::KeySpec::One("?".into()),
+        ),
+        (
+            "nav_up".to_string(),
+            herdr_file_viewer::config::KeySpec::One("u".into()),
+        ),
+    ]);
+
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::ShowHelp, Some(&keys)),
+        "(unbound)",
+        "Help stays unbound once '?' belongs to another effective binding"
+    );
+    assert_eq!(
+        herdr_file_viewer::input::resolve_status_hint_label_for_test(
+            Intent::DismissUpdate,
+            Some(&keys)
+        ),
+        "(unbound)",
+        "DismissUpdate stays unbound once 'u' belongs to another effective binding"
+    );
+}

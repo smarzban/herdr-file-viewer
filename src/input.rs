@@ -57,6 +57,34 @@ impl EffectiveBindings {
         codes.sort_by_key(|&c| key_label(c));
         codes
     }
+
+    /// The effective display label for `intent` in a remote-notice status hint. The label reflects
+    /// the resolved map, including custom bindings and keys displaced by another custom binding;
+    /// an intent with no effective keys is the canonical status-hint `(unbound)` label.
+    pub(crate) fn status_hint_label(&self, intent: Intent) -> String {
+        let label = self
+            .keys_for(intent)
+            .into_iter()
+            .map(key_label)
+            .collect::<Vec<_>>()
+            .join(" / ");
+        crate::update::status::normalize_status_hint_label(Some(&label)).to_owned()
+    }
+}
+
+/// Resolve raw `[keys]` config for integration-test setup, then return `intent`'s effective
+/// remote-notice status-hint label.
+///
+/// This exists only because integration tests cannot construct the crate-private
+/// [`EffectiveBindings`]. Production status rendering must read the already-resolved bindings
+/// stored on [`crate::controller::Controller`], then call
+/// [`EffectiveBindings::status_hint_label`], never resolve config again per frame.
+pub fn resolve_status_hint_label_for_test(
+    intent: Intent,
+    keys: Option<&std::collections::BTreeMap<String, KeySpec>>,
+) -> String {
+    let (bindings, _) = resolve_bindings(registry(), keys);
+    bindings.status_hint_label(intent)
 }
 
 /// Fold the [`REGISTRY`] into the default [`EffectiveBindings`]: every default key of every row
@@ -402,7 +430,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::DismissUpdate,
         name: "dismiss_update",
         default_keys: &[KeyCode::Char('u')],
-        description: "Dismiss the update-available banner for this session.",
+        description: "Dismiss all remote notices for this session.",
         category: "Session",
     },
     Binding {
@@ -1663,6 +1691,24 @@ mod tests {
         assert_eq!(dec(&b, KeyCode::Char('j')), Some(Intent::Refresh));
         assert_ne!(dec(&b, KeyCode::Char('j')), Some(Intent::NavDown));
         assert_eq!(dec(&b, KeyCode::Down), Some(Intent::NavDown));
+    }
+
+    #[test]
+    fn status_hint_collision_decodes_the_claimant() {
+        // A status hint reporting Help as unbound must mean its key actually moved to the custom
+        // claimant, not that collision handling dropped it from the effective decode map.
+        let (bindings, outcome) = resolve_with(&[("refresh", one("?"))]);
+        assert!(outcome.is_empty(), "an explicit/default collision is valid");
+        assert_eq!(
+            bindings.status_hint_label(Intent::ShowHelp),
+            "(unbound)",
+            "the default Help key is displaced"
+        );
+        assert_eq!(
+            dec(&bindings, KeyCode::Char('?')),
+            Some(Intent::Refresh),
+            "the displaced key decodes to its explicit claimant"
+        );
     }
 
     #[test]
