@@ -19,9 +19,6 @@ use std::time::{Duration, Instant};
 /// remote response. It also bounds the number of typed release tags returned to callers.
 pub const DISCOVERY_MAX_BYTES: usize = 256 * 1024;
 
-/// The hard wall-clock budget for one production discovery attempt.
-pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Maximum bytes retained from either immutable remote document.
 ///
 /// The reader accepts at most one byte beyond this cap, so an exact 1 MiB document succeeds while
@@ -46,6 +43,19 @@ pub enum Source<T> {
 /// A caller-injected release discovery seam. The caller chooses one absolute deadline; runners
 /// must return only the typed, bounded [`ReleaseState`] or [`Source::Unavailable`].
 pub type DiscoveryRunner = Box<dyn Fn(Instant) -> Source<ReleaseState> + Send>;
+
+/// The document half of the official source boundary, injected into the refresh coordinator.
+///
+/// Each method receives the coordinator's one absolute deadline. Implementations return only
+/// bounded typed source facts, never diagnostics, so callers cannot accidentally couple remote
+/// failures to the UI.
+pub trait Gateway: Send {
+    /// Retrieve immutable changelog bytes for the detected release commit.
+    fn changelog(&self, release: &ReleaseTag, deadline: Instant) -> Source<Option<Vec<u8>>>;
+
+    /// Retrieve spotlight bytes for the discovered HEAD commit.
+    fn spotlight(&self, state: &ReleaseState, deadline: Instant) -> Source<Option<Vec<u8>>>;
+}
 
 /// A validated Git object ID (SHA-1 or SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -216,6 +226,16 @@ impl DocumentGateway {
             authority: authority.trim_end_matches('/').to_owned(),
             https_only: false,
         }
+    }
+}
+
+impl Gateway for DocumentGateway {
+    fn changelog(&self, release: &ReleaseTag, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        Self::changelog(self, release, deadline)
+    }
+
+    fn spotlight(&self, state: &ReleaseState, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        Self::spotlight(self, state, deadline)
     }
 }
 

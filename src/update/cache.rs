@@ -51,8 +51,8 @@ pub struct PersistedReleaseDetails {
     pub details: String,
 }
 
-/// The on-disk remote-notice cache. The legacy update fields remain public for the compatibility
-/// loop; the newer fields retain advisory notice state only.
+/// The on-disk remote-notice cache. Release-check fields and advisory notice fields are retained
+/// together so one coordinator refresh can merge them as one bounded writer intent.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
     #[serde(default = "current_schema_version")]
@@ -88,9 +88,31 @@ fn current_schema_version() -> u8 {
     CACHE_SCHEMA_VERSION
 }
 
+/// The spotlight portion of a successful coordinator refresh. `Preserve` means the document
+/// source was unavailable, while `Withdraw` records a conclusive missing or invalid document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshSpotlight {
+    Preserve,
+    Store {
+        spotlight: Vec<u8>,
+        retrieved_at_unix: u64,
+    },
+    Withdraw {
+        retrieved_at_unix: u64,
+    },
+}
+
 /// A narrow cache update. Each variant changes only the state implied by its completed intent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheDelta {
+    /// One determined remote refresh. Its independent document outcomes share the release check's
+    /// single cache transaction, so the async writer merges one intent-owned delta at a time.
+    Refresh {
+        checked_at_unix: u64,
+        detected_release: Option<String>,
+        release_details: Option<PersistedReleaseDetails>,
+        spotlight: RefreshSpotlight,
+    },
     /// A successful release check. Changing the detected release invalidates its old details.
     RefreshRelease {
         checked_at_unix: u64,
@@ -167,6 +189,39 @@ impl Cache {
     /// Apply one intent-owned delta without projecting eligibility, freshness, or UI state.
     pub fn apply(&mut self, delta: CacheDelta) {
         match delta {
+            CacheDelta::Refresh {
+                checked_at_unix,
+                detected_release,
+                release_details,
+                spotlight,
+            } => {
+                if detected_release
+                    .as_ref()
+                    .is_some_and(|release| release.len() > MAX_VERSION_BYTES)
+                {
+                    return;
+                }
+                self.apply(CacheDelta::RefreshRelease {
+                    checked_at_unix,
+                    detected_release,
+                });
+                if let Some(PersistedReleaseDetails { release, details }) = release_details {
+                    self.apply(CacheDelta::StoreReleaseDetails { release, details });
+                }
+                match spotlight {
+                    RefreshSpotlight::Preserve => {}
+                    RefreshSpotlight::Store {
+                        spotlight,
+                        retrieved_at_unix,
+                    } => self.apply(CacheDelta::RefreshSpotlight {
+                        spotlight,
+                        retrieved_at_unix,
+                    }),
+                    RefreshSpotlight::Withdraw { retrieved_at_unix } => {
+                        self.apply(CacheDelta::WithdrawSpotlight { retrieved_at_unix });
+                    }
+                }
+            }
             CacheDelta::RefreshRelease {
                 checked_at_unix,
                 detected_release,
@@ -1050,6 +1105,44 @@ mod tests {
             "exhausting the lock budget must not publish an unlocked revision"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_delta_applies_release_details_and_spotlight_as_one_writer_message() {
+        let mut cache = Cache {
+            latest_seen: Some("1.1.0".into()),
+            release_details: Some(PersistedReleaseDetails {
+                release: "1.1.0".into(),
+                details: "old details".into(),
+            }),
+            spotlight: Some(b"# Old\nbody\n".to_vec()),
+            spotlight_retrieved_at_unix: Some(10),
+            ..Cache::default()
+        };
+
+        cache.apply(CacheDelta::Refresh {
+            checked_at_unix: 20,
+            detected_release: Some("1.2.0".into()),
+            release_details: Some(PersistedReleaseDetails {
+                release: "1.2.0".into(),
+                details: "new details".into(),
+            }),
+            spotlight: RefreshSpotlight::Withdraw {
+                retrieved_at_unix: 20,
+            },
+        });
+
+        assert_eq!(cache.last_check_unix, 20);
+        assert_eq!(cache.latest_seen.as_deref(), Some("1.2.0"));
+        assert_eq!(
+            cache.release_details,
+            Some(PersistedReleaseDetails {
+                release: "1.2.0".into(),
+                details: "new details".into(),
+            })
+        );
+        assert!(cache.spotlight.is_none());
+        assert_eq!(cache.spotlight_retrieved_at_unix, Some(20));
     }
 
     #[test]

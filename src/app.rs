@@ -168,16 +168,14 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // tab listing every action's effective key(s), marking custom bindings, and surfacing any
     // ignored `[keys]` entries. Pure/read-only (AC-23).
     controller.set_keybindings_display();
-    // Kick off the once-a-day update check (off the UI thread; disabled by
-    // HERDR_FILE_VIEWER_NO_UPDATE_CHECK, or by config `update_check = false`, AC-10). The banner,
-    // if any, appears on a later draw.
-    if crate::config::should_start_update_check(&eff) {
-        // Gate on the RESOLVED `update_check` (config > env > default) and pass that decision
-        // straight through (disabled = false here, since the gate already applied precedence).
-        // `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let the env
-        // silently override a config `update_check = true` (AC-3/AC-10).
-        controller.set_update(crate::update::start_default_with(false));
-    }
+    // Start the complete once-daily remote-notice coordinator off the UI thread. Pass the
+    // resolved config > env > default decision once: disabled startup returns its empty sentinel
+    // without source or cache work, while enabled startup owns the cache-writer handle and one
+    // refresh receiver. `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let
+    // the env silently override a config `update_check = true` (AC-3/AC-10).
+    controller.set_update(crate::update::start_default_with(
+        !crate::config::should_start_update_check(&eff),
+    ));
     // Inject the herdr query channel + the viewer's own workspace id for the worktree picker's
     // agent-active overlay (AC-3) — the first real use of the host seam. `ctx` is still in
     // scope (only borrowed by `root::resolve`). A missing/failing herdr degrades to a git-only

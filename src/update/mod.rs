@@ -14,13 +14,16 @@ pub mod version;
 pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source};
 pub use version::Version;
 
-use cache::{Cache, CacheDelta};
+use cache::{Cache, CacheDelta, RefreshSpotlight};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use version::{current, newer_than_current};
 
 /// One successful remote check suppresses another for this many seconds.
 pub(crate) const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// One coordinator refresh shares this absolute deadline across discovery and both documents.
+const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Setting this env var (to anything) disables the update check and banner entirely.
 pub const DISABLE_ENV: &str = "HERDR_FILE_VIEWER_NO_UPDATE_CHECK";
@@ -142,16 +145,6 @@ fn cached_spotlight(
     projected
 }
 
-/// The compatibility probe's successful release transition. T-10 replaces this with its unified
-/// intent-specific refresh transaction; keeping it here avoids putting coordinator policy in cache.
-fn next_cache(mut cache: Cache, now_unix: u64, latest: Option<Version>) -> Cache {
-    cache.apply(CacheDelta::RefreshRelease {
-        checked_at_unix: now_unix,
-        detected_release: latest.map(|version| version.to_string()),
-    });
-    cache
-}
-
 /// The complete remote-notice state visible to one controller frame.
 ///
 /// The controller replaces this value only as a whole, so a completed background result cannot
@@ -164,8 +157,8 @@ pub struct NoticeSnapshot {
     pub detected_release: Option<Version>,
     /// Immutable details only when they remain tied to the current detected release.
     pub release_details: Option<release_policy::CachedReleaseDetails>,
-    /// The current project spotlight state. The compatibility release-only probe leaves this at
-    /// its cached/default value until T-10 installs the unified refresh pipeline.
+    /// The current project spotlight state, projected from the cache or the same completed
+    /// refresh that supplied the release state.
     pub spotlight: spotlight_policy::SpotlightCache,
     /// Best-effort cache persistence for future notice intents. `None` when no cache directory
     /// is available or when update checks are disabled.
@@ -194,13 +187,15 @@ pub struct StartDeps {
     pub cache: Option<Cache>,
     pub cache_dir: Option<PathBuf>,
     pub run: DiscoveryRunner,
+    pub gateway: Box<dyn gateway::Gateway>,
 }
 
-/// Decide, then (if warranted) spawn the background probe. On a **successful** probe the thread
-/// persists the throttle cache (advancing the 24h window + the latest version seen) and sends a
-/// release-only [`NoticeSnapshot`] (`Some` when newer, `None` when nothing newer) over the channel.
-/// On a probe **failure** it leaves the cache untouched, so the check simply retries next launch
-/// and sends nothing (the receiver then disconnects, which `Controller::poll` cleans up).
+/// Decide, then (if warranted) run one complete coordinator refresh off the UI thread.
+///
+/// Discovery and both optional document requests receive the same absolute deadline. A determined
+/// discovery always advances the daily check through the asynchronous writer, while unavailable
+/// documents preserve their independent valid cache state. An unavailable discovery sends no
+/// replacement and leaves the successful-check timestamp untouched.
 pub fn start_with(deps: StartDeps) -> UpdateState {
     let StartDeps {
         disabled,
@@ -208,6 +203,7 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         cache,
         cache_dir,
         run,
+        gateway,
     } = deps;
     let decision = decide(disabled, now_unix, &cache);
     let mut initial = decision.initial;
@@ -221,42 +217,103 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
     if !decision.should_refresh {
         return UpdateState { initial, rx: None };
     }
-    // The compatibility probe remains release-only until T-10. It returns a complete replacement
-    // snapshot so later spotlight-capable work cannot update one notice independently of another.
-    let replacement_details = initial.release_details.clone();
-    let replacement_spotlight = initial.spotlight.clone();
-    let replacement_writer = initial.cache_writer.clone();
+
+    let refresh_initial = initial.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        // An unavailable source leaves the cache as-is (retry next launch) and sends nothing.
-        let deadline = std::time::Instant::now() + gateway::DISCOVERY_TIMEOUT;
-        if let Source::Available(state) = run(deadline) {
-            let latest = state.latest_release().map(|release| release.version);
-            if let Some(dir) = &cache_dir {
-                cache::store(
-                    dir,
-                    &next_cache(cache.unwrap_or_default(), now_unix, latest),
-                );
-            }
-            let detected_release = latest.and_then(newer_than_current);
-            let release_details = match release_policy::cached_release_details(
+        let deadline = std::time::Instant::now() + REFRESH_TIMEOUT;
+        let Source::Available(state) = run(deadline) else {
+            return;
+        };
+
+        let latest_release = state.latest_release();
+        let latest = latest_release.map(|release| release.version);
+        let detected_release = latest.and_then(newer_than_current);
+        let (release_details, persisted_release_details) =
+            match release_policy::cached_release_details(
                 current(),
                 detected_release,
-                replacement_details.as_ref(),
+                refresh_initial.release_details.as_ref(),
             ) {
                 release_policy::CachedReleaseDetailsDecision::Cached(details) => {
-                    Some(details.clone())
+                    (Some(details.clone()), None)
                 }
-                release_policy::CachedReleaseDetailsDecision::Hidden
-                | release_policy::CachedReleaseDetailsDecision::Fetch(_) => None,
+                release_policy::CachedReleaseDetailsDecision::Hidden => (None, None),
+                release_policy::CachedReleaseDetailsDecision::Fetch(detected) => {
+                    let fetched = latest_release.and_then(|release| {
+                        let Source::Available(Some(bytes)) = gateway.changelog(release, deadline)
+                        else {
+                            return None;
+                        };
+                        let changelog = std::str::from_utf8(&bytes).ok()?;
+                        let sections = release_policy::eligible_release_sections(
+                            changelog,
+                            current(),
+                            detected,
+                        );
+                        (!sections.is_empty()).then(|| release_policy::CachedReleaseDetails {
+                            release: detected,
+                            details: sections.concat(),
+                        })
+                    });
+                    let persisted =
+                        fetched
+                            .as_ref()
+                            .map(|details| cache::PersistedReleaseDetails {
+                                release: details.release.to_string(),
+                                details: details.details.clone(),
+                            });
+                    (fetched, persisted)
+                }
             };
-            let _ = tx.send(NoticeSnapshot {
-                detected_release,
-                release_details,
-                spotlight: replacement_spotlight,
-                cache_writer: replacement_writer,
+
+        let mut spotlight = refresh_initial.spotlight.clone();
+        let mut spotlight_session = spotlight_policy::SpotlightSession::new(now_unix);
+        let spotlight_delta = if spotlight_session.should_retrieve(&spotlight) {
+            let source = match gateway.spotlight(&state, deadline) {
+                Source::Available(Some(bytes)) => {
+                    spotlight_policy::SpotlightInput::Available(bytes)
+                }
+                Source::Available(None) => spotlight_policy::SpotlightInput::Missing,
+                Source::Unavailable => spotlight_policy::SpotlightInput::Unavailable,
+            };
+            let policy_delta =
+                spotlight_policy::cache_delta(spotlight_policy::project(source), now_unix);
+            let cache_delta = match &policy_delta {
+                spotlight_policy::SpotlightCacheDelta::Accepted {
+                    spotlight,
+                    retrieved_at_unix,
+                } => RefreshSpotlight::Store {
+                    spotlight: spotlight.identity.clone(),
+                    retrieved_at_unix: *retrieved_at_unix,
+                },
+                spotlight_policy::SpotlightCacheDelta::Withdrawn { retrieved_at_unix } => {
+                    RefreshSpotlight::Withdraw {
+                        retrieved_at_unix: *retrieved_at_unix,
+                    }
+                }
+                spotlight_policy::SpotlightCacheDelta::Preserve => RefreshSpotlight::Preserve,
+            };
+            spotlight_session.apply(&mut spotlight, policy_delta);
+            cache_delta
+        } else {
+            RefreshSpotlight::Preserve
+        };
+
+        if let Some(writer) = &refresh_initial.cache_writer {
+            let _ = writer.enqueue(CacheDelta::Refresh {
+                checked_at_unix: now_unix,
+                detected_release: latest.map(|version| version.to_string()),
+                release_details: persisted_release_details,
+                spotlight: spotlight_delta,
             });
         }
+        let _ = tx.send(NoticeSnapshot {
+            detected_release,
+            release_details,
+            spotlight,
+            cache_writer: refresh_initial.cache_writer,
+        });
     });
     UpdateState {
         initial,
@@ -290,6 +347,7 @@ pub fn start_default_with(disabled: bool) -> UpdateState {
         cache,
         cache_dir,
         run: Box::new(gateway::discover_release_state),
+        gateway: Box::new(gateway::DocumentGateway::new()),
     })
 }
 
@@ -678,6 +736,7 @@ mod tests {
             cache,
             cache_dir: None,
             run: Box::new(|_| panic!("must not probe when the cache is fresh")),
+            gateway: unavailable_test_gateway(),
         });
         assert_eq!(
             state.initial.detected_release,
@@ -735,30 +794,34 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_worker_keeps_details_for_the_same_release() {
+    fn refresh_worker_keeps_details_for_the_same_release() {
         let detected = future_version(1);
         let details = "## [next]\n- cached details\n";
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let spotlight = b"# Project\nexact spotlight bytes\n".to_vec();
+        let cached = Cache {
+            latest_seen: Some(detected.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: detected.to_string(),
+                details: details.into(),
+            }),
+            spotlight: Some(spotlight.clone()),
+            spotlight_retrieved_at_unix: Some(CHECK_INTERVAL_SECS * 9 + 1),
+            ..Cache::default()
+        };
+        cache::store(&dir, &cached);
         let state = start_with(StartDeps {
             disabled: false,
             now_unix: CHECK_INTERVAL_SECS * 10,
-            cache: Some(Cache {
-                latest_seen: Some(detected.to_string()),
-                release_details: Some(cache::PersistedReleaseDetails {
-                    release: detected.to_string(),
-                    details: details.into(),
-                }),
-                spotlight: Some(spotlight.clone()),
-                spotlight_retrieved_at_unix: Some(CHECK_INTERVAL_SECS * 9 + 1),
-                ..Cache::default()
-            }),
+            cache: Some(cached),
             cache_dir: Some(dir.clone()),
             run: Box::new(move |_| available_release(detected)),
+            gateway: unavailable_test_gateway(),
         });
-        let rx = state.rx.expect("a check was scheduled");
+        let UpdateState { initial, rx } = state;
         let got = rx
+            .expect("a check was scheduled")
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("result arrives");
         assert_eq!(got.detected_release, Some(detected));
@@ -770,21 +833,11 @@ mod tests {
             }),
             "a successful probe for the same release keeps exact cached details"
         );
-        assert_eq!(
-            got.spotlight.status_title(),
-            Some("Project"),
-            "the compatibility loop carries its initial spotlight into the replacement snapshot"
-        );
-        assert!(
-            got.cache_writer.is_some(),
-            "the snapshot carries the optional async cache writer for later notice intents"
-        );
+        assert_eq!(got.spotlight.status_title(), Some("Project"));
+        drop(got);
+        drop(initial);
         let persisted = cache::load(&dir).expect("successful probe writes the cache");
-        assert_eq!(
-            persisted.spotlight.as_deref(),
-            Some(spotlight.as_slice()),
-            "the compatibility writer must not discard cached content before T-10 replaces it"
-        );
+        assert_eq!(persisted.spotlight.as_deref(), Some(spotlight.as_slice()));
         assert_eq!(
             persisted.spotlight_retrieved_at_unix,
             Some(CHECK_INTERVAL_SECS * 9 + 1)
@@ -794,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_worker_clears_details_for_a_superseding_release() {
+    fn refresh_worker_clears_details_for_a_superseding_release() {
         let cached_release = future_version(1);
         let superseding_release = future_version(2);
         let state = start_with(StartDeps {
@@ -810,6 +863,7 @@ mod tests {
             }),
             cache_dir: None,
             run: Box::new(move |_| available_release(superseding_release)),
+            gateway: unavailable_test_gateway(),
         });
         assert!(
             state.initial.release_details.is_some(),
@@ -830,33 +884,38 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_worker_clears_cached_release_when_no_stable_tag_exists() {
+    fn refresh_worker_clears_cached_release_when_no_stable_tag_exists() {
         let cached_release = future_version(1);
         let dir = std::env::temp_dir().join(format!("hfv-no-release-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let cached = Cache {
+            latest_seen: Some(cached_release.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: cached_release.to_string(),
+                details: "## [cached]\n- details\n".into(),
+            }),
+            ..Cache::default()
+        };
+        cache::store(&dir, &cached);
         let state = start_with(StartDeps {
             disabled: false,
             now_unix: CHECK_INTERVAL_SECS * 10,
-            cache: Some(Cache {
-                latest_seen: Some(cached_release.to_string()),
-                release_details: Some(cache::PersistedReleaseDetails {
-                    release: cached_release.to_string(),
-                    details: "## [cached]\n- details\n".into(),
-                }),
-                ..Cache::default()
-            }),
+            cache: Some(cached),
             cache_dir: Some(dir.clone()),
             run: Box::new(|_| available_releases(Vec::new())),
+            gateway: unavailable_test_gateway(),
         });
 
-        let got = state
-            .rx
+        let UpdateState { initial, rx } = state;
+        let got = rx
             .expect("a check was scheduled")
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("result arrives");
 
         assert!(got.detected_release.is_none());
         assert!(got.release_details.is_none());
+        drop(got);
+        drop(initial);
         let persisted = cache::load(&dir).expect("successful probe writes the cache");
         assert_eq!(persisted.last_check_unix, CHECK_INTERVAL_SECS * 10);
         assert!(persisted.latest_seen.is_none());
@@ -872,6 +931,7 @@ mod tests {
             cache: None,
             cache_dir: None,
             run: Box::new(|_| panic!("must not probe when disabled")),
+            gateway: unavailable_test_gateway(),
         });
         assert!(
             state.initial.detected_release.is_none()
@@ -896,5 +956,351 @@ mod tests {
                 && state.rx.is_none(),
             "disabled=true → the disabled sentinel, regardless of the env"
         );
+    }
+
+    #[derive(Clone)]
+    struct TestGateway {
+        changelog: Source<Option<Vec<u8>>>,
+        spotlight: Source<Option<Vec<u8>>>,
+    }
+
+    impl gateway::Gateway for TestGateway {
+        fn changelog(
+            &self,
+            _release: &ReleaseTag,
+            _deadline: std::time::Instant,
+        ) -> Source<Option<Vec<u8>>> {
+            self.changelog.clone()
+        }
+
+        fn spotlight(
+            &self,
+            _state: &ReleaseState,
+            _deadline: std::time::Instant,
+        ) -> Source<Option<Vec<u8>>> {
+            self.spotlight.clone()
+        }
+    }
+
+    fn unavailable_test_gateway() -> Box<dyn gateway::Gateway> {
+        Box::new(TestGateway {
+            changelog: Source::Unavailable,
+            spotlight: Source::Unavailable,
+        })
+    }
+
+    struct DeadlineGateway {
+        deadlines: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+        changelog: Source<Option<Vec<u8>>>,
+        spotlight: Source<Option<Vec<u8>>>,
+    }
+
+    impl gateway::Gateway for DeadlineGateway {
+        fn changelog(
+            &self,
+            _release: &ReleaseTag,
+            deadline: std::time::Instant,
+        ) -> Source<Option<Vec<u8>>> {
+            self.deadlines.lock().unwrap().push(deadline);
+            self.changelog.clone()
+        }
+
+        fn spotlight(
+            &self,
+            _state: &ReleaseState,
+            deadline: std::time::Instant,
+        ) -> Source<Option<Vec<u8>>> {
+            self.deadlines.lock().unwrap().push(deadline);
+            self.spotlight.clone()
+        }
+    }
+
+    fn refresh_with(
+        cache: Option<Cache>,
+        run: DiscoveryRunner,
+        gateway: TestGateway,
+    ) -> UpdateState {
+        start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache,
+            cache_dir: None,
+            run,
+            gateway: Box::new(gateway),
+        })
+    }
+
+    fn refreshed(state: UpdateState) -> NoticeSnapshot {
+        state
+            .rx
+            .expect("stale cache schedules one refresh")
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("determined discovery publishes one replacement snapshot")
+    }
+
+    #[test]
+    fn failed_discovery_preserves_the_successful_check_time() {
+        let dir =
+            std::env::temp_dir().join(format!("hfv-discovery-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cached = Cache {
+            last_check_unix: CHECK_INTERVAL_SECS * 8,
+            latest_seen: Some(future_version(1).to_string()),
+            ..Cache::default()
+        };
+        cache::store(&dir, &cached);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache: Some(cached),
+            cache_dir: Some(dir.clone()),
+            run: Box::new(|_| Source::Unavailable),
+            gateway: unavailable_test_gateway(),
+        });
+
+        assert_eq!(
+            state.initial.detected_release,
+            Some(future_version(1)),
+            "a failed discovery leaves the initial cached state alone"
+        );
+        let UpdateState { initial, rx } = state;
+        assert!(matches!(
+            rx.expect("failure still closes the one-shot receiver")
+                .recv_timeout(std::time::Duration::from_secs(1)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        drop(initial);
+        assert_eq!(
+            cache::load(&dir)
+                .expect("unavailable discovery preserves the prior cache")
+                .last_check_unix,
+            CHECK_INTERVAL_SECS * 8,
+            "unavailable discovery cannot advance the only successful-check time"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn determined_discovery_advances_its_timestamp_through_every_document_failure() {
+        let now = CHECK_INTERVAL_SECS * 10;
+        let dir = std::env::temp_dir().join(format!("hfv-document-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cached = Cache {
+            last_check_unix: CHECK_INTERVAL_SECS * 8,
+            ..Cache::default()
+        };
+        cache::store(&dir, &cached);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: now,
+            cache: Some(cached),
+            cache_dir: Some(dir.clone()),
+            run: Box::new(move |_| available_release(future_version(1))),
+            gateway: Box::new(TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Unavailable,
+            }),
+        });
+        let UpdateState { initial, rx } = state;
+        let snapshot = rx
+            .expect("stale cache schedules one refresh")
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("determined discovery publishes one replacement snapshot");
+
+        assert_eq!(snapshot.detected_release, Some(future_version(1)));
+        assert!(snapshot.release_details.is_none());
+        assert!(snapshot.spotlight.status_title().is_none());
+        drop(snapshot);
+        drop(initial);
+        let persisted = cache::load(&dir).expect("the async refresh writer persists its one delta");
+        assert_eq!(persisted.last_check_unix, now);
+        assert_eq!(persisted.latest_seen, Some(future_version(1).to_string()));
+        assert!(persisted.release_details.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_passes_one_absolute_deadline_to_discovery_and_both_documents() {
+        let release = future_version(1);
+        let deadlines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let discovery_deadlines = std::sync::Arc::clone(&deadlines);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache: Some(Cache::default()),
+            cache_dir: None,
+            run: Box::new(move |deadline| {
+                discovery_deadlines.lock().unwrap().push(deadline);
+                available_release(release)
+            }),
+            gateway: Box::new(DeadlineGateway {
+                deadlines: std::sync::Arc::clone(&deadlines),
+                changelog: Source::Available(Some(
+                    format!("## [{release}]\n- details\n").into_bytes(),
+                )),
+                spotlight: Source::Available(Some(b"# Project\nbody\n".to_vec())),
+            }),
+        });
+        let _ = refreshed(state);
+        let deadlines = deadlines.lock().unwrap();
+        assert_eq!(deadlines.len(), 3, "discovery plus both documents run once");
+        assert!(
+            deadlines.windows(2).all(|pair| pair[0] == pair[1]),
+            "every source operation receives the coordinator's one absolute deadline"
+        );
+    }
+
+    #[test]
+    fn changelog_and_spotlight_partial_successes_are_independent() {
+        let release = future_version(1);
+        let changelog = format!("## [{release}]\n- details\n");
+        let details = refreshed(refresh_with(
+            Some(Cache::default()),
+            Box::new(move |_| available_release(release)),
+            TestGateway {
+                changelog: Source::Available(Some(changelog.into_bytes())),
+                spotlight: Source::Unavailable,
+            },
+        ));
+        assert_eq!(
+            details.release_details,
+            Some(release_policy::CachedReleaseDetails {
+                release,
+                details: format!("## [{release}]\n- details\n"),
+            })
+        );
+        assert!(details.spotlight.status_title().is_none());
+
+        let spotlight = refreshed(refresh_with(
+            Some(Cache::default()),
+            Box::new(move |_| available_release(release)),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Available(Some(b"# Project\nbody\n".to_vec())),
+            },
+        ));
+        assert!(spotlight.release_details.is_none());
+        assert_eq!(spotlight.spotlight.status_title(), Some("Project"));
+    }
+
+    #[test]
+    fn stale_spotlight_refresh_accepts_or_withdraws_independently() {
+        let stale = Cache {
+            spotlight: Some(b"# Old\nold body\n".to_vec()),
+            spotlight_retrieved_at_unix: Some(CHECK_INTERVAL_SECS * 9),
+            ..Cache::default()
+        };
+        let accepted = refreshed(refresh_with(
+            Some(stale.clone()),
+            Box::new(|_| available_releases(Vec::new())),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Available(Some(b"# New\nnew body\n".to_vec())),
+            },
+        ));
+        assert_eq!(accepted.spotlight.status_title(), Some("New"));
+        assert_eq!(
+            accepted.spotlight.whats_new_body(),
+            Some(b"new body\n".as_slice())
+        );
+
+        let withdrawn = refreshed(refresh_with(
+            Some(stale),
+            Box::new(|_| available_releases(Vec::new())),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Available(None),
+            },
+        ));
+        assert!(withdrawn.spotlight.status_title().is_none());
+        assert!(withdrawn.spotlight.whats_new_body().is_none());
+        assert_eq!(
+            withdrawn.spotlight.retrieved_at_unix(),
+            Some(CHECK_INTERVAL_SECS * 10)
+        );
+    }
+
+    #[test]
+    fn same_release_details_survive_source_failure_but_catch_up_and_supersede_hide_them() {
+        let cached_release = future_version(1);
+        let cached_details = release_policy::CachedReleaseDetails {
+            release: cached_release,
+            details: "## cached\n".into(),
+        };
+        let cache = Cache {
+            latest_seen: Some(cached_release.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: cached_release.to_string(),
+                details: cached_details.details.clone(),
+            }),
+            ..Cache::default()
+        };
+        let same_release = refreshed(refresh_with(
+            Some(cache.clone()),
+            Box::new(move |_| available_release(cached_release)),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Unavailable,
+            },
+        ));
+        assert_eq!(same_release.release_details, Some(cached_details));
+
+        let caught_up = refreshed(refresh_with(
+            Some(cache.clone()),
+            Box::new(|_| available_release(current())),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Unavailable,
+            },
+        ));
+        assert!(caught_up.detected_release.is_none());
+        assert!(caught_up.release_details.is_none());
+
+        let superseded = refreshed(refresh_with(
+            Some(cache),
+            Box::new(move |_| available_release(future_version(2))),
+            TestGateway {
+                changelog: Source::Unavailable,
+                spotlight: Source::Unavailable,
+            },
+        ));
+        assert_eq!(superseded.detected_release, Some(future_version(2)));
+        assert!(superseded.release_details.is_none());
+    }
+
+    #[test]
+    fn changelog_without_eligible_sections_has_no_durable_release_details() {
+        let release = future_version(1);
+        let dir =
+            std::env::temp_dir().join(format!("hfv-empty-release-details-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache: Some(Cache::default()),
+            cache_dir: Some(dir.clone()),
+            run: Box::new(move |_| available_release(release)),
+            gateway: Box::new(TestGateway {
+                changelog: Source::Available(Some(
+                    b"# Changelog\n\n## [Unreleased]\n- pending\n".to_vec(),
+                )),
+                spotlight: Source::Unavailable,
+            }),
+        });
+
+        let UpdateState { initial, rx } = state;
+        let snapshot = rx
+            .expect("stale cache schedules one refresh")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("determined discovery publishes one replacement snapshot");
+        assert_eq!(snapshot.detected_release, Some(release));
+        assert!(snapshot.release_details.is_none());
+        drop(snapshot);
+        drop(initial);
+
+        let persisted = cache::load(&dir).expect("the determined discovery persists its check");
+        assert_eq!(persisted.latest_seen, Some(release.to_string()));
+        assert!(persisted.release_details.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
