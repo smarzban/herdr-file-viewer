@@ -7,6 +7,7 @@
 
 pub mod cache;
 pub mod release_policy;
+pub mod spotlight_policy;
 pub mod version;
 
 pub use version::Version;

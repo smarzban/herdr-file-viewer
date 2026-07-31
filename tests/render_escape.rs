@@ -1,6 +1,6 @@
 //! Content Renderer: escape-sequence neutralization (AC-27).
 
-use herdr_file_viewer::render::to_text;
+use herdr_file_viewer::render::{neutralize_plain_text, to_text};
 use ratatui::text::Text;
 
 fn flatten(text: &Text) -> String {
@@ -9,6 +9,43 @@ fn flatten(text: &Text) -> String {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect()
+}
+
+#[test]
+fn plain_text_neutralizer_makes_hostile_titles_one_safe_visible_line() {
+    // Spotlight titles are remote input. The same plain-text boundary as `to_text` must remove
+    // all terminal control behavior while preserving ordinary Unicode text on one visible line.
+    let cases = [
+        ("newlines", "first\nsecond", "firstsecond"),
+        ("C0", "be\x07fore\rafter\tend", "beforeafterend"),
+        ("C1", "be\u{9b}fore\u{85}after", "beforeafter"),
+        ("CSI", "before\x1b[2Jafter", "beforeafter"),
+        (
+            "OSC hyperlink",
+            "before\x1b]8;;https://evil.invalid/\x1b\\after",
+            "beforeafter",
+        ),
+        (
+            "OSC clipboard",
+            "before\x1b]52;c;c3RvbGVu\x07after",
+            "beforeafter",
+        ),
+        ("malformed CSI", "before\x1b[31", "before"),
+        ("Unicode", "Café 東京", "Café 東京"),
+    ];
+
+    for (name, hostile, expected) in cases {
+        let title = neutralize_plain_text(hostile);
+        assert_eq!(
+            title, expected,
+            "{name}: expected hostile bytes to be neutralized"
+        );
+        assert_eq!(title.lines().count(), 1, "{name}: exactly one visible line");
+        assert!(
+            !title.chars().any(char::is_control),
+            "{name}: no control characters survive: {title:?}"
+        );
+    }
 }
 
 #[test]

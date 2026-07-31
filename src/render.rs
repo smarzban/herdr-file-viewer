@@ -512,18 +512,40 @@ fn run_renderer(
 /// kept and mapped into spans by `ansi-to-tui` (AC-27). The result can only ever paint the
 /// viewer's own region — it carries no terminal-control operations.
 pub fn to_text(raw: &str) -> Text<'static> {
-    let cleaned = strip_terminal_control(raw);
+    // The shared scanner keeps SGR only for this styled content path; status titles use the same
+    // scanner through `neutralize_plain_text`, where SGR is dropped with every other control.
+    let cleaned = neutralize_terminal_control(raw, ControlMode::Styled);
     cleaned.clone().into_text().unwrap_or_else(|_| {
-        // If ANSI parsing fails, the kept SGR runs still contain raw ESC bytes — strip
-        // ALL ESC on the fallback so no control byte ever reaches the terminal (AC-27).
-        Text::raw(cleaned.replace('\u{1b}', ""))
+        // If ANSI parsing fails, remove retained SGR while preserving the content's line structure.
+        plain_text_with_line_breaks(&cleaned)
     })
 }
 
-/// Remove cursor/screen-control escape sequences, keeping only SGR (`…m`) styling so it
-/// can be mapped to ratatui styles downstream. Operates on bytes (control sequences are
-/// ASCII) and preserves all other (UTF-8) content verbatim.
-fn strip_terminal_control(raw: &str) -> String {
+/// Return one safe visible plain-text line from hostile input by dropping every terminal control,
+/// including SGR styling, C0/C1 bytes, and cursor/screen-control escape sequences. Unicode text is
+/// otherwise retained verbatim. Used for remote status titles; content rendering uses the same
+/// scanner with SGR retained for ratatui styling.
+pub fn neutralize_plain_text(raw: &str) -> String {
+    neutralize_terminal_control(raw, ControlMode::OneLine)
+}
+
+fn plain_text_with_line_breaks(raw: &str) -> Text<'static> {
+    Text::raw(neutralize_terminal_control(raw, ControlMode::Plain))
+}
+
+#[derive(Clone, Copy)]
+enum ControlMode {
+    /// Keep SGR for `ansi-to-tui` and preserve content line structure.
+    Styled,
+    /// Drop all controls including SGR, preserving content line structure.
+    Plain,
+    /// Drop all controls and line separators for status titles.
+    OneLine,
+}
+
+/// Remove terminal-control escape sequences according to the destination's presentation needs.
+/// Operates on bytes (control sequences are ASCII) and preserves all other UTF-8 content verbatim.
+fn neutralize_terminal_control(raw: &str, mode: ControlMode) -> String {
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -537,8 +559,8 @@ fn strip_terminal_control(raw: &str) -> String {
                     while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
                         j += 1;
                     }
-                    if j < bytes.len() && bytes[j] == b'm' {
-                        out.extend_from_slice(&bytes[start..=j]); // keep SGR styling
+                    if matches!(mode, ControlMode::Styled) && j < bytes.len() && bytes[j] == b'm' {
+                        out.extend_from_slice(&bytes[start..=j]); // keep SGR styling for `to_text`
                     }
                     // else: drop the whole control sequence (cursor move, erase, …)
                     i = if j < bytes.len() { j + 1 } else { j };
@@ -567,11 +589,12 @@ fn strip_terminal_control(raw: &str) -> String {
             // some terminals act on these, so drop the whole 2-byte sequence.
             i += 2;
         } else {
-            // Drop other C0 control bytes (BEL/BS/CR/FF/VT/…) and DEL, which can still
-            // ring the bell, backspace, or carriage-return to overwrite/spoof a line.
-            // Keep only newline and tab.
+            // Drop C0 controls and DEL, which can ring the bell, backspace, or overwrite/spoof
+            // a line. Content modes keep newline/tab; a status title keeps neither.
             let b = bytes[i];
-            let is_c0_control = b < 0x20 && b != b'\n' && b != b'\t';
+            let preserves_line_structure = !matches!(mode, ControlMode::OneLine);
+            let is_c0_control =
+                b < 0x20 && (!preserves_line_structure || (b != b'\n' && b != b'\t'));
             if !is_c0_control && b != 0x7f {
                 out.push(b);
             }
@@ -935,6 +958,14 @@ mod tests {
              took {elapsed:?} (the 2× bug would take ~{:?})",
             timeout.mul_f32(1.8)
         );
+    }
+
+    #[test]
+    fn ansi_parse_fallback_preserves_content_line_structure() {
+        let text = plain_text_with_line_breaks("\x1b[31mfirst\nsecond\tcolumn");
+        assert_eq!(text.lines.len(), 2, "fallback preserves line breaks");
+        assert_eq!(text.lines[0].spans[0].content, "first");
+        assert_eq!(text.lines[1].spans[0].content, "second\tcolumn");
     }
 
     #[test]
