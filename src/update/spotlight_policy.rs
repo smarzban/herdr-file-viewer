@@ -187,6 +187,15 @@ impl SpotlightCache {
         }
     }
 
+    /// The exact whole-document identity of the currently accepted spotlight. The controller uses
+    /// this only to enqueue a dismissal after it has set its local session flag; callers cannot
+    /// reconstruct an identity from the sanitized title or body.
+    pub(crate) fn accepted_identity(&self) -> Option<&[u8]> {
+        self.accepted
+            .as_ref()
+            .map(|spotlight| spotlight.identity.as_slice())
+    }
+
     /// Remember dismissal of the currently accepted exact document. There is no status to dismiss
     /// without accepted content.
     pub fn dismiss(&mut self) {

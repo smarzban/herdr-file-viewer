@@ -47,7 +47,10 @@ use crate::presenter::{
 use crate::render::{Prepared, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
-use crate::update::{self, NoticeSnapshot, UpdateState};
+use crate::update::{
+    self, NoticeSnapshot, UpdateState,
+    cache::{CacheDelta, CacheWriter},
+};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -714,10 +717,13 @@ pub struct Controller {
     /// post-construction (mirrors [`settings_display`](Self::settings_display)) so the controller
     /// stays hermetic in tests — a test that never calls the setter keeps its overlay unchanged.
     keybindings_display: Option<String>,
-    /// Hides the status line for the rest of this session after an update-triggered dismissal (the
-    /// `u` key). It is not persisted, so it returns next launch while still behind. T-15 expands
-    /// the trigger to spotlight-only notices.
+    /// Hides the status line for the rest of this session after a remote-notice dismissal (the
+    /// `u` key). It is never reset by a later background replacement, so the current process
+    /// cannot revive a dismissed line.
     update_dismissed: bool,
+    /// The T-5 writer held independently of a replaceable notice snapshot. It queues exact
+    /// spotlight dismissals for later sessions without making input or redraw wait for disk.
+    cache_writer: Option<CacheWriter>,
     /// One-shot receiver for a background notice replacement (`None` when no check ran).
     notice_rx: Option<mpsc::Receiver<NoticeSnapshot>>,
     /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
@@ -900,6 +906,7 @@ impl Controller {
             settings_display: None,
             keybindings_display: None,
             update_dismissed: false,
+            cache_writer: None,
             notice_rx: None,
             status_rx: None,
             modal: Modal::None,
@@ -1305,6 +1312,7 @@ impl Controller {
     /// deliver one complete replacement. Called once by the run loop after construction; the
     /// default snapshot keeps every existing no-update call site inert.
     pub fn set_update(&mut self, state: UpdateState) {
+        self.cache_writer = state.initial.cache_writer.clone();
         self.notice_snapshot = state.initial;
         self.notice_rx = state.rx;
     }
@@ -2785,15 +2793,25 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Hide the update status for this session (the `u` key). Inert when no update is showing, so
-    /// the key does nothing (no wasted repaint) until an update is actually available. T-15 expands
-    /// this action to spotlight-only status notices.
+    /// Hide the visible remote-notice line for this session (`u`). The session flag comes first:
+    /// a full or failed cache queue can never delay or reverse the redraw. Only an exact currently
+    /// accepted spotlight identity is sent to the asynchronous cache writer; update dismissal is
+    /// deliberately session-only.
     fn dismiss_update(&mut self) -> Effects {
-        if self.notice_snapshot.detected_release.is_some() && !self.update_dismissed {
-            self.update_dismissed = true;
-            return Effects::redraw();
+        if self.remote_notice_status().is_none() {
+            return Effects::noop();
         }
-        Effects::noop()
+
+        self.update_dismissed = true;
+        if let (Some(writer), Some(identity)) = (
+            self.cache_writer.as_ref(),
+            self.notice_snapshot.spotlight.accepted_identity(),
+        ) {
+            let _ = writer.enqueue(CacheDelta::DismissSpotlight {
+                identity: identity.to_vec(),
+            });
+        }
+        Effects::redraw()
     }
 
     /// The remote-notice status text to display, or `None` when there is no visible notice or the
@@ -3215,6 +3233,9 @@ impl Controller {
         if let Some(rx) = &self.notice_rx {
             match rx.try_recv() {
                 Ok(snapshot) => {
+                    if let Some(writer) = snapshot.cache_writer.clone() {
+                        self.cache_writer = Some(writer);
+                    }
                     self.notice_snapshot = snapshot;
                     self.notice_rx = None;
                     applied = true;
