@@ -96,7 +96,7 @@ fn snapshot(detected_release: Option<Version>, spotlight_title: Option<&str>) ->
     NoticeSnapshot {
         detected_release,
         spotlight,
-        cache_writer: None,
+        ..NoticeSnapshot::default()
     }
 }
 

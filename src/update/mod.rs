@@ -14,10 +14,13 @@ pub mod version;
 pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source};
 pub use version::Version;
 
-use cache::{Cache, next_cache, should_check};
+use cache::{Cache, CacheDelta};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use version::newer_than_current;
+use version::{current, newer_than_current};
+
+/// One successful remote check suppresses another for this many seconds.
+pub(crate) const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// Setting this env var (to anything) disables the update check and banner entirely.
 pub const DISABLE_ENV: &str = "HERDR_FILE_VIEWER_NO_UPDATE_CHECK";
@@ -46,32 +49,107 @@ pub fn banner_text(v: &Version) -> String {
     )
 }
 
-/// The startup decision: what to show immediately (from cache) and whether to hit the network.
+/// The startup decision: the cached notice snapshot and whether a remote refresh is eligible.
 pub struct Decision {
-    pub initial: Option<Version>,
-    pub should_check: bool,
+    pub initial: NoticeSnapshot,
+    pub should_refresh: bool,
 }
 
-/// Pure startup decision. `initial` is the cached latest-seen version if it is newer than the
-/// running build (and the feature is enabled); `should_check` is whether the 24h window has
-/// elapsed (and the feature is enabled).
-pub fn decide(disabled: bool, now_unix: u64, cache: &Option<Cache>) -> Decision {
+/// Whether a successful daily check is old enough to permit one new refresh. A timestamp in the
+/// future is eligible immediately rather than suppressing checks forever after clock skew.
+fn refresh_eligible(now_unix: u64, last_check_unix: u64) -> bool {
+    last_check_unix > now_unix || now_unix - last_check_unix >= CHECK_INTERVAL_SECS
+}
+
+/// Pure startup projection. It composes release-detail lifetime and spotlight freshness policies
+/// over bounded cache facts, performs no I/O, and starts no background work.
+pub fn decide(disabled: bool, session_started_at_unix: u64, cache: &Option<Cache>) -> Decision {
     if disabled {
         return Decision {
-            initial: None,
-            should_check: false,
+            initial: NoticeSnapshot::default(),
+            should_refresh: false,
         };
     }
-    let initial = cache
+
+    let detected_release = cache
         .as_ref()
-        .and_then(|c| c.latest_seen.as_deref())
+        .and_then(|cache| cache.latest_seen.as_deref())
         .and_then(Version::parse)
         .and_then(newer_than_current);
-    let last = cache.as_ref().map(|c| c.last_check_unix).unwrap_or(0);
+    let release_details = cached_release_details(cache, detected_release);
+    let spotlight = cached_spotlight(cache, session_started_at_unix);
+
     Decision {
-        initial,
-        should_check: should_check(now_unix, last),
+        initial: NoticeSnapshot {
+            detected_release,
+            release_details,
+            spotlight,
+            cache_writer: None,
+        },
+        should_refresh: cache
+            .as_ref()
+            .is_none_or(|cache| refresh_eligible(session_started_at_unix, cache.last_check_unix)),
     }
+}
+
+fn cached_release_details(
+    cache: &Option<Cache>,
+    detected_release: Option<Version>,
+) -> Option<release_policy::CachedReleaseDetails> {
+    let cached = cache.as_ref().and_then(|cache| {
+        let details = cache.release_details.as_ref()?;
+        Some(release_policy::CachedReleaseDetails {
+            release: Version::parse(&details.release)?,
+            details: details.details.clone(),
+        })
+    });
+
+    match release_policy::cached_release_details(current(), detected_release, cached.as_ref()) {
+        release_policy::CachedReleaseDetailsDecision::Cached(details) => Some(details.clone()),
+        release_policy::CachedReleaseDetailsDecision::Hidden
+        | release_policy::CachedReleaseDetailsDecision::Fetch(_) => None,
+    }
+}
+
+fn cached_spotlight(
+    cache: &Option<Cache>,
+    session_started_at_unix: u64,
+) -> spotlight_policy::SpotlightCache {
+    let Some(cache) = cache else {
+        return spotlight_policy::SpotlightCache::default();
+    };
+    let mut projected = cache
+        .dismissed_spotlight_identity
+        .clone()
+        .map(spotlight_policy::SpotlightCache::with_remembered_dismissal)
+        .unwrap_or_default();
+    let Some(retrieved_at_unix) = cache.spotlight_retrieved_at_unix else {
+        return projected;
+    };
+    let projection = match (
+        cache.spotlight.as_ref(),
+        spotlight_policy::freshness_at_session_start(session_started_at_unix, retrieved_at_unix),
+    ) {
+        (_, spotlight_policy::Freshness::Future) => return projected,
+        (Some(spotlight), spotlight_policy::Freshness::Fresh) => spotlight_policy::project(
+            spotlight_policy::SpotlightInput::Available(spotlight.clone()),
+        ),
+        (Some(_), spotlight_policy::Freshness::Stale) | (None, _) => {
+            spotlight_policy::SpotlightProjection::Withdrawn
+        }
+    };
+    projected.apply(spotlight_policy::cache_delta(projection, retrieved_at_unix));
+    projected
+}
+
+/// The compatibility probe's successful release transition. T-10 replaces this with its unified
+/// intent-specific refresh transaction; keeping it here avoids putting coordinator policy in cache.
+fn next_cache(mut cache: Cache, now_unix: u64, latest: Option<Version>) -> Cache {
+    cache.apply(CacheDelta::RefreshRelease {
+        checked_at_unix: now_unix,
+        detected_release: latest.map(|version| version.to_string()),
+    });
+    cache
 }
 
 /// The complete remote-notice state visible to one controller frame.
@@ -84,6 +162,8 @@ pub struct NoticeSnapshot {
     /// The latest stable release detected for the fixed official repository, if it is newer than
     /// the running build.
     pub detected_release: Option<Version>,
+    /// Immutable details only when they remain tied to the current detected release.
+    pub release_details: Option<release_policy::CachedReleaseDetails>,
     /// The current project spotlight state. The compatibility release-only probe leaves this at
     /// its cached/default value until T-10 installs the unified refresh pipeline.
     pub spotlight: spotlight_policy::SpotlightCache,
@@ -130,22 +210,20 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         run,
     } = deps;
     let decision = decide(disabled, now_unix, &cache);
-    let initial = NoticeSnapshot {
-        detected_release: decision.initial,
-        spotlight: spotlight_policy::SpotlightCache::default(),
-        cache_writer: if disabled {
-            None
-        } else {
-            cache_dir
-                .as_ref()
-                .map(|dir| cache::CacheWriter::new(dir.clone()))
-        },
+    let mut initial = decision.initial;
+    initial.cache_writer = if disabled {
+        None
+    } else {
+        cache_dir
+            .as_ref()
+            .map(|dir| cache::CacheWriter::new(dir.clone()))
     };
-    if !decision.should_check {
+    if !decision.should_refresh {
         return UpdateState { initial, rx: None };
     }
     // The compatibility probe remains release-only until T-10. It returns a complete replacement
     // snapshot so later spotlight-capable work cannot update one notice independently of another.
+    let replacement_details = initial.release_details.clone();
     let replacement_spotlight = initial.spotlight.clone();
     let replacement_writer = initial.cache_writer.clone();
     let (tx, rx) = mpsc::channel();
@@ -160,8 +238,21 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
                     &next_cache(cache.unwrap_or_default(), now_unix, latest),
                 );
             }
+            let detected_release = latest.and_then(newer_than_current);
+            let release_details = match release_policy::cached_release_details(
+                current(),
+                detected_release,
+                replacement_details.as_ref(),
+            ) {
+                release_policy::CachedReleaseDetailsDecision::Cached(details) => {
+                    Some(details.clone())
+                }
+                release_policy::CachedReleaseDetailsDecision::Hidden
+                | release_policy::CachedReleaseDetailsDecision::Fetch(_) => None,
+            };
             let _ = tx.send(NoticeSnapshot {
-                detected_release: latest.and_then(newer_than_current),
+                detected_release,
+                release_details,
                 spotlight: replacement_spotlight,
                 cache_writer: replacement_writer,
             });
@@ -205,21 +296,348 @@ pub fn start_default_with(disabled: bool) -> UpdateState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cache::CHECK_INTERVAL_SECS;
     use version::current;
 
-    fn available_release(version: Version) -> Source<ReleaseState> {
+    fn future_version(offset: u32) -> Version {
+        Version {
+            major: current().major + offset,
+            minor: 0,
+            patch: 0,
+        }
+    }
+
+    #[test]
+    fn startup_decision_disabled_returns_an_empty_snapshot_and_skips_refresh() {
+        let release = future_version(1);
+        let spotlight = b"# Project\nbody\n".to_vec();
+        let cache = Some(Cache {
+            last_check_unix: 10,
+            latest_seen: Some(release.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: release.to_string(),
+                details: "## [next]\n- cached details\n".into(),
+            }),
+            spotlight: Some(spotlight.clone()),
+            spotlight_retrieved_at_unix: Some(10_000),
+            dismissed_spotlight_identity: Some(spotlight),
+            ..Cache::default()
+        });
+
+        let decision = decide(true, 10_000, &cache);
+
+        assert!(decision.initial.detected_release.is_none());
+        assert!(decision.initial.release_details.is_none());
+        assert!(decision.initial.spotlight.status_title().is_none());
+        assert!(decision.initial.spotlight.whats_new_body().is_none());
+        assert!(decision.initial.cache_writer.is_none());
+        assert!(!decision.should_refresh);
+    }
+
+    #[test]
+    fn startup_decision_throttles_a_cache_younger_than_one_day() {
+        let last_check_unix = 10_000;
+        let decision = decide(
+            false,
+            last_check_unix + CHECK_INTERVAL_SECS - 1,
+            &Some(Cache {
+                last_check_unix,
+                ..Cache::default()
+            }),
+        );
+
+        assert!(
+            !decision.should_refresh,
+            "strictly less than 86,400 elapsed seconds is throttled"
+        );
+    }
+
+    #[test]
+    fn startup_decision_refreshes_at_the_boundary_and_for_a_future_cache_clock() {
+        let last_check_unix = 10_000;
+        let cache = Some(Cache {
+            last_check_unix,
+            ..Cache::default()
+        });
+
+        assert!(
+            decide(false, last_check_unix + CHECK_INTERVAL_SECS, &cache).should_refresh,
+            "exactly 86,400 elapsed seconds is eligible"
+        );
+        assert!(
+            decide(false, last_check_unix - 1, &cache).should_refresh,
+            "a future cache timestamp is eligible rather than throttling forever"
+        );
+    }
+
+    #[test]
+    fn startup_decision_projects_details_only_for_the_matching_newer_release() {
+        let release = future_version(1);
+        let details = "## [next]\n- cached details\n";
+        let decision = decide(
+            false,
+            10_000,
+            &Some(Cache {
+                latest_seen: Some(release.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: release.to_string(),
+                    details: details.into(),
+                }),
+                ..Cache::default()
+            }),
+        );
+
+        assert_eq!(decision.initial.detected_release, Some(release));
+        let projected = decision
+            .initial
+            .release_details
+            .as_ref()
+            .expect("matching newer release details remain usable");
+        assert_eq!(projected.release, release);
+        assert_eq!(projected.details, details);
+    }
+
+    #[test]
+    fn startup_decision_hides_caught_up_and_superseded_release_details() {
+        let caught_up = current();
+        let older = future_version(1);
+        let newer = future_version(2);
+
+        let caught_up_decision = decide(
+            false,
+            10_000,
+            &Some(Cache {
+                latest_seen: Some(caught_up.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: caught_up.to_string(),
+                    details: "caught up details".into(),
+                }),
+                ..Cache::default()
+            }),
+        );
+        assert!(caught_up_decision.initial.detected_release.is_none());
+        assert!(caught_up_decision.initial.release_details.is_none());
+
+        let superseded_decision = decide(
+            false,
+            10_000,
+            &Some(Cache {
+                latest_seen: Some(newer.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: older.to_string(),
+                    details: "superseded details".into(),
+                }),
+                ..Cache::default()
+            }),
+        );
+        assert_eq!(superseded_decision.initial.detected_release, Some(newer));
+        assert!(superseded_decision.initial.release_details.is_none());
+    }
+
+    #[test]
+    fn startup_decision_projects_fresh_spotlight_and_hides_stale_spotlight() {
+        let session_started_at_unix = 1_000_000;
+        let spotlight = b"# Project\nbody\n".to_vec();
+        let fresh = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(
+                    session_started_at_unix - CHECK_INTERVAL_SECS + 1,
+                ),
+                ..Cache::default()
+            }),
+        )
+        .initial;
+        assert_eq!(fresh.spotlight.status_title(), Some("Project"));
+        assert_eq!(fresh.spotlight.whats_new_body(), Some(b"body\n".as_slice()));
+
+        let stale = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight: Some(spotlight),
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - CHECK_INTERVAL_SECS),
+                ..Cache::default()
+            }),
+        )
+        .initial;
+        assert!(stale.spotlight.status_title().is_none());
+        assert!(stale.spotlight.whats_new_body().is_none());
+    }
+
+    #[test]
+    fn startup_decision_preserves_withdrawal_freshness_without_fabricating_content() {
+        let session_started_at_unix = 1_000_000;
+        let fresh_retrieved_at_unix = session_started_at_unix - CHECK_INTERVAL_SECS + 1;
+        let fresh = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight_retrieved_at_unix: Some(fresh_retrieved_at_unix),
+                ..Cache::default()
+            }),
+        )
+        .initial
+        .spotlight;
+
+        assert_eq!(fresh.retrieved_at_unix(), Some(fresh_retrieved_at_unix));
+        assert!(fresh.status_title().is_none());
+        assert!(fresh.whats_new_body().is_none());
+        assert!(
+            !spotlight_policy::SpotlightSession::new(session_started_at_unix)
+                .should_retrieve(&fresh),
+            "a fresh persisted withdrawal remains throttled for this session"
+        );
+
+        let stale = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - CHECK_INTERVAL_SECS),
+                ..Cache::default()
+            }),
+        )
+        .initial
+        .spotlight;
+        assert_eq!(
+            stale.retrieved_at_unix(),
+            Some(session_started_at_unix - CHECK_INTERVAL_SECS)
+        );
+        assert!(
+            spotlight_policy::SpotlightSession::new(session_started_at_unix)
+                .should_retrieve(&stale)
+        );
+
+        let unavailable = decide(false, session_started_at_unix, &Some(Cache::default()))
+            .initial
+            .spotlight;
+        assert_eq!(unavailable.retrieved_at_unix(), None);
+        assert!(
+            spotlight_policy::SpotlightSession::new(session_started_at_unix)
+                .should_retrieve(&unavailable)
+        );
+
+        let invalid = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight: Some(b"not a spotlight document\n".to_vec()),
+                spotlight_retrieved_at_unix: Some(fresh_retrieved_at_unix),
+                ..Cache::default()
+            }),
+        )
+        .initial
+        .spotlight;
+        assert_eq!(invalid.retrieved_at_unix(), Some(fresh_retrieved_at_unix));
+        assert!(invalid.status_title().is_none());
+        assert!(invalid.whats_new_body().is_none());
+        assert!(
+            !spotlight_policy::SpotlightSession::new(session_started_at_unix)
+                .should_retrieve(&invalid),
+            "invalid present content is a conclusive withdrawal, not an unavailable result"
+        );
+    }
+
+    #[test]
+    fn stale_spotlight_keeps_its_dismissal_for_an_identical_refresh() {
+        let session_started_at_unix = 1_000_000;
+        let spotlight = b"# Project\nbody\n".to_vec();
+        let mut refreshed = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - CHECK_INTERVAL_SECS),
+                dismissed_spotlight_identity: Some(spotlight.clone()),
+                ..Cache::default()
+            }),
+        )
+        .initial
+        .spotlight;
+
+        assert!(refreshed.status_title().is_none());
+        assert!(refreshed.whats_new_body().is_none());
+
+        refreshed.apply(spotlight_policy::cache_delta(
+            spotlight_policy::project(spotlight_policy::SpotlightInput::Available(spotlight)),
+            session_started_at_unix,
+        ));
+
+        assert!(
+            refreshed.status_title().is_none(),
+            "an identical refresh retains the persisted dismissal"
+        );
+        assert_eq!(
+            refreshed.whats_new_body(),
+            Some(b"body\n".as_slice()),
+            "fresh content restores What's New independently of dismissal"
+        );
+    }
+
+    #[test]
+    fn startup_decision_keeps_a_remembered_dismissal_out_of_status_but_in_whats_new() {
+        let session_started_at_unix = 1_000_000;
+        let spotlight = b"# Project\nbody\n".to_vec();
+        let initial = decide(
+            false,
+            session_started_at_unix,
+            &Some(Cache {
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
+                dismissed_spotlight_identity: Some(spotlight),
+                ..Cache::default()
+            }),
+        )
+        .initial;
+
+        assert!(initial.spotlight.status_title().is_none());
+        assert_eq!(
+            initial.spotlight.whats_new_body(),
+            Some(b"body\n".as_slice()),
+            "dismissal never suppresses accepted What's New content"
+        );
+    }
+
+    #[test]
+    fn startup_decision_fixes_spotlight_freshness_at_session_start() {
+        let session_started_at_unix = 1_000_000;
+        let cache = Some(Cache {
+            spotlight: Some(b"# Project\nbody\n".to_vec()),
+            spotlight_retrieved_at_unix: Some(session_started_at_unix - CHECK_INTERVAL_SECS + 1),
+            ..Cache::default()
+        });
+        let initial = decide(false, session_started_at_unix, &cache).initial;
+        let later = decide(false, session_started_at_unix + CHECK_INTERVAL_SECS, &cache).initial;
+
+        assert_eq!(initial.spotlight.status_title(), Some("Project"));
+        assert!(
+            later.spotlight.status_title().is_none(),
+            "a later session independently re-evaluates its own startup freshness"
+        );
+        assert_eq!(
+            initial.spotlight.status_title(),
+            Some("Project"),
+            "the existing session keeps its startup projection without a live-clock recheck"
+        );
+    }
+
+    fn available_releases(releases: Vec<ReleaseTag>) -> Source<ReleaseState> {
         Source::Available(
             ReleaseState::new(
                 RemoteRef::parse("refs/heads/main").unwrap(),
                 ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
-                vec![ReleaseTag::new(
-                    version,
-                    ObjectId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
-                )],
+                releases,
             )
             .unwrap(),
         )
+    }
+
+    fn available_release(version: Version) -> Source<ReleaseState> {
+        available_releases(vec![ReleaseTag::new(
+            version,
+            ObjectId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+        )])
     }
 
     #[test]
@@ -273,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_uses_cache_for_the_initial_banner_and_gates_the_check() {
+    fn startup_decision_uses_cache_for_the_initial_banner_and_gates_the_check() {
         let newer = format!("{}.{}.{}", current().major + 1, 0, 0);
         let cache = Some(Cache {
             last_check_unix: 1_000,
@@ -283,23 +701,23 @@ mod tests {
 
         // Fresh cache (within 24h), behind → show banner from cache, no network.
         let d = decide(false, 1_000 + 10, &cache);
-        assert_eq!(d.initial, Version::parse(&newer));
-        assert!(!d.should_check, "fresh cache → no check");
+        assert_eq!(d.initial.detected_release, Version::parse(&newer));
+        assert!(!d.should_refresh, "fresh cache → no check");
 
         // Stale cache (>24h) → still show cached banner, AND check.
         let d = decide(false, 1_000 + CHECK_INTERVAL_SECS + 1, &cache);
-        assert_eq!(d.initial, Version::parse(&newer));
-        assert!(d.should_check, "stale → check");
+        assert_eq!(d.initial.detected_release, Version::parse(&newer));
+        assert!(d.should_refresh, "stale → check");
 
         // Disabled → never a banner, never a check, whatever the cache says.
         let d = decide(true, 10_000_000, &cache);
-        assert_eq!(d.initial, None);
-        assert!(!d.should_check);
+        assert!(d.initial.detected_release.is_none());
+        assert!(!d.should_refresh);
 
-        // No cache → no initial banner, but do check (real clock vs last=0).
+        // No cache → no initial banner, but do check.
         let d = decide(false, 10_000_000, &None);
-        assert_eq!(d.initial, None);
-        assert!(d.should_check);
+        assert!(d.initial.detected_release.is_none());
+        assert!(d.should_refresh);
 
         // Cache says we're up-to-date (current version) → no banner.
         let same = current().to_string();
@@ -308,25 +726,32 @@ mod tests {
             latest_seen: Some(same),
             ..Cache::default()
         });
-        assert_eq!(decide(false, 0, &upcache).initial, None);
+        assert!(
+            decide(false, 0, &upcache)
+                .initial
+                .detected_release
+                .is_none()
+        );
     }
 
     #[test]
-    fn start_with_delivers_a_release_only_notice_snapshot_over_the_channel() {
-        // A fake probe reporting a newer tag → the receiver yields a complete replacement
-        // snapshot; the compatibility loop leaves spotlight handling for T-10.
-        let newer = current().major + 1;
-        let detected = Version::parse(&format!("{newer}.0.0")).unwrap();
+    fn compatibility_worker_keeps_details_for_the_same_release() {
+        let detected = future_version(1);
+        let details = "## [next]\n- cached details\n";
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let spotlight = b"# Project\nexact spotlight bytes\n".to_vec();
         let state = start_with(StartDeps {
             disabled: false,
-            now_unix: CHECK_INTERVAL_SECS * 10, // force should_check
+            now_unix: CHECK_INTERVAL_SECS * 10,
             cache: Some(Cache {
+                latest_seen: Some(detected.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: detected.to_string(),
+                    details: details.into(),
+                }),
                 spotlight: Some(spotlight.clone()),
-                spotlight_retrieved_at_unix: Some(1),
-                dismissed_spotlight_identity: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(CHECK_INTERVAL_SECS * 9 + 1),
                 ..Cache::default()
             }),
             cache_dir: Some(dir.clone()),
@@ -336,14 +761,19 @@ mod tests {
         let got = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("result arrives");
+        assert_eq!(got.detected_release, Some(detected));
         assert_eq!(
-            got.detected_release,
-            Version::parse(&format!("{newer}.0.0"))
+            got.release_details,
+            Some(release_policy::CachedReleaseDetails {
+                release: detected,
+                details: details.into(),
+            }),
+            "a successful probe for the same release keeps exact cached details"
         );
         assert_eq!(
             got.spotlight.status_title(),
-            None,
-            "the compatibility loop emits a release-only snapshot"
+            Some("Project"),
+            "the compatibility loop carries its initial spotlight into the replacement snapshot"
         );
         assert!(
             got.cache_writer.is_some(),
@@ -355,8 +785,82 @@ mod tests {
             Some(spotlight.as_slice()),
             "the compatibility writer must not discard cached content before T-10 replaces it"
         );
-        assert_eq!(persisted.spotlight_retrieved_at_unix, Some(1));
-        assert_eq!(persisted.dismissed_spotlight_identity, Some(spotlight));
+        assert_eq!(
+            persisted.spotlight_retrieved_at_unix,
+            Some(CHECK_INTERVAL_SECS * 9 + 1)
+        );
+        assert!(persisted.dismissed_spotlight_identity.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compatibility_worker_clears_details_for_a_superseding_release() {
+        let cached_release = future_version(1);
+        let superseding_release = future_version(2);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache: Some(Cache {
+                latest_seen: Some(cached_release.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: cached_release.to_string(),
+                    details: "## [cached]\n- details\n".into(),
+                }),
+                ..Cache::default()
+            }),
+            cache_dir: None,
+            run: Box::new(move |_| available_release(superseding_release)),
+        });
+        assert!(
+            state.initial.release_details.is_some(),
+            "the valid cached state reaches the compatibility worker"
+        );
+
+        let got = state
+            .rx
+            .expect("a check was scheduled")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("result arrives");
+
+        assert_eq!(got.detected_release, Some(superseding_release));
+        assert!(
+            got.release_details.is_none(),
+            "details for an older release must not accompany a newer detected release"
+        );
+    }
+
+    #[test]
+    fn compatibility_worker_clears_cached_release_when_no_stable_tag_exists() {
+        let cached_release = future_version(1);
+        let dir = std::env::temp_dir().join(format!("hfv-no-release-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = start_with(StartDeps {
+            disabled: false,
+            now_unix: CHECK_INTERVAL_SECS * 10,
+            cache: Some(Cache {
+                latest_seen: Some(cached_release.to_string()),
+                release_details: Some(cache::PersistedReleaseDetails {
+                    release: cached_release.to_string(),
+                    details: "## [cached]\n- details\n".into(),
+                }),
+                ..Cache::default()
+            }),
+            cache_dir: Some(dir.clone()),
+            run: Box::new(|_| available_releases(Vec::new())),
+        });
+
+        let got = state
+            .rx
+            .expect("a check was scheduled")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("result arrives");
+
+        assert!(got.detected_release.is_none());
+        assert!(got.release_details.is_none());
+        let persisted = cache::load(&dir).expect("successful probe writes the cache");
+        assert_eq!(persisted.last_check_unix, CHECK_INTERVAL_SECS * 10);
+        assert!(persisted.latest_seen.is_none());
+        assert!(persisted.release_details.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

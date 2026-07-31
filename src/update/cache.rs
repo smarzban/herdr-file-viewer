@@ -1,8 +1,7 @@
-//! The throttle cache: the timestamp of the last check + the latest version then seen. Lets
-//! the banner show immediately from a prior result while bounding the network to once per 24h.
-//! Stores nothing about the user — only a unix time and a version string.
+//! Bounded advisory facts for remote notices: successful-check time, detected release, and the
+//! exact release-detail and spotlight bytes that a Refresh Coordinator may project. It stores no
+//! startup eligibility or display policy, and nothing about the user beyond a dismissed identity.
 
-use crate::update::version::Version;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
@@ -11,9 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-
-/// Minimum gap between network checks: 24h.
-pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// The cache file name within the cache dir.
 const CACHE_FILE: &str = "update-check.json";
@@ -247,27 +243,6 @@ impl Cache {
     }
 }
 
-/// Whether enough time has elapsed since `last_check_unix` to hit the network again. A
-/// `last_check_unix` in the future (corrupted cache / clock skew) is treated as "check now",
-/// consistent with treating any unreadable cache as a reason to re-check.
-pub fn should_check(now_unix: u64, last_check_unix: u64) -> bool {
-    last_check_unix > now_unix || now_unix - last_check_unix >= CHECK_INTERVAL_SECS
-}
-
-/// The cache to persist after a **successful** probe: refresh the check time plus the latest
-/// version seen (`None` when the repo has no stable tags — which clears any stale cached banner).
-/// A *failed* probe must not call this: the cache is left untouched so the check retries next
-/// launch rather than being suppressed for 24h by a transient network blip.
-///
-/// This compatibility writer preserves remote-notice state until T-10 replaces the legacy loop.
-pub fn next_cache(mut cache: Cache, now_unix: u64, latest: Option<Version>) -> Cache {
-    cache.apply(CacheDelta::RefreshRelease {
-        checked_at_unix: now_unix,
-        detected_release: latest.map(|v| v.to_string()),
-    });
-    cache
-}
-
 /// The plugin's cache directory: `$XDG_CACHE_HOME/herdr-file-viewer`, else
 /// `$HOME/.cache/herdr-file-viewer` (unix) / `%LOCALAPPDATA%\herdr-file-viewer` (Windows).
 /// `None` when no base directory is available (then we check without persisting — a rare
@@ -499,7 +474,6 @@ fn is_transient_replace_error(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::version::Version;
     use std::cell::Cell;
     use std::ffi::OsString;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -612,56 +586,6 @@ mod tests {
         assert!(
             got.unwrap().ends_with("herdr-file-viewer"),
             "joins the plugin subdir onto the resolved base"
-        );
-    }
-
-    #[test]
-    fn should_check_respects_the_24h_window() {
-        let day = CHECK_INTERVAL_SECS;
-        assert!(
-            should_check(1_000 + day, 1_000),
-            "exactly 24h later → check"
-        );
-        assert!(should_check(1_000 + day + 1, 1_000), "past 24h → check");
-        assert!(!should_check(1_000 + day - 1, 1_000), "within 24h → skip");
-        assert!(
-            !should_check(0, 0),
-            "zero elapsed → skip (not a check trigger)"
-        );
-        // First run carries no cache, so `decide` checks against last=0 with the real (large)
-        // clock — which is well past the window.
-        assert!(
-            should_check(1_700_000_000, 0),
-            "real clock vs last=0 → check"
-        );
-        assert!(
-            should_check(100, 9_999),
-            "clock went backwards → check, never overflow"
-        );
-    }
-
-    #[test]
-    fn next_cache_records_the_check_time_and_version() {
-        // A successful probe with a version → record the time and the version.
-        let c = next_cache(Cache::default(), 500, Version::parse("1.2.0"));
-        assert_eq!(
-            c,
-            Cache {
-                last_check_unix: 500,
-                latest_seen: Some("1.2.0".into()),
-                ..Cache::default()
-            }
-        );
-        // A successful probe that found no stable tag → latest_seen cleared (clears a stale
-        // cached banner). (A *failed* probe never reaches here — the caller leaves the cache.)
-        let c = next_cache(Cache::default(), 500, None);
-        assert_eq!(
-            c,
-            Cache {
-                last_check_unix: 500,
-                latest_seen: None,
-                ..Cache::default()
-            }
         );
     }
 

@@ -3,7 +3,7 @@
 //! This module owns no I/O or clock. Its caller supplies the remote input, the session-start
 //! timestamp, and successful retrieval timestamps, then applies the returned cache deltas.
 
-use super::cache::should_check;
+use super::CHECK_INTERVAL_SECS;
 use crate::render::neutralize_plain_text;
 
 /// The result of retrieving the remote spotlight source.
@@ -114,7 +114,7 @@ pub fn freshness_at_session_start(
     if retrieved_at_unix > session_started_at_unix {
         return Freshness::Future;
     }
-    if should_check(session_started_at_unix, retrieved_at_unix) {
+    if session_started_at_unix - retrieved_at_unix >= CHECK_INTERVAL_SECS {
         Freshness::Stale
     } else {
         Freshness::Fresh
@@ -155,6 +155,15 @@ pub fn cache_delta(projection: SpotlightProjection, retrieved_at_unix: u64) -> S
 }
 
 impl SpotlightCache {
+    /// Rehydrate a persisted dismissal without accepting or displaying cached content. A later
+    /// accepted document retains it only when its exact identity matches.
+    pub fn with_remembered_dismissal(identity: Vec<u8>) -> Self {
+        Self {
+            dismissed_identity: Some(identity),
+            ..Self::default()
+        }
+    }
+
     /// Apply a selected delta. A changed identity clears a remembered dismissal; an identical one
     /// retains it. Withdrawal clears accepted content while recording the successful retrieval
     /// time for future session-start freshness decisions.
@@ -251,7 +260,7 @@ impl SpotlightSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::cache::CHECK_INTERVAL_SECS as FRESHNESS_SECS;
+    use crate::update::CHECK_INTERVAL_SECS as FRESHNESS_SECS;
 
     fn accepted(input: &str) -> AcceptedSpotlight {
         match project(SpotlightInput::Available(input.as_bytes().to_vec())) {
@@ -510,5 +519,45 @@ mod tests {
         assert_eq!(cache.retrieved_at_unix(), Some(20));
         assert_eq!(cache.status_title(), None);
         assert_eq!(cache.whats_new_body(), None);
+    }
+
+    #[test]
+    fn conclusive_withdrawals_throttle_fresh_sessions_but_unavailable_state_does_not() {
+        let session_started_at_unix = 1_000_000;
+        let fresh_retrieved_at_unix = session_started_at_unix - FRESHNESS_SECS + 1;
+        let session = SpotlightSession::new(session_started_at_unix);
+
+        let mut withdrawn = SpotlightCache::default();
+        withdrawn.apply(cache_delta(
+            SpotlightProjection::Withdrawn,
+            fresh_retrieved_at_unix,
+        ));
+        assert_eq!(withdrawn.status_title(), None);
+        assert_eq!(withdrawn.whats_new_body(), None);
+        assert!(
+            !session.should_retrieve(&withdrawn),
+            "a fresh withdrawal is a successful retrieval"
+        );
+
+        let mut invalid = SpotlightCache::default();
+        invalid.apply(cache_delta(
+            project(SpotlightInput::Available(b"no heading\n".to_vec())),
+            fresh_retrieved_at_unix,
+        ));
+        assert_eq!(invalid, withdrawn, "invalid present content withdraws");
+
+        let mut stale = SpotlightCache::default();
+        stale.apply(cache_delta(
+            SpotlightProjection::Withdrawn,
+            session_started_at_unix - FRESHNESS_SECS,
+        ));
+        assert!(
+            session.should_retrieve(&stale),
+            "a stale withdrawal retries"
+        );
+        assert!(
+            session.should_retrieve(&SpotlightCache::default()),
+            "unavailable state has no successful retrieval timestamp"
+        );
     }
 }
