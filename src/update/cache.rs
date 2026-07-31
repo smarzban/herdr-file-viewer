@@ -4,14 +4,32 @@
 
 use crate::update::version::Version;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Minimum gap between network checks: 24h.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// The cache file name within the cache dir.
 const CACHE_FILE: &str = "update-check.json";
+
+/// A separate advisory lock, so readers never need to hold the cache-data file open.
+const LOCK_FILE: &str = "update-check.lock";
+
+/// Retry a competing writer for a short, bounded interval, then leave the advisory cache alone.
+const LOCK_ATTEMPTS: usize = 200;
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(5);
+
+/// On Windows an external reader can transiently prevent replacement of the destination.
+const REPLACE_ATTEMPTS: usize = 20;
+const REPLACE_RETRY_DELAY: Duration = Duration::from_millis(5);
+
+/// Distinguishes staging names from writers in the same process.
+static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const STAGING_ATTEMPTS: usize = 8;
 
 /// The only schema version this build understands. Unversioned files are the legacy update cache
 /// and deserialize with this value so they can be extended in place.
@@ -249,18 +267,102 @@ fn load_bounded(dir: &Path, max_bytes: usize) -> Option<Cache> {
     cache.is_valid().then_some(cache)
 }
 
-/// Best-effort persist; creates `dir` if needed. Any error is ignored — a cache we cannot
-/// write just means we check again next launch.
+/// Best-effort persist of a complete snapshot; creates `dir` if needed. Any error is ignored —
+/// a cache we cannot write just means we check again next launch. New mutation call sites should
+/// prefer [`store_delta`], which rereads the current revision while exclusive instead of replacing
+/// it with a stale in-memory snapshot.
 ///
-/// Atomic publish: write a per-process temp file in the same dir, then `rename` it over the
-/// target. herdr is multi-pane, so two viewer instances can write concurrently — a plain
-/// truncating write could be read torn; with rename each reader sees either the old or the new
-/// complete file (last writer wins, never a partial one).
+/// This compatibility path also requires the shared cache lease. Although it does not reread,
+/// publishing its caller-supplied snapshot unlocked could collide with a lease-holding writer and
+/// replace that writer's complete revision. Rename keeps readers whole, not competing writers
+/// serialized, so a lock error leaves the prior revision untouched.
 pub fn store(dir: &Path, cache: &Cache) {
     store_bounded(dir, cache, CACHE_MAX_BYTES);
 }
 
+/// Best-effort read-modify-write of one completed cache intent across viewer processes.
+///
+/// The separate lock file is opened read/write because Rust 1.96 documents that Windows file
+/// locks require one of those access modes. Once exclusive, this rereads the cache-data file,
+/// applies only `delta`, and publishes one complete staged revision. The data handle from
+/// `load_bounded` is closed before replacement, which matters when Windows rejects replacing an
+/// open destination. Every lock and replacement retry is bounded; failure is advisory and silent.
+pub fn store_delta(dir: &Path, delta: CacheDelta) {
+    store_delta_bounded(dir, delta, CACHE_MAX_BYTES, LOCK_ATTEMPTS);
+}
+
 fn store_bounded(dir: &Path, cache: &Cache, max_bytes: usize) {
+    store_with_try_lock(dir, cache, max_bytes, File::try_lock);
+}
+
+fn store_with_try_lock(
+    dir: &Path,
+    cache: &Cache,
+    max_bytes: usize,
+    try_lock: impl FnMut(&File) -> Result<(), TryLockError>,
+) {
+    if !cache.is_valid() || std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let Some(_lock) = acquire_lock_with(dir, LOCK_ATTEMPTS, try_lock) else {
+        return;
+    };
+    write_complete_revision(dir, cache, max_bytes);
+}
+
+fn store_delta_bounded(dir: &Path, delta: CacheDelta, max_bytes: usize, lock_attempts: usize) {
+    store_delta_with_try_lock(dir, delta, max_bytes, lock_attempts, File::try_lock);
+}
+
+fn store_delta_with_try_lock(
+    dir: &Path,
+    delta: CacheDelta,
+    max_bytes: usize,
+    lock_attempts: usize,
+    try_lock: impl FnMut(&File) -> Result<(), TryLockError>,
+) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    // A failed or unsupported lock is deliberately not an unlocked fallback: atomic rename keeps
+    // readers whole, but only this lock makes the read-modify-write merge safe across processes.
+    let Some(_lock) = acquire_lock_with(dir, lock_attempts, try_lock) else {
+        return;
+    };
+
+    // `load_bounded` drops its cache-data `File` before returning, so no destination handle from
+    // this writer remains open while the staged revision is renamed over it.
+    let mut cache = load_bounded(dir, max_bytes).unwrap_or_default();
+    cache.apply(delta);
+    write_complete_revision(dir, &cache, max_bytes);
+}
+
+fn acquire_lock_with(
+    dir: &Path,
+    attempts: usize,
+    mut try_lock: impl FnMut(&File) -> Result<(), TryLockError>,
+) -> Option<File> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(LOCK_FILE))
+        .ok()?;
+
+    for attempt in 0..attempts {
+        match try_lock(&lock) {
+            Ok(()) => return Some(lock),
+            Err(TryLockError::WouldBlock) if attempt + 1 < attempts => {
+                std::thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn write_complete_revision(dir: &Path, cache: &Cache, max_bytes: usize) {
     if !cache.is_valid() {
         return;
     }
@@ -270,10 +372,71 @@ fn store_bounded(dir: &Path, cache: &Cache, max_bytes: usize) {
     if json.len() > max_bytes {
         return;
     }
-    let _ = std::fs::create_dir_all(dir);
-    let tmp = dir.join(format!("{CACHE_FILE}.{}.tmp", std::process::id()));
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, dir.join(CACHE_FILE));
+
+    let Some((staged_path, mut staged)) = create_staging_file(dir) else {
+        return;
+    };
+    let result = (|| -> std::io::Result<()> {
+        staged.write_all(&json)?;
+        // Close the staging handle before publishing its complete revision.
+        drop(staged);
+        replace_with_retry(&dir.join(CACHE_FILE), &staged_path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(staged_path);
+    }
+}
+
+fn create_staging_file(dir: &Path) -> Option<(PathBuf, File)> {
+    for _ in 0..STAGING_ATTEMPTS {
+        let path = staging_path(dir);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Some((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn staging_path(dir: &Path) -> PathBuf {
+    let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    dir.join(format!(
+        "{CACHE_FILE}.{}-{nanos}-{sequence}.tmp",
+        std::process::id()
+    ))
+}
+
+fn replace_with_retry(destination: &Path, staged: &Path) -> std::io::Result<()> {
+    for attempt in 0..REPLACE_ATTEMPTS {
+        match std::fs::rename(staged, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_transient_replace_error(&error) && attempt + 1 < REPLACE_ATTEMPTS => {
+                std::thread::sleep(REPLACE_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::other("cache replacement retry exhausted"))
+}
+
+fn is_transient_replace_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    // Rust 1.96's `sys/io/error/windows.rs` maps ERROR_SHARING_VIOLATION (32) to
+    // `Uncategorized`, so inspect the documented raw Win32 code instead of its error kind.
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(32)
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -281,6 +444,7 @@ fn store_bounded(dir: &Path, cache: &Cache, max_bytes: usize) {
 mod tests {
     use super::*;
     use crate::update::version::Version;
+    use std::cell::Cell;
     use std::ffi::OsString;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -759,6 +923,112 @@ mod tests {
             load_bounded(&dir, cap),
             None,
             "oversized cache degrades to empty"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sharing_violation_is_a_transient_replacement_error() {
+        assert!(is_transient_replace_error(
+            &std::io::Error::from_raw_os_error(32)
+        ));
+    }
+
+    #[test]
+    fn store_lock_error_preserves_the_prior_complete_revision() {
+        let dir = tmp();
+        let before = Cache {
+            last_check_unix: 10,
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        store(&dir, &before);
+
+        store_with_try_lock(
+            &dir,
+            &Cache {
+                last_check_unix: 20,
+                latest_seen: Some("1.3.0".into()),
+                ..Cache::default()
+            },
+            CACHE_MAX_BYTES,
+            |_| {
+                Err(TryLockError::Error(std::io::Error::other(
+                    "locking unsupported",
+                )))
+            },
+        );
+
+        assert_eq!(
+            load(&dir),
+            Some(before),
+            "a compatibility snapshot cannot publish without the shared cache lease"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_error_never_publishes_an_unserialized_delta() {
+        let dir = tmp();
+        let before = Cache {
+            last_check_unix: 10,
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        store(&dir, &before);
+
+        store_delta_with_try_lock(
+            &dir,
+            CacheDelta::RefreshRelease {
+                checked_at_unix: 20,
+                detected_release: Some("1.3.0".into()),
+            },
+            CACHE_MAX_BYTES,
+            1,
+            |_| {
+                Err(TryLockError::Error(std::io::Error::other(
+                    "locking unsupported",
+                )))
+            },
+        );
+
+        assert_eq!(
+            load(&dir),
+            Some(before),
+            "an unavailable lock must leave the cache unchanged rather than write unlocked"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_lock_attempt_exhaustion_drops_the_best_effort_delta() {
+        let dir = tmp();
+        let attempts = Cell::new(0);
+
+        store_delta_with_try_lock(
+            &dir,
+            CacheDelta::RefreshRelease {
+                checked_at_unix: 20,
+                detected_release: Some("1.3.0".into()),
+            },
+            CACHE_MAX_BYTES,
+            1,
+            |_| {
+                attempts.set(attempts.get() + 1);
+                Err(TryLockError::WouldBlock)
+            },
+        );
+
+        assert_eq!(
+            attempts.get(),
+            1,
+            "the injected one-attempt budget is honored"
+        );
+        assert_eq!(
+            load(&dir),
+            None,
+            "exhausting the lock budget must not publish an unlocked revision"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
