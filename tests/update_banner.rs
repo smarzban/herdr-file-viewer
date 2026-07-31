@@ -1,7 +1,7 @@
-//! The update-available banner state on the Session Controller (AC-U1, AC-U2, AC-U7): shown
-//! from the initial (cached) value, refreshed from the background channel, and dismissable for
-//! the session. No real git / renderer / editor / network — the components are no-op stubs and
-//! the update result is injected directly.
+//! The remote-notice status state on the Session Controller: shown from the initial (cached)
+//! value, refreshed from the background channel, and dismissable for the session. No real git /
+//! renderer / editor / network, the components are no-op stubs and the update result is injected
+//! directly.
 
 mod common;
 
@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, mpsc};
 
-// ---- minimal no-op stubs (the banner logic exercises none of these) -------------------
+// ---- minimal no-op stubs (the remote-notice logic exercises none of these) ------------
 
 struct Git;
 impl GitService for Git {
@@ -60,7 +60,7 @@ impl EditorHandoff for Editor {
 
 fn controller_in(dir: &Path) -> Controller {
     Controller::new(
-        // non-git: keeps the test focused on banner state
+        // non-git: keeps the test focused on remote-notice state
         common::resolved(dir.to_path_buf(), false),
         Baseline::Head,
         Components {
@@ -107,7 +107,7 @@ fn snapshot_from_spotlight_input(input: SpotlightInput) -> NoticeSnapshot {
 }
 
 #[test]
-fn initial_cached_version_shows_a_banner() {
+fn initial_cached_version_shows_a_remote_notice_status() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
@@ -116,25 +116,25 @@ fn initial_cached_version_shows_a_banner() {
     });
     assert!(
         c.view_state()
-            .update_banner
+            .remote_notice_status
             .is_some_and(|b| b.contains("9.9.9")),
         "a cached newer version is advertised on the first frame"
     );
 }
 
 #[test]
-fn no_update_means_no_banner() {
+fn no_update_means_no_remote_notice_status() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
         initial: snapshot(None, None),
         rx: None,
     });
-    assert!(c.view_state().update_banner.is_none());
+    assert!(c.view_state().remote_notice_status.is_none());
 }
 
 #[test]
-fn background_result_turns_the_banner_on() {
+fn background_result_turns_the_remote_notice_status_on() {
     let dir = TempDir::new();
     let (tx, rx) = mpsc::channel();
     let mut c = controller_in(dir.path());
@@ -143,7 +143,7 @@ fn background_result_turns_the_banner_on() {
         rx: Some(rx),
     });
     assert!(
-        c.view_state().update_banner.is_none(),
+        c.view_state().remote_notice_status.is_none(),
         "nothing until the check returns"
     );
 
@@ -152,15 +152,15 @@ fn background_result_turns_the_banner_on() {
     assert!(fx.redraw, "a fresh verdict triggers a repaint");
     assert!(
         c.view_state()
-            .update_banner
-            .is_some_and(|b| b.contains("2.0.0")),
-        "the banner now names the version the check found"
+            .remote_notice_status
+            .is_some_and(|status| status.contains("2.0.0")),
+        "the remote-notice status now names the version the check found"
     );
 }
 
 #[test]
-fn background_up_to_date_clears_a_stale_cached_banner() {
-    // A cached banner, then a successful check that finds nothing newer (`None`) → banner gone.
+fn background_up_to_date_clears_a_stale_cached_remote_notice_status() {
+    // A cached status, then a successful check that finds nothing newer (`None`) removes it.
     let dir = TempDir::new();
     let (tx, rx) = mpsc::channel();
     let mut c = controller_in(dir.path());
@@ -168,13 +168,13 @@ fn background_up_to_date_clears_a_stale_cached_banner() {
         initial: snapshot(Some(v(9, 9, 9)), None),
         rx: Some(rx),
     });
-    assert!(c.view_state().update_banner.is_some());
+    assert!(c.view_state().remote_notice_status.is_some());
 
     tx.send(snapshot(None, None)).unwrap();
     c.poll().expect("poll applies the result");
     assert!(
-        c.view_state().update_banner.is_none(),
-        "a successful 'up-to-date' check clears the stale cached banner"
+        c.view_state().remote_notice_status.is_none(),
+        "a successful 'up-to-date' check clears the stale cached remote-notice status"
     );
 }
 
@@ -193,8 +193,8 @@ fn background_notice_snapshot_replaces_release_and_spotlight_together() {
 
     assert!(
         c.view_state()
-            .update_banner
-            .is_some_and(|banner| banner.contains("2.0.0")),
+            .remote_notice_status
+            .is_some_and(|status| status.contains("2.0.0")),
         "the new snapshot replaces the detected release"
     );
     assert_eq!(
@@ -219,8 +219,8 @@ fn disconnected_notice_channel_preserves_last_snapshot() {
 
     assert!(
         c.view_state()
-            .update_banner
-            .is_some_and(|banner| banner.contains("9.9.9")),
+            .remote_notice_status
+            .is_some_and(|status| status.contains("9.9.9")),
         "a disconnected probe keeps the last detected release"
     );
     assert_eq!(
@@ -231,7 +231,7 @@ fn disconnected_notice_channel_preserves_last_snapshot() {
 }
 
 #[test]
-fn dismiss_hides_the_banner_for_the_session() {
+fn dismiss_hides_the_remote_notice_status_for_the_session() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
@@ -239,12 +239,15 @@ fn dismiss_hides_the_banner_for_the_session() {
         rx: None,
     });
     let fx = c.handle(Intent::DismissUpdate);
-    assert!(fx.redraw, "dismissing repaints to remove the banner");
     assert!(
-        c.view_state().update_banner.is_none(),
+        fx.redraw,
+        "dismissing repaints to remove the remote-notice status"
+    );
+    assert!(
+        c.view_state().remote_notice_status.is_none(),
         "session dismissal hides every notice form at once"
     );
-    // Dismiss again is inert (no banner to hide).
+    // Dismiss again is inert (no remote-notice status to hide).
     assert!(!c.handle(Intent::DismissUpdate).redraw);
 }
 
@@ -284,7 +287,7 @@ fn controller_projects_typed_notice_status_forms_with_default_labels() {
         let dir = TempDir::new();
         let mut controller = controller_in(dir.path());
         controller.set_update(UpdateState { initial, rx: None });
-        let actual = controller.view_state().update_banner;
+        let actual = controller.view_state().remote_notice_status;
         assert_eq!(actual.as_deref(), expected, "{name}");
         assert!(
             !actual.as_deref().is_some_and(
@@ -319,7 +322,7 @@ fn disabled_and_invalid_spotlights_project_no_status_line() {
     let dir = TempDir::new();
     let mut disabled = controller_in(dir.path());
     disabled.set_update(UpdateState::disabled());
-    assert_eq!(disabled.view_state().update_banner, None, "disabled");
+    assert_eq!(disabled.view_state().remote_notice_status, None, "disabled");
 
     for (name, input) in invalid {
         let dir = TempDir::new();
@@ -329,7 +332,7 @@ fn disabled_and_invalid_spotlights_project_no_status_line() {
             rx: None,
         });
         assert_eq!(
-            controller.view_state().update_banner,
+            controller.view_state().remote_notice_status,
             None,
             "{name}: only an accepted typed spotlight can reach the status line"
         );

@@ -103,9 +103,9 @@ pub struct ViewState {
     /// Hide the tree and let the content pane fill the whole frame (the `z` zoom toggle).
     /// Overrides the split — and the narrow-layout focus rule — to draw content only.
     pub zoomed: bool,
-    /// When `Some`, a one-row "update available" status line is drawn across the bottom of the
-    /// frame (the columns take the remaining rows). `None` ⇒ no footer, layout unchanged.
-    pub update_banner: Option<String>,
+    /// When `Some`, one remote-notice status row is drawn across the bottom of the frame (the
+    /// columns take the remaining rows). `None` reserves no row and leaves the layout unchanged.
+    pub remote_notice_status: Option<String>,
     /// When `Some`, the worktree picker overlay is drawn on top of the two columns (AC-1, AC-5).
     /// `None` ⇒ no overlay.
     pub picker: Option<PickerView>,
@@ -1197,25 +1197,24 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     (text.width, text.height)
 }
 
-/// Split the frame into the body (the two columns) and an optional one-row footer. The footer
-/// is present exactly when an update banner is to be shown (and the frame is tall enough to
-/// spare a row). Shared by [`draw`] and [`geometry`] so the drawn layout and the hit-test
-/// geometry carve the same body rect — a mouse click is never mapped against stale geometry.
-fn body_and_footer(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
-    if state.update_banner.is_none() || area.height < 2 {
+/// Split the frame into the body (the two columns) and an optional one-row remote-notice status.
+/// The status is present exactly when supplied (and the frame is tall enough to spare a row).
+/// Shared by [`draw`] and [`geometry`] so the drawn layout and the hit-test geometry carve the
+/// same body rect, a mouse click is never mapped against stale geometry.
+fn body_and_remote_notice_status(area: Rect, state: &ViewState) -> (Rect, Option<Rect>) {
+    if state.remote_notice_status.is_none() || area.height < 2 {
         return (area, None);
     }
     let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
     (parts[0], Some(parts[1]))
 }
 
-/// Draw the one-row "update available" status line. Reversed (theme-relative) so it reads
-/// as a status bar on any terminal palette — previously `Black`-on-`Cyan`, which ignored the theme
-/// and could be invisible on a cyan-heavy palette. Sanitized (defense-in-depth, AC-27) and clipped
-/// to its row by ratatui.
-fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
+/// Draw the supplied one-row remote-notice status. Reversed (theme-relative) so it reads as a
+/// status bar on any terminal palette, sanitized (defense-in-depth, AC-27) and clipped to its row
+/// by ratatui.
+fn draw_remote_notice_status(frame: &mut Frame, area: Rect, status: &str) {
     let line = Line::styled(
-        sanitize_control(banner),
+        sanitize_control(status),
         Style::new()
             .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
@@ -1223,19 +1222,22 @@ fn draw_update_footer(frame: &mut Frame, area: Rect, banner: &str) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Carve the optional one-row bottom prompt off the very bottom, then the optional update-banner
-/// footer off what remains (so the prompt sits below the banner). Reuses [`body_and_footer`] for
-/// the banner so a frame with NO prompt lays out exactly as before. Shared by [`draw`] and
-/// [`geometry`] so the body rect they use can never disagree.
-fn body_footer_prompt(area: Rect, state: &ViewState) -> (Rect, Option<Rect>, Option<Rect>) {
+/// Carve the optional one-row bottom prompt off the very bottom, then the optional remote-notice
+/// status off what remains (so the prompt sits below the status). Reuses
+/// [`body_and_remote_notice_status`] so a frame with no prompt lays out exactly as before. Shared
+/// by [`draw`] and [`geometry`] so the body rect they use can never disagree.
+fn body_remote_notice_status_prompt(
+    area: Rect,
+    state: &ViewState,
+) -> (Rect, Option<Rect>, Option<Rect>) {
     let (above_prompt, prompt) = if state.prompt.is_some() && area.height >= 2 {
         let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         (parts[0], Some(parts[1]))
     } else {
         (area, None)
     };
-    let (body, banner) = body_and_footer(above_prompt, state);
-    (body, banner, prompt)
+    let (body, remote_notice_status) = body_and_remote_notice_status(above_prompt, state);
+    (body, remote_notice_status, prompt)
 }
 
 /// Draw the one-row bottom prompt (`Go to line: 42` / later search). Reversed (theme-relative)
@@ -1404,7 +1406,7 @@ pub struct PaneGeometry {
 /// renders, so a click is never mapped against stale geometry. The interior of a bordered
 /// block is its area inset by one cell on each side (the title does not change it).
 pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
-    let (body, _footer, _prompt) = body_footer_prompt(area, state);
+    let (body, _remote_notice_status, _prompt) = body_remote_notice_status_prompt(area, state);
     let (tree, content, divider_x) = columns(body, state);
     let inner = |r: Rect| Block::bordered().inner(r);
 
@@ -1530,9 +1532,11 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 /// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
 /// geometry it is drawn into (a stale `state.width` cannot desync the layout).
 pub fn draw(frame: &mut Frame, state: &ViewState) -> (u16, u16) {
-    let (body, footer, prompt_area) = body_footer_prompt(frame.area(), state);
-    if let (Some(area), Some(banner)) = (footer, state.update_banner.as_deref()) {
-        draw_update_footer(frame, area, banner);
+    let (body, remote_notice_area, prompt_area) =
+        body_remote_notice_status_prompt(frame.area(), state);
+    if let (Some(area), Some(status)) = (remote_notice_area, state.remote_notice_status.as_deref())
+    {
+        draw_remote_notice_status(frame, area, status);
     }
     if let (Some(area), Some(prompt)) = (prompt_area, state.prompt.as_deref()) {
         draw_prompt_line(frame, area, prompt);

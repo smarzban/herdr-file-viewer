@@ -1678,7 +1678,7 @@ impl Controller {
             tree_max_cols: self.tree_max_cols,
             split_manual: self.split_manual,
             zoomed: self.zoomed,
-            update_banner: self.update_banner(),
+            remote_notice_status: self.remote_notice_status(),
             picker: self.picker_view(),
             finder: self.finder_view(),
             annotation_count: self.annotations.len(),
@@ -2799,7 +2799,7 @@ impl Controller {
     /// The remote-notice status text to display, or `None` when there is no visible notice or the
     /// session dismissed it. Labels come from the controller's already-resolved bindings, never
     /// from raw config or a per-frame resolver.
-    fn update_banner(&self) -> Option<String> {
+    fn remote_notice_status(&self) -> Option<String> {
         let details_key = self.bindings.status_hint_label(Intent::ShowHelp);
         let dismiss_key = self.bindings.status_hint_label(Intent::DismissUpdate);
         update::status::format_status(
@@ -3985,7 +3985,9 @@ mod tests {
             rx: None,
         });
 
-        let line = ctrl.update_banner().expect("the update status is visible");
+        let line = ctrl
+            .remote_notice_status()
+            .expect("the update status is visible");
         assert_eq!(
             line,
             "Update v9.9.9 available · F2 / F3 details · d dismiss"
@@ -4017,7 +4019,9 @@ mod tests {
             rx: None,
         });
 
-        let line = ctrl.update_banner().expect("the update status is visible");
+        let line = ctrl
+            .remote_notice_status()
+            .expect("the update status is visible");
         assert_eq!(
             line,
             "Update v9.9.9 available · (unbound) details · (unbound) dismiss"

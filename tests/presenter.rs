@@ -88,7 +88,7 @@ fn sample_state() -> ViewState {
         tree_max_cols: 1000,
         split_manual: false,
         zoomed: false,
-        update_banner: None,
+        remote_notice_status: None,
         picker: None,
         finder: None,
         annotation_count: 0,
@@ -1629,38 +1629,86 @@ fn geometry_is_single_column_when_narrow() {
 }
 
 #[test]
-fn update_banner_renders_as_a_bottom_status_line() {
-    // AC-U1: when behind, the bottom row carries the version + the install command.
+fn remote_notice_update_only_snapshot() {
     let mut state = sample_state();
-    state.update_banner = Some(
-        "↑ v1.1.0 available · herdr plugin install smarzban/herdr-file-viewer · u to dismiss"
-            .to_string(),
-    );
+    let status = "Update v1.1.0 available · ? details · u dismiss";
+    state.remote_notice_status = Some(status.to_string());
+
     let out = render(&state, 100, 24);
-    assert!(out.contains("v1.1.0 available"), "names the version\n{out}");
-    assert!(
-        out.contains("herdr plugin install smarzban/herdr-file-viewer"),
-        "shows the install command\n{out}"
+    assert_eq!(
+        out.lines().filter(|line| line.contains(status)).count(),
+        1,
+        "the supplied update status occupies exactly one row\n{out}"
     );
-    // The banner sits on the last interior row; the tree/content are still drawn above it.
     assert!(
-        out.contains("fn main()"),
-        "content still shows above the banner\n{out}"
+        !out.contains("install"),
+        "the Presenter does not add an install command\n{out}"
     );
-    let last = out.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("");
-    assert!(
-        last.contains("u to dismiss"),
-        "banner is the bottom line: {last:?}"
-    );
+    insta::assert_snapshot!("remote_notice_update_only", out);
 }
 
 #[test]
-fn no_banner_reserves_no_row_and_shows_nothing() {
-    // AC-U2: up-to-date users see no banner text at all.
-    let out = render(&sample_state(), 100, 24); // update_banner: None
+fn remote_notice_spotlight_only_snapshot() {
+    let mut state = sample_state();
+    let status = "Spotlight: Project Meteor · ? details · u dismiss";
+    state.remote_notice_status = Some(status.to_string());
+
+    let out = render(&state, 100, 24);
     assert!(
-        !out.contains("available"),
-        "no update text when up-to-date\n{out}"
+        out.contains("Spotlight: Project Meteor"),
+        "the accepted safe spotlight title is drawn verbatim\n{out}"
+    );
+    assert!(
+        !out.contains("install"),
+        "the Presenter does not add an install command\n{out}"
+    );
+
+    // The formatter supplies safe text, but the Presenter still cannot let a malformed value
+    // change terminal state.
+    state.remote_notice_status = Some(format!("{status}\u{1b}[2J"));
+    let hostile = render(&state, 100, 24);
+    assert!(
+        !hostile.contains(['\u{1b}', '\u{7}']),
+        "a control byte in the supplied status has no terminal effect\n{hostile}"
+    );
+
+    insta::assert_snapshot!("remote_notice_spotlight_only", out);
+}
+
+#[test]
+fn remote_notice_combined_snapshot_clips_in_a_narrow_frame() {
+    let mut state = sample_state();
+    state.focus = Focus::Content;
+    state.remote_notice_status = Some(
+        "Update v1.1.0 available · Spotlight: Project Meteor · ? details · u dismiss".to_string(),
+    );
+
+    let out = render(&state, 60, 20);
+    let last = out
+        .lines()
+        .last()
+        .expect("the rendered frame has a bottom row");
+    assert!(
+        last.contains("Spotlight: Project Meteor"),
+        "the combined row retains the accepted title before clipping\n{out}"
+    );
+    assert!(
+        !last.contains("dismiss"),
+        "the narrow row clips rather than wrapping into a second status row: {last:?}"
+    );
+    assert!(
+        !out.contains("install"),
+        "the Presenter does not add an install command\n{out}"
+    );
+    insta::assert_snapshot!("remote_notice_combined", out);
+}
+
+#[test]
+fn no_remote_notice_reserves_no_row_and_shows_nothing() {
+    let out = render(&sample_state(), 100, 24); // remote_notice_status: None
+    assert!(
+        !out.contains("available") && !out.contains("Spotlight:"),
+        "no remote-notice status text is drawn when absent\n{out}"
     );
 }
 
@@ -2404,9 +2452,9 @@ fn picker_overlay_snapshot() {
 }
 
 #[test]
-fn banner_carves_exactly_one_row_off_the_columns() {
-    // AC-U2: showing the banner shrinks the content interior by exactly one row vs. no banner,
-    // so mouse hit-testing (which reads the same geometry) stays correct.
+fn remote_notice_status_carves_exactly_one_row_off_the_columns() {
+    // The optional remote-notice status shrinks the content interior by exactly one row versus
+    // its absence, so mouse hit-testing (which reads the same geometry) stays correct.
     use herdr_file_viewer::presenter::geometry;
     use ratatui::layout::Rect;
     let area = Rect {
@@ -2417,15 +2465,16 @@ fn banner_carves_exactly_one_row_off_the_columns() {
     };
 
     let plain = sample_state();
-    let mut withbanner = sample_state();
-    withbanner.update_banner = Some("↑ v1.1.0 available · u to dismiss".to_string());
+    let mut with_notice = sample_state();
+    with_notice.remote_notice_status =
+        Some("Update v1.1.0 available · ? details · u dismiss".to_string());
 
     let h_plain = geometry(area, &plain).content_inner.unwrap().height;
-    let h_banner = geometry(area, &withbanner).content_inner.unwrap().height;
+    let h_notice = geometry(area, &with_notice).content_inner.unwrap().height;
     assert_eq!(
-        h_plain - h_banner,
+        h_plain - h_notice,
         1,
-        "the banner takes exactly one row from the body"
+        "the remote-notice status takes exactly one row from the body"
     );
 }
 
@@ -2847,7 +2896,7 @@ fn an_open_go_to_line_prompt_renders_a_bottom_line() {
     // AC-1: when a prompt is open (`ViewState.prompt = Some("Go to line: 42")`), the Presenter draws
     // a one-row line at the very bottom of the frame showing the prompt string.
     let mut st = sample_state();
-    st.update_banner = None; // no banner — prompt is the sole bottom row
+    st.remote_notice_status = None; // no remote notice, prompt is the sole bottom row
     st.prompt = Some("Go to line: 42".into());
     // Render at a known size; the bottom row (row h-1) must contain the prompt label + number.
     let (w, h) = (100u16, 24u16);
@@ -2870,7 +2919,7 @@ fn an_open_go_to_line_prompt_renders_a_bottom_line() {
 #[test]
 fn no_prompt_open_leaves_layout_unchanged() {
     // AC-1 (negative): with `prompt: None` the layout is byte-identical to the pre-prompt baseline —
-    // body_footer_prompt falls through to body_and_footer with no prompt row reserved.
+    // body_remote_notice_status_prompt falls through with no prompt row reserved.
     let st = sample_state(); // prompt: None (set by the sample_state helper)
     let out_no_prompt = render(&st, 100, 24);
     // The bottom row must NOT contain the go-to-line prompt label (no phantom prompt).

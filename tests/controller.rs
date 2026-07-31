@@ -10832,7 +10832,7 @@ fn controller_exposes_update_status_with_its_default_resolved_labels() {
 
     let line = controller
         .view_state()
-        .update_banner
+        .remote_notice_status
         .expect("a detected release projects one status line");
     assert_eq!(line, "Update v9.9.9 available · ? details · u dismiss");
     assert!(

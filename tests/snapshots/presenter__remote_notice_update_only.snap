@@ -1,0 +1,29 @@
+---
+source: tests/presenter.rs
+assertion_line: 1647
+expression: out
+---
+"┌r─────────────────────────────────────┐┌main.rs───────────────────────────────────────────────────┐"
+"│  ▾ src                               ││Showing first 5000 lines (truncated)                      │"
+"│M     main.rs                         ││delta not found — showing plain diff                      │"
+"│    ▾ inner                           ││fn main() {                                               │"
+"│A       added.rs                      ││    println!("hello");                                    │"
+"│    README.md                         ││}                                                         │"
+"│D   gone.txt                          ││                                                          │"
+"│?   scratch.log                       ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"│                                      ││                                                          │"
+"└──────────────────────────────────────┘└────────────────────────────────────────────────────? help┘"
+"Update v1.1.0 available · ? details · u dismiss                                                     "

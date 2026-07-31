@@ -1,0 +1,25 @@
+---
+source: tests/presenter.rs
+assertion_line: 1700
+expression: out
+---
+"┌main.rs───────────────────────────────────────────────────┐"
+"│Showing first 5000 lines (truncated)                      │"
+"│delta not found — showing plain diff                      │"
+"│fn main() {                                               │"
+"│    println!("hello");                                    │"
+"│}                                                         │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└────────────────────────────────────────────────────? help┘"
+"Update v1.1.0 available · Spotlight: Project Meteor · ? deta"
