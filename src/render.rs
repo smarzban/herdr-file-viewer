@@ -280,6 +280,34 @@ pub(crate) fn with_wrap_width(command: &[String], width: u16) -> Vec<String> {
     out
 }
 
+/// Render exactly one untrusted Markdown document for a Help section using the injected command.
+///
+/// `remaining` is supplied by the caller's aggregate deadline policy, not derived here. A zero
+/// budget bypasses process creation and returns the same safe plain-text timeout fallback that a
+/// late delegate would produce. Nonzero calls apply the existing width rewrite, output cap,
+/// fallback, kill/reap behavior, and terminal-control neutralizer through [`delegate`].
+pub fn render_markdown_section(
+    markdown_command: &[String],
+    document: &str,
+    width: u16,
+    remaining: Duration,
+) -> (Text<'static>, Option<String>) {
+    if remaining.is_zero() {
+        return (
+            to_text(document),
+            Some(RendererError::Timeout.notice(capability(ViewMode::RenderedMarkdown))),
+        );
+    }
+    let command = with_wrap_width(markdown_command, width);
+    delegate(
+        &command,
+        document,
+        ViewMode::RenderedMarkdown,
+        remaining,
+        None,
+    )
+}
+
 /// Substitute the `{name}` placeholder in a renderer command with the selected file name,
 /// so a stdin-fed renderer (e.g. `bat --file-name={name}`) can still infer the language —
 /// keeping the secure stdin design while enabling syntax highlighting (AC-10).

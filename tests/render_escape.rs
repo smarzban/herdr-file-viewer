@@ -1,7 +1,8 @@
 //! Content Renderer: escape-sequence neutralization (AC-27).
 
-use herdr_file_viewer::render::{neutralize_plain_text, to_text};
+use herdr_file_viewer::render::{neutralize_plain_text, render_markdown_section, to_text};
 use ratatui::text::Text;
+use std::time::Duration;
 
 fn flatten(text: &Text) -> String {
     text.lines
@@ -9,6 +10,53 @@ fn flatten(text: &Text) -> String {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect()
+}
+
+#[test]
+fn markdown_section_neutralizes_hostile_delegate_output_and_preserves_safe_sgr() {
+    // This is the actual section path, not a direct neutralizer test: the injected command returns
+    // untrusted stdin verbatim, then the shared T-2 boundary must make its output safe for ratatui.
+    let command = vec!["sh".into(), "-c".into(), "cat".into()];
+    let cases = [
+        ("cursor", "before\x1b[10;10Hafter", "beforeafter", false),
+        ("screen", "before\x1b[2Jafter", "beforeafter", false),
+        (
+            "OSC hyperlink",
+            "before\x1b]8;;https://evil.invalid/\x1b\\after",
+            "beforeafter",
+            false,
+        ),
+        (
+            "OSC clipboard",
+            "before\x1b]52;c;c3RvbGVu\x07after",
+            "beforeafter",
+            false,
+        ),
+        ("C0", "be\x07fore\rafter", "beforeafter", false),
+        ("C1", "be\u{9b}fore\u{85}after", "beforeafter", false),
+        ("malformed CSI", "before\x1b[31", "before", false),
+        ("safe SGR", "\x1b[34mBlue\x1b[0m", "Blue", true),
+    ];
+
+    for (name, hostile, expected, expect_color) in cases {
+        let (text, notice) = render_markdown_section(&command, hostile, 72, Duration::from_secs(1));
+        let rendered = flatten(&text);
+        assert!(notice.is_none(), "{name}: cat succeeds");
+        assert_eq!(rendered, expected, "{name}: hostile bytes are neutralized");
+        assert!(
+            !rendered.chars().any(char::is_control),
+            "{name}: no terminal control survives: {rendered:?}"
+        );
+        let has_color = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.style.fg.is_some());
+        assert_eq!(
+            has_color, expect_color,
+            "{name}: safe SGR styling is retained"
+        );
+    }
 }
 
 #[test]
