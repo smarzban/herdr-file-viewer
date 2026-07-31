@@ -9,6 +9,7 @@ pub mod cache;
 pub mod gateway;
 pub mod release_policy;
 pub mod spotlight_policy;
+pub mod status;
 pub mod version;
 
 pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source};
