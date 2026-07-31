@@ -4,6 +4,7 @@
 
 use crate::update::version::Version;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Minimum gap between network checks: 24h.
@@ -12,12 +13,164 @@ pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// The cache file name within the cache dir.
 const CACHE_FILE: &str = "update-check.json";
 
-/// The on-disk cache. Both fields tolerate absence (a fresh/upgraded cache).
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+/// The only schema version this build understands. Unversioned files are the legacy update cache
+/// and deserialize with this value so they can be extended in place.
+const CACHE_SCHEMA_VERSION: u8 = 1;
+
+/// The largest encoded cache accepted from or written to disk: 20 MiB.
+pub const CACHE_MAX_BYTES: usize = 20 * 1024 * 1024;
+
+/// Each retained source payload is capped independently. Three fields can hold exact source bytes:
+/// release details, the spotlight document, and its dismissed identity.
+const MAX_EXACT_FIELD_BYTES: usize = 1024 * 1024;
+const MAX_VERSION_BYTES: usize = 64;
+
+/// On-disk representation of immutable details retained for the exact release they describe.
+///
+/// This is deliberately distinct from the policy's in-memory `CachedReleaseDetails`: T-9 converts
+/// persisted strings at the persistence boundary, then the policy owns display eligibility.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PersistedReleaseDetails {
+    pub release: String,
+    pub details: String,
+}
+
+/// The on-disk remote-notice cache. The legacy update fields remain public for the compatibility
+/// loop; the newer fields retain advisory notice state only.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
+    #[serde(default = "current_schema_version")]
+    pub schema_version: u8,
     pub last_check_unix: u64,
     #[serde(default)]
     pub latest_seen: Option<String>,
+    #[serde(default)]
+    pub release_details: Option<PersistedReleaseDetails>,
+    #[serde(default)]
+    pub spotlight: Option<Vec<u8>>,
+    #[serde(default)]
+    pub spotlight_retrieved_at_unix: Option<u64>,
+    #[serde(default)]
+    pub dismissed_spotlight_identity: Option<Vec<u8>>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            schema_version: CACHE_SCHEMA_VERSION,
+            last_check_unix: 0,
+            latest_seen: None,
+            release_details: None,
+            spotlight: None,
+            spotlight_retrieved_at_unix: None,
+            dismissed_spotlight_identity: None,
+        }
+    }
+}
+
+fn current_schema_version() -> u8 {
+    CACHE_SCHEMA_VERSION
+}
+
+/// A narrow cache update. Each variant changes only the state implied by its completed intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheDelta {
+    /// A successful release check. Changing the detected release invalidates its old details.
+    RefreshRelease {
+        checked_at_unix: u64,
+        detected_release: Option<String>,
+    },
+    /// Successful immutable release details for the exact currently detected release.
+    StoreReleaseDetails { release: String, details: String },
+    /// A successful spotlight retrieval with the exact accepted document.
+    RefreshSpotlight {
+        spotlight: Vec<u8>,
+        retrieved_at_unix: u64,
+    },
+    /// Dismiss the exact currently cached spotlight identity.
+    DismissSpotlight { identity: Vec<u8> },
+    /// A conclusive withdrawal, which clears content but remains fresh at this retrieval time.
+    WithdrawSpotlight { retrieved_at_unix: u64 },
+}
+
+impl Cache {
+    /// Apply one intent-owned delta without projecting eligibility, freshness, or UI state.
+    pub fn apply(&mut self, delta: CacheDelta) {
+        match delta {
+            CacheDelta::RefreshRelease {
+                checked_at_unix,
+                detected_release,
+            } => {
+                if detected_release
+                    .as_ref()
+                    .is_some_and(|release| release.len() > MAX_VERSION_BYTES)
+                {
+                    return;
+                }
+                if self.latest_seen != detected_release {
+                    self.release_details = None;
+                }
+                self.last_check_unix = checked_at_unix;
+                self.latest_seen = detected_release;
+            }
+            CacheDelta::StoreReleaseDetails { release, details } => {
+                if release.len() > MAX_VERSION_BYTES
+                    || details.len() > MAX_EXACT_FIELD_BYTES
+                    || self.latest_seen.as_deref() != Some(release.as_str())
+                {
+                    return;
+                }
+                self.release_details = Some(PersistedReleaseDetails { release, details });
+            }
+            CacheDelta::RefreshSpotlight {
+                spotlight,
+                retrieved_at_unix,
+            } => {
+                if spotlight.len() > MAX_EXACT_FIELD_BYTES {
+                    return;
+                }
+                if self.dismissed_spotlight_identity.as_deref() != Some(spotlight.as_slice()) {
+                    self.dismissed_spotlight_identity = None;
+                }
+                self.spotlight = Some(spotlight);
+                self.spotlight_retrieved_at_unix = Some(retrieved_at_unix);
+            }
+            CacheDelta::DismissSpotlight { identity } => {
+                if identity.len() > MAX_EXACT_FIELD_BYTES
+                    || self.spotlight.as_deref() != Some(identity.as_slice())
+                {
+                    return;
+                }
+                self.dismissed_spotlight_identity = Some(identity);
+            }
+            CacheDelta::WithdrawSpotlight { retrieved_at_unix } => {
+                self.spotlight = None;
+                self.spotlight_retrieved_at_unix = Some(retrieved_at_unix);
+            }
+        }
+    }
+
+    /// Validate untrusted persisted state before it can enter the advisory cache.
+    fn is_valid(&self) -> bool {
+        self.schema_version == CACHE_SCHEMA_VERSION
+            && self
+                .latest_seen
+                .as_ref()
+                .is_none_or(|release| release.len() <= MAX_VERSION_BYTES)
+            && self.release_details.as_ref().is_none_or(|details| {
+                details.release.len() <= MAX_VERSION_BYTES
+                    && details.details.len() <= MAX_EXACT_FIELD_BYTES
+                    && self.latest_seen.as_deref() == Some(details.release.as_str())
+            })
+            && self
+                .spotlight
+                .as_ref()
+                .is_none_or(|spotlight| spotlight.len() <= MAX_EXACT_FIELD_BYTES)
+            && self
+                .dismissed_spotlight_identity
+                .as_ref()
+                .is_none_or(|identity| identity.len() <= MAX_EXACT_FIELD_BYTES)
+    }
 }
 
 /// Whether enough time has elapsed since `last_check_unix` to hit the network again. A
@@ -27,15 +180,18 @@ pub fn should_check(now_unix: u64, last_check_unix: u64) -> bool {
     last_check_unix > now_unix || now_unix - last_check_unix >= CHECK_INTERVAL_SECS
 }
 
-/// The cache to persist after a **successful** probe: the check time plus the latest version
-/// seen (`None` when the repo has no stable tags — which clears any stale cached banner). A
-/// *failed* probe must not call this: the cache is left untouched so the check retries next
+/// The cache to persist after a **successful** probe: refresh the check time plus the latest
+/// version seen (`None` when the repo has no stable tags — which clears any stale cached banner).
+/// A *failed* probe must not call this: the cache is left untouched so the check retries next
 /// launch rather than being suppressed for 24h by a transient network blip.
-pub fn next_cache(now_unix: u64, latest: Option<Version>) -> Cache {
-    Cache {
-        last_check_unix: now_unix,
-        latest_seen: latest.map(|v| v.to_string()),
-    }
+///
+/// This compatibility writer preserves remote-notice state until T-10 replaces the legacy loop.
+pub fn next_cache(mut cache: Cache, now_unix: u64, latest: Option<Version>) -> Cache {
+    cache.apply(CacheDelta::RefreshRelease {
+        checked_at_unix: now_unix,
+        detected_release: latest.map(|v| v.to_string()),
+    });
+    cache
 }
 
 /// The plugin's cache directory: `$XDG_CACHE_HOME/herdr-file-viewer`, else
@@ -72,10 +228,25 @@ fn cache_base_dir(get_env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Optio
         .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// Read and parse the cache; `None` (→ "check now") on any absence/error.
+/// Read and parse the cache; `None` (→ "check now") on any absence, invalid state, or error.
+///
+/// The raw read stops after the encoded cap plus one byte, before `serde_json` can allocate for
+/// parsed values. A cache at the cap is valid, while the extra byte proves an oversized file.
 pub fn load(dir: &Path) -> Option<Cache> {
-    let raw = std::fs::read_to_string(dir.join(CACHE_FILE)).ok()?;
-    serde_json::from_str(&raw).ok()
+    load_bounded(dir, CACHE_MAX_BYTES)
+}
+
+fn load_bounded(dir: &Path, max_bytes: usize) -> Option<Cache> {
+    let file = std::fs::File::open(dir.join(CACHE_FILE)).ok()?;
+    let mut raw = Vec::new();
+    file.take((max_bytes + 1) as u64)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() > max_bytes {
+        return None;
+    }
+    let cache: Cache = serde_json::from_slice(&raw).ok()?;
+    cache.is_valid().then_some(cache)
 }
 
 /// Best-effort persist; creates `dir` if needed. Any error is ignored — a cache we cannot
@@ -86,12 +257,23 @@ pub fn load(dir: &Path) -> Option<Cache> {
 /// truncating write could be read torn; with rename each reader sees either the old or the new
 /// complete file (last writer wins, never a partial one).
 pub fn store(dir: &Path, cache: &Cache) {
+    store_bounded(dir, cache, CACHE_MAX_BYTES);
+}
+
+fn store_bounded(dir: &Path, cache: &Cache, max_bytes: usize) {
+    if !cache.is_valid() {
+        return;
+    }
+    let Ok(json) = serde_json::to_vec(cache) else {
+        return;
+    };
+    if json.len() > max_bytes {
+        return;
+    }
     let _ = std::fs::create_dir_all(dir);
-    if let Ok(json) = serde_json::to_string(cache) {
-        let tmp = dir.join(format!("{CACHE_FILE}.{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, dir.join(CACHE_FILE));
-        }
+    let tmp = dir.join(format!("{CACHE_FILE}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(CACHE_FILE));
     }
 }
 
@@ -202,22 +384,24 @@ mod tests {
     #[test]
     fn next_cache_records_the_check_time_and_version() {
         // A successful probe with a version → record the time and the version.
-        let c = next_cache(500, Version::parse("1.2.0"));
+        let c = next_cache(Cache::default(), 500, Version::parse("1.2.0"));
         assert_eq!(
             c,
             Cache {
                 last_check_unix: 500,
-                latest_seen: Some("1.2.0".into())
+                latest_seen: Some("1.2.0".into()),
+                ..Cache::default()
             }
         );
         // A successful probe that found no stable tag → latest_seen cleared (clears a stale
         // cached banner). (A *failed* probe never reaches here — the caller leaves the cache.)
-        let c = next_cache(500, None);
+        let c = next_cache(Cache::default(), 500, None);
         assert_eq!(
             c,
             Cache {
                 last_check_unix: 500,
-                latest_seen: None
+                latest_seen: None,
+                ..Cache::default()
             }
         );
     }
@@ -239,6 +423,7 @@ mod tests {
         let c = Cache {
             last_check_unix: 42,
             latest_seen: Some("1.1.0".into()),
+            ..Cache::default()
         };
         store(&dir, &c);
         assert_eq!(load(&dir), Some(c));
@@ -246,12 +431,355 @@ mod tests {
     }
 
     #[test]
-    fn load_is_none_for_missing_or_corrupt_cache() {
+    fn legacy_cache_migrates_known_fields_with_notice_fields_absent() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(CACHE_FILE),
+            r#"{"last_check_unix":42,"latest_seen":"1.2.0"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load(&dir),
+            Some(Cache {
+                last_check_unix: 42,
+                latest_seen: Some("1.2.0".into()),
+                ..Cache::default()
+            }),
+            "the unversioned update cache retains its known fields and starts with no notices"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_notice_cache_round_trips_complete_state() {
+        let dir = tmp();
+        let cache = Cache {
+            last_check_unix: 42,
+            latest_seen: Some("1.2.0".into()),
+            release_details: Some(PersistedReleaseDetails {
+                release: "1.2.0".into(),
+                details: "## [1.2.0]\n- Exact cached details\n".into(),
+            }),
+            spotlight: Some(vec![0, b'#', 0xff, b'\n']),
+            spotlight_retrieved_at_unix: Some(99),
+            dismissed_spotlight_identity: Some(vec![0, 0xff]),
+            ..Cache::default()
+        };
+
+        store(&dir, &cache);
+        assert_eq!(
+            load(&dir),
+            Some(cache),
+            "every persisted remote-notice field retains its exact value"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_deltas_change_only_their_owned_notice_state() {
+        let first = b"# First\nold body\n".to_vec();
+        let replacement = b"# First\nnew body\n".to_vec();
+        let mut cache = Cache {
+            last_check_unix: 10,
+            latest_seen: Some("1.1.0".into()),
+            release_details: Some(PersistedReleaseDetails {
+                release: "1.1.0".into(),
+                details: "old details".into(),
+            }),
+            spotlight: Some(first.clone()),
+            spotlight_retrieved_at_unix: Some(20),
+            dismissed_spotlight_identity: Some(first),
+            ..Cache::default()
+        };
+
+        cache.apply(CacheDelta::RefreshRelease {
+            checked_at_unix: 30,
+            detected_release: Some("1.2.0".into()),
+        });
+        assert_eq!(cache.last_check_unix, 30);
+        assert_eq!(cache.latest_seen.as_deref(), Some("1.2.0"));
+        assert_eq!(
+            cache.release_details, None,
+            "old release details are untied"
+        );
+        assert_eq!(
+            cache.spotlight.as_deref(),
+            Some(b"# First\nold body\n".as_slice())
+        );
+        assert_eq!(
+            cache.dismissed_spotlight_identity.as_deref(),
+            Some(b"# First\nold body\n".as_slice()),
+            "a release check does not alter spotlight dismissal"
+        );
+
+        cache.apply(CacheDelta::StoreReleaseDetails {
+            release: "1.2.0".into(),
+            details: "new details".into(),
+        });
+        assert_eq!(
+            cache.release_details,
+            Some(PersistedReleaseDetails {
+                release: "1.2.0".into(),
+                details: "new details".into(),
+            })
+        );
+
+        cache.apply(CacheDelta::RefreshSpotlight {
+            spotlight: replacement.clone(),
+            retrieved_at_unix: 40,
+        });
+        assert_eq!(cache.spotlight, Some(replacement.clone()));
+        assert_eq!(cache.spotlight_retrieved_at_unix, Some(40));
+        assert_eq!(
+            cache.dismissed_spotlight_identity, None,
+            "a different exact document clears the old dismissal"
+        );
+
+        cache.apply(CacheDelta::DismissSpotlight {
+            identity: replacement.clone(),
+        });
+        cache.apply(CacheDelta::WithdrawSpotlight {
+            retrieved_at_unix: 50,
+        });
+        assert_eq!(cache.spotlight, None);
+        assert_eq!(cache.spotlight_retrieved_at_unix, Some(50));
+        assert_eq!(cache.dismissed_spotlight_identity, Some(replacement));
+    }
+
+    #[test]
+    fn cache_delta_rejects_an_overlong_detected_release() {
+        let mut cache = Cache {
+            last_check_unix: 10,
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        let before = cache.clone();
+
+        cache.apply(CacheDelta::RefreshRelease {
+            checked_at_unix: 20,
+            detected_release: Some("x".repeat(MAX_VERSION_BYTES + 1)),
+        });
+
+        assert_eq!(
+            cache, before,
+            "invalid release input must not advance the throttle"
+        );
+    }
+
+    #[test]
+    fn cache_delta_rejects_invalid_release_details() {
+        let mut cache = Cache {
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        let before = cache.clone();
+
+        for delta in [
+            CacheDelta::StoreReleaseDetails {
+                release: "1.3.0".into(),
+                details: "wrong detected release".into(),
+            },
+            CacheDelta::StoreReleaseDetails {
+                release: "x".repeat(MAX_VERSION_BYTES + 1),
+                details: "overlong release".into(),
+            },
+            CacheDelta::StoreReleaseDetails {
+                release: "1.2.0".into(),
+                details: "x".repeat(MAX_EXACT_FIELD_BYTES + 1),
+            },
+        ] {
+            cache.apply(delta);
+            assert_eq!(cache, before, "invalid release details must be a no-op");
+        }
+    }
+
+    #[test]
+    fn cache_delta_rejects_an_oversized_spotlight() {
+        let original = b"# Original\nbody\n".to_vec();
+        let mut cache = Cache {
+            spotlight: Some(original.clone()),
+            spotlight_retrieved_at_unix: Some(10),
+            dismissed_spotlight_identity: Some(original),
+            ..Cache::default()
+        };
+        let before = cache.clone();
+
+        cache.apply(CacheDelta::RefreshSpotlight {
+            spotlight: vec![b'x'; MAX_EXACT_FIELD_BYTES + 1],
+            retrieved_at_unix: 20,
+        });
+
+        assert_eq!(
+            cache, before,
+            "an oversized spotlight must not clear a dismissal"
+        );
+    }
+
+    #[test]
+    fn cache_delta_rejects_an_invalid_spotlight_dismissal() {
+        let spotlight = b"# Current\nbody\n".to_vec();
+        let mut cache = Cache {
+            spotlight: Some(spotlight),
+            ..Cache::default()
+        };
+        let before = cache.clone();
+
+        for identity in [
+            b"# Different\nbody\n".to_vec(),
+            vec![b'x'; MAX_EXACT_FIELD_BYTES + 1],
+        ] {
+            cache.apply(CacheDelta::DismissSpotlight { identity });
+            assert_eq!(
+                cache, before,
+                "only the exact bounded spotlight may be dismissed"
+            );
+        }
+    }
+
+    #[test]
+    fn load_rejects_semantically_invalid_persisted_notice_state() {
+        let overlong_version = "x".repeat(MAX_VERSION_BYTES + 1);
+        let overlong_payload = "x".repeat(MAX_EXACT_FIELD_BYTES + 1);
+        let cases = [
+            (
+                "overlong detected release",
+                Cache {
+                    latest_seen: Some(overlong_version.clone()),
+                    ..Cache::default()
+                },
+            ),
+            (
+                "untied release details",
+                Cache {
+                    latest_seen: Some("1.2.0".into()),
+                    release_details: Some(PersistedReleaseDetails {
+                        release: "1.3.0".into(),
+                        details: "wrong release".into(),
+                    }),
+                    ..Cache::default()
+                },
+            ),
+            (
+                "oversized release details",
+                Cache {
+                    latest_seen: Some("1.2.0".into()),
+                    release_details: Some(PersistedReleaseDetails {
+                        release: "1.2.0".into(),
+                        details: overlong_payload.clone(),
+                    }),
+                    ..Cache::default()
+                },
+            ),
+            (
+                "oversized spotlight",
+                Cache {
+                    spotlight: Some(overlong_payload.as_bytes().to_vec()),
+                    ..Cache::default()
+                },
+            ),
+            (
+                "oversized dismissed identity",
+                Cache {
+                    dismissed_spotlight_identity: Some(overlong_payload.into_bytes()),
+                    ..Cache::default()
+                },
+            ),
+        ];
+
+        for (name, cache) in cases {
+            let dir = tmp();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(CACHE_FILE), serde_json::to_vec(&cache).unwrap()).unwrap();
+            assert_eq!(load(&dir), None, "{name} must degrade to empty");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn store_rejects_invalid_and_over_cap_cache_state() {
+        let invalid_dir = tmp();
+        let invalid = Cache {
+            latest_seen: Some("x".repeat(MAX_VERSION_BYTES + 1)),
+            ..Cache::default()
+        };
+        store(&invalid_dir, &invalid);
+        assert!(
+            !invalid_dir.join(CACHE_FILE).exists(),
+            "invalid state must never be persisted"
+        );
+
+        let cap_dir = tmp();
+        let valid = Cache::default();
+        let encoded_len = serde_json::to_vec(&valid).unwrap().len();
+        store_bounded(&cap_dir, &valid, encoded_len - 1);
+        assert!(
+            !cap_dir.join(CACHE_FILE).exists(),
+            "an encoded cache over the write cap must not be persisted"
+        );
+    }
+
+    #[test]
+    fn load_accepts_a_valid_cache_at_the_exact_encoded_cap() {
+        assert_eq!(
+            CACHE_MAX_BYTES,
+            20 * 1024 * 1024,
+            "the production cap is 20 MiB"
+        );
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = Cache {
+            last_check_unix: 42,
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        let encoded = serde_json::to_vec(&cache).unwrap();
+        std::fs::write(dir.join(CACHE_FILE), &encoded).unwrap();
+
+        assert_eq!(load_bounded(&dir, encoded.len()), Some(cache));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_a_valid_cache_one_byte_past_the_encoded_cap() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = Cache {
+            last_check_unix: 42,
+            latest_seen: Some("1.2.0".into()),
+            ..Cache::default()
+        };
+        let mut encoded = serde_json::to_vec(&cache).unwrap();
+        let cap = encoded.len();
+        encoded.push(b' ');
+        std::fs::write(dir.join(CACHE_FILE), encoded).unwrap();
+
+        assert_eq!(
+            load_bounded(&dir, cap),
+            None,
+            "oversized cache degrades to empty"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_is_none_for_missing_corrupt_unknown_version_or_truncated_cache() {
         let dir = tmp();
         assert_eq!(load(&dir), None, "missing dir → None (check now)");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(CACHE_FILE), "{ not json").unwrap();
-        assert_eq!(load(&dir), None, "corrupt → None, never a panic");
+
+        for (name, json) in [
+            ("corrupt", "{ not json"),
+            (
+                "unknown schema version",
+                r#"{"schema_version":99,"last_check_unix":42,"latest_seen":"1.2.0"}"#,
+            ),
+            ("truncated", r#"{"schema_version":1,"last_check_unix":42"#),
+        ] {
+            std::fs::write(dir.join(CACHE_FILE), json).unwrap();
+            assert_eq!(load(&dir), None, "{name} → None, never a panic");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

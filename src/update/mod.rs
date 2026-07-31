@@ -257,7 +257,10 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         if let Ok(stdout) = run(&repo_url) {
             let latest = latest_stable(&stdout);
             if let Some(dir) = &cache_dir {
-                cache::store(dir, &next_cache(now_unix, latest));
+                cache::store(
+                    dir,
+                    &next_cache(cache.unwrap_or_default(), now_unix, latest),
+                );
             }
             let _ = tx.send(latest.and_then(newer_than_current));
         }
@@ -456,6 +459,7 @@ mod tests {
         let cache = Some(Cache {
             last_check_unix: 1_000,
             latest_seen: Some(newer.clone()),
+            ..Cache::default()
         });
         let state = start_with(StartDeps {
             disabled: false,
@@ -482,6 +486,7 @@ mod tests {
         let cache = Some(Cache {
             last_check_unix: 1_000,
             latest_seen: Some(newer.clone()),
+            ..Cache::default()
         });
 
         // Fresh cache (within 24h), behind → show banner from cache, no network.
@@ -509,6 +514,7 @@ mod tests {
         let upcache = Some(Cache {
             last_check_unix: 0,
             latest_seen: Some(same),
+            ..Cache::default()
         });
         assert_eq!(decide(false, 0, &upcache).initial, None);
     }
@@ -520,10 +526,16 @@ mod tests {
         let stdout = format!("aaa\trefs/tags/v{newer}.0.0\n");
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let spotlight = b"# Project\nexact spotlight bytes\n".to_vec();
         let state = start_with(StartDeps {
             disabled: false,
             now_unix: CHECK_INTERVAL_SECS * 10, // force should_check
-            cache: None,
+            cache: Some(Cache {
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(1),
+                dismissed_spotlight_identity: Some(spotlight.clone()),
+                ..Cache::default()
+            }),
             cache_dir: Some(dir.clone()),
             repo_url: "fake-url".to_string(),
             run: Box::new(move |_url| Ok(stdout.clone())),
@@ -533,8 +545,14 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("result arrives");
         assert_eq!(got, Version::parse(&format!("{newer}.0.0")));
-        // And the cache was written so a re-run wouldn't re-probe.
-        assert!(cache::load(&dir).is_some());
+        let persisted = cache::load(&dir).expect("successful probe writes the cache");
+        assert_eq!(
+            persisted.spotlight.as_deref(),
+            Some(spotlight.as_slice()),
+            "the compatibility writer must not discard cached content before T-10 replaces it"
+        );
+        assert_eq!(persisted.spotlight_retrieved_at_unix, Some(1));
+        assert_eq!(persisted.dismissed_spotlight_identity, Some(spotlight));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
