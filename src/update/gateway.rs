@@ -1,8 +1,8 @@
 //! The isolated public-source boundary for release discovery.
 //!
-//! This module is the only place the update feature asks Git about the official repository. It
-//! accepts a single absolute deadline, exposes no raw command output, and turns every source or
-//! process failure into [`Source::Unavailable`].
+//! This module is the only place the update feature asks the official repository for release state
+//! or documents. It accepts a single absolute deadline, exposes no raw source output, and turns
+//! every source or process failure into [`Source::Unavailable`].
 
 use super::{Version, repo_url};
 use std::collections::BTreeMap;
@@ -21,6 +21,17 @@ pub const DISCOVERY_MAX_BYTES: usize = 256 * 1024;
 
 /// The hard wall-clock budget for one production discovery attempt.
 pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum bytes retained from either immutable remote document.
+///
+/// The reader accepts at most one byte beyond this cap, so an exact 1 MiB document succeeds while
+/// an oversized source becomes unavailable before unbounded allocation.
+pub const DOCUMENT_MAX_BYTES: usize = 1024 * 1024;
+
+/// The compiled raw-content authority for documents in the official repository.
+const DOCUMENT_AUTHORITY: &str = "https://raw.githubusercontent.com";
+const CHANGELOG_PATH: &str = "CHANGELOG.md";
+const SPOTLIGHT_PATH: &str = "project-spotlight.md";
 
 /// The terminal source outcome exposed by the official-repository gateway.
 ///
@@ -129,6 +140,89 @@ pub fn discover_release_state(deadline: Instant) -> Source<ReleaseState> {
     let result = discover_with_command(ls_remote_command(&run_dir), deadline);
     let _ = std::fs::remove_dir_all(&run_dir);
     result
+}
+
+/// Bounded retrieval of immutable documents from the official repository.
+///
+/// The public constructor fixes the raw-content authority at compile time. No configuration or
+/// environment input can select a host, proxy, redirect destination, or transport security mode.
+pub struct DocumentGateway {
+    authority: String,
+    https_only: bool,
+}
+
+impl DocumentGateway {
+    /// Construct a gateway for the fixed official raw-content authority.
+    pub fn new() -> Self {
+        Self {
+            authority: DOCUMENT_AUTHORITY.to_owned(),
+            https_only: true,
+        }
+    }
+
+    /// Retrieve the changelog at the immutable commit resolved for `release`.
+    pub fn changelog(&self, release: &ReleaseTag, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        self.document(release.object_id.as_str(), CHANGELOG_PATH, deadline)
+    }
+
+    /// Retrieve the project spotlight at the immutable commit discovered for `HEAD`.
+    pub fn spotlight(&self, state: &ReleaseState, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        self.document(state.head_object_id.as_str(), SPOTLIGHT_PATH, deadline)
+    }
+
+    fn document(&self, object_id: &str, path: &str, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        let url = format!(
+            "{}/{}/{object_id}/{path}",
+            self.authority,
+            super::repo_slug()
+        );
+        let timeout = remaining(deadline);
+        if timeout.is_zero() {
+            return Source::Unavailable;
+        }
+        let mut response = match self.agent(timeout).get(&url).call() {
+            Ok(response) => response,
+            Err(_) => return Source::Unavailable,
+        };
+        match response.status().as_u16() {
+            404 => Source::Available(None),
+            200 => response
+                .body_mut()
+                .with_config()
+                .limit(DOCUMENT_MAX_BYTES as u64 + 1)
+                .read_to_vec()
+                .ok()
+                .filter(|bytes| bytes.len() <= DOCUMENT_MAX_BYTES)
+                .map(|bytes| Source::Available(Some(bytes)))
+                .unwrap_or(Source::Unavailable),
+            _ => Source::Unavailable,
+        }
+    }
+
+    fn agent(&self, timeout: Duration) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .https_only(self.https_only)
+            .proxy(None)
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .timeout_global(Some(timeout))
+            .build()
+            .into()
+    }
+
+    #[cfg(test)]
+    fn with_test_authority(authority: &str) -> Self {
+        Self {
+            authority: authority.trim_end_matches('/').to_owned(),
+            https_only: false,
+        }
+    }
+}
+
+impl Default for DocumentGateway {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Git's HTTPS low-speed timeout complements the single outer deadline by terminating a stalled
@@ -506,7 +600,155 @@ static PROBE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::{Duration, Instant};
+
+    enum LocalResponse {
+        Complete {
+            status: u16,
+            body: Vec<u8>,
+            delay: Duration,
+        },
+        Redirect {
+            location: String,
+        },
+        Malformed,
+        Stall,
+    }
+
+    struct LocalServer {
+        authority: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl LocalServer {
+        fn start(responses: Vec<LocalResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("local server binds");
+            listener
+                .set_nonblocking(true)
+                .expect("local server becomes nonblocking");
+            let authority = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let captured_requests = Arc::clone(&requests);
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::clone(&stop);
+            let worker = thread::spawn(move || {
+                for response in responses {
+                    let mut stream = loop {
+                        if stopped.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                stream
+                                    .set_nonblocking(false)
+                                    .expect("accepted stream blocks");
+                                break stream;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(_) => return,
+                        }
+                    };
+                    let mut request = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while stream.read(&mut byte).unwrap_or(0) == 1 {
+                        request.push(byte[0]);
+                        if request.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let path = std::str::from_utf8(&request)
+                        .ok()
+                        .and_then(|request| request.lines().next())
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("<malformed-request>");
+                    captured_requests.lock().unwrap().push(path.to_owned());
+
+                    match response {
+                        LocalResponse::Complete {
+                            status,
+                            body,
+                            delay,
+                        } => {
+                            thread::sleep(delay);
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 {status} test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(&body);
+                        }
+                        LocalResponse::Redirect { location } => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 302 test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            );
+                        }
+                        LocalResponse::Malformed => {
+                            let _ = stream.write_all(b"not a valid HTTP response\r\n");
+                        }
+                        LocalResponse::Stall => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 200 test\r\nContent-Length: 4\r\nConnection: close\r\n\r\n",
+                            );
+                            let _ = stream.flush();
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(10)));
+                            while !stopped.load(Ordering::Relaxed) {
+                                let _ = stream.read(&mut byte);
+                            }
+                        }
+                    }
+                }
+            });
+            Self {
+                authority,
+                requests,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for LocalServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn test_release() -> ReleaseTag {
+        ReleaseTag::new(
+            Version::parse("9.8.7").unwrap(),
+            ObjectId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+        )
+    }
+
+    fn test_state() -> ReleaseState {
+        ReleaseState::new(
+            RemoteRef::parse("refs/heads/alternate").unwrap(),
+            ObjectId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn test_gateway(server: &LocalServer) -> DocumentGateway {
+        DocumentGateway::with_test_authority(&server.authority)
+    }
 
     #[test]
     fn parser_pins_symbolic_head_object_id_and_annotated_tag_peel() {
@@ -922,6 +1164,232 @@ mod tests {
             "the transient Git execution directory is never group- or world-accessible"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn document_gateway_accepts_an_exact_one_mib_changelog_body() {
+        let server = LocalServer::start(vec![LocalResponse::Complete {
+            status: 200,
+            body: vec![b'c'; DOCUMENT_MAX_BYTES],
+            delay: Duration::ZERO,
+        }]);
+
+        assert_eq!(
+            test_gateway(&server)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
+            Source::Available(Some(vec![b'c'; DOCUMENT_MAX_BYTES]))
+        );
+    }
+
+    #[test]
+    fn document_gateway_rejects_a_one_mib_plus_one_changelog_body() {
+        let server = LocalServer::start(vec![LocalResponse::Complete {
+            status: 200,
+            body: vec![b'c'; DOCUMENT_MAX_BYTES + 1],
+            delay: Duration::ZERO,
+        }]);
+
+        assert_eq!(
+            test_gateway(&server)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
+            Source::Unavailable
+        );
+    }
+
+    #[test]
+    fn document_gateway_accepts_an_exact_one_mib_spotlight_body() {
+        let server = LocalServer::start(vec![LocalResponse::Complete {
+            status: 200,
+            body: vec![b's'; DOCUMENT_MAX_BYTES],
+            delay: Duration::ZERO,
+        }]);
+
+        assert_eq!(
+            test_gateway(&server).spotlight(&test_state(), Instant::now() + Duration::from_secs(1)),
+            Source::Available(Some(vec![b's'; DOCUMENT_MAX_BYTES]))
+        );
+    }
+
+    #[test]
+    fn document_gateway_rejects_a_one_mib_plus_one_spotlight_body() {
+        let server = LocalServer::start(vec![LocalResponse::Complete {
+            status: 200,
+            body: vec![b's'; DOCUMENT_MAX_BYTES + 1],
+            delay: Duration::ZERO,
+        }]);
+
+        assert_eq!(
+            test_gateway(&server).spotlight(&test_state(), Instant::now() + Duration::from_secs(1)),
+            Source::Unavailable
+        );
+    }
+
+    #[test]
+    fn document_gateway_uses_exact_detected_and_discovered_identities_and_official_spotlight_path()
+    {
+        let server = LocalServer::start(vec![
+            LocalResponse::Complete {
+                status: 200,
+                body: b"release details".to_vec(),
+                delay: Duration::ZERO,
+            },
+            LocalResponse::Complete {
+                status: 200,
+                body: b"project spotlight".to_vec(),
+                delay: Duration::ZERO,
+            },
+        ]);
+        let gateway = test_gateway(&server);
+        let release = test_release();
+        let state = test_state();
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(
+            gateway.changelog(&release, deadline),
+            Source::Available(Some(b"release details".to_vec()))
+        );
+        assert_eq!(
+            gateway.spotlight(&state, deadline),
+            Source::Available(Some(b"project spotlight".to_vec()))
+        );
+        assert_eq!(
+            server.requests(),
+            vec![
+                "/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md",
+                "/smarzban/herdr-file-viewer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/project-spotlight.md",
+            ],
+            "document URLs pin object IDs and request the official project-spotlight.md path, never alternate refs or spellings"
+        );
+    }
+
+    #[test]
+    fn document_gateway_treats_only_404_as_absent() {
+        let server = LocalServer::start(vec![
+            LocalResponse::Complete {
+                status: 404,
+                body: Vec::new(),
+                delay: Duration::ZERO,
+            },
+            LocalResponse::Complete {
+                status: 500,
+                body: b"server error".to_vec(),
+                delay: Duration::ZERO,
+            },
+        ]);
+        let gateway = test_gateway(&server);
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(
+            gateway.changelog(&test_release(), deadline),
+            Source::Available(None),
+            "the changelog alone treats a 404 as absent"
+        );
+        assert_eq!(
+            gateway.spotlight(&test_state(), deadline),
+            Source::Unavailable,
+            "all non-404 statuses are unavailable"
+        );
+    }
+
+    #[test]
+    fn document_gateway_rejects_redirects_without_following_them() {
+        let server = LocalServer::start(vec![
+            LocalResponse::Redirect {
+                location: "/redirect-target".to_owned(),
+            },
+            LocalResponse::Complete {
+                status: 200,
+                body: b"must not follow".to_vec(),
+                delay: Duration::ZERO,
+            },
+        ]);
+
+        assert_eq!(
+            test_gateway(&server)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
+            Source::Unavailable
+        );
+        assert_eq!(
+            server.requests(),
+            vec![
+                "/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md"
+            ],
+            "a redirect response must not cause a second request"
+        );
+    }
+
+    #[test]
+    fn document_gateway_maps_malformed_responses_to_unavailable() {
+        let server = LocalServer::start(vec![LocalResponse::Malformed]);
+
+        assert_eq!(
+            test_gateway(&server)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
+            Source::Unavailable
+        );
+    }
+
+    #[test]
+    fn document_gateway_stalled_body_respects_its_deadline() {
+        let server = LocalServer::start(vec![LocalResponse::Stall]);
+        let started = Instant::now();
+
+        assert_eq!(
+            test_gateway(&server).changelog(&test_release(), started + Duration::from_millis(50)),
+            Source::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a stalled body must not outlive its absolute deadline"
+        );
+    }
+
+    #[test]
+    fn document_gateway_uses_only_the_shared_deadline_remaining_for_sequential_requests() {
+        let server = LocalServer::start(vec![
+            LocalResponse::Complete {
+                status: 200,
+                body: b"first".to_vec(),
+                delay: Duration::from_millis(100),
+            },
+            LocalResponse::Stall,
+        ]);
+        let gateway = test_gateway(&server);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(250);
+
+        assert_eq!(
+            gateway.changelog(&test_release(), deadline),
+            Source::Available(Some(b"first".to_vec()))
+        );
+        assert_eq!(
+            gateway.spotlight(&test_state(), deadline),
+            Source::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(320),
+            "the second request receives only the first request's remaining deadline"
+        );
+    }
+
+    #[test]
+    fn public_document_gateway_uses_fixed_https_authority_without_environment_configuration() {
+        let gateway = DocumentGateway::new();
+        let agent = gateway.agent(Duration::from_secs(1));
+
+        assert_eq!(gateway.authority, DOCUMENT_AUTHORITY);
+        assert!(gateway.https_only, "production documents permit HTTPS only");
+        assert!(agent.config().https_only());
+        assert_eq!(agent.config().max_redirects(), 0);
+        assert!(
+            agent.config().proxy().is_none(),
+            "environment proxies cannot override production"
+        );
+        assert_eq!(
+            agent.config().timeouts().global,
+            Some(Duration::from_secs(1)),
+            "each request gets its supplied remaining deadline"
+        );
     }
 
     #[test]

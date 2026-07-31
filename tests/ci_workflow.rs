@@ -50,6 +50,35 @@ fn the_required_test_matrix_does_not_include_windows() {
 }
 
 #[test]
+fn required_ubuntu_musl_job_installs_the_target_tools_and_builds_release() {
+    let w = workflow();
+    let idx = w
+        .find("x86_64-unknown-linux-musl")
+        .expect("ci.yml must declare the musl target");
+    let window = &w[idx.saturating_sub(500)..(idx + 700).min(w.len())];
+    assert!(
+        window.contains("runs-on: ubuntu-latest"),
+        "the musl build must run in a blocking Ubuntu job: {window}"
+    );
+    assert!(
+        window.contains("musl-tools"),
+        "the musl build must install the linker tools: {window}"
+    );
+    assert!(
+        window.contains("targets: x86_64-unknown-linux-musl"),
+        "the Rust musl target must be installed: {window}"
+    );
+    assert!(
+        window.contains("cargo build --release --target x86_64-unknown-linux-musl"),
+        "the musl target must run a release build: {window}"
+    );
+    assert!(
+        !window.contains("continue-on-error: true"),
+        "the musl build is required, not advisory: {window}"
+    );
+}
+
+#[test]
 fn the_windows_job_builds_release_and_runs_cargo_test() {
     let w = workflow();
     let idx = w
