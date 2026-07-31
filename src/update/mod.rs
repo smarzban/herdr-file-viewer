@@ -2,8 +2,8 @@
 //!
 //! A bounded, read-only, fail-silent feature: once per 24h it runs `git ls-remote` against
 //! our own repo (off the UI thread), compares the highest stable tag to the version compiled
-//! into this binary, and — if behind — surfaces a one-line banner. Disabled entirely by the
-//! `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
+//! into this binary, and if behind contributes to a one-line status notice. Disabled entirely by
+//! the `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
 
 pub mod cache;
 pub mod gateway;
@@ -26,7 +26,7 @@ pub(crate) const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// One coordinator refresh shares this absolute deadline across discovery and both documents.
 const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Setting this env var (to anything) disables the update check and banner entirely.
+/// Setting this env var (to anything) disables the update check and status notice entirely.
 pub const DISABLE_ENV: &str = "HERDR_FILE_VIEWER_NO_UPDATE_CHECK";
 
 /// The only authority the public-source gateway may query (and the source of [`repo_slug`]).
@@ -37,20 +37,12 @@ pub fn repo_url() -> &'static str {
     OFFICIAL_REPOSITORY_URL
 }
 
-/// The `owner/repo` slug for the install command, derived from [`repo_url`].
+/// The official `owner/repo` slug, derived from [`repo_url`].
 pub fn repo_slug() -> &'static str {
     repo_url()
         .trim_end_matches('/')
         .trim_start_matches("https://github.com/")
         .trim_start_matches("http://github.com/")
-}
-
-/// The one-line footer shown when a newer release exists.
-pub fn banner_text(v: &Version) -> String {
-    format!(
-        "↑ v{v} available · herdr plugin install {} · u to dismiss",
-        repo_slug()
-    )
 }
 
 /// The startup decision: the cached notice snapshot and whether a remote refresh is eligible.
@@ -703,22 +695,6 @@ mod tests {
     fn repo_slug_is_owner_repo() {
         // Derived from CARGO_PKG_REPOSITORY so it stays correct if the repo moves.
         assert_eq!(repo_slug(), "smarzban/herdr-file-viewer");
-    }
-
-    #[test]
-    fn banner_names_the_version_and_install_command() {
-        let v = Version {
-            major: 1,
-            minor: 1,
-            patch: 0,
-        };
-        let b = banner_text(&v);
-        assert!(b.contains("1.1.0"), "names the version: {b}");
-        assert!(
-            b.contains("herdr plugin install smarzban/herdr-file-viewer"),
-            "shows install cmd: {b}"
-        );
-        assert!(b.contains('u'), "mentions the dismiss key: {b}");
     }
 
     #[test]

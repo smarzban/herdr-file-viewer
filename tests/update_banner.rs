@@ -100,6 +100,12 @@ fn snapshot(detected_release: Option<Version>, spotlight_title: Option<&str>) ->
     }
 }
 
+fn snapshot_from_spotlight_input(input: SpotlightInput) -> NoticeSnapshot {
+    let mut snapshot = NoticeSnapshot::default();
+    snapshot.spotlight.apply(cache_delta(project(input), 1));
+    snapshot
+}
+
 #[test]
 fn initial_cached_version_shows_a_banner() {
     let dir = TempDir::new();
@@ -229,15 +235,103 @@ fn dismiss_hides_the_banner_for_the_session() {
     let dir = TempDir::new();
     let mut c = controller_in(dir.path());
     c.set_update(UpdateState {
-        initial: snapshot(Some(v(9, 9, 9)), None),
+        initial: snapshot(Some(v(9, 9, 9)), Some("Project")),
         rx: None,
     });
     let fx = c.handle(Intent::DismissUpdate);
     assert!(fx.redraw, "dismissing repaints to remove the banner");
     assert!(
         c.view_state().update_banner.is_none(),
-        "dismissed → hidden for the session"
+        "session dismissal hides every notice form at once"
     );
     // Dismiss again is inert (no banner to hide).
     assert!(!c.handle(Intent::DismissUpdate).redraw);
+}
+
+#[test]
+fn controller_projects_typed_notice_status_forms_with_default_labels() {
+    let update = v(9, 9, 9);
+    let mut remembered_spotlight = snapshot(Some(update), Some("Project"));
+    remembered_spotlight.spotlight.dismiss();
+    let cases = [
+        (
+            "update",
+            snapshot(Some(update), None),
+            Some("Update v9.9.9 available · ? details · u dismiss"),
+        ),
+        (
+            "accepted spotlight safe title",
+            snapshot(
+                None,
+                Some("Project \x1b]8;;https://evil.invalid/\x1b\\Meteor"),
+            ),
+            Some("Spotlight: Project Meteor · ? details · u dismiss"),
+        ),
+        (
+            "combined",
+            snapshot(Some(update), Some("Project")),
+            Some("Update v9.9.9 available · Spotlight: Project · ? details · u dismiss"),
+        ),
+        (
+            "remembered spotlight dismissal leaves update",
+            remembered_spotlight,
+            Some("Update v9.9.9 available · ? details · u dismiss"),
+        ),
+        ("empty", snapshot(None, None), None),
+    ];
+
+    for (name, initial, expected) in cases {
+        let dir = TempDir::new();
+        let mut controller = controller_in(dir.path());
+        controller.set_update(UpdateState { initial, rx: None });
+        let actual = controller.view_state().update_banner;
+        assert_eq!(actual.as_deref(), expected, "{name}");
+        assert!(
+            !actual.as_deref().is_some_and(
+                |line| line.contains("herdr plugin install") || line.contains("install")
+            ),
+            "{name}: status must not advertise an install or automatic action: {actual:?}"
+        );
+    }
+}
+
+#[test]
+fn disabled_and_invalid_spotlights_project_no_status_line() {
+    let invalid = [
+        ("missing", SpotlightInput::Missing),
+        ("empty", SpotlightInput::Available(Vec::new())),
+        ("blank", SpotlightInput::Available(b" \r\n\t".to_vec())),
+        (
+            "non-utf8",
+            SpotlightInput::Available(vec![b'#', b' ', 0xff]),
+        ),
+        (
+            "headingless",
+            SpotlightInput::Available(b"ordinary body without a heading\n".to_vec()),
+        ),
+        (
+            "empty title",
+            SpotlightInput::Available(b"# \r\nbody\n".to_vec()),
+        ),
+        ("unavailable", SpotlightInput::Unavailable),
+    ];
+
+    let dir = TempDir::new();
+    let mut disabled = controller_in(dir.path());
+    disabled.set_update(UpdateState::disabled());
+    assert_eq!(disabled.view_state().update_banner, None, "disabled");
+
+    for (name, input) in invalid {
+        let dir = TempDir::new();
+        let mut controller = controller_in(dir.path());
+        controller.set_update(UpdateState {
+            initial: snapshot_from_spotlight_input(input),
+            rx: None,
+        });
+        assert_eq!(
+            controller.view_state().update_banner,
+            None,
+            "{name}: only an accepted typed spotlight can reach the status line"
+        );
+    }
 }

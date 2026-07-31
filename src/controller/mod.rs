@@ -714,8 +714,9 @@ pub struct Controller {
     /// post-construction (mirrors [`settings_display`](Self::settings_display)) so the controller
     /// stays hermetic in tests — a test that never calls the setter keeps its overlay unchanged.
     keybindings_display: Option<String>,
-    /// Hides the banner for the rest of this session (the `u` key). Not persisted — it returns
-    /// next launch while still behind.
+    /// Hides the status line for the rest of this session after an update-triggered dismissal (the
+    /// `u` key). It is not persisted, so it returns next launch while still behind. T-15 expands
+    /// the trigger to spotlight-only notices.
     update_dismissed: bool,
     /// One-shot receiver for a background notice replacement (`None` when no check ran).
     notice_rx: Option<mpsc::Receiver<NoticeSnapshot>>,
@@ -2784,8 +2785,9 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Hide the update banner for this session (the `u` key). Inert when no banner is showing,
-    /// so the key does nothing (no wasted repaint) until an update is actually available.
+    /// Hide the update status for this session (the `u` key). Inert when no update is showing, so
+    /// the key does nothing (no wasted repaint) until an update is actually available. T-15 expands
+    /// this action to spotlight-only status notices.
     fn dismiss_update(&mut self) -> Effects {
         if self.notice_snapshot.detected_release.is_some() && !self.update_dismissed {
             self.update_dismissed = true;
@@ -2794,15 +2796,18 @@ impl Controller {
         Effects::noop()
     }
 
-    /// The update-banner text to display, or `None` when up-to-date, dismissed, or unknown.
+    /// The remote-notice status text to display, or `None` when there is no visible notice or the
+    /// session dismissed it. Labels come from the controller's already-resolved bindings, never
+    /// from raw config or a per-frame resolver.
     fn update_banner(&self) -> Option<String> {
-        if self.update_dismissed {
-            return None;
-        }
-        self.notice_snapshot
-            .detected_release
-            .as_ref()
-            .map(update::banner_text)
+        let details_key = self.bindings.status_hint_label(Intent::ShowHelp);
+        let dismiss_key = self.bindings.status_hint_label(Intent::DismissUpdate);
+        update::status::format_status(
+            &self.notice_snapshot,
+            self.update_dismissed,
+            Some(&details_key),
+            Some(&dismiss_key),
+        )
     }
 
     /// Whether the go-to-file finder overlay is currently open.
@@ -3953,6 +3958,73 @@ mod tests {
         assert!(
             !ctrl.key_load_outcome().is_empty(),
             "the rejected-entry outcome is stored on the controller (AC-16 surfacing path)"
+        );
+    }
+
+    #[test]
+    fn status_projection_uses_the_controller_stored_custom_hint_labels() {
+        let mut ctrl = wiring_controller();
+        let keys = BTreeMap::from([
+            (
+                "show_help".to_string(),
+                KeySpec::Many(vec!["F2".into(), "F3".into()]),
+            ),
+            ("dismiss_update".to_string(), KeySpec::One("d".into())),
+        ]);
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        ctrl.set_keybindings(bindings, outcome);
+        ctrl.set_update(UpdateState {
+            initial: NoticeSnapshot {
+                detected_release: Some(update::Version {
+                    major: 9,
+                    minor: 9,
+                    patch: 9,
+                }),
+                ..NoticeSnapshot::default()
+            },
+            rx: None,
+        });
+
+        let line = ctrl.update_banner().expect("the update status is visible");
+        assert_eq!(
+            line,
+            "Update v9.9.9 available · F2 / F3 details · d dismiss"
+        );
+        assert!(
+            !line.contains("herdr plugin install") && !line.contains("install"),
+            "status does not advertise an install or automatic action: {line}"
+        );
+    }
+
+    #[test]
+    fn status_projection_marks_displaced_hint_bindings_unbound() {
+        let mut ctrl = wiring_controller();
+        let keys = BTreeMap::from([
+            ("refresh".to_string(), KeySpec::One("?".into())),
+            ("nav_up".to_string(), KeySpec::One("u".into())),
+        ]);
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        ctrl.set_keybindings(bindings, outcome);
+        ctrl.set_update(UpdateState {
+            initial: NoticeSnapshot {
+                detected_release: Some(update::Version {
+                    major: 9,
+                    minor: 9,
+                    patch: 9,
+                }),
+                ..NoticeSnapshot::default()
+            },
+            rx: None,
+        });
+
+        let line = ctrl.update_banner().expect("the update status is visible");
+        assert_eq!(
+            line,
+            "Update v9.9.9 available · (unbound) details · (unbound) dismiss"
+        );
+        assert!(
+            !line.contains("herdr plugin install") && !line.contains("install"),
+            "status does not advertise an install or automatic action: {line}"
         );
     }
 

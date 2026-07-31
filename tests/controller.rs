@@ -18,6 +18,7 @@ use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::opener::{Opener, OpenerOutcome};
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::render::Renderers;
+use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
@@ -10810,6 +10811,33 @@ fn status_hint_labels_use_default_help_and_dismiss_bindings() {
         herdr_file_viewer::input::resolve_status_hint_label_for_test(Intent::DismissUpdate, None),
         "u",
         "the dismiss hint uses DismissUpdate's default binding"
+    );
+}
+
+#[test]
+fn controller_exposes_update_status_with_its_default_resolved_labels() {
+    let dir = TempDir::new();
+    let (mut controller, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    controller.set_update(UpdateState {
+        initial: NoticeSnapshot {
+            detected_release: Some(Version {
+                major: 9,
+                minor: 9,
+                patch: 9,
+            }),
+            ..NoticeSnapshot::default()
+        },
+        rx: None,
+    });
+
+    let line = controller
+        .view_state()
+        .update_banner
+        .expect("a detected release projects one status line");
+    assert_eq!(line, "Update v9.9.9 available · ? details · u dismiss");
+    assert!(
+        !line.contains("herdr plugin install") && !line.contains("install"),
+        "status never presents an install command or automatic action: {line}"
     );
 }
 
