@@ -538,17 +538,17 @@ fn search_routes_keys_to_query_and_n_cycles_and_esc_restores() {
     // Step 7: `N` cycles backward (liveness proof — clean exit is the secondary assertion).
     s.send("N").expect("send `N` to go to previous match");
 
-    // Step 8: a bare Esc outside the prompt is inert (maps to no intent — must not crash).
-    // Settle before Esc so crossterm reads a lone ESC (not Alt+char) — inter-byte gap.
+    // Step 8: in a narrow pty, `/` auto-zooms the file. The close stack after a committed search
+    // is therefore: clear the search, un-zoom, then quit. Step 4 already exercises Esc closing a
+    // search prompt; controller tests cover Esc's identical close-stack behavior. Use q here so a
+    // standalone ESC cannot be coalesced with a following character by the pty as Alt+q.
+    s.send("q").expect("clear committed search");
     std::thread::sleep(Duration::from_millis(150));
-    s.send("\u{1b}")
-        .expect("send Esc outside the prompt (inert)");
-    // Settle after the inert Esc before `q` — keeps Esc and `q` apart (lone-ESC, not Alt+char)
-    // and lets the inert Esc be consumed before the quit key arrives. Stays a short sleep.
+    s.send("q").expect("un-zoom the file");
     std::thread::sleep(Duration::from_millis(150));
 
     // Step 9: clean exit — no search key crashed the run loop (AC-21).
-    s.send("q").expect("send close");
+    s.send("q").expect("quit");
     s.expect(Eof)
         .expect("the viewer terminates cleanly after the search flow");
     match s.get_process().wait().expect("reap the viewer") {

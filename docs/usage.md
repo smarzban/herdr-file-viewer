@@ -94,9 +94,11 @@ finder in a narrow split.
 
 ### Teach your agent
 
-Agents do **not** know this surface by default. Paste a short block into your project’s
-`AGENTS.md` (preferred: every agent reads it) or `CLAUDE.md` / agent skill so “open in the file
-viewer” means something concrete:
+Agents do **not** know this surface by default. This repository includes a
+[ready-to-copy agent skill](../skills/herdr-file-viewer/SKILL.md) with the target-resolution,
+launch, and conversation rules. Use it where your agent runner supports skills, or paste the short
+block below into your project’s `AGENTS.md` (preferred: every agent reads it) or `CLAUDE.md` so
+“open in the file viewer” means something concrete:
 
 ````markdown
 ## File viewer (herdr-file-viewer)
@@ -110,12 +112,20 @@ herdr plugin pane open \
   --plugin herdr-file-viewer \
   --entrypoint file-viewer \
   --placement split \
+  --direction right \
+  --cwd "$PWD" \
   --focus \
-  --env HERDR_FILE_VIEWER_OPEN=<path>[:line]
+  --env "HERDR_FILE_VIEWER_OPEN=<path>[:line]"
 ```
 
-Examples: `src/app.rs`, `src/app.rs:42`, `src/app.rs:10-20`.
-Outside herdr: `herdr-file-viewer --open <path>[:line]`.
+Examples: `src/app.rs`, `src/app.rs:42`, `src/app.rs:10-20`. Treat the target as one data value,
+not shell source: prefer a structured argv or process API, or shell-escape it before assigning and
+expanding it only within double quotes.
+
+The Herdr pane command applies to Linux, macOS, and WSL. On native Windows preview, the Files action
+cannot accept an open target, so use WSL for this flow or, if the binary is on `PATH`, run
+`herdr-file-viewer.exe --open "<target>"` in a terminal devoted to the viewer. Outside herdr, with
+the binary on `PATH`: `herdr-file-viewer --open <path>[:line]`.
 ````
 
 Without that (or an equivalent skill), a vague “open it in the file viewer” is only a wish: the
