@@ -5,10 +5,12 @@ mod common;
 
 use common::TempDir;
 use herdr_file_viewer::update::cache::{
-    Cache, CacheDelta, PersistedReleaseDetails, load, store, store_delta,
+    Cache, CacheDelta, CacheWriter, PersistedReleaseDetails, load, store, store_delta,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::{Arc, Barrier, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const FIXTURE_ENV: &str = "HERDR_FILE_VIEWER_CACHE_FIXTURE";
@@ -30,11 +32,7 @@ fn cache_writer_fixture() {
     match kind.as_str() {
         "writer" => {
             let before = load(&dir).expect("fixture starts with a complete cache revision");
-            std::fs::write(
-                marker(&dir, "ready", &id),
-                serde_json::to_vec(&before).unwrap(),
-            )
-            .expect("write ready barrier");
+            publish_ready_snapshot(&dir, &id, &before);
             wait_for(&marker(&dir, "release", &id));
             std::fs::write(marker(&dir, "attempt", &id), []).expect("write attempt barrier");
             store_delta(
@@ -239,6 +237,189 @@ fn reader_sees_only_complete_revisions_while_a_same_directory_stage_waits_to_pub
     );
 }
 
+#[test]
+fn cache_writer_enqueues_intents_without_waiting_for_a_held_lock_and_drains_on_last_drop() {
+    let dir = TempDir::new();
+    let before = starting_cache(None);
+    store(dir.path(), &before);
+    let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
+    wait_for(&marker(dir.path(), "ready", "holder"));
+
+    let writer = CacheWriter::new(dir.path().to_path_buf());
+    let final_handle = writer.clone();
+    let started = Instant::now();
+    assert!(writer.enqueue(CacheDelta::RefreshSpotlight {
+        spotlight: NEW.to_vec(),
+        retrieved_at_unix: 70,
+    }));
+    assert!(writer.enqueue(CacheDelta::DismissSpotlight {
+        identity: NEW.to_vec(),
+    }));
+    assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
+        retrieved_at_unix: 80,
+    }));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "enqueue must return while another process holds the cache lease"
+    );
+
+    drop(writer);
+    release(dir.path(), "holder");
+    finish_fixture(dir.path(), "holder", &mut holder);
+    drop(final_handle);
+
+    assert_eq!(
+        load(dir.path()),
+        Some(Cache {
+            spotlight: None,
+            spotlight_retrieved_at_unix: Some(80),
+            dismissed_spotlight_identity: Some(NEW.to_vec()),
+            ..before
+        }),
+        "the final handle drains refresh, dismissal, and withdrawal in enqueue order"
+    );
+}
+
+#[test]
+fn cache_writer_concurrent_final_drops_drain_before_both_return() {
+    let dir = TempDir::new();
+    let before = starting_cache(None);
+    store(dir.path(), &before);
+    let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
+    wait_for(&marker(dir.path(), "ready", "holder"));
+
+    let writer = CacheWriter::new(dir.path().to_path_buf());
+    assert!(writer.enqueue(CacheDelta::RefreshSpotlight {
+        spotlight: NEW.to_vec(),
+        retrieved_at_unix: 70,
+    }));
+
+    let barrier = Arc::new(Barrier::new(3));
+    let (dropped_tx, dropped_rx) = mpsc::channel();
+    let first = writer.clone();
+    let first_barrier = Arc::clone(&barrier);
+    let first_dropped = dropped_tx.clone();
+    let first_thread = thread::spawn(move || {
+        first_barrier.wait();
+        drop(first);
+        first_dropped.send(()).expect("report first drop");
+    });
+    let second_barrier = Arc::clone(&barrier);
+    let second_thread = thread::spawn(move || {
+        second_barrier.wait();
+        drop(writer);
+        dropped_tx.send(()).expect("report second drop");
+    });
+
+    barrier.wait();
+    dropped_rx
+        .recv_timeout(WAIT)
+        .expect("one concurrent drop must finish before the worker drains");
+    assert!(
+        dropped_rx.try_recv().is_err(),
+        "the final concurrent drop must join the worker until its accepted delta drains"
+    );
+
+    release(dir.path(), "holder");
+    finish_fixture(dir.path(), "holder", &mut holder);
+    dropped_rx
+        .recv_timeout(WAIT)
+        .expect("the final drop must return after the worker drains");
+    first_thread.join().expect("join first dropper");
+    second_thread.join().expect("join second dropper");
+
+    assert_eq!(
+        load(dir.path()),
+        Some(Cache {
+            spotlight: Some(NEW.to_vec()),
+            spotlight_retrieved_at_unix: Some(70),
+            ..before
+        }),
+        "every accepted delta is persisted before the last concurrent drop returns"
+    );
+}
+
+#[test]
+fn cache_writer_shutdown_is_bounded_for_multiple_deltas_when_the_cache_lease_stays_held() {
+    let dir = TempDir::new();
+    let before = starting_cache(None);
+    store(dir.path(), &before);
+    let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
+    wait_for(&marker(dir.path(), "ready", "holder"));
+
+    let writer = CacheWriter::new(dir.path().to_path_buf());
+    assert!(writer.enqueue(CacheDelta::DismissSpotlight {
+        identity: OLD.to_vec(),
+    }));
+    assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
+        retrieved_at_unix: 80,
+    }));
+    assert!(writer.enqueue(CacheDelta::RefreshSpotlight {
+        spotlight: NEW.to_vec(),
+        retrieved_at_unix: 90,
+    }));
+    let started = Instant::now();
+    drop(writer);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "last-handle shutdown must stop after the bounded attempts for every queued delta"
+    );
+
+    release(dir.path(), "holder");
+    finish_fixture(dir.path(), "holder", &mut holder);
+    assert_eq!(
+        load(dir.path()),
+        Some(before),
+        "a dropped best-effort delta must not publish without the shared lease"
+    );
+}
+
+#[test]
+fn cache_writer_ignores_an_unavailable_cache_directory_without_delaying_shutdown() {
+    let dir = TempDir::new();
+    let unavailable = dir.path().join("not-a-directory");
+    std::fs::write(&unavailable, b"not a directory").expect("make cache path unavailable");
+
+    let writer = CacheWriter::new(unavailable.clone());
+    assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
+        retrieved_at_unix: 80,
+    }));
+    let started = Instant::now();
+    drop(writer);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "an unavailable advisory cache cannot delay the current process"
+    );
+    assert_eq!(
+        std::fs::read(&unavailable).expect("unavailable path remains a regular file"),
+        b"not a directory"
+    );
+}
+
+#[test]
+fn cache_writer_ignores_a_cache_write_failure_without_delaying_shutdown() {
+    let dir = TempDir::new();
+    let cache_file = dir.path().join("update-check.json");
+    std::fs::create_dir(&cache_file).expect("make cache destination unwritable as a file");
+
+    let writer = CacheWriter::new(dir.path().to_path_buf());
+    assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
+        retrieved_at_unix: 80,
+    }));
+    let started = Instant::now();
+    drop(writer);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a failed advisory write cannot delay the current process"
+    );
+    assert!(
+        cache_file.is_dir(),
+        "a failed complete-revision publish leaves the existing destination untouched"
+    );
+}
+
 fn starting_cache(dismissed_spotlight_identity: Option<Vec<u8>>) -> Cache {
     Cache {
         last_check_unix: 10,
@@ -307,6 +488,13 @@ fn run_ordered_writers(dir: &Path, first_action: &str, second_action: &str, befo
     finish_fixture(dir, "first", &mut first);
     release(dir, "second");
     finish_fixture(dir, "second", &mut second);
+}
+
+fn publish_ready_snapshot(dir: &Path, id: &str, snapshot: &Cache) {
+    let ready = marker(dir, "ready", id);
+    let staged = ready.with_extension("tmp");
+    std::fs::write(&staged, serde_json::to_vec(snapshot).unwrap()).expect("write ready snapshot");
+    std::fs::rename(staged, ready).expect("publish ready barrier");
 }
 
 fn assert_ready_snapshots(dir: &Path, before: &Cache) {

@@ -8,6 +8,8 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 /// Minimum gap between network checks: 24h.
@@ -109,6 +111,60 @@ pub enum CacheDelta {
     DismissSpotlight { identity: Vec<u8> },
     /// A conclusive withdrawal, which clears content but remains fresh at this retrieval time.
     WithdrawSpotlight { retrieved_at_unix: u64 },
+}
+
+/// A cloneable, best-effort writer for completed cache intents.
+///
+/// [`enqueue`](Self::enqueue) sends only an intent-owned [`CacheDelta`] to the worker, so it does
+/// not wait for cache locks or disk. Dropping the final handle closes the channel and joins the
+/// worker after it has given every accepted delta one bounded persistence attempt.
+#[derive(Clone)]
+pub struct CacheWriter {
+    // Fields drop in declaration order, so the final sender closes before the final worker
+    // reference drops and joins its drained worker.
+    sender: mpsc::Sender<CacheDelta>,
+    _worker: Arc<CacheWriterWorker>,
+}
+
+struct CacheWriterWorker {
+    join: Option<JoinHandle<()>>,
+}
+
+impl Drop for CacheWriterWorker {
+    fn drop(&mut self) {
+        let Some(join) = self.join.take() else {
+            return;
+        };
+        // The worker closure owns no CacheWriter. Keep the shutdown path deadlock-free if a
+        // future call site changes that ownership and drops the final handle on this worker.
+        if join.thread().id() != thread::current().id() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl CacheWriter {
+    /// Start one cache worker for `dir`. Persistence failures remain advisory and silent.
+    pub fn new(dir: PathBuf) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let join = thread::Builder::new()
+            .spawn(move || {
+                while let Ok(delta) = receiver.recv() {
+                    store_delta(&dir, delta);
+                }
+            })
+            .ok();
+        Self {
+            sender,
+            _worker: Arc::new(CacheWriterWorker { join }),
+        }
+    }
+
+    /// Queue one completed intent. `true` means the worker accepted the delta for a bounded,
+    /// best-effort persistence attempt; it does not promise that the advisory cache was written.
+    pub fn enqueue(&self, delta: CacheDelta) -> bool {
+        self.sender.send(delta).is_ok()
+    }
 }
 
 impl Cache {
@@ -447,6 +503,45 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::OsString;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn cache_writer_joins_the_worker_on_the_last_handle_drop() {
+        let (sender, receiver) = mpsc::channel::<CacheDelta>();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = Arc::new(CacheWriterWorker {
+            join: Some(std::thread::spawn(move || {
+                assert!(
+                    receiver.recv().is_err(),
+                    "last sender closes the worker channel"
+                );
+                closed_tx.send(()).expect("report closed channel");
+                release_rx.recv().expect("release worker");
+            })),
+        });
+        let final_worker = Arc::clone(&worker);
+        drop(worker);
+        drop(sender);
+
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(final_worker);
+            dropped_tx.send(()).expect("report final drop");
+        });
+        closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("last sender must close the worker channel");
+        assert!(
+            dropped_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the last handle must wait for its worker to finish"
+        );
+
+        release_tx.send(()).expect("release worker");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("last handle returns after the worker finishes");
+        dropper.join().expect("join final dropper");
+    }
 
     // ---- cache_base_dir: platform cache-dir seam (AC-7, T-3) --------------------
 
