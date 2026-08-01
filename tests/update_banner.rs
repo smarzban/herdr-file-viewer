@@ -321,42 +321,6 @@ fn refresh_cannot_clear_a_remote_notice_session_dismissal() {
 }
 
 #[test]
-fn controller_keeps_the_writer_for_the_current_spotlight_after_a_snapshot_replacement() {
-    let dir = TempDir::new();
-    let current = b"# After\nbody\n".to_vec();
-    cache::store(
-        dir.path(),
-        &Cache {
-            spotlight: Some(current.clone()),
-            spotlight_retrieved_at_unix: Some(1),
-            ..Cache::default()
-        },
-    );
-    let (tx, rx) = mpsc::channel();
-    let mut initial = snapshot(None, Some("Before"));
-    initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
-    let mut controller = controller_in(dir.path());
-    controller.set_update(UpdateState {
-        initial,
-        rx: Some(rx),
-    });
-
-    tx.send(snapshot(None, Some("After")))
-        .expect("send current spotlight replacement");
-    assert!(controller.poll().expect("apply replacement").redraw);
-    assert!(controller.handle(Intent::DismissUpdate).redraw);
-    drop(controller);
-
-    assert_eq!(
-        cache::load(dir.path())
-            .expect("writer drains the queued dismissal")
-            .dismissed_spotlight_identity,
-        Some(current),
-        "the writer survives snapshot replacement and receives only the current identity"
-    );
-}
-
-#[test]
 fn update_dismissal_is_session_only_and_never_persists() {
     let dir = TempDir::new();
     let mut initial = snapshot(Some(v(9, 9, 9)), None);
@@ -384,84 +348,155 @@ fn update_dismissal_is_session_only_and_never_persists() {
 }
 
 #[test]
-fn spotlight_dismissal_persists_exact_identity_and_later_sessions_project_it() {
+fn dismissal_writes_no_identity_and_every_still_relevant_notice_returns_next_session() {
+    let session_started_at_unix = 10_000;
+    let spotlight = b"# Project\nbody\n".to_vec();
+    let cases = [
+        (
+            "update-only",
+            Cache {
+                latest_seen: Some("9.9.9".into()),
+                ..Cache::default()
+            },
+            None,
+        ),
+        (
+            "spotlight-only",
+            Cache {
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
+                ..Cache::default()
+            },
+            Some(b"body\n".as_slice()),
+        ),
+        (
+            "combined",
+            Cache {
+                latest_seen: Some("9.9.9".into()),
+                spotlight: Some(spotlight.clone()),
+                spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
+                ..Cache::default()
+            },
+            Some(b"body\n".as_slice()),
+        ),
+    ];
+
+    for (name, persisted, expected_body) in cases {
+        let dir = TempDir::new();
+        cache::store(dir.path(), &persisted);
+        let mut initial = snapshot_from_cache(persisted.clone(), session_started_at_unix);
+        initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
+        let mut controller = controller_in(dir.path());
+        controller.set_update(UpdateState { initial, rx: None });
+
+        assert!(
+            controller.view_state().remote_notice_status.is_some(),
+            "{name}: precondition"
+        );
+        assert!(
+            controller.handle(Intent::DismissUpdate).redraw,
+            "{name}: u hides the row"
+        );
+        assert_eq!(
+            controller.view_state().remote_notice_status,
+            None,
+            "{name}: hidden now"
+        );
+        assert_eq!(
+            controller.notice_snapshot().spotlight.whats_new_body(),
+            expected_body,
+            "{name}: dismissal does not discard What's New content"
+        );
+        drop(controller);
+
+        assert_eq!(
+            cache::load(dir.path()),
+            Some(persisted),
+            "{name}: dismissal must not write an advisory identity"
+        );
+        assert!(
+            !std::fs::read_to_string(dir.path().join("update-check.json"))
+                .expect("the seed cache remains readable")
+                .contains("dismissed_spotlight_identity"),
+            "{name}: the cache schema contains no dismissal identity"
+        );
+
+        let mut fresh = controller_in(dir.path());
+        fresh.set_update(UpdateState {
+            initial: snapshot_from_cache(
+                cache::load(dir.path()).expect("the unchanged cache is reusable"),
+                session_started_at_unix,
+            ),
+            rx: None,
+        });
+        assert!(
+            fresh.view_state().remote_notice_status.is_some(),
+            "{name}: the same still-relevant row returns in a fresh session"
+        );
+    }
+}
+
+#[test]
+fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_dismissal() {
+    let session_started_at_unix = 100_000;
+    let original = b"# Project\nold body\n".to_vec();
     let dir = TempDir::new();
-    let original = b"# Project\nbody\n".to_vec();
-    cache::store(
-        dir.path(),
-        &Cache {
-            spotlight: Some(original.clone()),
-            spotlight_retrieved_at_unix: Some(1),
-            ..Cache::default()
-        },
-    );
+    let persisted = Cache {
+        spotlight: Some(original),
+        spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
+        ..Cache::default()
+    };
+    cache::store(dir.path(), &persisted);
 
-    let mut initial = snapshot(None, Some("Project"));
+    let mut initial = snapshot_from_cache(persisted, session_started_at_unix);
     initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
-    let mut controller = controller_in(dir.path());
-    controller.set_update(UpdateState { initial, rx: None });
-    assert!(controller.handle(Intent::DismissUpdate).redraw);
-    drop(controller);
-
-    let remembered = cache::load(dir.path()).expect("dismissal persists through the T-5 writer");
-    assert_eq!(
-        remembered.dismissed_spotlight_identity.as_deref(),
-        Some(original.as_slice()),
-        "only the exact currently accepted spotlight document is remembered"
-    );
-
-    let same = snapshot_from_cache(remembered.clone(), 2);
-    let mut same_controller = controller_in(dir.path());
-    same_controller.set_update(UpdateState {
-        initial: same,
-        rx: None,
-    });
-    assert_eq!(
-        same_controller.view_state().remote_notice_status,
-        None,
-        "the exact previously dismissed identity stays hidden"
-    );
-
-    let mut changed = remembered.clone();
-    changed.apply(cache::CacheDelta::RefreshSpotlight {
-        spotlight: b"# Project\nchanged body\n".to_vec(),
-        retrieved_at_unix: 2,
-    });
-    let mut changed_controller = controller_in(dir.path());
-    changed_controller.set_update(UpdateState {
-        initial: snapshot_from_cache(changed, 3),
-        rx: None,
-    });
+    let mut dismissed = controller_in(dir.path());
+    dismissed.set_update(UpdateState { initial, rx: None });
     assert!(
-        changed_controller
-            .view_state()
-            .remote_notice_status
-            .is_some(),
-        "a changed identity is new spotlight content"
+        dismissed.handle(Intent::DismissUpdate).redraw,
+        "u dismisses this session"
+    );
+    drop(dismissed);
+
+    let mut withdrawn = cache::load(dir.path()).expect("dismissal leaves a reusable cache");
+    withdrawn.apply(cache::CacheDelta::WithdrawSpotlight {
+        retrieved_at_unix: session_started_at_unix - 1,
+    });
+    let fresh_withdrawal = snapshot_from_cache(withdrawn.clone(), session_started_at_unix);
+    assert!(fresh_withdrawal.spotlight.status_title().is_none());
+    assert!(fresh_withdrawal.spotlight.whats_new_body().is_none());
+    assert!(
+        !herdr_file_viewer::update::spotlight_policy::SpotlightSession::new(
+            session_started_at_unix
+        )
+        .should_retrieve(&fresh_withdrawal.spotlight),
+        "a fresh withdrawal remains fresh regardless of dismissal"
     );
 
-    let mut combined = remembered;
-    combined.latest_seen = Some("9.9.9".into());
-    let mut combined_controller = controller_in(dir.path());
-    combined_controller.set_update(UpdateState {
-        initial: snapshot_from_cache(combined, 2),
-        rx: None,
+    withdrawn.spotlight_retrieved_at_unix = Some(session_started_at_unix - 24 * 60 * 60);
+    let stale_withdrawal = snapshot_from_cache(withdrawn, session_started_at_unix);
+    assert!(
+        herdr_file_viewer::update::spotlight_policy::SpotlightSession::new(session_started_at_unix)
+            .should_retrieve(&stale_withdrawal.spotlight),
+        "a stale withdrawal retries regardless of dismissal"
+    );
+
+    let mut replacement = cache::load(dir.path()).expect("dismissal leaves a reusable cache");
+    replacement.apply(cache::CacheDelta::RefreshSpotlight {
+        spotlight: b"# Project\nnew body\n".to_vec(),
+        retrieved_at_unix: session_started_at_unix,
     });
+    let next = snapshot_from_cache(replacement, session_started_at_unix);
+    assert_eq!(next.spotlight.status_title(), Some("Project"));
     assert_eq!(
-        combined_controller
-            .view_state()
-            .remote_notice_status
-            .as_deref(),
-        Some("Update v9.9.9 available · ? details · u dismiss"),
-        "a remembered spotlight hides only itself when a later session also has an update"
+        next.spotlight.whats_new_body(),
+        Some(b"new body\n".as_slice())
     );
 }
 
 #[test]
 fn controller_projects_typed_notice_status_forms_with_default_labels() {
     let update = v(9, 9, 9);
-    let mut remembered_spotlight = snapshot(Some(update), Some("Project"));
-    remembered_spotlight.spotlight.dismiss();
     let cases = [
         (
             "update",
@@ -480,11 +515,6 @@ fn controller_projects_typed_notice_status_forms_with_default_labels() {
             "combined",
             snapshot(Some(update), Some("Project")),
             Some("Update v9.9.9 available · Spotlight: Project · ? details · u dismiss"),
-        ),
-        (
-            "remembered spotlight dismissal leaves update",
-            remembered_spotlight,
-            Some("Update v9.9.9 available · ? details · u dismiss"),
         ),
         ("empty", snapshot(None, None), None),
     ];

@@ -1,6 +1,6 @@
 //! Bounded advisory facts for remote notices: successful-check time, detected release, and the
 //! exact release-detail and spotlight bytes that a Refresh Coordinator may project. It stores no
-//! startup eligibility or display policy, and nothing about the user beyond a dismissed identity.
+//! startup eligibility or display policy, and nothing about user actions.
 
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
@@ -36,8 +36,7 @@ const CACHE_SCHEMA_VERSION: u8 = 1;
 /// The largest encoded cache accepted from or written to disk: 20 MiB.
 pub const CACHE_MAX_BYTES: usize = 20 * 1024 * 1024;
 
-/// Each retained source payload is capped independently. Three fields can hold exact source bytes:
-/// release details, the spotlight document, and its dismissed identity.
+/// Each retained source payload is capped independently: release details and the spotlight document.
 const MAX_EXACT_FIELD_BYTES: usize = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 64;
 
@@ -66,8 +65,6 @@ pub struct Cache {
     pub spotlight: Option<Vec<u8>>,
     #[serde(default)]
     pub spotlight_retrieved_at_unix: Option<u64>,
-    #[serde(default)]
-    pub dismissed_spotlight_identity: Option<Vec<u8>>,
 }
 
 impl Default for Cache {
@@ -79,7 +76,6 @@ impl Default for Cache {
             release_details: None,
             spotlight: None,
             spotlight_retrieved_at_unix: None,
-            dismissed_spotlight_identity: None,
         }
     }
 }
@@ -125,8 +121,6 @@ pub enum CacheDelta {
         spotlight: Vec<u8>,
         retrieved_at_unix: u64,
     },
-    /// Dismiss the exact currently cached spotlight identity.
-    DismissSpotlight { identity: Vec<u8> },
     /// A conclusive withdrawal, which clears content but remains fresh at this retrieval time.
     WithdrawSpotlight { retrieved_at_unix: u64 },
 }
@@ -254,19 +248,8 @@ impl Cache {
                 if spotlight.len() > MAX_EXACT_FIELD_BYTES {
                     return;
                 }
-                if self.dismissed_spotlight_identity.as_deref() != Some(spotlight.as_slice()) {
-                    self.dismissed_spotlight_identity = None;
-                }
                 self.spotlight = Some(spotlight);
                 self.spotlight_retrieved_at_unix = Some(retrieved_at_unix);
-            }
-            CacheDelta::DismissSpotlight { identity } => {
-                if identity.len() > MAX_EXACT_FIELD_BYTES
-                    || self.spotlight.as_deref() != Some(identity.as_slice())
-                {
-                    return;
-                }
-                self.dismissed_spotlight_identity = Some(identity);
             }
             CacheDelta::WithdrawSpotlight { retrieved_at_unix } => {
                 self.spotlight = None;
@@ -291,10 +274,6 @@ impl Cache {
                 .spotlight
                 .as_ref()
                 .is_none_or(|spotlight| spotlight.len() <= MAX_EXACT_FIELD_BYTES)
-            && self
-                .dismissed_spotlight_identity
-                .as_ref()
-                .is_none_or(|identity| identity.len() <= MAX_EXACT_FIELD_BYTES)
     }
 }
 
@@ -702,7 +681,6 @@ mod tests {
             }),
             spotlight: Some(vec![0, b'#', 0xff, b'\n']),
             spotlight_retrieved_at_unix: Some(99),
-            dismissed_spotlight_identity: Some(vec![0, 0xff]),
             ..Cache::default()
         };
 
@@ -717,7 +695,6 @@ mod tests {
 
     #[test]
     fn cache_deltas_change_only_their_owned_notice_state() {
-        let first = b"# First\nold body\n".to_vec();
         let replacement = b"# First\nnew body\n".to_vec();
         let mut cache = Cache {
             last_check_unix: 10,
@@ -726,9 +703,8 @@ mod tests {
                 release: "1.1.0".into(),
                 details: "old details".into(),
             }),
-            spotlight: Some(first.clone()),
+            spotlight: Some(b"# First\nold body\n".to_vec()),
             spotlight_retrieved_at_unix: Some(20),
-            dismissed_spotlight_identity: Some(first),
             ..Cache::default()
         };
 
@@ -746,12 +722,6 @@ mod tests {
             cache.spotlight.as_deref(),
             Some(b"# First\nold body\n".as_slice())
         );
-        assert_eq!(
-            cache.dismissed_spotlight_identity.as_deref(),
-            Some(b"# First\nold body\n".as_slice()),
-            "a release check does not alter spotlight dismissal"
-        );
-
         cache.apply(CacheDelta::StoreReleaseDetails {
             release: "1.2.0".into(),
             details: "new details".into(),
@@ -768,22 +738,14 @@ mod tests {
             spotlight: replacement.clone(),
             retrieved_at_unix: 40,
         });
-        assert_eq!(cache.spotlight, Some(replacement.clone()));
+        assert_eq!(cache.spotlight, Some(replacement));
         assert_eq!(cache.spotlight_retrieved_at_unix, Some(40));
-        assert_eq!(
-            cache.dismissed_spotlight_identity, None,
-            "a different exact document clears the old dismissal"
-        );
 
-        cache.apply(CacheDelta::DismissSpotlight {
-            identity: replacement.clone(),
-        });
         cache.apply(CacheDelta::WithdrawSpotlight {
             retrieved_at_unix: 50,
         });
         assert_eq!(cache.spotlight, None);
         assert_eq!(cache.spotlight_retrieved_at_unix, Some(50));
-        assert_eq!(cache.dismissed_spotlight_identity, Some(replacement));
     }
 
     #[test]
@@ -835,11 +797,9 @@ mod tests {
 
     #[test]
     fn cache_delta_rejects_an_oversized_spotlight() {
-        let original = b"# Original\nbody\n".to_vec();
         let mut cache = Cache {
-            spotlight: Some(original.clone()),
+            spotlight: Some(b"# Original\nbody\n".to_vec()),
             spotlight_retrieved_at_unix: Some(10),
-            dismissed_spotlight_identity: Some(original),
             ..Cache::default()
         };
         let before = cache.clone();
@@ -851,29 +811,8 @@ mod tests {
 
         assert_eq!(
             cache, before,
-            "an oversized spotlight must not clear a dismissal"
+            "an oversized spotlight must leave the cache untouched"
         );
-    }
-
-    #[test]
-    fn cache_delta_rejects_an_invalid_spotlight_dismissal() {
-        let spotlight = b"# Current\nbody\n".to_vec();
-        let mut cache = Cache {
-            spotlight: Some(spotlight),
-            ..Cache::default()
-        };
-        let before = cache.clone();
-
-        for identity in [
-            b"# Different\nbody\n".to_vec(),
-            vec![b'x'; MAX_EXACT_FIELD_BYTES + 1],
-        ] {
-            cache.apply(CacheDelta::DismissSpotlight { identity });
-            assert_eq!(
-                cache, before,
-                "only the exact bounded spotlight may be dismissed"
-            );
-        }
     }
 
     #[test]
@@ -914,13 +853,6 @@ mod tests {
                 "oversized spotlight",
                 Cache {
                     spotlight: Some(overlong_payload.as_bytes().to_vec()),
-                    ..Cache::default()
-                },
-            ),
-            (
-                "oversized dismissed identity",
-                Cache {
-                    dismissed_spotlight_identity: Some(overlong_payload.into_bytes()),
                     ..Cache::default()
                 },
             ),

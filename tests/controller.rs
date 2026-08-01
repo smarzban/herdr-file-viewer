@@ -18,6 +18,9 @@ use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::opener::{Opener, OpenerOutcome};
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
 use herdr_file_viewer::render::Renderers;
+use herdr_file_viewer::update::spotlight_policy::{
+    SpotlightCache, SpotlightInput, cache_delta, project,
+};
 use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::layout::Rect;
@@ -9050,6 +9053,38 @@ fn show_help_opens_help_overlay_with_whats_new_active_and_non_empty_bodies() {
     assert!(
         !state.sections[1].body.lines.is_empty(),
         "About body must be non-empty"
+    );
+}
+
+#[test]
+fn dismissing_the_status_row_keeps_spotlight_content_readable_in_whats_new() {
+    let dir = TempDir::new();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let mut spotlight = SpotlightCache::default();
+    spotlight.apply(cache_delta(
+        project(SpotlightInput::Available(
+            b"# Project\nSpotlight body remains readable\n".to_vec(),
+        )),
+        1,
+    ));
+    ctrl.set_update(UpdateState {
+        initial: NoticeSnapshot {
+            spotlight,
+            ..NoticeSnapshot::default()
+        },
+        rx: None,
+    });
+
+    assert!(
+        ctrl.handle(Intent::DismissUpdate).redraw,
+        "u hides the visible row"
+    );
+    assert!(ctrl.view_state().remote_notice_status.is_none());
+    ctrl.handle(Intent::ShowHelp);
+    assert!(
+        flatten_text(ctrl.help_state().expect("Help opens").active_body())
+            .contains("Spotlight body remains readable"),
+        "the status-only dismissal must not change the Help snapshot"
     );
 }
 

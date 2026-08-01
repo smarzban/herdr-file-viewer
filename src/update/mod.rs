@@ -126,11 +126,7 @@ fn cached_spotlight(
     let Some(cache) = cache else {
         return spotlight_policy::SpotlightCache::default();
     };
-    let mut projected = cache
-        .dismissed_spotlight_identity
-        .clone()
-        .map(spotlight_policy::SpotlightCache::with_remembered_dismissal)
-        .unwrap_or_default();
+    let mut projected = spotlight_policy::SpotlightCache::default();
     let Some(retrieved_at_unix) = cache.spotlight_retrieved_at_unix else {
         return projected;
     };
@@ -289,7 +285,7 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
                     spotlight,
                     retrieved_at_unix,
                 } => RefreshSpotlight::Store {
-                    spotlight: spotlight.identity.clone(),
+                    spotlight: spotlight.source.clone(),
                     retrieved_at_unix: *retrieved_at_unix,
                 },
                 spotlight_policy::SpotlightCacheDelta::Withdrawn { retrieved_at_unix } => {
@@ -380,9 +376,8 @@ mod tests {
                 release: release.to_string(),
                 details: "## [next]\n- cached details\n".into(),
             }),
-            spotlight: Some(spotlight.clone()),
+            spotlight: Some(spotlight),
             spotlight_retrieved_at_unix: Some(10_000),
-            dismissed_spotlight_identity: Some(spotlight),
             ..Cache::default()
         });
 
@@ -645,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_spotlight_keeps_its_dismissal_for_an_identical_refresh() {
+    fn stale_spotlight_reappears_after_a_fresh_identical_refresh() {
         let session_started_at_unix = 1_000_000;
         let spotlight = b"# Project\nbody\n".to_vec();
         let mut refreshed = decide(
@@ -654,7 +649,6 @@ mod tests {
             &Some(Cache {
                 spotlight: Some(spotlight.clone()),
                 spotlight_retrieved_at_unix: Some(session_started_at_unix - CHECK_INTERVAL_SECS),
-                dismissed_spotlight_identity: Some(spotlight.clone()),
                 ..Cache::default()
             }),
         )
@@ -669,38 +663,32 @@ mod tests {
             session_started_at_unix,
         ));
 
-        assert!(
-            refreshed.status_title().is_none(),
-            "an identical refresh retains the persisted dismissal"
-        );
+        assert_eq!(refreshed.status_title(), Some("Project"));
         assert_eq!(
             refreshed.whats_new_body(),
             Some(b"body\n".as_slice()),
-            "fresh content restores What's New independently of dismissal"
+            "fresh content restores What's New"
         );
     }
 
     #[test]
-    fn startup_decision_keeps_a_remembered_dismissal_out_of_status_but_in_whats_new() {
+    fn startup_decision_projects_fresh_spotlight_in_status_and_whats_new() {
         let session_started_at_unix = 1_000_000;
-        let spotlight = b"# Project\nbody\n".to_vec();
         let initial = decide(
             false,
             session_started_at_unix,
             &Some(Cache {
-                spotlight: Some(spotlight.clone()),
+                spotlight: Some(b"# Project\nbody\n".to_vec()),
                 spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
-                dismissed_spotlight_identity: Some(spotlight),
                 ..Cache::default()
             }),
         )
         .initial;
 
-        assert!(initial.spotlight.status_title().is_none());
+        assert_eq!(initial.spotlight.status_title(), Some("Project"));
         assert_eq!(
             initial.spotlight.whats_new_body(),
-            Some(b"body\n".as_slice()),
-            "dismissal never suppresses accepted What's New content"
+            Some(b"body\n".as_slice())
         );
     }
 
@@ -872,7 +860,6 @@ mod tests {
             persisted.spotlight_retrieved_at_unix,
             Some(CHECK_INTERVAL_SECS * 9 + 1)
         );
-        assert!(persisted.dismissed_spotlight_identity.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

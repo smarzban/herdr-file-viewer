@@ -14,9 +14,7 @@ pub const UNBOUND_KEY_LABEL: &str = "(unbound)";
 
 /// Format the current remote notices as one status line.
 ///
-/// A session dismissal hides every notice. A remembered spotlight dismissal is already represented
-/// by [`crate::update::spotlight_policy::SpotlightCache::status_title`], so it hides only that
-/// spotlight while any update remains visible.
+/// A session dismissal hides every notice without changing the notice snapshot.
 pub fn format_status(
     snapshot: &NoticeSnapshot,
     session_dismissed: bool,
@@ -69,7 +67,6 @@ mod tests {
     fn snapshot(
         detected_release: Option<Version>,
         spotlight_title: Option<&str>,
-        remember_spotlight_dismissal: bool,
     ) -> NoticeSnapshot {
         let mut spotlight = SpotlightCache::default();
         if let Some(title) = spotlight_title {
@@ -79,9 +76,6 @@ mod tests {
                 )),
                 1,
             ));
-        }
-        if remember_spotlight_dismissal {
-            spotlight.dismiss();
         }
         NoticeSnapshot {
             detected_release,
@@ -100,7 +94,7 @@ mod tests {
         let cases = [
             (
                 "none",
-                snapshot(None, None, false),
+                snapshot(None, None),
                 false,
                 Some("?"),
                 Some("u"),
@@ -108,7 +102,7 @@ mod tests {
             ),
             (
                 "update",
-                snapshot(Some(update), None, false),
+                snapshot(Some(update), None),
                 false,
                 Some("?"),
                 Some("u"),
@@ -119,7 +113,6 @@ mod tests {
                 snapshot(
                     None,
                     Some("Project \x1b]8;;https://evil.invalid/\x1b\\Meteor"),
-                    false,
                 ),
                 false,
                 Some("?"),
@@ -128,23 +121,15 @@ mod tests {
             ),
             (
                 "combined",
-                snapshot(Some(update), Some("Project Meteor"), false),
+                snapshot(Some(update), Some("Project Meteor")),
                 false,
                 Some("?"),
                 Some("u"),
                 Some("Update v2.0.0 available · Spotlight: Project Meteor · ? details · u dismiss"),
             ),
             (
-                "remembered spotlight dismissal leaves update",
-                snapshot(Some(update), Some("Project Meteor"), true),
-                false,
-                Some("?"),
-                Some("u"),
-                Some("Update v2.0.0 available · ? details · u dismiss"),
-            ),
-            (
                 "session dismissal hides every notice",
-                snapshot(Some(update), Some("Project Meteor"), false),
+                snapshot(Some(update), Some("Project Meteor")),
                 true,
                 Some("?"),
                 Some("u"),
@@ -167,7 +152,7 @@ mod tests {
             ),
             (
                 "supplied effective labels",
-                snapshot(Some(update), None, false),
+                snapshot(Some(update), None),
                 false,
                 Some("F2"),
                 Some("d"),
@@ -175,7 +160,7 @@ mod tests {
             ),
             (
                 "unbound details",
-                snapshot(Some(update), None, false),
+                snapshot(Some(update), None),
                 false,
                 None,
                 Some("u"),
@@ -183,7 +168,7 @@ mod tests {
             ),
             (
                 "unbound dismiss",
-                snapshot(Some(update), None, false),
+                snapshot(Some(update), None),
                 false,
                 Some("?"),
                 None,
@@ -191,7 +176,7 @@ mod tests {
             ),
             (
                 "empty effective labels normalize as unbound",
-                snapshot(Some(update), None, false),
+                snapshot(Some(update), None),
                 false,
                 Some(""),
                 Some(""),

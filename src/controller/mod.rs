@@ -47,10 +47,7 @@ use crate::presenter::{
 use crate::render::Renderers;
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
-use crate::update::{
-    self, NoticeSnapshot, UpdateState,
-    cache::{CacheDelta, CacheWriter},
-};
+use crate::update::{self, NoticeSnapshot, UpdateState};
 use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -715,9 +712,6 @@ pub struct Controller {
     /// `u` key). It is never reset by a later background replacement, so the current process
     /// cannot revive a dismissed line.
     update_dismissed: bool,
-    /// The T-5 writer held independently of a replaceable notice snapshot. It queues exact
-    /// spotlight dismissals for later sessions without making input or redraw wait for disk.
-    cache_writer: Option<CacheWriter>,
     /// One-shot receiver for a background notice replacement (`None` when no check ran).
     notice_rx: Option<mpsc::Receiver<NoticeSnapshot>>,
     /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
@@ -900,7 +894,6 @@ impl Controller {
             settings_display: None,
             keybindings_display: None,
             update_dismissed: false,
-            cache_writer: None,
             notice_rx: None,
             status_rx: None,
             modal: Modal::None,
@@ -1306,7 +1299,6 @@ impl Controller {
     /// deliver one complete replacement. Called once by the run loop after construction; the
     /// default snapshot keeps every existing no-update call site inert.
     pub fn set_update(&mut self, state: UpdateState) {
-        self.cache_writer = state.initial.cache_writer.clone();
         self.notice_snapshot = state.initial;
         self.notice_rx = state.rx;
     }
@@ -2787,24 +2779,14 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Hide the visible remote-notice line for this session (`u`). The session flag comes first:
-    /// a full or failed cache queue can never delay or reverse the redraw. Only an exact currently
-    /// accepted spotlight identity is sent to the asynchronous cache writer; update dismissal is
-    /// deliberately session-only.
+    /// Hide the visible remote-notice line for this session (`u`). This never changes the
+    /// snapshot or cache, so What's New stays available and a fresh session can show the same row.
     fn dismiss_update(&mut self) -> Effects {
         if self.remote_notice_status().is_none() {
             return Effects::noop();
         }
 
         self.update_dismissed = true;
-        if let (Some(writer), Some(identity)) = (
-            self.cache_writer.as_ref(),
-            self.notice_snapshot.spotlight.accepted_identity(),
-        ) {
-            let _ = writer.enqueue(CacheDelta::DismissSpotlight {
-                identity: identity.to_vec(),
-            });
-        }
         Effects::redraw()
     }
 
@@ -3227,9 +3209,6 @@ impl Controller {
         if let Some(rx) = &self.notice_rx {
             match rx.try_recv() {
                 Ok(snapshot) => {
-                    if let Some(writer) = snapshot.cache_writer.clone() {
-                        self.cache_writer = Some(writer);
-                    }
                     self.notice_snapshot = snapshot;
                     self.notice_rx = None;
                     applied = true;

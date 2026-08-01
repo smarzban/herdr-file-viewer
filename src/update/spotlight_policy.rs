@@ -17,11 +17,11 @@ pub enum SpotlightInput {
     Unavailable,
 }
 
-/// An accepted spotlight. `identity` and `body` retain the exact bytes received from the source.
+/// An accepted spotlight. Its source and body retain exact remote bytes for cache reuse and Help.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedSpotlight {
-    /// The byte-exact whole document, used as the dismissal identity.
-    pub identity: Vec<u8>,
+    /// The byte-exact whole document, retained only for cache reuse.
+    pub(crate) source: Vec<u8>,
     /// The first nonblank level-one heading, neutralized for a one-line status display.
     pub title: String,
     /// Every byte after the consumed title line, retained without rewriting.
@@ -40,8 +40,8 @@ pub enum SpotlightProjection {
 ///
 /// A usable document is valid UTF-8 whose first nonblank line is a `# ` heading with a nonempty
 /// visible title. Leading blank lines are only locating metadata; the stored body starts directly
-/// after the consumed title line. All bytes in that body and in the complete identity are copied
-/// exactly, including terminal-looking bytes which remain for the renderer's normal boundary.
+/// after the consumed title line. All body bytes are copied exactly, including terminal-looking
+/// bytes which remain for the renderer's normal boundary.
 pub fn project(input: SpotlightInput) -> SpotlightProjection {
     match input {
         SpotlightInput::Unavailable => SpotlightProjection::Unavailable,
@@ -88,7 +88,7 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
         }
         let body_start = offset + line.len();
         return Some(AcceptedSpotlight {
-            identity: bytes.clone(),
+            source: bytes.clone(),
             title,
             body: bytes[body_start..].to_vec(),
         });
@@ -126,7 +126,6 @@ pub fn freshness_at_session_start(
 pub struct SpotlightCache {
     accepted: Option<AcceptedSpotlight>,
     retrieved_at_unix: Option<u64>,
-    dismissed_identity: Option<Vec<u8>>,
 }
 
 /// A cache mutation selected by a source projection. Applying `Preserve` is a no-op.
@@ -155,27 +154,14 @@ pub fn cache_delta(projection: SpotlightProjection, retrieved_at_unix: u64) -> S
 }
 
 impl SpotlightCache {
-    /// Rehydrate a persisted dismissal without accepting or displaying cached content. A later
-    /// accepted document retains it only when its exact identity matches.
-    pub fn with_remembered_dismissal(identity: Vec<u8>) -> Self {
-        Self {
-            dismissed_identity: Some(identity),
-            ..Self::default()
-        }
-    }
-
-    /// Apply a selected delta. A changed identity clears a remembered dismissal; an identical one
-    /// retains it. Withdrawal clears accepted content while recording the successful retrieval
-    /// time for future session-start freshness decisions.
+    /// Apply a selected delta. Withdrawal clears accepted content while recording the successful
+    /// retrieval time for future session-start freshness decisions.
     pub fn apply(&mut self, delta: SpotlightCacheDelta) {
         match delta {
             SpotlightCacheDelta::Accepted {
                 spotlight,
                 retrieved_at_unix,
             } => {
-                if self.dismissed_identity.as_deref() != Some(spotlight.identity.as_slice()) {
-                    self.dismissed_identity = None;
-                }
                 self.accepted = Some(spotlight);
                 self.retrieved_at_unix = Some(retrieved_at_unix);
             }
@@ -187,39 +173,19 @@ impl SpotlightCache {
         }
     }
 
-    /// The exact whole-document identity of the currently accepted spotlight. The controller uses
-    /// this only to enqueue a dismissal after it has set its local session flag; callers cannot
-    /// reconstruct an identity from the sanitized title or body.
-    pub(crate) fn accepted_identity(&self) -> Option<&[u8]> {
-        self.accepted
-            .as_ref()
-            .map(|spotlight| spotlight.identity.as_slice())
-    }
-
-    /// Remember dismissal of the currently accepted exact document. There is no status to dismiss
-    /// without accepted content.
-    pub fn dismiss(&mut self) {
-        if let Some(spotlight) = &self.accepted {
-            self.dismissed_identity = Some(spotlight.identity.clone());
-        }
-    }
-
     /// The successful retrieval timestamp, if this cache has one.
     pub fn retrieved_at_unix(&self) -> Option<u64> {
         self.retrieved_at_unix
     }
 
-    /// The status title unless this exact accepted document was dismissed.
+    /// The status title for the accepted spotlight, if any.
     pub fn status_title(&self) -> Option<&str> {
         self.accepted
             .as_ref()
-            .filter(|spotlight| {
-                self.dismissed_identity.as_deref() != Some(spotlight.identity.as_slice())
-            })
             .map(|spotlight| spotlight.title.as_str())
     }
 
-    /// The accepted What's New body, independent of the status dismissal state.
+    /// The accepted What's New body.
     pub fn whats_new_body(&self) -> Option<&[u8]> {
         self.accepted
             .as_ref()
@@ -279,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_input_consumes_the_first_nonblank_h1_and_preserves_body_and_identity_bytes() {
+    fn accepted_input_consumes_the_first_nonblank_h1_and_preserves_body_bytes() {
         // These cases use mixed line endings and terminal-looking bytes in the body. The policy
         // validates only enough to select the title: all accepted source/body bytes remain exact.
         let cases = [
@@ -307,11 +273,6 @@ mod tests {
             let spotlight = accepted(input);
             assert_eq!(spotlight.title, title, "{name}: title from the H1");
             assert_eq!(spotlight.body, body, "{name}: all body bytes are exact");
-            assert_eq!(
-                spotlight.identity,
-                input.as_bytes(),
-                "{name}: whole document identity is byte-exact"
-            );
         }
     }
 
@@ -347,11 +308,6 @@ mod tests {
                 spotlight.title.lines().count(),
                 1,
                 "{name}: status title is one visible line"
-            );
-            assert_eq!(
-                spotlight.identity,
-                input.as_bytes(),
-                "{name}: identity stays exact"
             );
             assert_eq!(spotlight.body, b"body\n", "{name}: body stays exact");
         }
@@ -420,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_preserves_cache_and_dismissal_hides_only_matching_status_not_whats_new_body() {
+    fn unavailable_preserves_accepted_status_and_whats_new_body() {
         let mut cache = SpotlightCache::default();
         cache.apply(cache_delta(
             project(SpotlightInput::Available(b"# First\nfirst body\n".to_vec())),
@@ -432,31 +388,9 @@ mod tests {
             cache, before_unavailable,
             "unavailable input preserves every cache field"
         );
+        assert_eq!(cache.status_title(), Some("First"));
+        assert_eq!(cache.whats_new_body(), Some(b"first body\n".as_slice()));
 
-        cache.dismiss();
-        assert_eq!(
-            cache.status_title(),
-            None,
-            "dismissal suppresses matching status"
-        );
-        assert_eq!(
-            cache.whats_new_body(),
-            Some(b"first body\n".as_slice()),
-            "dismissal never hides accepted What's New body"
-        );
-
-        // Reaccepting the exact document remembers the dismissal because identity is exact bytes.
-        cache.apply(cache_delta(
-            project(SpotlightInput::Available(b"# First\nfirst body\n".to_vec())),
-            30,
-        ));
-        assert_eq!(
-            cache.status_title(),
-            None,
-            "same identity remains dismissed"
-        );
-
-        // A different byte identity is new content, even when the visible title is unchanged.
         cache.apply(cache_delta(
             project(SpotlightInput::Available(
                 b"# First\nchanged body\n".to_vec(),
@@ -497,21 +431,20 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_does_not_forget_a_dismissal_of_the_same_document() {
+    fn withdrawal_then_reacceptance_restores_the_spotlight_status() {
         let input = b"# Title\nbody\n".to_vec();
         let mut cache = SpotlightCache::default();
         cache.apply(cache_delta(
             project(SpotlightInput::Available(input.clone())),
             10,
         ));
-        cache.dismiss();
         cache.apply(cache_delta(SpotlightProjection::Withdrawn, 20));
         cache.apply(cache_delta(project(SpotlightInput::Available(input)), 30));
 
         assert_eq!(
             cache.status_title(),
-            None,
-            "an identical spotlight stays dismissed after a transient withdrawal"
+            Some("Title"),
+            "an accepted spotlight always reaches status policy"
         );
     }
 

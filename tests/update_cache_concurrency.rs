@@ -77,28 +77,9 @@ fn cache_writer_fixture() {
 }
 
 #[test]
-fn refresh_and_dismissal_contend_after_the_same_starting_revision() {
-    let dir = TempDir::new();
-    let before = starting_cache(None);
-    store(dir.path(), &before);
-
-    run_contending_writers(dir.path(), "refresh-new", "dismiss-old", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: Some(NEW.to_vec()),
-            spotlight_retrieved_at_unix: Some(70),
-            ..before
-        }),
-        "contending writers retain both complete intents"
-    );
-}
-
-#[test]
 fn independent_refreshes_contend_after_the_same_starting_revision_without_loss() {
     let dir = TempDir::new();
-    let before = starting_cache(None);
+    let before = starting_cache();
     store(dir.path(), &before);
 
     run_contending_writers(dir.path(), "refresh-new", "refresh-release", &before);
@@ -118,106 +99,9 @@ fn independent_refreshes_contend_after_the_same_starting_revision_without_loss()
 }
 
 #[test]
-fn refresh_then_dismissal_rereads_the_complete_revision_after_exclusivity() {
-    let dir = TempDir::new();
-    let before = starting_cache(None);
-    store(dir.path(), &before);
-
-    run_ordered_writers(dir.path(), "refresh-new", "dismiss-old", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: Some(NEW.to_vec()),
-            spotlight_retrieved_at_unix: Some(70),
-            ..before
-        }),
-        "the stale dismissal applies to the newly reread cache, not its old snapshot"
-    );
-}
-
-#[test]
-fn dismissal_then_refresh_preserves_the_new_document_in_the_opposite_order() {
-    let dir = TempDir::new();
-    let before = starting_cache(None);
-    store(dir.path(), &before);
-
-    run_ordered_writers(dir.path(), "dismiss-old", "refresh-new", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: Some(NEW.to_vec()),
-            spotlight_retrieved_at_unix: Some(70),
-            ..before
-        }),
-        "a changed document clears a dismissal of the old exact identity"
-    );
-}
-
-#[test]
-fn dismissal_then_withdrawal_retains_the_dismissed_exact_identity() {
-    let dir = TempDir::new();
-    let before = starting_cache(None);
-    store(dir.path(), &before);
-
-    run_ordered_writers(dir.path(), "dismiss-old", "withdraw", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: None,
-            spotlight_retrieved_at_unix: Some(80),
-            dismissed_spotlight_identity: Some(OLD.to_vec()),
-            ..before
-        }),
-        "withdrawal clears content but does not erase the completed dismissal intent"
-    );
-}
-
-#[test]
-fn withdrawal_then_dismissal_does_not_dismiss_content_that_is_already_gone() {
-    let dir = TempDir::new();
-    let before = starting_cache(None);
-    store(dir.path(), &before);
-
-    run_ordered_writers(dir.path(), "withdraw", "dismiss-old", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: None,
-            spotlight_retrieved_at_unix: Some(80),
-            ..before
-        }),
-        "the stale dismissal is checked against the reread withdrawn revision"
-    );
-}
-
-#[test]
-fn changed_identity_does_not_carry_a_prior_dismissal_into_the_new_document() {
-    let dir = TempDir::new();
-    let before = starting_cache(Some(OLD.to_vec()));
-    store(dir.path(), &before);
-
-    run_ordered_writers(dir.path(), "dismiss-old", "refresh-new", &before);
-
-    assert_eq!(
-        load(dir.path()),
-        Some(Cache {
-            spotlight: Some(NEW.to_vec()),
-            spotlight_retrieved_at_unix: Some(70),
-            dismissed_spotlight_identity: None,
-            ..before
-        }),
-        "only an equal identity carries a dismissal forward"
-    );
-}
-
-#[test]
 fn reader_sees_only_complete_revisions_while_a_same_directory_stage_waits_to_publish() {
     let dir = TempDir::new();
-    let before = starting_cache(None);
+    let before = starting_cache();
     store(dir.path(), &before);
     let mut stager = spawn_fixture(dir.path(), "stage", "stager", None);
 
@@ -240,7 +124,7 @@ fn reader_sees_only_complete_revisions_while_a_same_directory_stage_waits_to_pub
 #[test]
 fn cache_writer_enqueues_intents_without_waiting_for_a_held_lock_and_drains_on_last_drop() {
     let dir = TempDir::new();
-    let before = starting_cache(None);
+    let before = starting_cache();
     store(dir.path(), &before);
     let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
     wait_for(&marker(dir.path(), "ready", "holder"));
@@ -251,9 +135,6 @@ fn cache_writer_enqueues_intents_without_waiting_for_a_held_lock_and_drains_on_l
     assert!(writer.enqueue(CacheDelta::RefreshSpotlight {
         spotlight: NEW.to_vec(),
         retrieved_at_unix: 70,
-    }));
-    assert!(writer.enqueue(CacheDelta::DismissSpotlight {
-        identity: NEW.to_vec(),
     }));
     assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
         retrieved_at_unix: 80,
@@ -273,17 +154,16 @@ fn cache_writer_enqueues_intents_without_waiting_for_a_held_lock_and_drains_on_l
         Some(Cache {
             spotlight: None,
             spotlight_retrieved_at_unix: Some(80),
-            dismissed_spotlight_identity: Some(NEW.to_vec()),
             ..before
         }),
-        "the final handle drains refresh, dismissal, and withdrawal in enqueue order"
+        "the final handle drains refresh and withdrawal in enqueue order"
     );
 }
 
 #[test]
 fn cache_writer_concurrent_final_drops_drain_before_both_return() {
     let dir = TempDir::new();
-    let before = starting_cache(None);
+    let before = starting_cache();
     store(dir.path(), &before);
     let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
     wait_for(&marker(dir.path(), "ready", "holder"));
@@ -342,15 +222,12 @@ fn cache_writer_concurrent_final_drops_drain_before_both_return() {
 #[test]
 fn cache_writer_shutdown_is_bounded_for_multiple_deltas_when_the_cache_lease_stays_held() {
     let dir = TempDir::new();
-    let before = starting_cache(None);
+    let before = starting_cache();
     store(dir.path(), &before);
     let mut holder = spawn_fixture(dir.path(), "lock-holder", "holder", None);
     wait_for(&marker(dir.path(), "ready", "holder"));
 
     let writer = CacheWriter::new(dir.path().to_path_buf());
-    assert!(writer.enqueue(CacheDelta::DismissSpotlight {
-        identity: OLD.to_vec(),
-    }));
     assert!(writer.enqueue(CacheDelta::WithdrawSpotlight {
         retrieved_at_unix: 80,
     }));
@@ -420,7 +297,7 @@ fn cache_writer_ignores_a_cache_write_failure_without_delaying_shutdown() {
     );
 }
 
-fn starting_cache(dismissed_spotlight_identity: Option<Vec<u8>>) -> Cache {
+fn starting_cache() -> Cache {
     Cache {
         last_check_unix: 10,
         latest_seen: Some("1.2.0".into()),
@@ -430,7 +307,6 @@ fn starting_cache(dismissed_spotlight_identity: Option<Vec<u8>>) -> Cache {
         }),
         spotlight: Some(OLD.to_vec()),
         spotlight_retrieved_at_unix: Some(20),
-        dismissed_spotlight_identity,
         ..Cache::default()
     }
 }
@@ -444,9 +320,6 @@ fn fixture_delta(action: &str) -> CacheDelta {
         "refresh-release" => CacheDelta::RefreshRelease {
             checked_at_unix: 90,
             detected_release: Some("1.3.0".into()),
-        },
-        "dismiss-old" => CacheDelta::DismissSpotlight {
-            identity: OLD.to_vec(),
         },
         "withdraw" => CacheDelta::WithdrawSpotlight {
             retrieved_at_unix: 80,
@@ -475,18 +348,6 @@ fn run_contending_writers(dir: &Path, first_action: &str, second_action: &str, b
     release(dir, "holder");
     finish_fixture(dir, "holder", &mut holder);
     finish_fixture(dir, "first", &mut first);
-    finish_fixture(dir, "second", &mut second);
-}
-
-fn run_ordered_writers(dir: &Path, first_action: &str, second_action: &str, before: &Cache) {
-    let mut first = spawn_fixture(dir, "writer", "first", Some(first_action));
-    let mut second = spawn_fixture(dir, "writer", "second", Some(second_action));
-
-    assert_ready_snapshots(dir, before);
-
-    release(dir, "first");
-    finish_fixture(dir, "first", &mut first);
-    release(dir, "second");
     finish_fixture(dir, "second", &mut second);
 }
 

@@ -51,7 +51,7 @@ fn version() -> Version {
     }
 }
 
-fn snapshot(remote: bool, spotlight: bool, install: bool, dismissed: bool) -> NoticeSnapshot {
+fn snapshot(remote: bool, spotlight: bool, install: bool) -> NoticeSnapshot {
     let mut cached_spotlight = SpotlightCache::default();
     if spotlight {
         cached_spotlight.apply(cache_delta(
@@ -60,9 +60,6 @@ fn snapshot(remote: bool, spotlight: bool, install: bool, dismissed: bool) -> No
             )),
             1,
         ));
-        if dismissed {
-            cached_spotlight.dismiss();
-        }
     }
     NoticeSnapshot {
         detected_release: install.then(version),
@@ -94,7 +91,7 @@ fn content_subset_matrix_keeps_three_documents_ordered_and_locally_separated() {
                 let mut renderer = RecordingRenderer::default();
                 let install_copy = install_guidance();
                 let body = compose_whats_new(
-                    &snapshot(details, spotlight, release, false),
+                    &snapshot(details, spotlight, release),
                     EMBEDDED,
                     &install_copy,
                     Instant::now(),
@@ -156,7 +153,7 @@ fn remote_details_stay_exact_while_embedded_unreleased_is_excluded() {
     let mut renderer = RecordingRenderer::default();
 
     let body = compose_whats_new(
-        &snapshot(true, false, true, false),
+        &snapshot(true, false, true),
         embedded,
         &install_guidance(),
         Instant::now(),
@@ -189,7 +186,7 @@ fn embedded_only_renders_every_embedded_released_section() {
     let mut renderer = RecordingRenderer::default();
 
     let body = compose_whats_new(
-        &snapshot(false, false, false, false),
+        &snapshot(false, false, false),
         embedded,
         &install_guidance(),
         Instant::now(),
@@ -217,7 +214,7 @@ fn detected_release_with_details_adds_local_install_guidance() {
     let mut renderer = RecordingRenderer::default();
 
     let body = compose_whats_new(
-        &snapshot(true, false, true, false),
+        &snapshot(true, false, true),
         EMBEDDED,
         &install_guidance(),
         Instant::now(),
@@ -242,7 +239,7 @@ fn detected_release_without_details_still_adds_local_install_guidance() {
     let mut renderer = RecordingRenderer::default();
 
     let body = compose_whats_new(
-        &snapshot(false, false, true, false),
+        &snapshot(false, false, true),
         EMBEDDED,
         &install_guidance(),
         Instant::now(),
@@ -267,11 +264,11 @@ fn detected_release_without_details_still_adds_local_install_guidance() {
 }
 
 #[test]
-fn remembered_dismissed_spotlight_remains_in_whats_new() {
+fn accepted_spotlight_remains_in_whats_new() {
     let mut renderer = RecordingRenderer::default();
 
     let body = compose_whats_new(
-        &snapshot(false, true, false, true),
+        &snapshot(false, true, false),
         EMBEDDED,
         &install_guidance(),
         Instant::now(),
@@ -286,7 +283,7 @@ fn remembered_dismissed_spotlight_remains_in_whats_new() {
             .map(|call| call.document.as_str())
             .collect::<Vec<_>>(),
         vec![SPOTLIGHT, EMBEDDED],
-        "a remembered status dismissal never removes accepted current spotlight content from What's New"
+        "an accepted spotlight remains in What's New independently of status-row dismissal"
     );
     assert!(flatten(&body).contains(SPOTLIGHT));
 }
@@ -299,7 +296,7 @@ fn absolute_budget_passes_decreasing_remaining_to_each_document() {
     };
 
     let _ = compose_whats_new(
-        &snapshot(true, true, true, false),
+        &snapshot(true, true, true),
         EMBEDDED,
         &install_guidance(),
         Instant::now(),
@@ -334,7 +331,7 @@ fn already_expired_open_skips_delegation_and_keeps_neighboring_documents() {
     let install_copy = install_guidance();
 
     let body = compose_whats_new(
-        &snapshot(true, true, true, false),
+        &snapshot(true, true, true),
         EMBEDDED,
         &install_copy,
         Instant::now() - WHATS_NEW_COMPOSE_TIMEOUT,
