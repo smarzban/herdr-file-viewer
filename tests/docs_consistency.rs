@@ -244,6 +244,43 @@ fn configuration_doc_documents_config_file() {
 }
 
 #[test]
+fn one_update_control_documents_all_remote_behavior() {
+    // AC-57: `update_check` is the one resolved control for every advisory remote-notice
+    // projection. The reference and copyable template must keep that whole boundary together,
+    // without inventing a narrower setting or environment-variable surface.
+    for (document_name, document) in [
+        ("docs/configuration.md", CONFIG_DOC),
+        ("config.example.toml", CONFIG_EXAMPLE),
+    ] {
+        let text = normalized_markdown_text(&document.replace("\n# ", " "));
+        for required in [
+            "update_check",
+            "HERDR_FILE_VIEWER_NO_UPDATE_CHECK",
+            "config > env > default",
+            "Effective off disables all remote behavior and cached projection",
+            "release discovery",
+            "tagged release details",
+            "default-HEAD project spotlight retrieval",
+            "cached remote content",
+            "status row",
+            "remote additions to What's New",
+            "Effective on permits the bounded, fail-silent daily pipeline",
+            "does not guarantee network availability or content",
+            "no spotlight-specific, release-details-specific, status-only, or cache-projection setting or environment variable",
+        ] {
+            assert!(
+                text.contains(required),
+                "{document_name} must document that update_check controls `{required}`"
+            );
+        }
+    }
+    assert!(
+        CONFIG_DOC.contains("Dismiss the whole remote-notice status row for this session"),
+        "the dismiss_update action must describe its whole remote-notice row/session behavior"
+    );
+}
+
+#[test]
 fn configuration_doc_documents_keys_remapping() {
     // AC-22: the configuration reference must document the `[keys]` remapping surface -- that a
     // binding is written `intent_name = <key spec>` (a string AND an array example), that only

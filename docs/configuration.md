@@ -68,7 +68,7 @@ reveal = "nautilus"
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 show_ignored = false        # true to show gitignored files at startup (the `i` key still toggles)
 compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
-update_check = true         # false to disable the once-a-day update check
+update_check = true         # false to disable all remote-notice behavior
 confirm_discard = true      # false to discard annotations without confirming (on quit / worktree switch)
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
@@ -78,6 +78,15 @@ tree_position = "left"      # which side the directory tree sits on: "left" (def
 preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
 ```
+
+`update_check` is the single effective remote-notice control. It follows the existing `config > env
+> default` precedence, with `$HERDR_FILE_VIEWER_NO_UPDATE_CHECK` as its opt-out environment tier
+when the config key is unset. Effective off disables all remote behavior and cached projection:
+release discovery, tagged release details, default-HEAD project spotlight retrieval, cached remote
+content, its status row, and remote additions to What's New. Effective on permits the bounded,
+fail-silent daily pipeline, but does not guarantee network availability or content. There is no
+spotlight-specific, release-details-specific, status-only, or cache-projection setting or environment
+variable. For the bounded source and cache contract, see [remote notices](remote-notices.md).
 
 `tree_width` and `tree_max_cols` **together** decide the tree's startup width, and the **smaller of
 the two wins**: the tree is drawn at `min(tree_width% of the pane, tree_max_cols)`. So if you set
@@ -205,7 +214,7 @@ customized).
 | | `prev_match` | `N` | Jump to the previous search match (wraps) |
 | | `next_changed` | `]` | Jump the tree cursor to the next changed file (wraps) |
 | | `prev_changed` | `[` | Jump the tree cursor to the previous changed file (wraps) |
-| **Session** | `dismiss_update` | `u` | Dismiss the update-available banner for this session |
+| **Session** | `dismiss_update` | `u` | Dismiss the whole remote-notice status row for this session |
 | | `switch_worktree` | `W` | Open the worktree picker to re-root at another git worktree |
 | | `show_help` | `?` | Open the in-app help overlay (What's New and About) |
 | | `close` | `q`, `Esc` | Close the viewer and return to the prior pane |
