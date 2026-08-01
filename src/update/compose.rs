@@ -39,7 +39,7 @@ pub fn install_guidance() -> String {
 
 /// Compose the What's New body under one absolute Help-open deadline.
 ///
-/// Documents are independent and always ordered as the accepted spotlight body, Available updates,
+/// Documents are independent and always ordered as Available updates, the accepted spotlight body,
 /// then the full embedded released history. Available updates combines exact release details when
 /// present with local install guidance for a detected release. Once the deadline is exhausted,
 /// remaining documents use the shared safe plain-text fallback without invoking `renderer`.
@@ -57,9 +57,6 @@ pub fn compose_whats_new(
         .whats_new_body()
         .and_then(|body| std::str::from_utf8(body).ok());
     let mut documents = Vec::with_capacity(3);
-    if let Some(body) = spotlight_body {
-        documents.push(body.to_owned());
-    }
     if snapshot.detected_release.is_some() {
         let mut available_updates = snapshot
             .release_details
@@ -74,6 +71,9 @@ pub fn compose_whats_new(
         }
         available_updates.push_str(install_copy);
         documents.push(available_updates);
+    }
+    if let Some(body) = spotlight_body {
+        documents.push(body.to_owned());
     }
     if !embedded_releases.is_empty() {
         documents.push(embedded_releases);

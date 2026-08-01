@@ -138,8 +138,8 @@ fn remote_and_embedded_history_share_the_strict_release_section_matrix() {
 }
 
 #[test]
-fn content_subset_matrix_keeps_three_documents_ordered_and_locally_separated() {
-    // The only independent documents are spotlight, Available updates, and embedded history.
+fn content_subset_matrix_puts_release_notes_before_spotlight_and_embedded_history() {
+    // The only independent documents are Available updates, spotlight, and embedded history.
     // Details without a detected release are impossible policy leftovers and must not make an
     // update document on their own.
     for details in [false, true] {
@@ -163,11 +163,11 @@ fn content_subset_matrix_keeps_three_documents_ordered_and_locally_separated() {
                     }
                 });
                 let mut expected = Vec::new();
-                if spotlight {
-                    expected.push(SPOTLIGHT.to_owned());
-                }
                 if let Some(updates) = available_updates {
                     expected.push(updates);
+                }
+                if spotlight {
+                    expected.push(SPOTLIGHT.to_owned());
                 }
                 expected.push(EMBEDDED.to_owned());
 
@@ -178,7 +178,7 @@ fn content_subset_matrix_keeps_three_documents_ordered_and_locally_separated() {
                         .map(|call| call.document.as_str())
                         .collect::<Vec<_>>(),
                     expected.iter().map(String::as_str).collect::<Vec<_>>(),
-                    "details={details}, spotlight={spotlight}, release={release}: spotlight, Available updates, and embedded history are the only ordered documents"
+                    "details={details}, spotlight={spotlight}, release={release}: Available updates come first, then spotlight, then embedded history"
                 );
                 assert!(
                     renderer.calls.len() <= 3 && renderer.calls.iter().all(|call| call.width == 71),
