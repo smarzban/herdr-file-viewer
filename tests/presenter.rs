@@ -3380,6 +3380,40 @@ fn help_overlay_indicates_active_section_and_shows_footer_hints() {
 }
 
 #[test]
+fn help_whats_new_body_preserves_the_controllers_composed_document_order() {
+    // T-19: the Presenter receives one safe Text body from the controller. It displays that body,
+    // without rebuilding/reordering remote spotlight, fixed local install copy, or embedded history.
+    let mut state = sample_state();
+    state.help = Some(HelpView {
+        active: 0,
+        labels: vec!["What's New".to_string(), "About".to_string()],
+        body: to_text(
+            "SPOTLIGHT-FIRST\n\n\
+             DETAILS-SECOND\n\
+             To install this update, run:\n\n\
+                 herdr plugin install smarzban/herdr-file-viewer\n\n\
+             EMBEDDED-THIRD",
+        ),
+        scroll: 0,
+        hint: "Tab/←→ switch · Esc/q close".to_string(),
+        center: false,
+    });
+
+    let output = render(&state, 100, 24);
+    let spotlight = output.find("SPOTLIGHT-FIRST").unwrap();
+    let details = output.find("DETAILS-SECOND").unwrap();
+    let embedded = output.find("EMBEDDED-THIRD").unwrap();
+    assert!(
+        spotlight < details && details < embedded,
+        "the Help body stays in controller-composed order:\n{output}"
+    );
+    assert!(
+        output.contains("herdr plugin install smarzban/herdr-file-viewer"),
+        "the fixed install command is displayed as body text:\n{output}"
+    );
+}
+
+#[test]
 fn help_overlay_active_tab_is_reversed() {
     // AC-5: the active tab ("About") is rendered with a visible indicator (REVERSED), distinct
     // from the inactive tab ("What's New").

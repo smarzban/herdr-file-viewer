@@ -44,7 +44,7 @@ use crate::presenter::{
     FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView, PickerView,
     ViewState,
 };
-use crate::render::{Prepared, Renderers};
+use crate::render::Renderers;
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{
@@ -83,12 +83,6 @@ const SPLIT_STEP: u16 = 5;
 const SPLIT_DRAG_MIN: u16 = 10;
 /// How many columns one horizontal-scroll keypress moves the content pane.
 const HSCROLL_STEP: u16 = 8;
-/// Wall-clock bound for the synchronous What's New markdown render in `open_help`. The render runs
-/// on the input thread (the design settled on prerender-at-open), so it must be bounded well within
-/// the AC-22 responsiveness budget — far tighter than the shared 5s content `RENDER_TIMEOUT`, which
-/// would let a wedged `glow` freeze input for up to 5s. On timeout the existing render path falls
-/// back to plain text + a notice (AC-15). This reconciles prerender-at-open with AC-22.
-const HELP_RENDER_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long a [`Flash`] stays at full brightness before it starts to dim.
 const FLASH_FULL: Duration = Duration::from_millis(1600);
 /// How long a [`Flash`] lingers dimmed after [`FLASH_FULL`] before it disappears entirely. The
@@ -314,8 +308,8 @@ pub struct Components {
     pub providers: Box<dyn Fn(&Resolved) -> RootProviders>,
     pub editor: Box<dyn EditorHandoff>,
     pub clipboard: Box<dyn Clipboard>,
-    /// The external renderer commands used for the in-app help overlay's What's New section
-    /// (render CHANGELOG_MD as markdown via the same renderer the content pane uses).
+    /// The external renderer commands used for independently rendering the in-app Help What's New
+    /// documents through the injected markdown command.
     /// `None` ⇒ the markdown renderer is absent; `render::render` falls back to plain text
     /// and a notice (AC-15) — the same fallback it applies for any missing renderer.
     pub renderers: Option<Renderers>,
@@ -671,7 +665,7 @@ pub struct Controller {
     /// The provider factory (ADR-0004), kept so a re-root can rebuild the root-bound providers
     /// (Git Service + Content Renderer) against the new root.
     providers: Box<dyn Fn(&Resolved) -> RootProviders>,
-    /// The external renderer commands for the help overlay's What's New section.
+    /// The external renderer commands for independently rendering Help's What's New documents.
     /// Built from `Components::renderers` at construction; `None` ⇒ fallback.
     renderers: Renderers,
     /// Render dispatch to the worker thread (AC-23). `latest_seq` is the most recently
@@ -3356,22 +3350,14 @@ fn is_markdown(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::HELP_RENDER_TIMEOUT;
-
     #[test]
-    fn help_render_timeout_within_ac22_budget() {
-        // FIX-B / AC-22: open_help renders What's New synchronously on the input thread, so the
-        // worst-case input-thread block is HELP_RENDER_TIMEOUT. Since R3 item 1, `run_renderer`
-        // enforces a SINGLE combined wall-clock deadline (the stdout-wait and the exit-wait share
-        // one `timeout`, not two), so the real worst-case is now exactly `HELP_RENDER_TIMEOUT`, not
-        // ~2× it — making this `≤ 300ms` assertion a TRUE single wall-clock bound rather than a
-        // best-case one. A slow/wedged renderer is killed at it and the plain-text fallback applies.
-        // This pins that bound deterministically within the 300 ms responsiveness budget: bumping
-        // the timeout past it fails HERE, covering the slow real-renderer path that a wall-clock
-        // timing assertion could only check flakily.
-        assert!(
-            HELP_RENDER_TIMEOUT <= std::time::Duration::from_millis(300),
-            "HELP_RENDER_TIMEOUT ({HELP_RENDER_TIMEOUT:?}) must stay within the 300ms AC-22 budget"
+    fn help_composition_timeout_is_the_single_200ms_budget() {
+        // T-19: the controller must not retain or stack its former help-render timeout. T-17 owns
+        // the one absolute deadline shared across every independently rendered What's New document.
+        assert_eq!(
+            crate::update::compose::WHATS_NEW_COMPOSE_TIMEOUT,
+            std::time::Duration::from_millis(200),
+            "What's New composition owns the one 200ms Help-open budget"
         );
     }
 

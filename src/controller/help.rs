@@ -111,58 +111,38 @@ impl Controller {
         self.keybindings_display = Some(text);
     }
 
-    /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds two sections:
-    ///
-    /// - What's New: the embedded CHANGELOG rendered as markdown via `render::render`
-    ///   (AC-14). If the markdown renderer is absent/times out, `render::render` falls back to
-    ///   plain text + a notice (AC-15) — no extra handling needed here.
-    /// - About: the about_text() string rendered as plain text.
+    /// Open the in-app help overlay (AC-1, AC-6, AC-19). Builds its first section from the
+    /// already-complete in-memory notice snapshot, fixed local install copy, and embedded released
+    /// changelog. The composer owns the single 200 ms absolute deadline and document order; this
+    /// controller only supplies the injected one-document markdown renderer. About derives from the
+    /// same current snapshot, with no I/O in either path.
     ///
     /// Sets the active section to 0 (What's New) and returns `Effects::redraw()`.
     pub(super) fn open_help(&mut self) -> Effects {
-        let prepared = Prepared::Full {
-            // Render from the first version heading onward — the changelog's file-meta preamble
-            // (title + Keep-a-Changelog/SemVer paragraph + link refs) doesn't belong in What's New.
-            text: crate::help::changelog_display().to_owned(),
-        };
-        // The render is synchronous on the input thread, so bound it to the help-specific
-        // `HELP_RENDER_TIMEOUT` (within the AC-22 budget) rather than the shared 5s `RENDER_TIMEOUT`
-        // — a slow/wedged renderer must not freeze input. On timeout `render::render` already falls
-        // back to plain text + a notice (AC-15), so no new handling is needed here. This reconciles
-        // the design's prerender-at-open with AC-22's responsiveness budget.
-        //
-        // Wrap the changelog at the help box's fixed body width (NOT the default `-w 0`): glow then
-        // wraps with its own hanging indents, and the Presenter's `Paragraph::wrap` becomes a no-op
-        // that preserves them. The width is the SAME constant the layout draws the body at
-        // (`presenter::help_body_text_width`), so glow's wrapped lines fit exactly — never wider (a
-        // wider glow wrap would re-introduce a flat 1-char re-wrap in the Presenter). The box is
-        // fixed-width, so there is nothing to re-render on resize.
-        let r = Renderers {
-            timeout: HELP_RENDER_TIMEOUT,
-            markdown: crate::render::with_wrap_width(
-                &self.renderers.markdown,
-                crate::presenter::help_body_text_width(),
-            ),
-            ..self.renderers.clone()
-        };
-        // The embedded CHANGELOG is small and never user-tunable, so the default caps apply.
-        let (whats_new_body, _notice) = crate::render::render(
-            &r,
-            &prepared,
-            ViewMode::RenderedMarkdown,
-            None,
-            None,
-            crate::render::Caps::default(),
+        // The compositor's source set is deliberately closed over only local, already-projected
+        // state. It must not ask the Gateway/cache/Git/config for fresh facts while input is blocked.
+        // `render_markdown_section` applies the fixed help body width to each independent document;
+        // the composer passes it one decreasing remainder from its own absolute 200 ms deadline.
+        let install_copy = crate::update::compose::install_guidance();
+        let markdown = self.renderers.markdown.clone();
+        let whats_new_body = crate::update::compose::compose_whats_new(
+            self.notice_snapshot(),
+            crate::help::CHANGELOG_MD,
+            &install_copy,
+            Instant::now(),
+            crate::presenter::help_body_text_width(),
+            &mut |document: &str, width, remaining| -> Text<'static> {
+                crate::render::render_markdown_section(&markdown, document, width, remaining).0
+            },
         );
         let whats_new = HelpSectionState {
             label: HelpSection::WhatsNew.label(),
             body: whats_new_body,
             scroll: 0,
         };
-        // T-8 keeps About's release-only status seam while the controller owns the broader
-        // snapshot. T-13 replaces this temporary projection with the complete notice policy.
-        let detected_release = self.notice_snapshot().detected_release;
-        let about_body = crate::help::about_text(detected_release);
+        // About is a pure projection of the current snapshot's detected release. It never probes
+        // source or cache state while Help is opening.
+        let about_body = crate::help::about_text(self.notice_snapshot());
         let about = HelpSectionState {
             label: HelpSection::About.label(),
             body: crate::render::to_text(&about_body),
