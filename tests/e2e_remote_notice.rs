@@ -211,6 +211,9 @@ fn cached_remote_notices_render_without_external_effects_or_workspace_mutation()
         .expect("viewer renders its workspace");
     session.send("?").expect("open What's New");
     session
+        .expect(RELEASE_DETAILS_MARKER)
+        .expect("detected release details are visibly displayed before effect checks");
+    session
         .expect(SPOTLIGHT_MARKER)
         .expect("accepted spotlight body is rendered in What's New");
     session
@@ -231,10 +234,6 @@ fn cached_remote_notices_render_without_external_effects_or_workspace_mutation()
     session
         .expect("C1_SAFE_BEFORE31mC1_SAFE_AFTERC1_SAFE_TAIL")
         .expect("C1 controls are neutralized while surrounding text remains visible");
-    session
-        .expect(RELEASE_DETAILS_MARKER)
-        .expect("detected release details are visibly displayed before effect checks");
-
     session.send("?").expect("close What's New");
     // This is only an input-boundary gap, matching `e2e_help`: a lone modal close key must be
     // read before `u`, never a freshness or network-timing guess.
