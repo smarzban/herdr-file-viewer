@@ -1,10 +1,11 @@
 //! What's New composition: independent documents under one Help-open deadline.
 
+use herdr_file_viewer::help::released_changelog;
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::update::compose::{
     MarkdownSectionRenderer, WHATS_NEW_COMPOSE_TIMEOUT, compose_whats_new, install_guidance,
 };
-use herdr_file_viewer::update::release_policy::CachedReleaseDetails;
+use herdr_file_viewer::update::release_policy::{CachedReleaseDetails, eligible_release_sections};
 use herdr_file_viewer::update::spotlight_policy::{
     SpotlightCache, SpotlightInput, cache_delta, project,
 };
@@ -77,6 +78,63 @@ fn flatten(text: &Text<'_>) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn remote_and_embedded_history_share_the_strict_release_section_matrix() {
+    let changelog = concat!(
+        "# Changelog\r\n\r\n",
+        "## [Unreleased]\r\n",
+        "- pending\r\n\r\n",
+        "## [2.0.0-rc.1]\n",
+        "- prerelease\n\n",
+        "## [2.0.0+build.7]\n",
+        "- build metadata\n\n",
+        "## [v2.0.0]\n",
+        "- tag spelling is not a changelog heading\n\n",
+        "## [2.0.0] malformed suffix\n",
+        "- malformed suffix\n\n",
+        "## [2.0.0] - stable detail\r\n",
+        "- source order second\r\n\r\n",
+        "## [1.0.0]\n",
+        "- first duplicate\n\n",
+        "## [3.0.0] - newest\n",
+        "- source order third\n\n",
+        "## [1.0.0] - duplicate\r\n",
+        "- source order fourth\r\n\r\n",
+        "[1.0.0]: https://example.test/compare\r\n"
+    );
+    let stable_2 = "## [2.0.0] - stable detail\r\n- source order second\r\n\r\n";
+    let first_1 = "## [1.0.0]\n- first duplicate\n\n";
+    let stable_3 = "## [3.0.0] - newest\n- source order third\n\n";
+    let final_1 = concat!(
+        "## [1.0.0] - duplicate\r\n",
+        "- source order fourth\r\n\r\n",
+        "[1.0.0]: https://example.test/compare\r\n"
+    );
+
+    assert_eq!(
+        released_changelog(changelog),
+        format!("{stable_2}{first_1}{stable_3}{final_1}"),
+        "embedded history accepts exactly stable headings in source order and retains final-section references"
+    );
+    assert_eq!(
+        eligible_release_sections(
+            changelog,
+            Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            },
+            Version {
+                major: 3,
+                minor: 0,
+                patch: 0,
+            },
+        ),
+        vec![stable_3, stable_2, first_1, final_1],
+        "remote details use the same acceptance rules, preserve source slices, and sort accepted releases newest first"
+    );
 }
 
 #[test]

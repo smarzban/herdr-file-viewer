@@ -13,38 +13,10 @@ pub const CHANGELOG_MD: &str = include_str!("../CHANGELOG.md");
 /// `MAJOR.MINOR.PATCH` headings are release history. The link references after the final release
 /// remain part of that release's source slice, as they have always been in the Help display.
 pub fn released_changelog(changelog: &str) -> String {
-    let mut display = String::new();
-    let mut section_start = None;
-    let mut offset = 0;
-
-    for line in changelog.split_inclusive('\n') {
-        if line.starts_with("## ")
-            && let Some(start) = section_start.replace(offset)
-        {
-            append_released_section(&mut display, &changelog[start..offset]);
-        }
-        offset += line.len();
-    }
-    if let Some(start) = section_start {
-        append_released_section(&mut display, &changelog[start..]);
-    }
-
-    display
-}
-
-fn append_released_section(display: &mut String, section: &str) {
-    let Some(heading) = section.lines().next() else {
-        return;
-    };
-    let Some(rest) = heading.trim_end_matches('\r').strip_prefix("## [") else {
-        return;
-    };
-    let Some((version, _)) = rest.split_once(']') else {
-        return;
-    };
-    if crate::update::Version::parse(version).is_some() {
-        display.push_str(section);
-    }
+    crate::update::release_policy::release_sections(changelog)
+        .into_iter()
+        .map(|section| section.text)
+        .collect()
 }
 
 /// The What's New body source: the embedded released changelog, with file metadata and

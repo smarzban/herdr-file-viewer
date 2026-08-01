@@ -2,9 +2,43 @@
 
 use super::Version;
 
+/// Scan exact stable release sections from a changelog in source order.
+///
+/// A section starts at a level-two heading and ends at the next level-two heading, valid or not.
+/// Its heading must be exactly `## [MAJOR.MINOR.PATCH]` or add a ` - ` suffix. The returned slices
+/// borrow `changelog`, preserving every accepted byte, including final-section link references.
+pub(crate) fn release_sections(changelog: &str) -> Vec<ReleaseSection<'_>> {
+    let mut sections = Vec::new();
+    let mut section_start = None;
+    let mut section_version = None;
+    let mut offset = 0;
+
+    for line in changelog.split_inclusive('\n') {
+        if is_level_two_heading(line) {
+            if let (Some(start), Some(version)) = (section_start, section_version) {
+                sections.push(ReleaseSection {
+                    version,
+                    text: &changelog[start..offset],
+                });
+            }
+            section_start = Some(offset);
+            section_version = release_heading_version(line);
+        }
+        offset += line.len();
+    }
+
+    if let (Some(start), Some(version)) = (section_start, section_version) {
+        sections.push(ReleaseSection {
+            version,
+            text: &changelog[start..],
+        });
+    }
+
+    sections
+}
+
 /// Return the exact source slices for releases newer than `installed` through `detected`, sorted
-/// newest first. A section begins at a valid `## [MAJOR.MINOR.PATCH]` heading and ends at the next
-/// level-two heading, valid or not, so malformed headings never leak into an accepted section.
+/// newest first.
 ///
 /// This is deliberately a narrow changelog parser, not a Markdown parser. The returned slices
 /// borrow `changelog`, preserving every accepted byte for the downstream renderer/cache.
@@ -13,30 +47,7 @@ pub fn eligible_release_sections(
     installed: Version,
     detected: Version,
 ) -> Vec<&str> {
-    let mut sections = Vec::new();
-    let mut current = None;
-    let mut offset = 0;
-
-    for line in changelog.split_inclusive('\n') {
-        if is_level_two_heading(line) {
-            if let Some((version, start)) = current.take() {
-                sections.push(ReleaseSection {
-                    version,
-                    text: &changelog[start..offset],
-                });
-            }
-            current = release_heading_version(line).map(|version| (version, offset));
-        }
-        offset += line.len();
-    }
-
-    if let Some((version, start)) = current {
-        sections.push(ReleaseSection {
-            version,
-            text: &changelog[start..],
-        });
-    }
-
+    let mut sections = release_sections(changelog);
     sections.retain(|section| section.version > installed && section.version <= detected);
     sections.sort_by_key(|section| std::cmp::Reverse(section.version));
     sections.into_iter().map(|section| section.text).collect()
@@ -83,9 +94,9 @@ pub fn cached_release_details(
 }
 
 #[derive(Debug)]
-struct ReleaseSection<'a> {
-    version: Version,
-    text: &'a str,
+pub(crate) struct ReleaseSection<'a> {
+    pub(crate) version: Version,
+    pub(crate) text: &'a str,
 }
 
 fn is_level_two_heading(line: &str) -> bool {
@@ -96,7 +107,17 @@ fn release_heading_version(line: &str) -> Option<Version> {
     let heading = line.trim_end_matches(['\r', '\n']);
     let rest = heading.strip_prefix("## [")?;
     let (version, suffix) = rest.split_once(']')?;
-    (suffix.is_empty() || suffix.starts_with(" - ")).then(|| Version::parse(version))?
+    if !suffix.is_empty() && !suffix.starts_with(" - ") {
+        return None;
+    }
+    exact_stable_version(version)
+}
+
+fn exact_stable_version(version: &str) -> Option<Version> {
+    version
+        .split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| Version::parse(version))?
 }
 
 #[cfg(test)]
