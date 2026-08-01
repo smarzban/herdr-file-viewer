@@ -10126,12 +10126,11 @@ fn open_help_builds_exactly_two_sections_whats_new_and_about() {
     );
 }
 
-// AC-18/AC-15 (T-9): once `set_settings_display` has injected a formatted Settings body,
-// `open_help` appends a THIRD "Settings" section (after What's New/About) whose body is
-// non-empty. A controller that never calls the setter (the test above) keeps the two-section
-// overlay unchanged — this is additive, opt-in wiring.
+// AC-32/AC-33/AC-54 (T-18): once the live startup path has injected both optional display
+// sections, Help opens on What's New. Keybindings, Settings, and About retain their relative
+// order, and their scroll offsets remain individual state across tab navigation.
 #[test]
-fn open_help_appends_settings_section_when_display_is_set() {
+fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scroll() {
     use herdr_file_viewer::config::{EffectiveSettings, LoadOutcome};
     use herdr_file_viewer::help::SettingsWired;
 
@@ -10168,30 +10167,53 @@ fn open_help_appends_settings_section_when_display_is_set() {
         std::path::Path::new("/cfg/config.toml"),
         &wired,
     );
+    ctrl.set_keybindings_display();
 
     ctrl.handle(Intent::ShowHelp);
     let state = ctrl
         .help_state()
         .expect("help_state() must be Some after ShowHelp");
-
-    let labels = state.section_labels();
-    assert!(
-        labels.contains(&"Settings"),
-        "AC-18: section_labels() must contain 'Settings' once set_settings_display was called: {labels:?}"
+    assert_eq!(
+        state.active_index(),
+        0,
+        "What's New is active at index zero whenever Help opens"
     );
     assert_eq!(
-        labels,
-        vec!["What's New", "Settings", "About"],
-        "with only Settings injected, the overlay order is What's New, Settings, About"
+        state.section_labels(),
+        vec!["What's New", "Keybindings", "Settings", "About"],
+        "the fully injected live Help order is What's New, Keybindings, Settings, About"
+    );
+    assert!(
+        !state.sections[2].body.lines.is_empty(),
+        "the injected Settings section body remains non-empty"
     );
 
-    let settings_idx = labels
-        .iter()
-        .position(|l| *l == "Settings")
-        .expect("Settings label present");
-    assert!(
-        !state.sections[settings_idx].body.lines.is_empty(),
-        "the Settings section body must be non-empty"
+    // Give each tab a distinct offset, cycling once through all four tabs back to What's New.
+    ctrl.handle_help_key(key(KeyCode::Char('j')));
+    ctrl.handle_help_key(key(KeyCode::Tab));
+    for _ in 0..2 {
+        ctrl.handle_help_key(key(KeyCode::Char('j')));
+    }
+    ctrl.handle_help_key(key(KeyCode::Tab));
+    for _ in 0..3 {
+        ctrl.handle_help_key(key(KeyCode::Char('j')));
+    }
+    ctrl.handle_help_key(key(KeyCode::Tab));
+    for _ in 0..4 {
+        ctrl.handle_help_key(key(KeyCode::Char('j')));
+    }
+    ctrl.handle_help_key(key(KeyCode::Tab));
+
+    let state = ctrl.help_state().expect("Help remains open while tabbing");
+    assert_eq!(state.active_index(), 0, "Tab wraps back to What's New");
+    assert_eq!(
+        state
+            .sections
+            .iter()
+            .map(|section| section.scroll)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4],
+        "each Help section retains its own vertical scroll across tab navigation"
     );
 }
 

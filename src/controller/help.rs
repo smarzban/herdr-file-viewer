@@ -102,7 +102,7 @@ impl Controller {
     /// `app::run` after construction (mirrors
     /// [`set_settings_display`](Self::set_settings_display)); a controller that never calls it (most
     /// tests) keeps the pre-existing overlay unchanged.
-    pub(crate) fn set_keybindings_display(&mut self) {
+    pub fn set_keybindings_display(&mut self) {
         let text = crate::help::keybindings_text(
             crate::input::registry(),
             self.bindings(),
@@ -168,13 +168,13 @@ impl Controller {
             body: crate::render::to_text(&about_body),
             scroll: 0,
         };
-        // Overlay tab order: Keybindings, What's New, Settings, About. Keybindings and Settings are
+        // Overlay tab order: What's New, Keybindings, Settings, About. Keybindings and Settings are
         // present only once `app::run` has injected their text (via `set_keybindings_display` /
         // `set_settings_display`); a controller that injects neither (most tests) keeps the original
-        // two-section [What's New, About] pair, in that order, so those tests stay valid. The overlay
-        // opens on the first tab, so the live app lands on Keybindings.
-        let mut sections = Vec::new();
-        // Keybindings (AC-16, AC-19, AC-20): first, so the `?` overlay opens on it.
+        // two-section [What's New, About] pair, in that order. The overlay opens on the first tab,
+        // What's New, regardless of which optional sections are present.
+        let mut sections = vec![whats_new];
+        // Keybindings (AC-16, AC-19, AC-20): after What's New and before Settings/About.
         if let Some(text) = &self.keybindings_display {
             sections.push(HelpSectionState {
                 label: "Keybindings",
@@ -182,8 +182,7 @@ impl Controller {
                 scroll: 0,
             });
         }
-        sections.push(whats_new);
-        // Settings (AC-15, AC-18): between What's New and About.
+        // Settings (AC-15, AC-18): after Keybindings (when present) and before About.
         if let Some(text) = &self.settings_display {
             sections.push(HelpSectionState {
                 label: "Settings",
