@@ -50,31 +50,11 @@ fn the_required_test_matrix_does_not_include_windows() {
 }
 
 #[test]
-fn required_ubuntu_musl_job_installs_the_target_tools_and_builds_release() {
+fn ci_does_not_rebuild_musl_on_every_pull_request() {
     let w = workflow();
-    let idx = w
-        .find("x86_64-unknown-linux-musl")
-        .expect("ci.yml must declare the musl target");
-    let window = &w[idx.saturating_sub(500)..(idx + 700).min(w.len())];
     assert!(
-        window.contains("runs-on: ubuntu-latest"),
-        "the musl build must run in a blocking Ubuntu job: {window}"
-    );
-    assert!(
-        window.contains("musl-tools"),
-        "the musl build must install the linker tools: {window}"
-    );
-    assert!(
-        window.contains("targets: x86_64-unknown-linux-musl"),
-        "the Rust musl target must be installed: {window}"
-    );
-    assert!(
-        window.contains("cargo build --release --target x86_64-unknown-linux-musl"),
-        "the musl target must run a release build: {window}"
-    );
-    assert!(
-        !window.contains("continue-on-error: true"),
-        "the musl build is required, not advisory: {window}"
+        !w.contains("\n  musl:\n") && !w.contains("x86_64-unknown-linux-musl"),
+        "the release workflow retains the musl artifact build, but ci.yml must not duplicate it"
     );
 }
 

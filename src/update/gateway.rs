@@ -129,21 +129,23 @@ pub fn discover_release_state(deadline: Instant) -> Source<ReleaseState> {
     result
 }
 
+/// Maximum curl status bytes accepted from `--write-out %{http_code}`.
+const CURL_STATUS_MAX_BYTES: usize = 3;
+
 /// Bounded retrieval of immutable documents from the official repository.
 ///
-/// The public constructor fixes the raw-content authority at compile time. No configuration or
-/// environment input can select a host, proxy, redirect destination, or transport security mode.
+/// The public constructor fixes both the raw-content authority and the system curl program. Curl
+/// inherits the user's proxy and installed TLS trust, while its first `--disable` argument rejects
+/// per-user curlrc configuration.
 pub struct DocumentGateway {
-    authority: String,
-    https_only: bool,
+    program: PathBuf,
 }
 
 impl DocumentGateway {
     /// Construct a gateway for the fixed official raw-content authority.
     pub fn new() -> Self {
         Self {
-            authority: DOCUMENT_AUTHORITY.to_owned(),
-            https_only: true,
+            program: PathBuf::from("curl"),
         }
     }
 
@@ -158,50 +160,25 @@ impl DocumentGateway {
     }
 
     fn document(&self, object_id: &str, path: &str, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        let Ok(run_dir) = make_private_dir() else {
+            return Source::Unavailable;
+        };
+        let body = run_dir.join("body");
         let url = format!(
-            "{}/{}/{object_id}/{path}",
-            self.authority,
+            "{DOCUMENT_AUTHORITY}/{}/{object_id}/{path}",
             super::repo_slug()
         );
-        let timeout = remaining(deadline);
-        if timeout.is_zero() {
-            return Source::Unavailable;
-        }
-        let mut response = match self.agent(timeout).get(&url).call() {
-            Ok(response) => response,
-            Err(_) => return Source::Unavailable,
-        };
-        match response.status().as_u16() {
-            404 => Source::Available(None),
-            200 => response
-                .body_mut()
-                .with_config()
-                .limit(DOCUMENT_MAX_BYTES as u64 + 1)
-                .read_to_vec()
-                .ok()
-                .filter(|bytes| bytes.len() <= DOCUMENT_MAX_BYTES)
-                .map(|bytes| Source::Available(Some(bytes)))
-                .unwrap_or(Source::Unavailable),
-            _ => Source::Unavailable,
-        }
+        let result = curl_command_with_program(&self.program, &body, &url, remaining(deadline))
+            .map(|command| document_with_command(command, &body, deadline))
+            .unwrap_or(Source::Unavailable);
+        let _ = std::fs::remove_dir_all(&run_dir);
+        result
     }
 
-    fn agent(&self, timeout: Duration) -> ureq::Agent {
-        ureq::Agent::config_builder()
-            .https_only(self.https_only)
-            .proxy(None)
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .timeout_global(Some(timeout))
-            .build()
-            .into()
-    }
-
-    #[cfg(test)]
-    fn with_test_authority(authority: &str) -> Self {
+    #[cfg(all(test, unix))]
+    fn with_test_program(program: impl AsRef<OsStr>) -> Self {
         Self {
-            authority: authority.trim_end_matches('/').to_owned(),
-            https_only: false,
+            program: PathBuf::from(program.as_ref()),
         }
     }
 }
@@ -219,6 +196,88 @@ impl Gateway for DocumentGateway {
 impl Default for DocumentGateway {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Construct the fixed curl transfer without a shell. The official curl manual documents that
+/// `--disable` must be first to ignore curlrc, `--proto =https` permits HTTPS only, and
+/// `--write-out` writes the selected response variable to stdout.
+fn curl_command_with_program(
+    program: impl AsRef<OsStr>,
+    body: &Path,
+    url: &str,
+    timeout: Duration,
+) -> Option<Command> {
+    let max_time = curl_max_time(timeout)?;
+    let mut command = Command::new(program);
+    command
+        .arg("--disable")
+        .arg("--proto")
+        .arg("=https")
+        .arg("--silent")
+        .arg("--max-time")
+        .arg(max_time)
+        .arg("--max-filesize")
+        .arg(DOCUMENT_MAX_BYTES.to_string())
+        .arg("--output")
+        .arg(body)
+        .arg("--write-out")
+        .arg("%{http_code}")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    Some(command)
+}
+
+/// Curl rounds `--max-time` down to milliseconds, so shorter budgets are unavailable rather than
+/// rendered as a positive value that disables curl's timeout.
+const CURL_TIMEOUT_RESOLUTION: Duration = Duration::from_millis(1);
+
+/// Render curl's supported positive `--max-time` decimal, if the budget is usable.
+fn curl_max_time(timeout: Duration) -> Option<String> {
+    (timeout >= CURL_TIMEOUT_RESOLUTION).then(|| {
+        let micros = timeout.as_micros();
+        format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+    })
+}
+
+/// Spawn one bounded curl transfer, classify its tiny status output, and post-read its body.
+///
+/// A second deadline check prevents a test or caller from spawning after expiry or with less than
+/// curl's one-millisecond timeout resolution. The outer capture still kills and reaps a transfer
+/// that outlives the same absolute deadline.
+fn document_with_command(
+    mut command: Command,
+    body: &Path,
+    deadline: Instant,
+) -> Source<Option<Vec<u8>>> {
+    document_with_command_with_spawner(&mut command, body, deadline, &mut Command::spawn)
+}
+
+fn document_with_command_with_spawner(
+    command: &mut Command,
+    body: &Path,
+    deadline: Instant,
+    spawn: &mut impl FnMut(&mut Command) -> io::Result<Child>,
+) -> Source<Option<Vec<u8>>> {
+    if remaining(deadline) < CURL_TIMEOUT_RESOLUTION {
+        return Source::Unavailable;
+    }
+    let Ok(mut child) = spawn(command) else {
+        return Source::Unavailable;
+    };
+    let Ok(status) = capture_stdout_bounded(&mut child, CURL_STATUS_MAX_BYTES, deadline) else {
+        return Source::Unavailable;
+    };
+    match status.as_slice() {
+        b"404" => Source::Available(None),
+        b"200" => std::fs::File::open(body)
+            .ok()
+            .and_then(|body| read_bounded(body, DOCUMENT_MAX_BYTES).ok())
+            .map(|body| Source::Available(Some(body)))
+            .unwrap_or(Source::Unavailable),
+        _ => Source::Unavailable,
     }
 }
 
@@ -300,7 +359,6 @@ fn discover_child_bounded_with_spawner(
 ///
 /// On every error path this kills and reaps the child. The reader asks the pipe for at most one
 /// byte beyond the current cap, so an over-cap producer is stopped before the rest is buffered.
-#[cfg(all(test, unix))]
 fn capture_stdout_bounded(
     child: &mut Child,
     max_bytes: usize,
@@ -553,136 +611,11 @@ static PROBE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::thread;
+    #[cfg(unix)]
+    use std::sync::{Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
-    enum LocalResponse {
-        Complete {
-            status: u16,
-            body: Vec<u8>,
-            delay: Duration,
-        },
-        Redirect {
-            location: String,
-        },
-        Malformed,
-        Stall,
-    }
-
-    struct LocalServer {
-        authority: String,
-        requests: Arc<Mutex<Vec<String>>>,
-        stop: Arc<AtomicBool>,
-        worker: Option<thread::JoinHandle<()>>,
-    }
-
-    impl LocalServer {
-        fn start(responses: Vec<LocalResponse>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("local server binds");
-            listener
-                .set_nonblocking(true)
-                .expect("local server becomes nonblocking");
-            let authority = format!("http://{}", listener.local_addr().unwrap());
-            let requests = Arc::new(Mutex::new(Vec::new()));
-            let captured_requests = Arc::clone(&requests);
-            let stop = Arc::new(AtomicBool::new(false));
-            let stopped = Arc::clone(&stop);
-            let worker = thread::spawn(move || {
-                for response in responses {
-                    let mut stream = loop {
-                        if stopped.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        match listener.accept() {
-                            Ok((stream, _)) => {
-                                stream
-                                    .set_nonblocking(false)
-                                    .expect("accepted stream blocks");
-                                break stream;
-                            }
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(1));
-                            }
-                            Err(_) => return,
-                        }
-                    };
-                    let mut request = Vec::new();
-                    let mut byte = [0_u8; 1];
-                    while stream.read(&mut byte).unwrap_or(0) == 1 {
-                        request.push(byte[0]);
-                        if request.ends_with(b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    let path = std::str::from_utf8(&request)
-                        .ok()
-                        .and_then(|request| request.lines().next())
-                        .and_then(|line| line.split_whitespace().nth(1))
-                        .unwrap_or("<malformed-request>");
-                    captured_requests.lock().unwrap().push(path.to_owned());
-
-                    match response {
-                        LocalResponse::Complete {
-                            status,
-                            body,
-                            delay,
-                        } => {
-                            thread::sleep(delay);
-                            let _ = write!(
-                                stream,
-                                "HTTP/1.1 {status} test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            );
-                            let _ = stream.write_all(&body);
-                        }
-                        LocalResponse::Redirect { location } => {
-                            let _ = write!(
-                                stream,
-                                "HTTP/1.1 302 test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                            );
-                        }
-                        LocalResponse::Malformed => {
-                            let _ = stream.write_all(b"not a valid HTTP response\r\n");
-                        }
-                        LocalResponse::Stall => {
-                            let _ = stream.write_all(
-                                b"HTTP/1.1 200 test\r\nContent-Length: 4\r\nConnection: close\r\n\r\n",
-                            );
-                            let _ = stream.flush();
-                            let _ = stream.set_read_timeout(Some(Duration::from_millis(10)));
-                            while !stopped.load(Ordering::Relaxed) {
-                                let _ = stream.read(&mut byte);
-                            }
-                        }
-                    }
-                }
-            });
-            Self {
-                authority,
-                requests,
-                stop,
-                worker: Some(worker),
-            }
-        }
-
-        fn requests(&self) -> Vec<String> {
-            self.requests.lock().unwrap().clone()
-        }
-    }
-
-    impl Drop for LocalServer {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
-            }
-        }
-    }
-
+    #[cfg(unix)]
     fn test_release() -> ReleaseTag {
         ReleaseTag::new(
             Version::parse("9.8.7").unwrap(),
@@ -690,6 +623,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     fn test_state() -> ReleaseState {
         ReleaseState::new(
             ObjectId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
@@ -698,8 +632,386 @@ mod tests {
         .unwrap()
     }
 
-    fn test_gateway(server: &LocalServer) -> DocumentGateway {
-        DocumentGateway::with_test_authority(&server.authority)
+    #[cfg(unix)]
+    fn fake_curl_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(unix)]
+    struct FakeCurl {
+        dir: PathBuf,
+        program: PathBuf,
+        args: PathBuf,
+        path: PathBuf,
+        pid: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl FakeCurl {
+        fn new(body_script: &str, status: &str, exit: i32) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = make_private_dir().expect("private fake curl directory");
+            let program = dir.join("fake-curl");
+            let args = dir.join("args");
+            let path = dir.join("path");
+            let pid = dir.join("pid");
+            let quote = |path: &Path| {
+                format!(
+                    "'{}'",
+                    path.display().to_string().replace('\'', "'\\\"'\\\"'")
+                )
+            };
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > {}\nprintf '%s' \"$PATH\" > {}\nprintf '%s' \"$$\" > {}\nbody=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = \"--output\" ]; then\n        body=$2\n        break\n    fi\n    shift\ndone\n[ -n \"$body\" ]\n{body_script}\nprintf '%s' '{status}'\nexit {exit}\n",
+                    quote(&args),
+                    quote(&path),
+                    quote(&pid),
+                ),
+            )
+            .expect("fake curl script writes");
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
+                .expect("fake curl script is executable");
+            Self {
+                dir,
+                program,
+                args,
+                path,
+                pid,
+            }
+        }
+
+        fn args(&self) -> Vec<String> {
+            std::fs::read_to_string(&self.args)
+                .expect("fake curl recorded arguments")
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        fn output_path(&self) -> PathBuf {
+            let args = self.args();
+            args.windows(2)
+                .find(|pair| pair[0] == "--output")
+                .map(|pair| PathBuf::from(&pair[1]))
+                .expect("fake curl received an output path")
+        }
+
+        fn path(&self) -> String {
+            std::fs::read_to_string(&self.path).expect("fake curl recorded PATH")
+        }
+
+        fn pid(&self) -> u32 {
+            std::fs::read_to_string(&self.pid)
+                .expect("fake curl recorded pid")
+                .parse()
+                .expect("fake curl pid is numeric")
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for FakeCurl {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_curl_invocation(fake: &FakeCurl, expected_url: &str) {
+        let args = fake.args();
+        assert_eq!(
+            args.len(),
+            13,
+            "the curl argv is fixed and has no extras: {args:?}"
+        );
+        assert_eq!(args[0], "--disable", "curlrc disabling must be first");
+        assert_eq!(
+            &args[1..4],
+            ["--proto", "=https", "--silent"],
+            "curl accepts only HTTPS and stays silent"
+        );
+        assert_eq!(args[4], "--max-time");
+        assert!(
+            args[5].parse::<f64>().is_ok_and(|seconds| seconds > 0.0),
+            "the deadline-derived curl timeout is positive: {:?}",
+            args[5]
+        );
+        assert_eq!(
+            &args[6..8],
+            ["--max-filesize", &DOCUMENT_MAX_BYTES.to_string()],
+            "curl receives the document ceiling"
+        );
+        assert_eq!(args[8], "--output");
+        assert_eq!(args[10], "--write-out");
+        assert_eq!(args[11], "%{http_code}");
+        assert_eq!(args[12], expected_url);
+        for forbidden in [
+            "--fail",
+            "--location",
+            "--proxy",
+            "--noproxy",
+            "--user",
+            "--oauth2-bearer",
+            "--connect-to",
+            "--resolve",
+            "--cacert",
+            "--insecure",
+            "--verbose",
+            "--show-error",
+            "--stderr",
+        ] {
+            assert!(
+                !args.iter().any(|arg| arg == forbidden),
+                "curl must not receive {forbidden}: {args:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_private_body_is_cleaned(fake: &FakeCurl) {
+        let body = fake.output_path();
+        assert!(!body.exists(), "transient body is removed: {body:?}");
+        assert!(
+            !body.parent().expect("body has a parent").exists(),
+            "the private run directory is removed with its body: {body:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_accepts_200_with_a_private_bounded_body() {
+        let _lock = fake_curl_lock();
+        let fake = FakeCurl::new("printf 'release details' > \"$body\"", "200", 0);
+        let result = DocumentGateway::with_test_program(&fake.program)
+            .changelog(&test_release(), Instant::now() + Duration::from_secs(5));
+
+        assert_eq!(result, Source::Available(Some(b"release details".to_vec())));
+        assert_curl_invocation(
+            &fake,
+            "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md",
+        );
+        assert_private_body_is_cleaned(&fake);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_treats_only_404_as_confirmed_absence() {
+        let _lock = fake_curl_lock();
+        let fake = FakeCurl::new(":", "404", 0);
+
+        assert_eq!(
+            DocumentGateway::with_test_program(&fake.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Available(None),
+            "a missing body does not change the conclusive 404 result"
+        );
+        assert_private_body_is_cleaned(&fake);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_rejects_redirect_and_other_statuses() {
+        let _lock = fake_curl_lock();
+        for status in ["302", "500"] {
+            let fake = FakeCurl::new("printf 'ignored' > \"$body\"", status, 0);
+            assert_eq!(
+                DocumentGateway::with_test_program(&fake.program)
+                    .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+                Source::Unavailable,
+                "HTTP {status} is neither present nor confirmed absent"
+            );
+            assert_private_body_is_cleaned(&fake);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_rejects_malformed_and_over_cap_status_output() {
+        let _lock = fake_curl_lock();
+        for status in ["two hundred", "2000"] {
+            let fake = FakeCurl::new("printf 'ignored' > \"$body\"", status, 0);
+            assert_eq!(
+                DocumentGateway::with_test_program(&fake.program)
+                    .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+                Source::Unavailable,
+                "invalid bounded curl status output is unavailable: {status:?}"
+            );
+            assert_private_body_is_cleaned(&fake);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_accepts_an_exact_cap_body_and_rejects_cap_plus_one() {
+        let _lock = fake_curl_lock();
+        let exact = FakeCurl::new("dd if=/dev/zero of=\"$body\" bs=1048576 count=1", "200", 0);
+        assert_eq!(
+            DocumentGateway::with_test_program(&exact.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Available(Some(vec![0; DOCUMENT_MAX_BYTES]))
+        );
+        assert_private_body_is_cleaned(&exact);
+
+        let over = FakeCurl::new("dd if=/dev/zero of=\"$body\" bs=1048577 count=1", "200", 0);
+        assert_eq!(
+            DocumentGateway::with_test_program(&over.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Unavailable
+        );
+        assert_private_body_is_cleaned(&over);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_rejects_missing_and_partial_bodies() {
+        let _lock = fake_curl_lock();
+        let missing = FakeCurl::new(":", "200", 0);
+        assert_eq!(
+            DocumentGateway::with_test_program(&missing.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Unavailable
+        );
+        assert_private_body_is_cleaned(&missing);
+
+        let partial = FakeCurl::new("printf 'partial' > \"$body\"", "200", 1);
+        assert_eq!(
+            DocumentGateway::with_test_program(&partial.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Unavailable,
+            "a failed transfer cannot make its partial body available"
+        );
+        assert_private_body_is_cleaned(&partial);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_missing_command_and_exhausted_deadline_do_not_spawn() {
+        let _lock = fake_curl_lock();
+        let missing = make_private_dir()
+            .expect("private missing-command directory")
+            .join("curl");
+        assert_eq!(
+            DocumentGateway::with_test_program(&missing)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Unavailable
+        );
+        let _ = std::fs::remove_dir_all(missing.parent().expect("missing command has parent"));
+
+        let fake = FakeCurl::new("printf 'must not run' > \"$body\"", "200", 0);
+        assert_eq!(
+            DocumentGateway::with_test_program(&fake.program)
+                .changelog(&test_release(), Instant::now() - Duration::from_secs(1)),
+            Source::Unavailable
+        );
+        assert!(
+            !fake.args.exists(),
+            "an exhausted deadline must not spawn curl at all"
+        );
+    }
+
+    #[test]
+    fn document_gateway_curl_sub_millisecond_budget_does_not_spawn() {
+        let mut command = Command::new("must-not-run");
+        let mut spawned = false;
+
+        assert_eq!(
+            document_with_command_with_spawner(
+                &mut command,
+                Path::new("unused-body"),
+                Instant::now() + Duration::from_micros(999),
+                &mut |_| {
+                    spawned = true;
+                    Err(io::Error::other("spawn must not be attempted"))
+                },
+            ),
+            Source::Unavailable
+        );
+        assert!(
+            !spawned,
+            "a budget below curl's one-millisecond resolution must not spawn curl"
+        );
+        assert_eq!(curl_max_time(Duration::from_micros(999)), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_deadline_kills_and_reaps_the_fake_process() {
+        let _lock = fake_curl_lock();
+        let fake = FakeCurl::new("exec sleep 60", "200", 0);
+        let started = Instant::now();
+
+        assert_eq!(
+            DocumentGateway::with_test_program(&fake.program)
+                .changelog(&test_release(), started + Duration::from_secs(2)),
+            Source::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the absolute deadline bounds the stalled curl process"
+        );
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &fake.pid().to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill utility starts")
+                .success(),
+            "deadline expiry kills and reaps the direct curl process"
+        );
+        assert_private_body_is_cleaned(&fake);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_inherits_ambient_environment() {
+        let _lock = fake_curl_lock();
+        let fake = FakeCurl::new("printf 'ambient body' > \"$body\"", "200", 0);
+        let expected_path = std::env::var("PATH").expect("test process has PATH");
+
+        assert_eq!(
+            DocumentGateway::with_test_program(&fake.program)
+                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
+            Source::Available(Some(b"ambient body".to_vec()))
+        );
+        assert_eq!(
+            fake.path(),
+            expected_path,
+            "curl inherits the ambient environment, including proxy settings"
+        );
+        assert_private_body_is_cleaned(&fake);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_curl_pins_the_release_tag_and_discovered_head_urls() {
+        let _lock = fake_curl_lock();
+        let changelog = FakeCurl::new("printf 'details' > \"$body\"", "200", 0);
+        let spotlight = FakeCurl::new("printf 'spotlight' > \"$body\"", "200", 0);
+        let release = test_release();
+        let state = test_state();
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        assert_eq!(
+            DocumentGateway::with_test_program(&changelog.program).changelog(&release, deadline),
+            Source::Available(Some(b"details".to_vec()))
+        );
+        assert_eq!(
+            DocumentGateway::with_test_program(&spotlight.program).spotlight(&state, deadline),
+            Source::Available(Some(b"spotlight".to_vec()))
+        );
+        assert_curl_invocation(
+            &changelog,
+            "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md",
+        );
+        assert_curl_invocation(
+            &spotlight,
+            "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/project-spotlight.md",
+        );
+        assert_private_body_is_cleaned(&changelog);
+        assert_private_body_is_cleaned(&spotlight);
     }
 
     #[test]
@@ -1170,232 +1482,6 @@ mod tests {
             "the transient Git execution directory is never group- or world-accessible"
         );
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn document_gateway_accepts_an_exact_one_mib_changelog_body() {
-        let server = LocalServer::start(vec![LocalResponse::Complete {
-            status: 200,
-            body: vec![b'c'; DOCUMENT_MAX_BYTES],
-            delay: Duration::ZERO,
-        }]);
-
-        assert_eq!(
-            test_gateway(&server)
-                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
-            Source::Available(Some(vec![b'c'; DOCUMENT_MAX_BYTES]))
-        );
-    }
-
-    #[test]
-    fn document_gateway_rejects_a_one_mib_plus_one_changelog_body() {
-        let server = LocalServer::start(vec![LocalResponse::Complete {
-            status: 200,
-            body: vec![b'c'; DOCUMENT_MAX_BYTES + 1],
-            delay: Duration::ZERO,
-        }]);
-
-        assert_eq!(
-            test_gateway(&server)
-                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
-            Source::Unavailable
-        );
-    }
-
-    #[test]
-    fn document_gateway_accepts_an_exact_one_mib_spotlight_body() {
-        let server = LocalServer::start(vec![LocalResponse::Complete {
-            status: 200,
-            body: vec![b's'; DOCUMENT_MAX_BYTES],
-            delay: Duration::ZERO,
-        }]);
-
-        assert_eq!(
-            test_gateway(&server).spotlight(&test_state(), Instant::now() + Duration::from_secs(1)),
-            Source::Available(Some(vec![b's'; DOCUMENT_MAX_BYTES]))
-        );
-    }
-
-    #[test]
-    fn document_gateway_rejects_a_one_mib_plus_one_spotlight_body() {
-        let server = LocalServer::start(vec![LocalResponse::Complete {
-            status: 200,
-            body: vec![b's'; DOCUMENT_MAX_BYTES + 1],
-            delay: Duration::ZERO,
-        }]);
-
-        assert_eq!(
-            test_gateway(&server).spotlight(&test_state(), Instant::now() + Duration::from_secs(1)),
-            Source::Unavailable
-        );
-    }
-
-    #[test]
-    fn document_gateway_uses_exact_detected_and_discovered_identities_and_official_spotlight_path()
-    {
-        let server = LocalServer::start(vec![
-            LocalResponse::Complete {
-                status: 200,
-                body: b"release details".to_vec(),
-                delay: Duration::ZERO,
-            },
-            LocalResponse::Complete {
-                status: 200,
-                body: b"project spotlight".to_vec(),
-                delay: Duration::ZERO,
-            },
-        ]);
-        let gateway = test_gateway(&server);
-        let release = test_release();
-        let state = test_state();
-        let deadline = Instant::now() + Duration::from_secs(1);
-
-        assert_eq!(
-            gateway.changelog(&release, deadline),
-            Source::Available(Some(b"release details".to_vec()))
-        );
-        assert_eq!(
-            gateway.spotlight(&state, deadline),
-            Source::Available(Some(b"project spotlight".to_vec()))
-        );
-        assert_eq!(
-            server.requests(),
-            vec![
-                "/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md",
-                "/smarzban/herdr-file-viewer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/project-spotlight.md",
-            ],
-            "document URLs pin object IDs and request the official project-spotlight.md path, never alternate refs or spellings"
-        );
-    }
-
-    #[test]
-    fn document_gateway_treats_only_404_as_absent() {
-        let server = LocalServer::start(vec![
-            LocalResponse::Complete {
-                status: 404,
-                body: Vec::new(),
-                delay: Duration::ZERO,
-            },
-            LocalResponse::Complete {
-                status: 500,
-                body: b"server error".to_vec(),
-                delay: Duration::ZERO,
-            },
-        ]);
-        let gateway = test_gateway(&server);
-        let deadline = Instant::now() + Duration::from_secs(1);
-
-        assert_eq!(
-            gateway.changelog(&test_release(), deadline),
-            Source::Available(None),
-            "the changelog alone treats a 404 as absent"
-        );
-        assert_eq!(
-            gateway.spotlight(&test_state(), deadline),
-            Source::Unavailable,
-            "all non-404 statuses are unavailable"
-        );
-    }
-
-    #[test]
-    fn document_gateway_rejects_redirects_without_following_them() {
-        let server = LocalServer::start(vec![
-            LocalResponse::Redirect {
-                location: "/redirect-target".to_owned(),
-            },
-            LocalResponse::Complete {
-                status: 200,
-                body: b"must not follow".to_vec(),
-                delay: Duration::ZERO,
-            },
-        ]);
-
-        assert_eq!(
-            test_gateway(&server)
-                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
-            Source::Unavailable
-        );
-        assert_eq!(
-            server.requests(),
-            vec![
-                "/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md"
-            ],
-            "a redirect response must not cause a second request"
-        );
-    }
-
-    #[test]
-    fn document_gateway_maps_malformed_responses_to_unavailable() {
-        let server = LocalServer::start(vec![LocalResponse::Malformed]);
-
-        assert_eq!(
-            test_gateway(&server)
-                .changelog(&test_release(), Instant::now() + Duration::from_secs(1)),
-            Source::Unavailable
-        );
-    }
-
-    #[test]
-    fn document_gateway_stalled_body_respects_its_deadline() {
-        let server = LocalServer::start(vec![LocalResponse::Stall]);
-        let started = Instant::now();
-
-        assert_eq!(
-            test_gateway(&server).changelog(&test_release(), started + Duration::from_millis(50)),
-            Source::Unavailable
-        );
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "a stalled body must not outlive its absolute deadline"
-        );
-    }
-
-    #[test]
-    fn document_gateway_uses_only_the_shared_deadline_remaining_for_sequential_requests() {
-        let server = LocalServer::start(vec![
-            LocalResponse::Complete {
-                status: 200,
-                body: b"first".to_vec(),
-                delay: Duration::from_millis(100),
-            },
-            LocalResponse::Stall,
-        ]);
-        let gateway = test_gateway(&server);
-        let started = Instant::now();
-        let deadline = started + Duration::from_millis(250);
-
-        assert_eq!(
-            gateway.changelog(&test_release(), deadline),
-            Source::Available(Some(b"first".to_vec()))
-        );
-        assert_eq!(
-            gateway.spotlight(&test_state(), deadline),
-            Source::Unavailable
-        );
-        assert!(
-            started.elapsed() < Duration::from_millis(320),
-            "the second request receives only the first request's remaining deadline"
-        );
-    }
-
-    #[test]
-    fn public_document_gateway_uses_fixed_https_authority_without_environment_configuration() {
-        let gateway = DocumentGateway::new();
-        let agent = gateway.agent(Duration::from_secs(1));
-
-        assert_eq!(gateway.authority, DOCUMENT_AUTHORITY);
-        assert!(gateway.https_only, "production documents permit HTTPS only");
-        assert!(agent.config().https_only());
-        assert_eq!(agent.config().max_redirects(), 0);
-        assert!(
-            agent.config().proxy().is_none(),
-            "environment proxies cannot override production"
-        );
-        assert_eq!(
-            agent.config().timeouts().global,
-            Some(Duration::from_secs(1)),
-            "each request gets its supplied remaining deadline"
-        );
     }
 
     #[test]
