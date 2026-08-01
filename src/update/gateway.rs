@@ -75,23 +75,6 @@ impl ObjectId {
     }
 }
 
-/// A validated remote branch reference.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RemoteRef(String);
-
-impl RemoteRef {
-    /// Parse a symbolic `HEAD` target under `refs/heads/`.
-    pub fn parse(value: &str) -> Option<Self> {
-        let tail = value.strip_prefix("refs/heads/")?;
-        valid_ref_tail(tail).then(|| Self(value.to_owned()))
-    }
-
-    /// The validated full reference name.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// One stable release tag, resolved to the commit it describes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleaseTag {
@@ -109,20 +92,14 @@ impl ReleaseTag {
 /// The bounded release state discovered from the fixed official repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseState {
-    pub symbolic_head: RemoteRef,
     pub head_object_id: ObjectId,
     releases: Vec<ReleaseTag>,
 }
 
 impl ReleaseState {
     /// Construct a bounded state for an injected discovery runner.
-    pub fn new(
-        symbolic_head: RemoteRef,
-        head_object_id: ObjectId,
-        releases: Vec<ReleaseTag>,
-    ) -> Option<Self> {
+    pub fn new(head_object_id: ObjectId, releases: Vec<ReleaseTag>) -> Option<Self> {
         (releases.len() <= max_releases()).then_some(Self {
-            symbolic_head,
             head_object_id,
             releases,
         })
@@ -249,15 +226,15 @@ impl Default for DocumentGateway {
 /// transfer early. It is not a second wall-clock budget.
 const PROBE_LOW_SPEED_TIME: &str = "5";
 
-/// Construct the fixed `ls-remote` query. `--symref` gives the symbolic `HEAD`; its object-ID
-/// record and the requested `refs/tags/v*` records give the immutable source pins.
+/// Construct the fixed `ls-remote` query. Its `HEAD` object-ID record and requested
+/// `refs/tags/v*` records give the immutable source pins.
 fn ls_remote_command(run_dir: &Path) -> Command {
     ls_remote_command_with_program("git", run_dir)
 }
 
 fn ls_remote_command_with_program(program: impl AsRef<OsStr>, run_dir: &Path) -> Command {
     let mut command = Command::new(program);
-    command.args(["ls-remote", "--symref", repo_url(), "HEAD", "refs/tags/v*"]);
+    command.args(["ls-remote", repo_url(), "HEAD", "refs/tags/v*"]);
     harden_git(&mut command, run_dir);
     command
         .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
@@ -268,42 +245,25 @@ fn ls_remote_command_with_program(program: impl AsRef<OsStr>, run_dir: &Path) ->
     command
 }
 
-/// Isolate Git from every inherited configuration source and repository redirect.
+/// Keep discovery outside the viewed repository while retaining the user's Git transport trust.
 ///
-/// Discovery runs from a fresh private directory and configures Git to see only empty private
-/// homes/config files. `GIT_CONFIG_NOSYSTEM=1` excludes system configuration, while the private
-/// `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` exclude user/global configuration. This is
-/// deliberately stricter than the prior proxy/CA-friendly policy: an installation that needs a
-/// user Git proxy or CA setting can fail silently, which is acceptable for ADR-0013's isolated
-/// public-source check. The fixed HTTPS source can neither be rewritten nor cause credentials or
-/// repository paths from the parent environment to execute or redirect the query.
+/// The fresh private directory and ceiling exclude viewed-repository local configuration. Global
+/// and system Git configuration, including user proxy, CA, and noninteractive credential-helper
+/// settings, remains inherited. HTTPS-only transport, disabled terminal prompts, and null stdin
+/// keep the fixed public query noninteractive.
 fn harden_git(command: &mut Command, run_dir: &Path) {
-    // `env_clear` is stronger than an allowlist of inherited GIT_CONFIG_KEY_n / VALUE_n pairs,
-    // whose suffixes are attacker-controlled. Retain PATH only so the platform can locate `git`.
-    let path = std::env::var_os("PATH");
-    command.env_clear();
-    if let Some(path) = path {
-        command.env("PATH", path);
-    }
-    #[cfg(windows)]
-    for key in ["SystemRoot", "WINDIR"] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-
     command
+        // A ceiling constrains discovery only. Drop explicit repository redirects as well, so a
+        // viewer-launched `GIT_DIR` cannot reintroduce its local configuration.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
         .current_dir(run_dir)
         .env("GIT_CEILING_DIRECTORIES", run_dir)
-        .env("HOME", run_dir.join("home"))
-        .env("XDG_CONFIG_HOME", run_dir.join("xdg-config"))
-        .env("GIT_CONFIG_GLOBAL", run_dir.join("gitconfig"))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_ALLOW_PROTOCOL", "https")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "")
-        .env("SSH_ASKPASS", "")
-        .env("GIT_CREDENTIAL_HELPER", "");
+        .env("GIT_TERMINAL_PROMPT", "0");
 }
 
 fn discover_with_command(mut command: Command, deadline: Instant) -> Source<ReleaseState> {
@@ -455,66 +415,57 @@ fn parse_release_bytes(stdout: &[u8]) -> Option<ReleaseState> {
 }
 
 fn parse_release_state(stdout: &str) -> Option<ReleaseState> {
-    let mut symbolic_head = None;
     let mut head_object_id = None;
     let mut releases = BTreeMap::<Version, TagParts>::new();
 
     for line in stdout.lines() {
-        if let Some(symbolic) = line.strip_prefix("ref: ") {
-            let (reference, name) = symbolic.split_once('\t')?;
-            if name != "HEAD" || symbolic_head.is_some() {
-                return None;
-            }
-            symbolic_head = RemoteRef::parse(reference);
-            symbolic_head.as_ref()?;
+        let Some((object_id, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(object_id) = ObjectId::parse(object_id) else {
+            continue;
+        };
+        if reference == "HEAD" {
+            head_object_id.get_or_insert(object_id);
             continue;
         }
-        let (object_id, reference) = line.split_once('\t')?;
-        let object_id = ObjectId::parse(object_id)?;
-        match reference {
-            "HEAD" => {
-                if head_object_id.replace(object_id).is_some() {
-                    return None;
-                }
-            }
-            reference if reference.starts_with("refs/tags/") => {
-                let tag = reference.strip_prefix("refs/tags/")?;
-                let (tag, peeled) = match tag.strip_suffix("^{}") {
-                    Some(tag) => (tag, true),
-                    None => (tag, false),
-                };
-                if !tag.starts_with('v') {
-                    return None;
-                }
-                let Some(version) = Version::parse(tag) else {
-                    // Valid non-stable tags still match `v*`; they are irrelevant to a stable
-                    // release notice and do not make the otherwise trusted response unavailable.
-                    continue;
-                };
-                let part = releases.entry(version).or_default();
-                let slot = if peeled {
-                    &mut part.peeled
-                } else {
-                    &mut part.direct
-                };
-                if slot.replace(object_id).is_some() {
-                    return None;
-                }
-            }
-            _ => return None,
+        let Some(tag) = reference.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        let (tag, peeled) = match tag.strip_suffix("^{}") {
+            Some(tag) => (tag, true),
+            None => (tag, false),
+        };
+        if !tag.starts_with('v') {
+            continue;
         }
+        let Some(version) = Version::parse(tag) else {
+            // Valid non-stable tags still match `v*`; they are irrelevant to a stable release
+            // notice and do not make the otherwise trusted response unavailable.
+            continue;
+        };
+        // Different accepted tag spellings can parse as the same Version, so the first direct
+        // and peeled records retain the deterministic facts for each version.
+        let part = releases.entry(version).or_default();
+        let slot = if peeled {
+            &mut part.peeled
+        } else {
+            &mut part.direct
+        };
+        slot.get_or_insert(object_id);
     }
 
-    let symbolic_head = symbolic_head?;
     let head_object_id = head_object_id?;
     let mut typed_releases = Vec::with_capacity(releases.len());
     for (version, parts) in releases {
         // A peel line without its tag line cannot be trusted. A normal line without a peel is a
         // lightweight tag, while a normal + peel pair is an annotated tag resolved to its commit.
-        let object_id = parts.direct?;
+        let Some(object_id) = parts.direct else {
+            continue;
+        };
         typed_releases.push(ReleaseTag::new(version, parts.peeled.unwrap_or(object_id)));
     }
-    ReleaseState::new(symbolic_head, head_object_id, typed_releases)
+    ReleaseState::new(head_object_id, typed_releases)
 }
 
 #[derive(Default)]
@@ -524,28 +475,10 @@ struct TagParts {
 }
 
 fn max_releases() -> usize {
-    // Every accepted tag output line consumes at least a 40-character object ID, a tab, and the
-    // shortest stable tag ref. This independent cap makes the returned type bounded even if the
-    // byte cap changes later.
-    DISCOVERY_MAX_BYTES / 64
-}
-
-fn valid_ref_tail(tail: &str) -> bool {
-    !tail.is_empty()
-        && !tail.ends_with('.')
-        && !tail.contains("..")
-        && !tail.contains("@{")
-        && !tail.starts_with('/')
-        && !tail.ends_with('/')
-        && !tail.contains("//")
-        && tail
-            .split('/')
-            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
-        && !tail.bytes().any(|byte| {
-            byte.is_ascii_control()
-                || byte == b' '
-                || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
-        })
+    // Every accepted tag output line consumes at least 58 bytes: a 40-character object ID, tab,
+    // `refs/tags/v0.0.0`, and newline. This cap keeps the returned type bounded if the byte cap
+    // changes later.
+    DISCOVERY_MAX_BYTES / 58
 }
 
 /// Create a fresh, private, empty directory under the system temp directory.
@@ -759,7 +692,6 @@ mod tests {
 
     fn test_state() -> ReleaseState {
         ReleaseState::new(
-            RemoteRef::parse("refs/heads/alternate").unwrap(),
             ObjectId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
             vec![],
         )
@@ -771,55 +703,101 @@ mod tests {
     }
 
     #[test]
-    fn parser_pins_symbolic_head_object_id_and_annotated_tag_peel() {
+    fn parser_accepts_a_valid_head_without_tags() {
+        let state = parse_release_state("0123456789012345678901234567890123456789\tHEAD\n")
+            .expect("a valid HEAD is sufficient when the repository has no stable tags");
+
+        assert_eq!(
+            state.head_object_id.as_str(),
+            "0123456789012345678901234567890123456789"
+        );
+        assert!(state.releases().is_empty());
+    }
+
+    #[test]
+    fn parser_skips_malformed_unrelated_and_symbolic_ref_records() {
+        let state = parse_release_state(concat!(
+            "ref: refs/heads/.hidden\tHEAD\n",
+            "not a remote record\n",
+            "not-an-object\tHEAD\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/main\n",
+            "0123456789012345678901234567890123456789\tHEAD\n",
+            "not-an-object\trefs/tags/v1.2.3\n",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/v2.0.0-rc1\n",
+        ))
+        .expect("one valid HEAD remains usable despite unrelated remote records");
+
+        assert_eq!(
+            state.head_object_id.as_str(),
+            "0123456789012345678901234567890123456789"
+        );
+        assert!(state.releases().is_empty());
+    }
+
+    #[test]
+    fn parser_retains_the_first_valid_duplicate_head_and_tag_records() {
         let state = parse_release_state(concat!(
             "ref: refs/heads/main\tHEAD\n",
             "0123456789012345678901234567890123456789\tHEAD\n",
+            "1111111111111111111111111111111111111111\tHEAD\n",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/v1.4.0\n",
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/v1.4.0^{}\n",
-            "cccccccccccccccccccccccccccccccccccccccc\trefs/tags/v1.3.0\n",
-            "dddddddddddddddddddddddddddddddddddddddd\trefs/tags/v2.0.0-rc1\n",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/v1.4.0\n",
+            "cccccccccccccccccccccccccccccccccccccccc\trefs/tags/v1.4.0^{}\n",
+            "dddddddddddddddddddddddddddddddddddddddd\trefs/tags/v1.4.0^{}\n",
         ))
-        .expect("a complete, well-formed discovery response is available");
+        .expect("duplicate records retain the first complete facts");
 
-        assert_eq!(state.symbolic_head.as_str(), "refs/heads/main");
         assert_eq!(
             state.head_object_id.as_str(),
             "0123456789012345678901234567890123456789"
         );
         assert_eq!(
-            state.latest_release(),
-            Some(&ReleaseTag {
-                version: Version::parse("1.4.0").unwrap(),
-                object_id: ObjectId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
-            }),
-            "an annotated tag resolves to its peeled commit, not the tag object"
+            state.releases(),
+            &[ReleaseTag::new(
+                Version::parse("1.4.0").unwrap(),
+                ObjectId::parse("cccccccccccccccccccccccccccccccccccccccc").unwrap(),
+            )],
+            "an annotated tag resolves to its first peeled commit"
         );
     }
 
     #[test]
-    fn parser_rejects_malformed_or_incomplete_refs() {
+    fn parser_retains_direct_and_annotated_stable_tags() {
+        let state = parse_release_state(concat!(
+            "0123456789012345678901234567890123456789\tHEAD\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/v1.3.0\n",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/v1.4.0\n",
+            "cccccccccccccccccccccccccccccccccccccccc\trefs/tags/v1.4.0^{}\n",
+        ))
+        .expect("direct and annotated stable tags are retained");
+
+        assert_eq!(
+            state.releases(),
+            &[
+                ReleaseTag::new(
+                    Version::parse("1.3.0").unwrap(),
+                    ObjectId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+                ),
+                ReleaseTag::new(
+                    Version::parse("1.4.0").unwrap(),
+                    ObjectId::parse("cccccccccccccccccccccccccccccccccccccccc").unwrap(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_rejects_missing_or_invalid_head() {
         for output in [
-            "ref: refs/heads/main HEAD\n0123456789012345678901234567890123456789\tHEAD\n",
-            "ref: refs/heads/.hidden\tHEAD\n0123456789012345678901234567890123456789\tHEAD\n",
-            "ref: refs/heads/locked.lock\tHEAD\n0123456789012345678901234567890123456789\tHEAD\n",
-            "ref: refs/heads/main\tHEAD\nnot-an-object\tHEAD\n",
-            "ref: refs/heads/main\tHEAD\n0123456789012345678901234567890123456789\trefs/heads/main\n",
-            concat!(
-                "ref: refs/heads/main\tHEAD\n",
-                "0123456789012345678901234567890123456789\tHEAD\n",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/1.2.3\n",
-            ),
-            concat!(
-                "ref: refs/heads/main\tHEAD\n",
-                "0123456789012345678901234567890123456789\tHEAD\n",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/v1.2.3^{}\n",
-            ),
+            "",
+            "not-an-object\tHEAD\n",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/main\n",
+            "ref: refs/heads/main\tHEAD\n",
         ] {
             assert_eq!(
                 parse_release_state(output),
                 None,
-                "malformed discovery input must produce no usable release state: {output:?}"
+                "no usable HEAD leaves discovery unavailable: {output:?}"
             );
         }
     }
@@ -827,7 +805,7 @@ mod tests {
     #[test]
     fn parser_rejects_non_utf8_output() {
         assert_eq!(
-            parse_release_bytes(b"ref: refs/heads/main\tHEAD\n\xff"),
+            parse_release_bytes(b"0123456789012345678901234567890123456789\tHEAD\n\xff"),
             None,
             "undecodable remote output cannot become a typed release state"
         );
@@ -875,7 +853,6 @@ mod tests {
         let available: DiscoveryRunner = Box::new(|_| {
             Source::Available(
                 ReleaseState::new(
-                    RemoteRef::parse("refs/heads/main").unwrap(),
                     ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
                     vec![],
                 )
@@ -973,126 +950,109 @@ mod tests {
     }
 
     #[test]
-    fn ls_remote_command_is_hardened_against_untrusted_repo_config() {
-        // Security regression: the fixed public probe must not inherit any user, system, or
-        // repository configuration. It runs from the private directory, uses only private config
-        // paths, permits HTTPS, and never prompts.
+    fn ls_remote_command_keeps_the_fixed_head_only_query_private_and_noninteractive() {
         use std::collections::HashMap;
         use std::ffi::{OsStr, OsString};
         use std::path::Path;
 
         let run_dir = Path::new("/some/private/probe-dir");
-        let home = run_dir.join("home");
-        let xdg = run_dir.join("xdg-config");
-        let global = run_dir.join("gitconfig");
         let cmd = ls_remote_command_with_program("git", run_dir);
         let env: HashMap<OsString, Option<OsString>> = cmd
             .get_envs()
             .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
             .collect();
 
-        // `env_clear` leaves only explicit settings visible through `get_envs`; the assertions
-        // below therefore prove the inherited Git configuration cannot reach the child.
         assert_eq!(cmd.get_current_dir(), Some(run_dir));
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
             vec![
                 OsStr::new("ls-remote"),
-                OsStr::new("--symref"),
                 OsStr::new(repo_url()),
                 OsStr::new("HEAD"),
                 OsStr::new("refs/tags/v*"),
             ],
-            "the public source and ref patterns are fixed"
+            "the public source and head-only ref patterns are fixed"
         );
         for (key, expected) in [
             ("GIT_CEILING_DIRECTORIES", run_dir.as_os_str()),
-            ("HOME", home.as_os_str()),
-            ("XDG_CONFIG_HOME", xdg.as_os_str()),
-            ("GIT_CONFIG_GLOBAL", global.as_os_str()),
+            ("GIT_ALLOW_PROTOCOL", OsStr::new("https")),
+            ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
+            ("GIT_HTTP_LOW_SPEED_LIMIT", OsStr::new("1000")),
+            ("GIT_HTTP_LOW_SPEED_TIME", OsStr::new(PROBE_LOW_SPEED_TIME)),
         ] {
             assert_eq!(
                 env.get(OsStr::new(key))
                     .and_then(|value| value.as_ref())
                     .map(OsString::as_os_str),
                 Some(expected),
-                "{key} is rooted in the fresh private run directory"
-            );
-        }
-        for (key, value) in [
-            ("GIT_CONFIG_NOSYSTEM", "1"),
-            ("GIT_ALLOW_PROTOCOL", "https"),
-            ("GIT_TERMINAL_PROMPT", "0"),
-            ("GIT_ASKPASS", ""),
-            ("SSH_ASKPASS", ""),
-            ("GIT_CREDENTIAL_HELPER", ""),
-        ] {
-            assert_eq!(
-                env.get(OsStr::new(key))
-                    .and_then(|value| value.as_ref())
-                    .and_then(|value| value.to_str()),
-                Some(value),
-                "{key} is explicitly hardened"
+                "{key} is explicitly controlled for the private noninteractive probe"
             );
         }
         for key in [
-            "GIT_CONFIG_COUNT",
-            "GIT_CONFIG_KEY_0",
-            "GIT_CONFIG_VALUE_0",
             "GIT_DIR",
             "GIT_WORK_TREE",
             "GIT_COMMON_DIR",
             "GIT_INDEX_FILE",
             "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_NAMESPACE",
-            "GIT_SSL_NO_VERIFY",
-            "GIT_SSL_CERT",
+        ] {
+            assert!(
+                env.get(OsStr::new(key)).is_some_and(Option::is_none),
+                "{key} is removed so repository-local configuration cannot redirect discovery"
+            );
+        }
+        for key in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_CREDENTIAL_HELPER",
+            "HTTPS_PROXY",
             "GIT_SSL_CAINFO",
         ] {
             assert!(
                 !env.contains_key(OsStr::new(key)),
-                "{key} is absent from the cleared child environment"
+                "{key} is not overridden by probe hardening"
             );
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn credential_helper_and_askpass_marker_scripts_never_execute() {
+    fn ls_remote_command_inherits_proxy_and_ca_config_without_enabling_prompts() {
         use std::os::unix::fs::PermissionsExt;
 
         let run_dir = make_private_dir().expect("private run dir");
-        let marker = run_dir.join("marker");
-        let askpass = run_dir.join("askpass");
-        let helper = run_dir.join("helper");
         let fake_git = run_dir.join("fake-git");
-        for script in [&askpass, &helper] {
-            std::fs::write(script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
-            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let environment = run_dir.join("environment");
         std::fs::write(
             &fake_git,
-            "#!/bin/sh\n[ -z \"$GIT_ASKPASS\" ] || \"$GIT_ASKPASS\"\n[ -z \"$SSH_ASKPASS\" ] || \"$SSH_ASKPASS\"\n[ -z \"$GIT_CREDENTIAL_HELPER\" ] || \"$GIT_CREDENTIAL_HELPER\"\nprintf 'ref: refs/heads/main\\tHEAD\\n0123456789012345678901234567890123456789\\tHEAD\\n'\n",
+            format!(
+                "#!/bin/sh\nprintf '%s|%s|%s|%s|%s\\n' \"$HTTPS_PROXY\" \"$GIT_SSL_CAINFO\" \"$GIT_TERMINAL_PROMPT\" \"$GIT_ALLOW_PROTOCOL\" \"$GIT_CEILING_DIRECTORIES\" > {}\n[ \"$HTTPS_PROXY\" = \"https://proxy.invalid:8443\" ] || exit 10\n[ \"$GIT_SSL_CAINFO\" = \"/trusted/ca.pem\" ] || exit 11\n[ \"$GIT_TERMINAL_PROMPT\" = \"0\" ] || exit 12\n[ \"$GIT_ALLOW_PROTOCOL\" = \"https\" ] || exit 13\n[ \"$GIT_CEILING_DIRECTORIES\" = \"{}\" ] || exit 14\nIFS= read -r ignored && exit 15\nprintf '0123456789012345678901234567890123456789\\tHEAD\\n'\n",
+                environment.display(),
+                run_dir.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(1);
         let mut command = ls_remote_command_with_program(&fake_git, &run_dir);
         command
-            .env("GIT_ASKPASS", &askpass)
-            .env("SSH_ASKPASS", &askpass)
-            .env("GIT_CREDENTIAL_HELPER", &helper);
-        harden_git(&mut command, &run_dir);
-
-        assert!(matches!(
-            discover_with_command(command, deadline),
-            Source::Available(_)
-        ));
-        assert!(
-            !marker.exists(),
-            "the explicitly empty helper and askpass settings prevent marker scripts running"
+            .env("HTTPS_PROXY", "https://proxy.invalid:8443")
+            .env("GIT_SSL_CAINFO", "/trusted/ca.pem");
+        let result = discover_with_command(command, Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            result,
+            Source::Available(
+                ReleaseState::new(
+                    ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
+                    Vec::new(),
+                )
+                .unwrap()
+            ),
+            "fake Git saw: {:?}",
+            std::fs::read_to_string(&environment)
         );
         let _ = std::fs::remove_dir_all(&run_dir);
     }
@@ -1149,7 +1109,33 @@ mod tests {
         assert_eq!(
             get_url(&mut hardened),
             repo_url(),
-            "the fresh private directory and isolated configuration keep the source fixed"
+            "the fresh private directory keeps viewed-repository configuration out of the source query"
+        );
+
+        // Set `GIT_DIR` only for child commands: a viewer may inherit this redirect, but the test
+        // must not mutate its parallel test process's environment.
+        let parent_git_dir = std::env::var_os("GIT_DIR");
+        let mut redirected = std::process::Command::new("git");
+        redirected
+            .current_dir(&clean)
+            .env("GIT_DIR", evil.join(".git"));
+        assert!(
+            get_url(&mut redirected).contains("evil.invalid"),
+            "precondition: command-level GIT_DIR makes Git load the evil repository configuration"
+        );
+
+        let mut hardened_redirected = std::process::Command::new("git");
+        hardened_redirected.env("GIT_DIR", evil.join(".git"));
+        harden_git(&mut hardened_redirected, &clean);
+        assert_eq!(
+            get_url(&mut hardened_redirected),
+            repo_url(),
+            "hardening drops inherited GIT_DIR before Git can read repository-local configuration"
+        );
+        assert_eq!(
+            std::env::var_os("GIT_DIR"),
+            parent_git_dir,
+            "the regression uses command-local environment setup only"
         );
         let _ = std::fs::remove_dir_all(&base);
     }

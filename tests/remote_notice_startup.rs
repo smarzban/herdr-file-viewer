@@ -14,8 +14,8 @@ use herdr_file_viewer::presenter;
 use herdr_file_viewer::update::cache::Cache;
 use herdr_file_viewer::update::gateway::Gateway;
 use herdr_file_viewer::update::{
-    DiscoveryRunner, NoticeSnapshot, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source,
-    StartDeps, UpdateState, Version, start_with,
+    DiscoveryRunner, NoticeSnapshot, ObjectId, ReleaseState, ReleaseTag, Source, StartDeps,
+    UpdateState, Version, start_with,
 };
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::Terminal;
@@ -118,7 +118,6 @@ fn release_state(release: Option<Version>) -> ReleaseState {
         })
         .collect();
     ReleaseState::new(
-        RemoteRef::parse("refs/heads/main").unwrap(),
         ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
         releases,
     )

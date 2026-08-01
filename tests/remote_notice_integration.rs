@@ -11,8 +11,8 @@ use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::update::gateway::Gateway;
 use herdr_file_viewer::update::{
-    DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source, StartDeps, UpdateState,
-    Version, start_with,
+    DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, Source, StartDeps, UpdateState, Version,
+    start_with,
 };
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
@@ -161,7 +161,6 @@ fn controller(root: &Path) -> Controller {
 
 fn state() -> ReleaseState {
     ReleaseState::new(
-        RemoteRef::parse("refs/heads/main").unwrap(),
         ObjectId::parse(HEAD_OBJECT).unwrap(),
         vec![ReleaseTag::new(
             Version::parse("9.2.0").unwrap(),
@@ -364,12 +363,7 @@ fn invalid_spotlight_inputs_are_silent_and_never_replace_embedded_history() {
         let mut controller = controller(dir.path());
         controller.set_update(refresh(
             Source::Available(
-                ReleaseState::new(
-                    RemoteRef::parse("refs/heads/main").unwrap(),
-                    ObjectId::parse(HEAD_OBJECT).unwrap(),
-                    Vec::new(),
-                )
-                .unwrap(),
+                ReleaseState::new(ObjectId::parse(HEAD_OBJECT).unwrap(), Vec::new()).unwrap(),
             ),
             Source::Unavailable,
             spotlight,

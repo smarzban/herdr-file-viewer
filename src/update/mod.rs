@@ -13,7 +13,7 @@ pub mod spotlight_policy;
 pub mod status;
 pub mod version;
 
-pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, RemoteRef, Source};
+pub use gateway::{DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, Source};
 pub use version::Version;
 
 use cache::{Cache, CacheDelta, RefreshSpotlight};
@@ -730,7 +730,6 @@ mod tests {
     fn available_releases(releases: Vec<ReleaseTag>) -> Source<ReleaseState> {
         Source::Available(
             ReleaseState::new(
-                RemoteRef::parse("refs/heads/main").unwrap(),
                 ObjectId::parse("0123456789012345678901234567890123456789").unwrap(),
                 releases,
             )
