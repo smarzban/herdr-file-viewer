@@ -2799,8 +2799,8 @@ impl Controller {
         update::status::format_status(
             &self.notice_snapshot,
             self.update_dismissed,
-            Some(&details_key),
-            Some(&dismiss_key),
+            details_key.as_deref(),
+            dismiss_key.as_deref(),
         )
     }
 
@@ -3972,7 +3972,8 @@ mod tests {
         });
 
         let line = ctrl
-            .remote_notice_status()
+            .view_state()
+            .remote_notice_status
             .expect("the update status is visible");
         assert_eq!(
             line,
@@ -3981,6 +3982,34 @@ mod tests {
         assert!(
             !line.contains("herdr plugin install") && !line.contains("install"),
             "status does not advertise an install or automatic action: {line}"
+        );
+    }
+
+    #[test]
+    fn status_projection_marks_help_unbound_when_a_custom_binding_claims_its_key() {
+        let mut ctrl = wiring_controller();
+        let keys = BTreeMap::from([("refresh".to_string(), KeySpec::One("?".into()))]);
+        let (bindings, outcome) = input::resolve_bindings(input::registry(), Some(&keys));
+        ctrl.set_keybindings(bindings, outcome);
+        ctrl.set_update(UpdateState {
+            initial: NoticeSnapshot {
+                detected_release: Some(update::Version {
+                    major: 9,
+                    minor: 9,
+                    patch: 9,
+                }),
+                ..NoticeSnapshot::default()
+            },
+            rx: None,
+        });
+
+        let line = ctrl
+            .view_state()
+            .remote_notice_status
+            .expect("the update status is visible");
+        assert_eq!(
+            line,
+            "Update v9.9.9 available · (unbound) details · u dismiss"
         );
     }
 
@@ -4006,7 +4035,8 @@ mod tests {
         });
 
         let line = ctrl
-            .remote_notice_status()
+            .view_state()
+            .remote_notice_status
             .expect("the update status is visible");
         assert_eq!(
             line,

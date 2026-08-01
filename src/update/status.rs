@@ -6,11 +6,7 @@
 use super::NoticeSnapshot;
 
 /// The canonical fallback label for an unbound remote-notice status hint.
-///
-/// This module owns status-hint normalization. Binding adapters must call
-/// [`normalize_status_hint_label`] rather than duplicate this literal, while the formatter keeps
-/// its own fallback defense for an empty effective key set.
-pub const UNBOUND_KEY_LABEL: &str = "(unbound)";
+const UNBOUND_KEY_LABEL: &str = "(unbound)";
 
 /// Format the current remote notices as one status line.
 ///
@@ -36,30 +32,20 @@ pub fn format_status(
         return None;
     }
 
-    parts.push(format!(
-        "{} details",
-        normalize_status_hint_label(details_key)
-    ));
-    parts.push(format!(
-        "{} dismiss",
-        normalize_status_hint_label(dismiss_key)
-    ));
-    Some(parts.join(" · "))
-}
-
-/// Normalize a supplied effective binding label for a remote-notice status hint.
-///
-/// The caller normally supplies a non-empty label, but this fallback keeps the pure formatter
-/// total when an effective key set is empty.
-pub fn normalize_status_hint_label(label: Option<&str>) -> &str {
-    label
+    let details_key = details_key
         .filter(|label| !label.is_empty())
-        .unwrap_or(UNBOUND_KEY_LABEL)
+        .unwrap_or(UNBOUND_KEY_LABEL);
+    let dismiss_key = dismiss_key
+        .filter(|label| !label.is_empty())
+        .unwrap_or(UNBOUND_KEY_LABEL);
+    parts.push(format!("{details_key} details"));
+    parts.push(format!("{dismiss_key} dismiss"));
+    Some(parts.join(" · "))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{UNBOUND_KEY_LABEL, format_status, normalize_status_hint_label};
+    use super::format_status;
     use crate::update::release_policy::CachedReleaseDetails;
     use crate::update::spotlight_policy::{SpotlightCache, SpotlightInput, cache_delta, project};
     use crate::update::{NoticeSnapshot, Version};
@@ -151,12 +137,12 @@ mod tests {
                 Some("Update v2.0.0 available · ? details · u dismiss"),
             ),
             (
-                "supplied effective labels",
+                "supplied multi-key effective labels stay joined",
                 snapshot(Some(update), None),
                 false,
-                Some("F2"),
+                Some("F2 / F3"),
                 Some("d"),
-                Some("Update v2.0.0 available · F2 details · d dismiss"),
+                Some("Update v2.0.0 available · F2 / F3 details · d dismiss"),
             ),
             (
                 "unbound details",
@@ -206,9 +192,24 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_empty_status_hint_labels_to_the_canonical_label() {
-        assert_eq!(normalize_status_hint_label(None), UNBOUND_KEY_LABEL);
-        assert_eq!(normalize_status_hint_label(Some("")), UNBOUND_KEY_LABEL);
-        assert_eq!(normalize_status_hint_label(Some("F2")), "F2");
+    fn format_status_normalizes_absent_or_empty_labels_once_and_preserves_joined_labels() {
+        let update = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+        for details_key in [None, Some("")] {
+            assert_eq!(
+                format_status(
+                    &snapshot(Some(update), None),
+                    false,
+                    details_key,
+                    Some("F2 / F3"),
+                )
+                .as_deref(),
+                Some("Update v2.0.0 available · (unbound) details · F2 / F3 dismiss"),
+                "{details_key:?} details label normalizes only at formatting"
+            );
+        }
     }
 }
