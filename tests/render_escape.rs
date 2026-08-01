@@ -39,7 +39,13 @@ fn markdown_section_neutralizes_hostile_delegate_output_and_preserves_safe_sgr()
     ];
 
     for (name, hostile, expected, expect_color) in cases {
-        let (text, notice) = render_markdown_section(&command, hostile, 72, Duration::from_secs(1));
+        let (text, notice) = render_markdown_section(
+            &command,
+            hostile,
+            to_text(hostile),
+            72,
+            std::time::Instant::now() + Duration::from_secs(1),
+        );
         let rendered = flatten(&text);
         assert!(notice.is_none(), "{name}: cat succeeds");
         assert_eq!(rendered, expected, "{name}: hostile bytes are neutralized");

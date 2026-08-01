@@ -282,29 +282,31 @@ pub(crate) fn with_wrap_width(command: &[String], width: u16) -> Vec<String> {
 
 /// Render exactly one untrusted Markdown document for a Help section using the injected command.
 ///
-/// `remaining` is supplied by the caller's aggregate deadline policy, not derived here. A zero
-/// budget bypasses process creation and returns the same safe plain-text timeout fallback that a
-/// late delegate would produce. Nonzero calls apply the existing width rewrite, output cap,
-/// fallback, kill/reap behavior, and terminal-control neutralizer through [`delegate`].
+/// `deadline` is the one Help-open absolute deadline, supplied by the composer. `fallback` was
+/// terminal-neutralized before that budget was spent, so expiration never scans the document again.
+/// The normal path still applies the width rewrite, output cap, ANSI neutralizer, and existing
+/// capability-specific fallback notice.
 pub fn render_markdown_section(
     markdown_command: &[String],
     document: &str,
+    fallback: Text<'static>,
     width: u16,
-    remaining: Duration,
+    deadline: Instant,
 ) -> (Text<'static>, Option<String>) {
-    if remaining.is_zero() {
-        return (
-            to_text(document),
-            Some(RendererError::Timeout.notice(capability(ViewMode::RenderedMarkdown))),
-        );
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return markdown_section_timeout(fallback);
     }
     let command = with_wrap_width(markdown_command, width);
-    delegate(
-        &command,
-        document,
-        ViewMode::RenderedMarkdown,
-        remaining,
-        None,
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return markdown_section_timeout(fallback);
+    }
+    delegate_markdown_section(&command, document, fallback, deadline)
+}
+
+fn markdown_section_timeout(fallback: Text<'static>) -> (Text<'static>, Option<String>) {
+    (
+        fallback,
+        Some(RendererError::Timeout.notice(capability(ViewMode::RenderedMarkdown))),
     )
 }
 
@@ -378,18 +380,39 @@ fn delegate(
 ) -> (Text<'static>, Option<String>) {
     match run_renderer(command, input, timeout) {
         Ok(out) => (to_text(&out), base_notice),
-        Err(err) => {
-            // Map the typed failure to a short, actionable notice. The raw OS errno / io::Error
-            // detail is kept on the error but NOT surfaced in the default notice — a user can't
-            // act on "No such file or directory (os error 2)", but can act on "renderer (glow)
-            // not found; install it or see docs/renderers.md" (AC-24/25).
-            let fallback = err.notice(capability(mode));
-            let notice = match base_notice {
-                Some(prev) => format!("{prev}\n{fallback}"),
-                None => fallback,
-            };
-            (to_text(input), Some(notice))
-        }
+        Err(err) => (
+            to_text(input),
+            Some(fallback_notice(err, mode, base_notice)),
+        ),
+    }
+}
+
+/// The Help-only adapter receives a fallback prepared by the composer before it lets a renderer
+/// consume time. Unlike [`delegate`], this failure path must not scan the source document again.
+fn delegate_markdown_section(
+    command: &[String],
+    input: &str,
+    fallback: Text<'static>,
+    deadline: Instant,
+) -> (Text<'static>, Option<String>) {
+    match run_renderer_until(command, input, deadline) {
+        Ok(out) => (to_text(&out), None),
+        Err(err) => (
+            fallback,
+            Some(fallback_notice(err, ViewMode::RenderedMarkdown, None)),
+        ),
+    }
+}
+
+/// Map a typed failure to the existing short, actionable user-facing notice, preserving a prior
+/// truncation notice when a general file/diff render already has one.
+fn fallback_notice(err: RendererError, mode: ViewMode, base_notice: Option<String>) -> String {
+    // The raw OS errno / io::Error detail is retained by `RendererError`, never shown here: a user
+    // can act on the capability and remediation, not "No such file or directory (os error 2)".
+    let fallback = err.notice(capability(mode));
+    match base_notice {
+        Some(prev) => format!("{prev}\n{fallback}"),
+        None => fallback,
     }
 }
 
@@ -450,15 +473,72 @@ fn renderer_command(command: &[String]) -> Result<Command, String> {
     Ok(cmd)
 }
 
-/// Spawn a renderer, feed `input` on stdin (writer thread, avoids a pipe deadlock), read
-/// stdout (reader thread), and bound the wait by `timeout` — a wedged renderer is killed
-/// and reported as failed so the plain-text fallback kicks in. `Err` on a missing program,
-/// non-zero exit, or timeout. The command is trusted (operator-configured); only the stdin
-/// content is untrusted, so there is no argument injection.
+/// General file/diff rendering retains its established timeout contract: command setup, spawn,
+/// input cloning, and worker setup complete before its capture window begins.
 fn run_renderer(
     command: &[String],
     input: &str,
     timeout: Duration,
+) -> Result<String, RendererError> {
+    run_renderer_with_budget(command, input, RendererBudget::General(timeout))
+}
+
+/// Help rendering instead spends one caller-owned absolute deadline across setup and capture.
+fn run_renderer_until(
+    command: &[String],
+    input: &str,
+    deadline: Instant,
+) -> Result<String, RendererError> {
+    run_renderer_with_budget(command, input, RendererBudget::Help(deadline))
+}
+
+/// The two intentionally distinct timeout contracts supported by the one renderer runner.
+#[derive(Clone, Copy)]
+enum RendererBudget {
+    /// Existing content-renderer behavior: start timing after process and I/O setup.
+    General(Duration),
+    /// Help-only behavior: every phase consumes the one deadline captured at Help-open entry.
+    Help(Instant),
+}
+
+impl RendererBudget {
+    fn setup_deadline(self) -> Option<Instant> {
+        match self {
+            Self::General(_) => None,
+            Self::Help(deadline) => Some(crate::proc::capture_deadline(deadline)),
+        }
+    }
+
+    fn finalization_deadline(self) -> Option<Instant> {
+        match self {
+            Self::General(_) => None,
+            Self::Help(deadline) => Some(deadline),
+        }
+    }
+
+    fn capture_and_finalization_deadlines(self) -> (Instant, Instant) {
+        match self {
+            Self::General(timeout) => {
+                // Preserve the established full capture window, then replace the old unbounded
+                // kill/wait tail with one small, bounded finalization allowance.
+                let capture_deadline = Instant::now() + timeout;
+                (
+                    capture_deadline,
+                    crate::proc::finalization_deadline(capture_deadline),
+                )
+            }
+            Self::Help(deadline) => (crate::proc::capture_deadline(deadline), deadline),
+        }
+    }
+}
+
+/// Spawn a renderer, feed `input` on stdin (writer thread, avoiding a pipe deadlock), then capture
+/// stdout on a reader thread. The selected [`RendererBudget`] makes the legacy general and
+/// setup-inclusive Help deadline policies explicit while keeping process cleanup and notices shared.
+fn run_renderer_with_budget(
+    command: &[String],
+    input: &str,
+    budget: RendererBudget,
 ) -> Result<String, RendererError> {
     let prog = command
         .first()
@@ -466,73 +546,150 @@ fn run_renderer(
         .ok_or_else(|| RendererError::Failed {
             detail: "empty renderer command".to_string(),
         })?;
-    let mut child = renderer_command(command)
-        .map_err(|e| RendererError::Failed { detail: e })?
-        .spawn()
-        .map_err(|e| {
-            // A spawn failure is almost always "binary not installed" — branch on the OS error
-            // kind so the notice can name the binary and point to remediation, instead of
-            // leaking the raw "No such file or directory (os error 2)".
-            if e.kind() == std::io::ErrorKind::NotFound {
-                RendererError::NotFound {
-                    prog: prog.clone(),
-                    detail: e.to_string(),
-                }
-            } else {
-                RendererError::Failed {
-                    detail: e.to_string(),
-                }
+    let setup_deadline = budget.setup_deadline();
+    let setup_finalization_deadline = budget.finalization_deadline();
+    if deadline_expired(setup_deadline) {
+        return Err(RendererError::Timeout);
+    }
+    let mut command = renderer_command(command).map_err(|e| RendererError::Failed { detail: e })?;
+    if deadline_expired(setup_deadline) {
+        return Err(RendererError::Timeout);
+    }
+    let mut child = command.spawn().map_err(|e| {
+        // A spawn failure is almost always "binary not installed" — branch on the OS error kind
+        // so the notice can name the binary and point to remediation, instead of leaking the raw
+        // "No such file or directory (os error 2)".
+        if e.kind() == std::io::ErrorKind::NotFound {
+            RendererError::NotFound {
+                prog: prog.clone(),
+                detail: e.to_string(),
             }
-        })?;
+        } else {
+            RendererError::Failed {
+                detail: e.to_string(),
+            }
+        }
+    })?;
+    if deadline_expired(setup_deadline) {
+        stop_renderer(
+            child,
+            setup_finalization_deadline.expect("Help has a finalization deadline"),
+        );
+        return Err(RendererError::Timeout);
+    }
 
     if let Some(mut stdin) = child.stdin.take() {
         let owned = input.to_owned();
+        if deadline_expired(setup_deadline) {
+            stop_renderer(
+                child,
+                setup_finalization_deadline.expect("Help has a finalization deadline"),
+            );
+            return Err(RendererError::Timeout);
+        }
         std::thread::spawn(move || {
-            let _ = stdin.write_all(owned.as_bytes()); // ignore a closed pipe
+            let mut remaining = owned.as_bytes();
+            while !remaining.is_empty() && !deadline_expired(setup_deadline) {
+                match stdin.write(remaining) {
+                    Ok(0) | Err(_) => break,
+                    Ok(written) => remaining = &remaining[written..],
+                }
+            }
         });
+        if deadline_expired(setup_deadline) {
+            stop_renderer(
+                child,
+                setup_finalization_deadline.expect("Help has a finalization deadline"),
+            );
+            return Err(RendererError::Timeout);
+        }
     }
 
     let stdout = child.stdout.take();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        // Cap the captured output so a renderer spewing unbounded data can't exhaust memory.
-        let mut buf = Vec::new();
-        if let Some(out) = stdout {
-            let _ = out.take(MAX_RENDER_OUTPUT).read_to_end(&mut buf);
-        }
+        let buf = stdout
+            .map(|out| capture_renderer_output(out, setup_deadline))
+            .unwrap_or_default();
         let _ = tx.send(buf);
     });
+    if deadline_expired(setup_deadline) {
+        stop_renderer(
+            child,
+            setup_finalization_deadline.expect("Help has a finalization deadline"),
+        );
+        return Err(RendererError::Timeout);
+    }
 
-    // A SINGLE combined wall-clock deadline for the whole invocation (the doc'd "per-invocation
-    // wall-clock bound"), NOT `timeout` applied twice. The stdout phase below waits up to
-    // `timeout`, then the Ok-path exit-wait gets only the REMAINING budget — so a renderer that
-    // closes stdout late and then lingers on exit can't burn ~2× the timeout (which, for the
-    // synchronous help render, would blow AC-22's responsiveness budget). See item 1 / AC-22.
-    let deadline = Instant::now() + timeout;
-    match rx.recv_timeout(timeout) {
-        Ok(buf) => {
-            // stdout closed; the process should exit promptly. Bound that wait by what's LEFT of
-            // the single deadline, so a renderer that closes stdout then hangs is still killed and
-            // the TOTAL never exceeds `timeout` (no indefinite block, no doubled budget).
-            match crate::proc::wait_bounded(
-                &mut child,
-                deadline.saturating_duration_since(Instant::now()),
-            ) {
+    let (capture_deadline, finalization_deadline) = budget.capture_and_finalization_deadlines();
+    let Some(remaining) = deadline_remaining(capture_deadline) else {
+        stop_renderer(child, finalization_deadline);
+        return Err(RendererError::Timeout);
+    };
+    match rx.recv_timeout(remaining) {
+        Ok(buf)
+            if matches!(budget, RendererBudget::General(_))
+                || deadline_remaining(finalization_deadline).is_some() =>
+        {
+            match crate::proc::wait_until(&mut child, finalization_deadline) {
                 Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
                 Some(status) => Err(RendererError::Failed {
                     detail: format!("exited with {status}"),
                 }),
-                None => Err(RendererError::Failed {
-                    detail: "did not exit".to_string(),
-                }),
+                None => {
+                    stop_renderer(child, finalization_deadline);
+                    Err(RendererError::Failed {
+                        detail: "did not exit".to_string(),
+                    })
+                }
             }
         }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
+        Ok(_) | Err(_) => {
+            stop_renderer(child, finalization_deadline);
             Err(RendererError::Timeout)
         }
     }
+}
+
+fn deadline_expired(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| deadline_remaining(deadline).is_none())
+}
+
+fn deadline_remaining(deadline: Instant) -> Option<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    (!remaining.is_zero()).then_some(remaining)
+}
+
+fn stop_renderer(mut child: std::process::Child, deadline: Instant) {
+    if crate::proc::terminate_and_reap(&mut child, deadline).is_none() {
+        // Keep the synchronous deadline absolute while one owned waiter guarantees eventual reap.
+        std::thread::Builder::new()
+            .name("renderer-reaper".to_owned())
+            .spawn(move || {
+                loop {
+                    match child.wait() {
+                        Ok(_) => break,
+                        Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            })
+            .expect("spawn renderer reaper");
+    }
+}
+
+/// Capture no more than [`MAX_RENDER_OUTPUT`] bytes. Help checks its absolute deadline between
+/// reads; a blocked read is released by `stop_renderer` once the main thread reaches the deadline.
+fn capture_renderer_output(mut stdout: impl Read, deadline: Option<Instant>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut chunk = [0; 8192];
+    while buf.len() < MAX_RENDER_OUTPUT as usize && !deadline_expired(deadline) {
+        let cap = (MAX_RENDER_OUTPUT as usize - buf.len()).min(chunk.len());
+        match stdout.read(&mut chunk[..cap]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => buf.extend_from_slice(&chunk[..read]),
+        }
+    }
+    buf
 }
 
 /// Ingest (possibly untrusted) content into ratatui `Text`. Cursor-movement and
@@ -640,6 +797,33 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static N: AtomicU64 = AtomicU64::new(0);
+    const RENDERER_FIXTURE_NAME: &str = "render::tests::renderer_fixture";
+    const RENDERER_FIXTURE_ARG: &str = "--hfv-render-fixture=";
+
+    fn renderer_fixture_command(mode: &str) -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .expect("test binary path")
+                .display()
+                .to_string(),
+            "--exact".to_string(),
+            RENDERER_FIXTURE_NAME.to_string(),
+            "--".to_string(),
+            format!("{RENDERER_FIXTURE_ARG}{mode}"),
+        ]
+    }
+
+    #[test]
+    fn renderer_fixture() {
+        let mode = std::env::args().find_map(|argument| {
+            argument
+                .strip_prefix(RENDERER_FIXTURE_ARG)
+                .map(str::to_owned)
+        });
+        if mode.as_deref() == Some("stall") {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
 
     fn tmp(name: &str, bytes: &[u8]) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -949,10 +1133,54 @@ mod tests {
     }
 
     #[test]
+    fn help_renderer_does_not_start_inside_its_finalization_reserve() {
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let result = run_renderer_until(&renderer_fixture_command("normal"), "input", deadline);
+
+        assert!(
+            matches!(result, Err(RendererError::Timeout)),
+            "Help setup must stop at the work cutoff and leave the final deadline for reaping"
+        );
+    }
+
+    #[test]
+    fn general_renderer_can_succeed_with_a_timeout_shorter_than_the_help_reap_reserve() {
+        // General rendering starts its configured capture window only after setup and does not
+        // reserve Help's finalization slice. Before that separation, any timeout <= 50 ms failed
+        // before this fixture could return successfully.
+        let result = run_renderer(
+            &renderer_fixture_command("normal"),
+            "input",
+            Duration::from_millis(40),
+        );
+        assert!(
+            result.is_ok(),
+            "a short general-renderer timeout still permits success"
+        );
+    }
+
+    #[test]
+    fn general_renderer_timeout_has_one_bounded_reap_tail() {
+        let started = Instant::now();
+        let result = run_renderer(
+            &renderer_fixture_command("stall"),
+            "input",
+            Duration::from_millis(100),
+        );
+
+        assert!(matches!(result, Err(RendererError::Timeout)));
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "the full capture window plus bounded reap tail must not become an unbounded wait"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_renderer_bounds_total_wall_clock_to_a_single_timeout_on_slow_exit() {
         // R3 item 1 / AC-22: `run_renderer` must enforce a SINGLE combined wall-clock deadline,
         // not apply `timeout` twice (once waiting for stdout, again waiting for exit). This
-        // exercises the Ok→wait_bounded slow-exit path: `cat` echoes stdin then closes stdout
+        // exercises the Ok→wait_until slow-exit path: `cat` echoes stdin then closes stdout
         // (fast EOF → the recv_timeout(stdout) phase returns promptly), but the shell then sleeps
         // 2s before exiting — so the exit-wait is what would burn a second full `timeout` under
         // the old code. The combined deadline caps the TOTAL at roughly one `timeout`.
@@ -965,7 +1193,7 @@ mod tests {
         // still returns Ok), THEN lingers ~2s before exiting (so the Ok-path exit-wait would burn
         // a SECOND full timeout under the bug). `exec 1>&-` closes stdout precisely at the phase
         // boundary so the reader thread sees EOF and `recv_timeout` returns Ok → the slow-exit
-        // `wait_bounded` path. Under the 2× bug: ~0.8×+1.0× ≈ 1.8×. Under the single combined
+        // `wait_until` path. Under the 2× bug: ~0.8×+1.0× ≈ 1.8×. Under the single combined
         // deadline: ~0.8× + remaining(~0.2×) ≈ 1.0×.
         let cmd = vec![
             "sh".to_string(),

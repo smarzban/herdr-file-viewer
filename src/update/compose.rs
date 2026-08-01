@@ -10,20 +10,34 @@ use std::time::{Duration, Instant};
 /// The whole synchronous What's New composition budget, measured once when Help opens.
 pub const WHATS_NEW_COMPOSE_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// Render one already-selected Markdown document under the caller's remaining budget.
+/// Render one already-selected Markdown document under the Help-open absolute deadline.
 ///
-/// Implementations must return terminal-safe [`Text`]. The production adapter is T-16's
-/// [`crate::render::render_markdown_section`]; this small boundary keeps composer tests hermetic.
+/// `fallback` is terminal-safe plain text prepared before the renderer receives any budget. An
+/// implementation must return it unchanged when the deadline has expired or rendering fails. The
+/// production adapter is [`crate::render::render_markdown_section`]; this small boundary keeps
+/// composer tests hermetic.
 pub trait MarkdownSectionRenderer {
-    fn render(&mut self, document: &str, width: u16, remaining: Duration) -> Text<'static>;
+    fn render(
+        &mut self,
+        document: &str,
+        fallback: Text<'static>,
+        width: u16,
+        deadline: Instant,
+    ) -> Text<'static>;
 }
 
 impl<F> MarkdownSectionRenderer for F
 where
-    F: FnMut(&str, u16, Duration) -> Text<'static>,
+    F: FnMut(&str, Text<'static>, u16, Instant) -> Text<'static>,
 {
-    fn render(&mut self, document: &str, width: u16, remaining: Duration) -> Text<'static> {
-        self(document, width, remaining)
+    fn render(
+        &mut self,
+        document: &str,
+        fallback: Text<'static>,
+        width: u16,
+        deadline: Instant,
+    ) -> Text<'static> {
+        self(document, fallback, width, deadline)
     }
 }
 
@@ -51,6 +65,7 @@ pub fn compose_whats_new(
     width: u16,
     renderer: &mut impl MarkdownSectionRenderer,
 ) -> Text<'static> {
+    let deadline = opened_at + WHATS_NEW_COMPOSE_TIMEOUT;
     let embedded_releases = crate::help::released_changelog(embedded_changelog);
     let spotlight_body = snapshot
         .spotlight
@@ -79,14 +94,23 @@ pub fn compose_whats_new(
         documents.push(embedded_releases);
     }
 
-    let deadline = opened_at + WHATS_NEW_COMPOSE_TIMEOUT;
+    // Do this before delegating even the first document. Once the deadline expires, these owned
+    // values are appended directly, so an expired later document never re-neutralizes up to MiB of
+    // remote content on the input thread.
+    let documents = documents
+        .into_iter()
+        .map(|document| {
+            let fallback = crate::render::to_text(&document);
+            (document, fallback)
+        })
+        .collect::<Vec<_>>();
+
     let mut lines = Vec::<Line<'static>>::new();
-    for (index, document) in documents.iter().enumerate() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let rendered = if remaining.is_zero() {
-            crate::render::to_text(document)
+    for (index, (document, fallback)) in documents.into_iter().enumerate() {
+        let rendered = if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            fallback
         } else {
-            renderer.render(document, width, remaining)
+            renderer.render(&document, fallback, width, deadline)
         };
         if index > 0 {
             lines.push(Line::raw(""));

@@ -1,7 +1,6 @@
 //! What's New composition: independent documents under one Help-open deadline.
 
 use herdr_file_viewer::help::released_changelog;
-use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::update::compose::{
     MarkdownSectionRenderer, WHATS_NEW_COMPOSE_TIMEOUT, compose_whats_new, install_guidance,
 };
@@ -20,8 +19,10 @@ const SPOTLIGHT: &str = "Spotlight body\n";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Call {
     document: String,
+    fallback: String,
     width: u16,
-    remaining: Duration,
+    deadline: Instant,
+    observed_remaining: Duration,
 }
 
 #[derive(Default)]
@@ -31,16 +32,24 @@ struct RecordingRenderer {
 }
 
 impl MarkdownSectionRenderer for RecordingRenderer {
-    fn render(&mut self, document: &str, width: u16, remaining: Duration) -> Text<'static> {
+    fn render(
+        &mut self,
+        document: &str,
+        fallback: Text<'static>,
+        width: u16,
+        deadline: Instant,
+    ) -> Text<'static> {
         self.calls.push(Call {
             document: document.to_owned(),
+            fallback: flatten(&fallback),
             width,
-            remaining,
+            deadline,
+            observed_remaining: deadline.saturating_duration_since(Instant::now()),
         });
         if let Some(delay) = self.delay_each {
             std::thread::sleep(delay);
         }
-        to_text(document)
+        fallback
     }
 }
 
@@ -346,9 +355,11 @@ fn accepted_spotlight_remains_in_whats_new() {
 }
 
 #[test]
-fn absolute_budget_passes_decreasing_remaining_to_each_document() {
+fn one_absolute_deadline_is_shared_and_observed_remaining_decreases() {
     let mut renderer = RecordingRenderer {
-        delay_each: Some(Duration::from_millis(1)),
+        // A comfortable gap avoids depending on the clock's sub-millisecond resolution while
+        // staying well within the 200 ms composition budget.
+        delay_each: Some(Duration::from_millis(10)),
         ..RecordingRenderer::default()
     };
 
@@ -366,29 +377,48 @@ fn absolute_budget_passes_decreasing_remaining_to_each_document() {
         3,
         "only three logical documents may delegate"
     );
+    let deadline = renderer.calls[0].deadline;
     assert!(
-        renderer
-            .calls
-            .iter()
-            .all(|call| call.remaining <= WHATS_NEW_COMPOSE_TIMEOUT && !call.remaining.is_zero()),
-        "every delegated document receives the current remainder of the one 200 ms Help-open budget"
+        renderer.calls.iter().all(|call| call.deadline == deadline),
+        "every document receives the one Help-open absolute deadline, never a fresh timeout"
+    );
+    assert!(
+        renderer.calls.iter().all(|call| {
+            call.observed_remaining <= WHATS_NEW_COMPOSE_TIMEOUT
+                && !call.observed_remaining.is_zero()
+        }),
+        "each delegate starts before the common deadline"
     );
     assert!(
         renderer
             .calls
             .windows(2)
-            .all(|pair| pair[0].remaining > pair[1].remaining),
-        "the composer must remeasure the same absolute deadline, never reset a per-document budget"
+            .all(|pair| pair[0].observed_remaining > pair[1].observed_remaining),
+        "the shared deadline leaves less time for each later document"
     );
 }
 
 #[test]
-fn already_expired_open_skips_delegation_and_keeps_neighboring_documents() {
+fn already_expired_open_uses_precomputed_fallbacks_without_delegation() {
     let mut renderer = RecordingRenderer::default();
     let install_copy = install_guidance();
+    let spotlight = format!("# Project Spotlight\n{}", "x".repeat(1024 * 1024));
+    let mut cached_spotlight = SpotlightCache::default();
+    cached_spotlight.apply(cache_delta(
+        project(SpotlightInput::Available(spotlight.into_bytes())),
+        1,
+    ));
+    let snapshot = NoticeSnapshot {
+        detected_release: Some(version()),
+        release_details: Some(CachedReleaseDetails {
+            release: version(),
+            details: REMOTE.to_owned(),
+        }),
+        spotlight: cached_spotlight,
+    };
 
     let body = compose_whats_new(
-        &snapshot(true, true, true),
+        &snapshot,
         EMBEDDED,
         &install_copy,
         Instant::now() - WHATS_NEW_COMPOSE_TIMEOUT,
@@ -398,10 +428,14 @@ fn already_expired_open_skips_delegation_and_keeps_neighboring_documents() {
 
     assert!(
         renderer.calls.is_empty(),
-        "an already-expired Help-open deadline falls back without delegation"
+        "an expired multi-document Help open never invokes a renderer, even with a MiB fallback"
     );
     let shown = flatten(&body);
-    for document in [SPOTLIGHT, REMOTE, install_copy.as_str(), EMBEDDED] {
+    assert!(
+        shown.contains(&"x".repeat(1024 * 1024)),
+        "the precomputed MiB spotlight fallback remains visible"
+    );
+    for document in [REMOTE, install_copy.as_str(), EMBEDDED] {
         assert!(
             shown.contains(document.trim_end_matches('\n')),
             "a timed-out neighboring render cannot drop this logical document: {document:?}"

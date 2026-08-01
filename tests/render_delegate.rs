@@ -4,7 +4,9 @@
 //! Renderer commands are injected: `cat` echoes stdin (a working renderer), a nonexistent
 //! program simulates a missing one — so the tests never depend on glow/delta/bat.
 
-use herdr_file_viewer::render::{Caps, Prepared, Renderers, render, render_markdown_section};
+use herdr_file_viewer::render::{
+    Caps, Prepared, Renderers, render, render_markdown_section, to_text,
+};
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::process::{Command, Stdio};
@@ -52,11 +54,13 @@ fn markdown_section_uses_the_injected_command_at_the_requested_width() {
         "0".into(),
         "-".into(),
     ];
+    let document = "# One document\n\nThis is the only section.";
     let (text, notice) = render_markdown_section(
         &command,
-        "# One document\n\nThis is the only section.",
+        document,
+        to_text(document),
         71,
-        Duration::from_secs(1),
+        Instant::now() + Duration::from_secs(1),
     );
 
     assert!(flatten(&text).contains("This is the only section."));
@@ -64,8 +68,8 @@ fn markdown_section_uses_the_injected_command_at_the_requested_width() {
 }
 
 #[test]
-fn markdown_section_at_zero_falls_back_without_spawning_a_delegate() {
-    let marker = marker_path("zero");
+fn expired_markdown_section_uses_the_precomputed_fallback_without_spawning_a_delegate() {
+    let marker = marker_path("expired");
     let command = vec![
         "sh".into(),
         "-c".into(),
@@ -73,15 +77,19 @@ fn markdown_section_at_zero_falls_back_without_spawning_a_delegate() {
         "section".into(),
         marker.display().to_string(),
     ];
-    let (text, notice) = render_markdown_section(&command, "# Safe fallback", 71, Duration::ZERO);
+    let fallback = Text::raw("precomputed safe fallback");
+    let (text, notice) = render_markdown_section(
+        &command,
+        "a potentially MiB-sized source document",
+        fallback,
+        71,
+        Instant::now() - Duration::from_millis(1),
+    );
     let spawned = marker.exists();
     let _ = std::fs::remove_file(&marker);
 
-    assert!(
-        !spawned,
-        "zero remaining duration must not spawn the delegate"
-    );
-    assert!(flatten(&text).contains("# Safe fallback"));
+    assert!(!spawned, "an expired deadline must not spawn the delegate");
+    assert_eq!(flatten(&text), "precomputed safe fallback");
     assert!(
         notice.unwrap().to_lowercase().contains("timed out"),
         "the existing Markdown fallback notice is retained"
@@ -101,9 +109,11 @@ fn late_markdown_section_delegate_is_killed_and_reaped() {
         "section".into(),
         marker.display().to_string(),
     ];
-    let remaining = Duration::from_millis(150);
+    let timeout = Duration::from_millis(150);
     let start = Instant::now();
-    let (text, notice) = render_markdown_section(&command, "# Safe fallback", 71, remaining);
+    let document = "# Safe fallback";
+    let (text, notice) =
+        render_markdown_section(&command, document, to_text(document), 71, start + timeout);
     let elapsed = start.elapsed();
     let pid = std::fs::read_to_string(&marker).expect("delegate recorded its PID");
     let reaped = !Command::new("kill")

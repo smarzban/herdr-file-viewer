@@ -9297,43 +9297,75 @@ fn whats_new_body_falls_back_to_plain_text_when_renderer_is_absent() {
     );
 }
 
-/// A Renderers whose markdown command WORKS but is deliberately slow — it sleeps 2s then echoes
-/// stdin (`sh -c 'sleep 2 && cat'`). Used to prove `open_help` passes T-17's one 200 ms composition
-/// budget to the synchronous on-thread render: it must return below 300 ms, falling back to plain
-/// text. (`sh`/`sleep`/`cat` are POSIX — Linux & macOS.)
-fn slow_markdown_renderers() -> Renderers {
+const HELP_STALL_FIXTURE_NAME: &str = "help_stalled_markdown_renderer_fixture";
+const HELP_STALL_MARKER_PREFIX: &str = "--hfv-help-stall-marker=";
+
+/// The command is this test binary itself, so the deadline proof has no POSIX shell dependency.
+/// Keep the trailing `-` after `--`: `with_wrap_width` inserts its `-w` arguments before it, where
+/// libtest treats them as fixture arguments rather than its own flags.
+fn slow_markdown_renderers(marker: &std::path::Path) -> Renderers {
     Renderers {
-        markdown: vec!["sh".into(), "-c".into(), "sleep 2 && cat".into()],
+        markdown: vec![
+            std::env::current_exe()
+                .expect("controller test binary path")
+                .display()
+                .to_string(),
+            "--exact".into(),
+            HELP_STALL_FIXTURE_NAME.into(),
+            "--".into(),
+            format!("{HELP_STALL_MARKER_PREFIX}{}", marker.display()),
+            "-".into(),
+        ],
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
-        // The SHARED render timeout is generous (5s). FIX-B must NOT lean on it — the help path
-        // installs its own ~250ms bound — so we set this high to prove the bound is help-specific.
+        // This is deliberately generous: Help must use its own shared 200 ms deadline.
         timeout: Duration::from_secs(5),
     }
 }
 
 #[test]
+fn help_stalled_markdown_renderer_fixture() {
+    if let Some(marker) = std::env::args().find_map(|argument| {
+        argument
+            .strip_prefix(HELP_STALL_MARKER_PREFIX)
+            .map(std::path::PathBuf::from)
+    }) {
+        std::fs::write(marker, "started").expect("fixture writes stall handshake");
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+#[test]
 fn open_help_uses_the_composers_single_200ms_budget() {
-    // T-19 (AC-22): the What's New render is synchronous on the input thread. A slow/wedged
-    // markdown renderer must not freeze input for the shared 5s content timeout, nor gain a second
-    // controller budget. With a renderer that sleeps 2s, handle(ShowHelp) must return below 300 ms
-    // from the composer's one 200 ms deadline and yield the safe plain-text fallback.
+    // T-29: a current-exe fixture writes its handshake before stalling. The handshake rules out a
+    // missing/malformed renderer false positive before this test accepts Help's deadline fallback.
     let dir = TempDir::new();
-    let mut ctrl = controller_with_renderers(dir.path(), slow_markdown_renderers());
+    let marker = std::env::temp_dir().join(format!(
+        "hfv-help-stall-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let mut ctrl = controller_with_renderers(dir.path(), slow_markdown_renderers(&marker));
 
     let start = Instant::now();
     ctrl.handle(Intent::ShowHelp);
     let elapsed = start.elapsed();
 
+    let spawned_and_stalled = marker.exists();
+    let _ = std::fs::remove_file(&marker);
     assert!(
-        ctrl.help_open(),
-        "help must open even when the markdown renderer is slow"
+        spawned_and_stalled,
+        "the current-exe renderer fixture must start and stall before Help falls back"
     );
     assert!(
         elapsed < Duration::from_millis(300),
-        "T-19/AC-22: Help opens below 300 ms from the composer's single 200 ms deadline, not the \
-         renderer's 2s sleep — took {elapsed:?}"
+        "T-29: Help must stay within its 200 ms budget plus bounded scheduling/reap slack: {elapsed:?}"
+    );
+    assert!(
+        ctrl.help_open(),
+        "help must open even when the markdown renderer stalls"
     );
 
     let state = ctrl.help_state().expect("help_state() must be Some");

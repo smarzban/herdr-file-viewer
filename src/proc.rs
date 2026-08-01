@@ -20,13 +20,27 @@ pub fn wait_bounded(child: &mut Child, grace: Duration) -> Option<std::process::
     wait_until(child, Instant::now() + grace)
 }
 
+/// The latest instant a caller may wait for normal output before retaining the remainder of its
+/// absolute deadline for termination and reaping. Shared with the Help renderer so the reserve has
+/// one definition.
+pub fn capture_deadline(deadline: Instant) -> Instant {
+    deadline.checked_sub(REAP_RESERVE).unwrap_or(deadline)
+}
+
+/// Give a completed work window one bounded tail for termination and reaping.
+pub(crate) fn finalization_deadline(work_deadline: Instant) -> Instant {
+    work_deadline
+        .checked_add(REAP_RESERVE)
+        .unwrap_or(work_deadline)
+}
+
 /// Wait for `child` through its caller's absolute deadline.
 ///
 /// A small slice of that same deadline is reserved for termination and reaping, so neither path
 /// falls through to an unbounded `wait()`. A normally exited child receives its full exit status;
 /// an overrun remains `None` after it is killed and reaped.
 pub fn wait_until(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStatus> {
-    let wait_deadline = deadline.checked_sub(REAP_RESERVE).unwrap_or(deadline);
+    let wait_deadline = capture_deadline(deadline);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),

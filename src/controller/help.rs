@@ -119,20 +119,24 @@ impl Controller {
     ///
     /// Sets the active section to 0 (What's New) and returns `Effects::redraw()`.
     pub(super) fn open_help(&mut self) -> Effects {
+        let opened_at = Instant::now();
         // The compositor's source set is deliberately closed over only local, already-projected
         // state. It must not ask the Gateway/cache/Git/config for fresh facts while input is blocked.
         // `render_markdown_section` applies the fixed help body width to each independent document;
-        // the composer passes it one decreasing remainder from its own absolute 200 ms deadline.
+        // the composer passes each one the same absolute 200 ms Help-open deadline.
         let install_copy = crate::update::compose::install_guidance();
         let markdown = self.renderers.markdown.clone();
         let whats_new_body = crate::update::compose::compose_whats_new(
             self.notice_snapshot(),
             crate::help::CHANGELOG_MD,
             &install_copy,
-            Instant::now(),
+            opened_at,
             crate::presenter::help_body_text_width(),
-            &mut |document: &str, width, remaining| -> Text<'static> {
-                crate::render::render_markdown_section(&markdown, document, width, remaining).0
+            &mut |document: &str, fallback: Text<'static>, width, deadline| -> Text<'static> {
+                crate::render::render_markdown_section(
+                    &markdown, document, fallback, width, deadline,
+                )
+                .0
             },
         );
         let whats_new = HelpSectionState {
