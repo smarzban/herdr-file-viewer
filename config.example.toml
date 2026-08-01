@@ -82,14 +82,10 @@
 # toggles it. Default:
 #compact_dirs = false
 
-# `update_check` is the single effective remote-notice control. It resolves as config > env >
-# default, with $HERDR_FILE_VIEWER_NO_UPDATE_CHECK as its opt-out environment tier when the config
-# key is unset. Effective off disables all remote behavior and cached projection: release discovery,
-# tagged release details, default-HEAD project spotlight retrieval, cached remote content, its status
-# row, and remote additions to What's New. Effective on permits the bounded, fail-silent daily
-# pipeline, but does not guarantee network availability or content. There is no spotlight-specific,
-# release-details-specific, status-only, or cache-projection setting or environment variable. For
-# the bounded source and cache contract, see docs/remote-notices.md. Default:
+# `update_check` controls release details and project spotlights.
+# `false` disables all remote requests and their display.
+# When unset, $HERDR_FILE_VIEWER_NO_UPDATE_CHECK also disables it.
+# No separate spotlight setting. Default:
 #update_check = true
 
 # Annotations (`a` / `A`) live only for the session, so both quitting (`q`) and

@@ -335,52 +335,18 @@ Read-only: it changes only *what you're viewing*, never the branch or any files.
 
 ## In-app help
 
-Press `?` to open a view-only **help overlay**. **What's New is the first section and is selected
-when you press `?`.** When information is available, it orders the **project spotlight, Available
-updates, then the full embedded released history**. **`[Unreleased]` is excluded**. A spotlight's
-title can appear in the status footer, but its body remains **readable in What's New after you
-dismiss the footer**. Available updates include immutable release details when available and the
-fixed install command as copy text.
-
-The remaining sections are **Keybindings** (every action's config-var name, effective keys, and
-description, marking your customizations), **Settings** (your effective configuration), and
-**About** (version, repo, license, and update status). Keyboard and mouse; `Esc` or `q` closes it.
-A `? help` hint rides the content pane's bottom border so the overlay is discoverable without
-already knowing the key.
+`?` opens **What's New** first in the view-only **help overlay**, followed by **Keybindings**
+(every action's config-var name, effective keys, and description, marking your customizations),
+**Settings** (your effective configuration), and **About** (version, repo, license, and update
+status). Keyboard and mouse; `Esc` or `q` closes it. A `? help` hint rides the content pane's bottom
+border so the overlay is discoverable without already knowing the key.
 
 ## Staying up to date
 
-The viewer can show an advisory remote-notice footer. With the default bindings, the forms are:
-
-```text
-Update vX.Y.Z available · ? details · u dismiss
-Spotlight: <title> · ? details · u dismiss
-Update vX.Y.Z available · Spotlight: <title> · ? details · u dismiss
-```
-
-The `details` and `dismiss` hints always use the effective bindings, not assumed defaults. For
-example, remapping them can yield `Update vX.Y.Z available · F2 / F3 details · d dismiss`; if an
-action has no effective binding, its hint is `(unbound) details` or `(unbound) dismiss`, including
-`(unbound) details · (unbound) dismiss` when both are unbound. There is no status row when notices
-are empty, disabled, or dismissed.
-
-Press `?` for the expanded **What's New** detail and `u` to hide the whole row for this session.
-An update dismissal returns next session while you are still behind. A spotlight's exact content is
-remembered until that content changes, so a later session can show an update alone; dismissal does
-not remove the spotlight body from What's New.
-
-When enabled, the viewer checks at most once every 24 hours, off the UI thread. At session start it
-uses advisory cached facts first: immutable cached release details remain usable only for the exact
-detected release, while a spotlight is fresh only when it is less than 24 hours old at session
-start. A stale or absent spotlight is hidden, then refreshed only when the shared daily refresh is
-eligible or already underway. Each source can fail silently and independently: a missing or failed
-source never blocks the viewer, emits a network diagnostic, or erases usable neighboring notice
-information. The footer and What's New are display only, with no automatic action.
-
-Set `update_check = false` or `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` to disable remote notices
-entirely. For the fixed-source and trust boundary, see the maintainer
-[remote-notices reference](remote-notices.md); it explains the implementation contract rather than
-adding a delivery promise.
+The viewer can show an advisory status row for a newer release or project spotlight. Press `?` for
+What's New details; `u` dismisses the status row for this session. It is display-only and never
+installs, opens, or copies anything. Control remote notices with
+[`update_check`](configuration.md).
 
 ## Using the mouse
 

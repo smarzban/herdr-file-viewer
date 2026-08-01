@@ -35,11 +35,8 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   to the size cap.
 - **renderer fallback**: the plain, unstyled text the content pane shows when a
   delegated renderer is unavailable, alongside a non-fatal notice.
-- **remote notice**: advisory information from the viewer's official project, shown in the
-  status footer and **What's New** as an available version, a **project spotlight**, or both.
-  Display-only: it never performs an action.
-- **project spotlight**: the current advisory project message carried by a **remote notice**;
-  its title can appear in the status footer and its body appears in **What's New**.
+- **remote notice**: display-only official-project advisory shown in the status row and **What's New**.
+- **project spotlight**: a display-only introduction to an official software project, whose title can appear in the status row and whose detail appears in **What's New**.
 - **focus-toggle**: the control that, in a narrow split (< 80 columns), gives the full
   pane width to either the tree or the content pane.
 - **file finder**: the keyboard-summoned text-input overlay that fuzzy-matches a typed

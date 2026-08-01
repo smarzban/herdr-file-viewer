@@ -99,10 +99,6 @@ The full reference — file location, precedence, every key, and `[keys]` remapp
 **[docs/configuration.md](docs/configuration.md)**. See your effective settings any time in the `?`
 help overlay's **Settings** section.
 
-An advisory footer can point out an available update or project spotlight. Press `?` for its
-expanded **What's New** detail, it never installs or opens anything for you. See
-[staying up to date](docs/usage.md#staying-up-to-date).
-
 ## Windows
 
 Native Windows is supported as a **preview** (install works the same way; the open actions use
@@ -113,7 +109,7 @@ Native Windows is supported as a **preview** (install works the same way; the op
 
 Full docs live in **[docs/](docs/README.md)**:
 
-- **[Install & updating](docs/install.md)** — prebuilt vs. source, pinning a version, local-dev linking, and advisory update notices.
+- **[Install & updating](docs/install.md)** — prebuilt vs. source, pinning a version, local-dev linking, and the in-app update banner.
 - **[Summoning the viewer](docs/summoning.md)** — the open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat.
 - **[Usage guide](docs/usage.md)** — a feature-by-feature tour of the whole viewer.
 - **[Keys & mouse](docs/keys.md)** — the complete key table, mouse gestures, and editor hand-off.

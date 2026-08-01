@@ -18,7 +18,7 @@ const CACHE_FILE: &str = "update-check.json";
 const LOCK_FILE: &str = "update-check.lock";
 
 /// Retry a competing writer for a short, bounded interval, then leave the advisory cache alone.
-const LOCK_ATTEMPTS: usize = 200;
+const LOCK_ATTEMPTS: usize = 100;
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 /// On Windows an external reader can transiently prevent replacement of the destination.

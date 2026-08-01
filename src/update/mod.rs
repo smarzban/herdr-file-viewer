@@ -102,7 +102,18 @@ fn cached_release_details(
     });
 
     match release_policy::cached_release_details(current(), detected_release, cached.as_ref()) {
-        release_policy::CachedReleaseDetailsDecision::Cached(details) => Some(details.clone()),
+        release_policy::CachedReleaseDetailsDecision::Cached(cached) => {
+            let details = release_policy::eligible_release_sections(
+                &cached.details,
+                current(),
+                cached.release,
+            )
+            .concat();
+            (!details.is_empty()).then_some(release_policy::CachedReleaseDetails {
+                release: cached.release,
+                details,
+            })
+        }
         release_policy::CachedReleaseDetailsDecision::Hidden
         | release_policy::CachedReleaseDetailsDecision::Fetch(_) => None,
     }
@@ -424,7 +435,7 @@ mod tests {
     #[test]
     fn startup_decision_projects_details_only_for_the_matching_newer_release() {
         let release = future_version(1);
-        let details = "## [next]\n- cached details\n";
+        let details = format!("## [{release}]\n- cached details\n");
         let decision = decide(
             false,
             10_000,
@@ -432,7 +443,7 @@ mod tests {
                 latest_seen: Some(release.to_string()),
                 release_details: Some(cache::PersistedReleaseDetails {
                     release: release.to_string(),
-                    details: details.into(),
+                    details: details.clone(),
                 }),
                 ..Cache::default()
             }),
@@ -446,6 +457,48 @@ mod tests {
             .expect("matching newer release details remain usable");
         assert_eq!(projected.release, release);
         assert_eq!(projected.details, details);
+    }
+
+    #[test]
+    fn startup_decision_reprojects_cached_details_after_an_intermediate_install() {
+        let intermediate = current();
+        let detected = future_version(1);
+        let detected_section = format!("## [{detected}]\n- detected bytes\n");
+        let intermediate_section = format!("## [{intermediate}]\r\n- installed bytes\r\n");
+        let cache = Some(Cache {
+            latest_seen: Some(detected.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: detected.to_string(),
+                details: format!("{detected_section}{intermediate_section}"),
+            }),
+            ..Cache::default()
+        });
+
+        let projected = decide(false, 10_000, &cache)
+            .initial
+            .release_details
+            .expect("only sections newer than this installed build remain visible");
+        assert_eq!(projected.release, detected);
+        assert_eq!(
+            projected.details, detected_section,
+            "the eligible cached section retains its exact original bytes"
+        );
+
+        let empty_cache = Some(Cache {
+            latest_seen: Some(detected.to_string()),
+            release_details: Some(cache::PersistedReleaseDetails {
+                release: detected.to_string(),
+                details: intermediate_section,
+            }),
+            ..Cache::default()
+        });
+        assert!(
+            decide(false, 10_000, &empty_cache)
+                .initial
+                .release_details
+                .is_none(),
+            "cached details with no section above the installed build stay hidden"
+        );
     }
 
     #[test]
@@ -774,7 +827,7 @@ mod tests {
     #[test]
     fn refresh_worker_keeps_details_for_the_same_release() {
         let detected = future_version(1);
-        let details = "## [next]\n- cached details\n";
+        let details = format!("## [{detected}]\n- cached details\n");
         let dir = std::env::temp_dir().join(format!("hfv-startwith-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let spotlight = b"# Project\nexact spotlight bytes\n".to_vec();
@@ -782,7 +835,7 @@ mod tests {
             latest_seen: Some(detected.to_string()),
             release_details: Some(cache::PersistedReleaseDetails {
                 release: detected.to_string(),
-                details: details.into(),
+                details: details.clone(),
             }),
             spotlight: Some(spotlight.clone()),
             spotlight_retrieved_at_unix: Some(CHECK_INTERVAL_SECS * 9 + 1),
@@ -807,7 +860,7 @@ mod tests {
             got.release_details,
             Some(release_policy::CachedReleaseDetails {
                 release: detected,
-                details: details.into(),
+                details,
             }),
             "a successful probe for the same release keeps exact cached details"
         );
@@ -835,7 +888,7 @@ mod tests {
                 latest_seen: Some(cached_release.to_string()),
                 release_details: Some(cache::PersistedReleaseDetails {
                     release: cached_release.to_string(),
-                    details: "## [cached]\n- details\n".into(),
+                    details: format!("## [{cached_release}]\n- details\n"),
                 }),
                 ..Cache::default()
             }),
@@ -1203,7 +1256,7 @@ mod tests {
         let cached_release = future_version(1);
         let cached_details = release_policy::CachedReleaseDetails {
             release: cached_release,
-            details: "## cached\n".into(),
+            details: format!("## [{cached_release}]\n- cached details\n"),
         };
         let cache = Cache {
             latest_seen: Some(cached_release.to_string()),

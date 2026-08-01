@@ -340,7 +340,7 @@ fn discover_child_bounded_with_spawner(
 ///
 /// On every error path this kills and reaps the child. The reader asks the pipe for at most one
 /// byte beyond the current cap, so an over-cap producer is stopped before the rest is buffered.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn capture_stdout_bounded(
     child: &mut Child,
     max_bytes: usize,

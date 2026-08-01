@@ -17,23 +17,8 @@ const KEYS_DOC: &str = include_str!("../docs/keys.md");
 const CONFIG_DOC: &str = include_str!("../docs/configuration.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
-const REMOTE_NOTICES_DOC: &str = include_str!("../docs/remote-notices.md");
-const DOCS_INDEX: &str = include_str!("../docs/README.md");
-const ARCHITECTURE: &str = include_str!("../ARCHITECTURE.md");
-const SECURITY: &str = include_str!("../SECURITY.md");
-const AGENTS: &str = include_str!("../AGENTS.md");
-const CONTEXT: &str = include_str!("../CONTEXT.md");
 const USAGE_DOC: &str = include_str!("../docs/usage.md");
 const INSTALL_DOC: &str = include_str!("../docs/install.md");
-
-/// Remove Markdown emphasis and normalize whitespace so wording guards do not depend on line wraps.
-fn normalized_markdown_text(document: &str) -> String {
-    document
-        .replace("**", "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 /// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading
 /// `#`, reads `key = ...`). Stronger than a bare substring: the key must appear as an actual
@@ -244,40 +229,18 @@ fn configuration_doc_documents_config_file() {
 }
 
 #[test]
-fn one_update_control_documents_all_remote_behavior() {
-    // AC-57: `update_check` is the one resolved control for every advisory remote-notice
-    // projection. The reference and copyable template must keep that whole boundary together,
-    // without inventing a narrower setting or environment-variable surface.
-    for (document_name, document) in [
-        ("docs/configuration.md", CONFIG_DOC),
-        ("config.example.toml", CONFIG_EXAMPLE),
-    ] {
-        let text = normalized_markdown_text(&document.replace("\n# ", " "));
-        for required in [
-            "update_check",
-            "HERDR_FILE_VIEWER_NO_UPDATE_CHECK",
-            "config > env > default",
-            "Effective off disables all remote behavior and cached projection",
-            "release discovery",
-            "tagged release details",
-            "default-HEAD project spotlight retrieval",
-            "cached remote content",
-            "status row",
-            "remote additions to What's New",
-            "Effective on permits the bounded, fail-silent daily pipeline",
-            "does not guarantee network availability or content",
-            "no spotlight-specific, release-details-specific, status-only, or cache-projection setting or environment variable",
-        ] {
-            assert!(
-                text.contains(required),
-                "{document_name} must document that update_check controls `{required}`"
-            );
-        }
+fn concise_remote_notice_controls_and_keys_are_documented() {
+    for document in [CONFIG_DOC, CONFIG_EXAMPLE] {
+        assert!(document.contains("update_check"));
+        assert!(document.contains("release details"));
+        assert!(document.contains("spotlight"));
+        assert!(document.contains("HERDR_FILE_VIEWER_NO_UPDATE_CHECK"));
+        assert!(document.contains("`false` disables all remote requests"));
+        assert!(document.contains("their display"));
     }
-    assert!(
-        CONFIG_DOC.contains("Dismiss the whole remote-notice status row for this session"),
-        "the dismiss_update action must describe its whole remote-notice row/session behavior"
-    );
+    assert!(CONFIG_DOC.contains("No separate spotlight setting"));
+    assert!(KEYS_DOC.contains("Open help with **What's New** details selected first"));
+    assert!(KEYS_DOC.contains("Dismiss the advisory status row for this session"));
 }
 
 #[test]
@@ -351,204 +314,11 @@ fn keys_doc_documents_altgr_windows_scope() {
 }
 
 #[test]
-fn remote_notices_reference_documents_publishing_and_trust_contract() {
-    // AC-58: this page is the canonical maintainer reference for the one official repository's
-    // advisory notices. It must name the source pins, bounded/silent acquisition, cache semantics,
-    // rendering boundary, and explicit non-effects rather than turning the spotlight into a general
-    // publishing channel.
-    let remote_notices = normalized_markdown_text(REMOTE_NOTICES_DOC);
-    let security = normalized_markdown_text(SECURITY);
-    for required in [
-        "https://github.com/smarzban/herdr-file-viewer",
-        "https://raw.githubusercontent.com",
-        "git ls-remote",
-        "exact object ID resolved for the detected release tag",
-        "For an annotated tag, the resolved ID is its peeled commit",
-        "vMAJOR.MINOR.PATCH",
-        "no prerelease or build suffixes",
-        "current default-branch HEAD object",
-        "CHANGELOG.md",
-        "project-spotlight.md",
-        "first nonblank `# ` heading",
-        "remaining document body",
-        "immutable",
-        "1 MiB",
-        "20 MiB",
-        "Each cached remote",
-        "15 seconds",
-        "24 hours",
-        "session start",
-        "Stale and future spotlight content is hidden",
-        "shared daily refresh is eligible or already underway",
-        "Available",
-        "Missing",
-        "Unavailable",
-        "fail silently",
-        "update-check.json",
-        "atomic",
-        "advisory",
-        "session-only",
-        "remembered",
-        "display-only",
-        "trusted local code",
-        "possible side effects",
-        "no automatic install",
-        "no download",
-        "no URL open",
-        "no clipboard",
-        "no viewed-root or Git mutation",
-        "sends no application credentials",
-        "no telemetry",
-        "no shell interpretation",
-        "no raw terminal control",
-    ] {
-        assert!(
-            remote_notices.contains(required),
-            "docs/remote-notices.md must document `{required}`"
-        );
-    }
-
-    assert!(
-        DOCS_INDEX.contains("remote-notices.md"),
-        "docs/README.md must link the canonical remote-notices reference"
-    );
-    assert!(
-        ARCHITECTURE.contains("Official Repository Gateway")
-            && ARCHITECTURE.contains("remote-notices"),
-        "ARCHITECTURE.md must map the official gateway and point to its reference"
-    );
-    assert!(
-        ARCHITECTURE.contains("update-check.json") && ARCHITECTURE.contains("spotlight"),
-        "ARCHITECTURE.md must state the advisory-cache persistent-state exception"
-    );
-    assert!(
-        SECURITY.contains("rustls")
-            && SECURITY.contains("ureq")
-            && SECURITY.contains("credentials")
-            && SECURITY.contains("remote notices")
-            && SECURITY.contains("exact object ID resolved for the detected release tag")
-            && SECURITY.contains("For an annotated tag")
-            && SECURITY.contains("resolved ID is its peeled commit")
-            && SECURITY.contains("trusted local code")
-            && SECURITY.contains("possible side effects")
-            && security.contains("accepted only when it is at most 1 MiB")
-            && security.contains("one additional sentinel byte")
-            && security.contains("sends no application credentials"),
-        "SECURITY.md must cover the remote-notice transport audit surface, accurate release pin, document acceptance cap, credential scope, and renderer trust"
-    );
-    assert!(
-        remote_notices.contains("accepted only when it is at most 1 MiB")
-            && remote_notices.contains("one additional sentinel byte")
-            && remote_notices.contains("sends no application credentials"),
-        "docs/remote-notices.md must distinguish the 1 MiB acceptance cap, sentinel-byte oversize detection, and application-credential scope"
-    );
-    assert!(
-        !REMOTE_NOTICES_DOC.contains("exact detected release tag object"),
-        "docs/remote-notices.md must not call an annotated tag object the fetched source pin"
-    );
-    assert!(
-        !SECURITY.contains("Residual trust is limited"),
-        "SECURITY.md must not limit residual trust to GitHub and TLS while executing a configured renderer"
-    );
-    for prohibited in [
-        "1 MiB plus one byte",
-        "cap-plus-one limit of **1 MiB**",
-        "The viewer has no credentials",
-    ] {
-        assert!(
-            !remote_notices.contains(prohibited),
-            "docs/remote-notices.md must not make the contradictory claim `{prohibited}`"
-        );
-    }
-    assert!(
-        !security.contains("1 MiB plus one byte"),
-        "SECURITY.md must not describe the sentinel byte as accepted document capacity"
-    );
-    assert!(
-        AGENTS.contains("remote notices") && AGENTS.contains("ureq"),
-        "AGENTS.md must preserve durable remote-notice implementation constraints"
-    );
-}
-
-#[test]
-fn remote_notice_user_docs_cover_whats_new_status_and_dismissal() {
-    // AC-56: user docs must predict the advisory remote-notice surface without duplicating the
-    // maintainer trust contract. Keep the exact status copy grounded in update::status.
-    let usage = normalized_markdown_text(USAGE_DOC);
-    let install = normalized_markdown_text(INSTALL_DOC);
-    let keys = normalized_markdown_text(KEYS_DOC);
-
-    for term in ["**remote notice**", "**project spotlight**"] {
-        assert!(
-            CONTEXT.contains(term),
-            "CONTEXT.md must define the approved `{term}` glossary term"
-        );
-    }
-    assert!(
-        README.contains("docs/usage.md#staying-up-to-date"),
-        "README.md must keep a lean remote-notice taste linked to the usage guide"
-    );
-    assert!(
-        USAGE_DOC.contains("remote-notices.md"),
-        "docs/usage.md must link the maintainer remote-notice contract instead of duplicating it"
-    );
-
-    for status in [
-        "Update vX.Y.Z available · ? details · u dismiss",
-        "Spotlight: <title> · ? details · u dismiss",
-        "Update vX.Y.Z available · Spotlight: <title> · ? details · u dismiss",
-        "F2 / F3 details · d dismiss",
-        "(unbound) details · (unbound) dismiss",
-    ] {
-        assert!(
-            usage.contains(status),
-            "docs/usage.md must show the `{status}` status form"
-        );
-    }
-    for required in [
-        "no status row",
-        "empty, disabled, or dismissed",
-        "What's New is the first section",
-        "selected when you press `?`",
-        "project spotlight, Available updates, then the full embedded released history",
-        "`[Unreleased]` is excluded",
-        "readable in What's New after you dismiss the footer",
-        "at most once every 24 hours",
-        "at session start",
-        "stale or absent spotlight",
-        "daily refresh is eligible or already underway",
-        "immutable cached release details",
-        "exact detected release",
-        "fail silently and independently",
-        "no automatic action",
-    ] {
-        assert!(
-            usage.contains(required),
-            "docs/usage.md must document `{required}`"
-        );
-    }
-    for required in [
-        "whole status row for the current session",
-        "returns next session while you are still behind",
-        "exact spotlight content is remembered until that content changes",
-        "does not remove its body from What's New",
-    ] {
-        assert!(
-            keys.contains(required),
-            "docs/keys.md must document `{required}` for `u`"
-        );
-    }
-    for required in [
-        "What's New",
-        "herdr plugin install smarzban/herdr-file-viewer",
-        "copy only",
-        "never runs it",
-    ] {
-        assert!(
-            install.contains(required),
-            "docs/install.md must document `{required}` for updates"
-        );
-    }
+fn concise_remote_notice_usage_and_install_docs_are_accurate() {
+    assert!(USAGE_DOC.contains("`?` opens **What's New** first"));
+    assert!(USAGE_DOC.contains("`u` dismisses the status row for this session"));
+    assert!(INSTALL_DOC.contains("Installation remains manual"));
+    assert!(INSTALL_DOC.contains("[`update_check = false`](configuration.md)"));
 }
 
 #[test]

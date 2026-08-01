@@ -50,7 +50,7 @@ is unit-testable with stubs.
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold ephemeral session state, including the root-bound `AnnotationStore`; dispatch renders to the worker; map mouse events against fed-back geometry; and rebuild root-bound services on a worktree switch. Its owned annotation projection root-joins file targets, follows the applied `content_path` rather than the live cursor, and exposes merged line ranges only when the applied render carries a source map. Feature submodules are `mod`, `mouse`, `help`, `finder`, `picker`, `infile`, `lineselect`, `annotation`, and `git_apply`. One `Modal` enum type-enforces exclusive input ownership. Only a successful root change clears annotations; failure and same-root paths preserve them. Quitting or switching worktree with a non-empty store raises the `Modal::DiscardConfirm` layer (for a quit, outside search/unzoom) rather than silently discarding it; its `y` proceeds only on a successful clipboard write, and a switch re-validates its held target before committing. |
 | `app` | The event loop (`run()`): assemble the live components, then `draw → poll input → route to the controller (or the active modal) → drain finished renders`, until the user closes the viewer. |
-| `update` | The remote-notice pipeline. Its **Official Repository Gateway** uses a hardened, fixed-authority `git ls-remote --symref` discovery and bounded HTTPS document reads pinned to the exact detected release tag (`CHANGELOG.md`) and current default-branch HEAD (`project-spotlight.md`). The Refresh Coordinator runs one off-thread, 15-second, fail-silent refresh, projects independent typed outcomes, and atomically publishes one `NoticeSnapshot`; its policies retain immutable release details only for their detected release and accept one titled project spotlight. See [remote notices: publishing & trust](docs/remote-notices.md). |
+| `update` | Fixed official-source, bounded display-only remote notices with a fail-silent advisory cache; checks at most once per 24 hours off the UI thread, with opt-out via `HERDR_FILE_VIEWER_NO_UPDATE_CHECK`. |
 | `config` | Load & resolve the read-only TOML config: path resolution (`$HERDR_PLUGIN_CONFIG_DIR`, else XDG fallback), defensive parse (malformed input degrades to defaults, never panics), and precedence (config > env > default) → the `EffectiveSettings` consumed at startup by `editor`, `render`, `opener`, and `update`; it also parses the `[keys]` remapping table into `KeySpec` (string-or-array) entries the `input` bindings resolver layers over the registry. Never writes the file. |
 | `editor` | Hand a file off to `$EDITOR`, or the config's `editor` override (launch only — never reads or writes the file). |
 | `opener` | Read-only OS hand-off for the `O` / `R` keys: a pure per-OS argv builder (open-with-default-app / reveal-in-file-manager, overridable via the config's `open` / `reveal` keys) plus an `Opener` seam over the reused editor `Spawner`, spawned **non-blocking** (no terminal takeover, stdio nulled) so the TUI keeps running. |
@@ -95,13 +95,9 @@ retain file/title markers where applicable but never receive guessed source-line
 - **Git is first-class**, woven through the tree (status markers, colors, changed-only filter,
   baseline toggle) and the content pane (diff view), not a separate mode.
 - **In-memory, ephemeral state only**, including annotations, which start empty and are scoped to
-  the current root. A successful re-root clears them; failed and same-root re-root attempts do not.
-  The one on-disk exception is the bounded, advisory, safe-to-delete remote-notice cache
-  (`update-check.json` under the cache dir): it retains the daily check timestamp, detected release,
-  exact release details, spotlight bytes/retrieval time, and exact spotlight dismissal identity.
-  `update::cache` serializes intent-owned changes under an advisory lock and publishes staged,
-  complete revisions by atomic rename. Apart from that exception, there is no persistent store; the
-  filesystem and git repo are the read-only source of truth.
+  the current root. A successful re-root clears them; failed and same-root attempts do not. The
+  safe-to-delete `update-check.json` advisory cache is the sole persistent exception; it never
+  changes the viewed root or git repo.
 
 ## Trust boundaries
 

@@ -18,38 +18,13 @@ collaborator handed you. Its security posture is built around that.
   move the cursor, clear the screen, set the window title, or otherwise drive the terminal; it
   can only paint text inside the viewer's own region.
 
-- **Remote notices → fixed authority, bounded advisory data.** Remote notices have one publishing
-  authority: `https://github.com/smarzban/herdr-file-viewer`. A hardened, noninteractive system-Git
-  `ls-remote` query discovers only that repository's symbolic `HEAD` and stable tags; `CHANGELOG.md`
-  is then read at the exact object ID resolved for the detected release tag. For an annotated tag,
-  the resolved ID is its peeled commit; `project-spotlight.md` is read at the discovered
-  default-branch HEAD object. The raw-document client is `ureq` 3.3.0 with default
-  features disabled and only `rustls` enabled, and is fixed to `https://raw.githubusercontent.com`:
-  HTTPS only, no proxy, and no redirects. This ureq/rustls dependency path and `Cargo.lock` are an
-  explicit audit surface.
-
-  The remote path has no credential posture: discovery clears inherited configuration, disables
-  terminal prompting, and empties Git/SSH askpass and credential-helper variables. It sends no
-  application credentials or telemetry. Discovery stdout is capped at 256 KiB. Each document is
-  accepted only when it is at most 1 MiB. Its reader takes at most one additional sentinel byte
-  solely to detect and reject oversize. One 15-second absolute deadline covers discovery plus both
-  documents. The advisory `update-check.json` cache is capped at 20 MiB; its exact remote fields are each
-  capped at 1 MiB and complete revisions are staged then atomically renamed under an advisory lock.
-  Failures are typed and silent, so missing, invalid, unavailable, timeout, or transport states
-  cannot become diagnostics or an alternate source.
-
-  Remote bytes remain display-only to viewer-owned handling: they are sent to the configured
-  Markdown renderer on stdin, never shell-interpreted or used as an argument, and all rendered
-  output passes the same terminal neutralizer. The configured Markdown renderer executable is
-  trusted local code and may have possible side effects outside those viewer guarantees. The
-  neutralizer strips cursor, screen, OSC, C0, and C1 control sequences before ratatui display; only
-  safe SGR styling remains. The viewer performs no automatic install/download/URL open/clipboard
-  action, viewed-root or Git mutation, or raw terminal control. The only viewer-owned write is the
-  advisory cache outside the viewed root. Residual trust includes the compiled GitHub authorities
-  and their TLS trust path, plus the configured local Markdown renderer command: the viewer relies
-  on the endpoint and successful TLS validation for authentic bytes; a transport or TLS-validation
-  failure becomes a silent unavailable result, not a fallback endpoint. See [remote notices:
-  publishing & trust](docs/remote-notices.md).
+- **Remote notices → fixed, bounded display-only data.** The only source is the official
+  `https://github.com/smarzban/herdr-file-viewer` repository: no proxy, redirect, application
+  credential, or telemetry path. `ureq` 3.3.0 with `rustls` only reads fixed HTTPS documents with
+  bounded, fail-silent handling; audit its `Cargo.lock` surface. Remote Markdown reaches the
+  configured renderer only on stdin, and its output passes the terminal-control neutralizer. The
+  safe-to-delete `update-check.json` cache is the sole viewer-owned write and never affects the
+  viewed root or Git repository.
 
 - **Untrusted repository → hardened git invocations.** Because the opened repo may be hostile,
   every `git` command is hardened against repo-controlled code execution: `--no-ext-diff` /
