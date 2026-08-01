@@ -176,3 +176,16 @@ pub fn viewer_command(dir: &Path) -> Command {
     cmd.env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK", "1");
     cmd
 }
+
+/// A viewer command for an e2e fixture that deliberately supplies fresh cached remote notices.
+///
+/// This is opt-in: it removes only [`herdr_file_viewer::update::DISABLE_ENV`] from
+/// [`viewer_command`], leaving
+/// every other suite environment setting intact. The caller must set an isolated cache directory
+/// with a current successful-check timestamp, so cache freshness, never a network request, suppresses
+/// refresh.
+pub fn viewer_command_with_notices(dir: &Path) -> Command {
+    let mut cmd = viewer_command(dir);
+    cmd.env_remove(herdr_file_viewer::update::DISABLE_ENV);
+    cmd
+}

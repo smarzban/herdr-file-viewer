@@ -21,7 +21,24 @@ mod common;
 use common::{TempDir, git, init_repo_with_commit, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
+use std::ffi::OsStr;
 use std::time::Duration;
+
+#[test]
+fn default_viewer_command_keeps_remote_notices_disabled_for_the_rest_of_the_e2e_suite() {
+    let dir = TempDir::new();
+    let command = viewer_command(dir.path());
+    let disabled = command
+        .get_envs()
+        .find(|(name, _)| *name == OsStr::new("HERDR_FILE_VIEWER_NO_UPDATE_CHECK"))
+        .map(|(_, value)| value.map(|value| value.to_owned()));
+
+    assert_eq!(
+        disabled,
+        Some(Some("1".into())),
+        "the default e2e launcher remains hermetic; only the remote-notice helper opts into cached notices"
+    );
+}
 
 /// AC-20/AC-21 e2e oracle: `?` opens a modal help overlay that consumes navigation keys without
 /// moving the underlying tree, and `Esc` closes it and returns to the prior view.
