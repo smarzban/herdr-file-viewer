@@ -329,7 +329,7 @@ pub struct DiscardConfirmView {
 pub struct HelpView {
     /// The index of the active section in `labels` — rendered with the active-tab indicator (AC-5).
     pub active: usize,
-    /// The section labels (the tab row), in order. v1: `["What's New", "About"]`.
+    /// The section labels (the tab row), in controller-defined order.
     pub labels: Vec<String>,
     /// The active section's prerendered body (an owned clone, so the Presenter stays borrow-free).
     /// Drawn via [`Paragraph::scroll`] so a tall changelog can be read with the scrollbar.

@@ -170,7 +170,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     controller.set_keybindings_display();
     // Start the complete once-daily remote-notice coordinator off the UI thread. Pass the
     // resolved config > env > default decision once: disabled startup returns its empty sentinel
-    // without source or cache work, while enabled startup owns the cache-writer handle and one
+    // without source or cache work, while enabled startup returns the initial snapshot and one
     // refresh receiver. `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let
     // the env silently override a config `update_check = true` (AC-3/AC-10).
     controller.set_update(crate::update::start_default_with(

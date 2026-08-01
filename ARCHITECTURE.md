@@ -101,7 +101,7 @@ retain file/title markers where applicable but never receive guessed source-line
 
 ## Trust boundaries
 
-Three untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
+Four untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
 
 1. **File content** is untrusted: fed to renderers on **stdin** (never as an argument), and the
    renderer output is re-sanitized so no escape sequence can drive the terminal.
@@ -110,6 +110,8 @@ Three untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
    neutralized `core.fsmonitor`/`core.hooksPath`, scrubbed repo-redirecting env). This hardening
    lives in **one** shared builder so it cannot drift between callers.
 3. **The herdr-injected context** is parsed defensively and degrades to a minimal default.
+4. **Official remote-notice documents** come only from fixed HTTPS sources, stay bounded and
+   fail-silent, and pass through terminal-control neutralization before display.
 
 ## Tests
 

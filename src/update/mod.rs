@@ -1,9 +1,8 @@
-//! Update-available check — tell the user when a newer release exists.
+//! Bounded remote notices for newer release details and one project spotlight.
 //!
-//! A bounded, read-only, fail-silent feature: once per 24h it runs `git ls-remote` against
-//! our own repo (off the UI thread), compares the highest stable tag to the version compiled
-//! into this binary, and if behind contributes to a one-line status notice. Disabled entirely by
-//! the `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
+//! Once per 24h, one off-UI-thread coordinator queries the official repository, projects typed
+//! advisory content, publishes a complete safe-to-delete cache snapshot, and updates the one-line
+//! status plus What's New. Failures stay silent; no telemetry or viewed-repository mutation occurs.
 
 pub mod cache;
 pub mod compose;
