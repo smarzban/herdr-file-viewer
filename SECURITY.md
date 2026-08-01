@@ -18,13 +18,16 @@ collaborator handed you. Its security posture is built around that.
   move the cursor, clear the screen, set the window title, or otherwise drive the terminal; it
   can only paint text inside the viewer's own region.
 
-- **Remote notices → fixed, bounded display-only data.** The only source is the official
-  `https://github.com/smarzban/herdr-file-viewer` repository: no proxy, redirect, application
-  credential, or telemetry path. `ureq` 3.3.0 with `rustls` only reads fixed HTTPS documents with
-  bounded, fail-silent handling; audit its `Cargo.lock` surface. Remote Markdown reaches the
-  configured renderer only on stdin, and its output passes the terminal-control neutralizer. The
-  safe-to-delete `update-check.json` cache is the sole viewer-owned write and never affects the
-  viewed root or Git repository.
+- **Remote notices → isolated, bounded display-only data.** They use fixed official HTTPS sources
+  off the UI thread under one 15-second deadline. Private Git discovery excludes viewed-repo
+  configuration but inherits global/system proxy and CA configuration; curl inherits ambient proxy
+  settings and installed curl CA/TLS behavior. Curl starts with `.curlrc` disabled, uses a fixed
+  authority over HTTPS only, and follows no redirects. A 1 MiB document cap plus bounded transient
+  body and status prevent unbounded reads; `404` withdraws a spotlight, while every other failure
+  becomes typed, fail-silent outcomes. Remote Markdown reaches the configured renderer only on
+  stdin and passes the terminal-control neutralizer, with no content-triggered actions. The
+  complete, atomic, safe-to-delete cache (`update-check.json`) is the sole viewer-owned write and
+  never affects the viewed root or Git repository.
 
 - **Untrusted repository → hardened git invocations.** Because the opened repo may be hostile,
   every `git` command is hardened against repo-controlled code execution: `--no-ext-diff` /

@@ -79,9 +79,10 @@ preview_max_lines = 10000   # show at most this many lines before a truncated pr
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
 ```
 
-`update_check` controls release details and project spotlights. `false` disables all remote requests
+`update_check` governs release details and project spotlights. `false` disables all remote requests
 and their display. When the key is unset, `$HERDR_FILE_VIEWER_NO_UPDATE_CHECK` also disables it.
 No separate spotlight setting exists.
+The system `curl` is optional: without it, document retrieval is unavailable without an error.
 
 `tree_width` and `tree_max_cols` **together** decide the tree's startup width, and the **smaller of
 the two wins**: the tree is drawn at `min(tree_width% of the pane, tree_max_cols)`. So if you set

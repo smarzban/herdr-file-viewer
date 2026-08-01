@@ -82,10 +82,9 @@
 # toggles it. Default:
 #compact_dirs = false
 
-# `update_check` controls release details and project spotlights.
-# `false` disables all remote requests and their display.
-# When unset, $HERDR_FILE_VIEWER_NO_UPDATE_CHECK also disables it.
-# No separate spotlight setting. Default:
+# `update_check` governs release details and project spotlights.
+# `false` disables all remote requests and their display. When unset,
+# $HERDR_FILE_VIEWER_NO_UPDATE_CHECK also disables it. No separate spotlight setting. Default:
 #update_check = true
 
 # Annotations (`a` / `A`) live only for the session, so both quitting (`q`) and

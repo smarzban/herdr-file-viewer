@@ -416,7 +416,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::DismissUpdate,
         name: "dismiss_update",
         default_keys: &[KeyCode::Char('u')],
-        description: "Dismiss all remote notices for this session.",
+        description: "Dismiss the advisory status row for this session.",
         category: "Session",
     },
     Binding {
@@ -873,6 +873,25 @@ mod tests {
             registry().len(),
             "no two REGISTRY rows may share a name"
         );
+    }
+
+    #[test]
+    fn dismiss_update_help_copy_describes_session_status_row() {
+        let binding = registry()
+            .iter()
+            .find(|binding| binding.intent == Intent::DismissUpdate)
+            .expect("dismiss_update must be registered");
+        let help = crate::help::keybindings_text(
+            registry(),
+            &default_bindings(),
+            &KeyLoadOutcome::default(),
+        );
+
+        for copy in [binding.description, help.as_str()] {
+            assert!(copy.contains("advisory status row"));
+            assert!(copy.contains("this session"));
+            assert!(!copy.contains("all remote notices"));
+        }
     }
 
     #[test]

@@ -343,9 +343,9 @@ border so the overlay is discoverable without already knowing the key.
 
 ## Staying up to date
 
-The viewer can show an advisory status row for a newer release or project spotlight. Press `?` for
-What's New details; `u` dismisses the status row for this session. It is display-only and never
-installs, opens, or copies anything. Control remote notices with
+The viewer can show an advisory status row for a newer release or project spotlight. `?` opens
+**What's New** first; `u` dismisses the whole advisory status row for this session only. It is
+display-only and never installs, opens, or copies anything. Control remote notices with
 [`update_check`](configuration.md).
 
 ## Using the mouse

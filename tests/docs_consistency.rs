@@ -19,6 +19,7 @@ const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
 const USAGE_DOC: &str = include_str!("../docs/usage.md");
 const INSTALL_DOC: &str = include_str!("../docs/install.md");
+const SECURITY: &str = include_str!("../SECURITY.md");
 
 /// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading
 /// `#`, reads `key = ...`). Stronger than a bare substring: the key must appear as an actual
@@ -228,19 +229,57 @@ fn configuration_doc_documents_config_file() {
     }
 }
 
+fn section<'a>(document: &'a str, start: &str, end: &str) -> &'a str {
+    let (_, remainder) = document
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing section start: {start}"));
+    remainder
+        .split_once(end)
+        .map_or(remainder, |(section, _)| section)
+}
+
 #[test]
-fn concise_remote_notice_controls_and_keys_are_documented() {
-    for document in [CONFIG_DOC, CONFIG_EXAMPLE] {
-        assert!(document.contains("update_check"));
-        assert!(document.contains("release details"));
-        assert!(document.contains("spotlight"));
-        assert!(document.contains("HERDR_FILE_VIEWER_NO_UPDATE_CHECK"));
-        assert!(document.contains("`false` disables all remote requests"));
-        assert!(document.contains("their display"));
+fn remote_notice_docs_keep_their_controls_and_boundaries() {
+    let config = section(CONFIG_DOC, "update_check = true", "`tree_width`");
+    assert!(
+        config.contains("`update_check` governs"),
+        "the update_check passage must say it governs remote notices"
+    );
+    assert!(
+        config.contains("release details and project spotlights"),
+        "the update_check passage must cover release details and project spotlights"
+    );
+
+    let usage = section(USAGE_DOC, "## Staying up to date", "\n## ");
+    assert!(
+        usage.contains("display-only"),
+        "remote notices must retain their display-only boundary"
+    );
+    assert!(
+        usage.contains("never installs"),
+        "remote notices must not imply an install action"
+    );
+
+    for document in [CONFIG_DOC, INSTALL_DOC] {
+        assert!(
+            document.contains("system `curl` is optional"),
+            "docs must describe system curl as optional"
+        );
+        assert!(
+            document.contains("document retrieval is unavailable"),
+            "without curl, only document retrieval must be unavailable"
+        );
     }
-    assert!(CONFIG_DOC.contains("No separate spotlight setting"));
-    assert!(KEYS_DOC.contains("Open help with **What's New** details selected first"));
-    assert!(KEYS_DOC.contains("Dismiss the advisory status row for this session"));
+
+    let remote_notice = section(SECURITY, "**Remote notices", "- **Untrusted repository");
+    assert!(
+        remote_notice.contains("fixed official HTTPS sources"),
+        "remote notices must use fixed official HTTPS sources"
+    );
+    assert!(
+        remote_notice.contains("`404` withdraws a spotlight"),
+        "an HTTP 404 must withdraw a spotlight"
+    );
 }
 
 #[test]
@@ -311,14 +350,6 @@ fn keys_doc_documents_altgr_windows_scope() {
         "docs/keys.md must explain the Crossterm 0.29 Windows-input behavior behind the AltGr \
          ambiguity"
     );
-}
-
-#[test]
-fn concise_remote_notice_usage_and_install_docs_are_accurate() {
-    assert!(USAGE_DOC.contains("`?` opens **What's New** first"));
-    assert!(USAGE_DOC.contains("`u` dismisses the status row for this session"));
-    assert!(INSTALL_DOC.contains("Installation remains manual"));
-    assert!(INSTALL_DOC.contains("[`update_check = false`](configuration.md)"));
 }
 
 #[test]

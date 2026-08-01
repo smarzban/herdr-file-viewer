@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Advisory remote notices: update details and project spotlights in the status row and **What's New**. → [usage](docs/usage.md#staying-up-to-date)
+- Advisory remote notices: release details and project spotlights in the status row and **What's New**; `u` dismisses the advisory status row for this session. Display-only. → [usage](docs/usage.md#staying-up-to-date)
 - Bundled `herdr-file-viewer` agent skill: agents can resolve a file, source location, or function definition and open it in a fresh Files pane. Includes safe target handling, an explicit user-confirmation prompt for proactive offers, and platform guidance. → [agent skill](skills/herdr-file-viewer/SKILL.md) · [usage](docs/usage.md#teach-your-agent)
 - `show_ignored`: show gitignored (and git-excluded) files at startup, exactly as if the `i` key had already been pressed once. `.git/` stays hidden regardless, and the `i` key still toggles the state during the session. Off by default. Thanks @leonfox28 for the suggestion (#119) → [configuration](docs/configuration.md)
 - `compact_dirs`: draw a chain of single-child directories as one row (`src/main/java/br/com` instead of six indented rows), in both the full tree and the changed-only view. Off by default; worth turning on when your paths are deeper than your pane is wide. → [configuration](docs/configuration.md) · [usage](docs/usage.md#the-tree)

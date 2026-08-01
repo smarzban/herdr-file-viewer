@@ -92,9 +92,9 @@ These shape every decision; violating one is a design error, not a style nit:
   content flows through it.
 - **`ignore` 0.4.26** for fast, `.gitignore`-aware tree walking (do not hand-roll gitignore).
 - **git via the system CLI** (read-only subcommands only), no `git2`/`gix`.
-- **`serde`/`serde_json`** only for parsing `HERDR_PLUGIN_CONTEXT_JSON`.
-- **`ureq` 3.3.0** with default features disabled and `rustls` only: the fixed-source, bounded
-  remote-notice client. Keep its `Cargo.lock` audit surface intact.
+- **`serde`/`serde_json`** parse `HERDR_PLUGIN_CONTEXT_JSON` and the advisory cache.
+- **System `curl`** is optional at runtime: it retrieves fixed official HTTPS documents for
+  advisory notices; without it, document retrieval is unavailable without an error.
 - Tests: `cargo test` + ratatui `TestBackend` + **`insta`** (snapshots) + **`expectrl`** (pty e2e).
 - No `tokio` (off-thread rendering uses `std::thread`+`mpsc`), no `clap`. **Minimal-deps house
   style**: adding a crate is a deliberate decision, not a default.
