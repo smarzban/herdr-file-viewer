@@ -28,6 +28,8 @@ TUI pane. New here? Start with the [README](../README.md) for what it is and a q
 
 - [Architecture](../ARCHITECTURE.md) — one in-process TUI owning both columns, the component map,
   off-thread rendering, and the load-bearing decisions (read-only, delegate rendering, git-first).
+- [Remote notices: publishing & trust](remote-notices.md) — the maintainer contract for the fixed
+  official sources, advisory cache, typed failures, and display-only boundary.
 - [Security](../SECURITY.md) — the threat model and mitigations for opening untrusted content, and
   how to report a vulnerability.
 - [Changelog](../CHANGELOG.md) — the release history (also viewable in-app under `?` → What's New).

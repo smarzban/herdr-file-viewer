@@ -17,6 +17,20 @@ const KEYS_DOC: &str = include_str!("../docs/keys.md");
 const CONFIG_DOC: &str = include_str!("../docs/configuration.md");
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
+const REMOTE_NOTICES_DOC: &str = include_str!("../docs/remote-notices.md");
+const DOCS_INDEX: &str = include_str!("../docs/README.md");
+const ARCHITECTURE: &str = include_str!("../ARCHITECTURE.md");
+const SECURITY: &str = include_str!("../SECURITY.md");
+const AGENTS: &str = include_str!("../AGENTS.md");
+
+/// Remove Markdown emphasis and normalize whitespace so wording guards do not depend on line wraps.
+fn normalized_markdown_text(document: &str) -> String {
+    document
+        .replace("**", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading
 /// `#`, reads `key = ...`). Stronger than a bare substring: the key must appear as an actual
@@ -293,6 +307,126 @@ fn keys_doc_documents_altgr_windows_scope() {
         KEYS_DOC.contains("Crossterm 0.29"),
         "docs/keys.md must explain the Crossterm 0.29 Windows-input behavior behind the AltGr \
          ambiguity"
+    );
+}
+
+#[test]
+fn remote_notices_reference_documents_publishing_and_trust_contract() {
+    // AC-58: this page is the canonical maintainer reference for the one official repository's
+    // advisory notices. It must name the source pins, bounded/silent acquisition, cache semantics,
+    // rendering boundary, and explicit non-effects rather than turning the spotlight into a general
+    // publishing channel.
+    let remote_notices = normalized_markdown_text(REMOTE_NOTICES_DOC);
+    let security = normalized_markdown_text(SECURITY);
+    for required in [
+        "https://github.com/smarzban/herdr-file-viewer",
+        "https://raw.githubusercontent.com",
+        "git ls-remote",
+        "exact object ID resolved for the detected release tag",
+        "For an annotated tag, the resolved ID is its peeled commit",
+        "vMAJOR.MINOR.PATCH",
+        "no prerelease or build suffixes",
+        "current default-branch HEAD object",
+        "CHANGELOG.md",
+        "project-spotlight.md",
+        "first nonblank `# ` heading",
+        "remaining document body",
+        "immutable",
+        "1 MiB",
+        "20 MiB",
+        "Each cached remote",
+        "15 seconds",
+        "24 hours",
+        "session start",
+        "Stale and future spotlight content is hidden",
+        "shared daily refresh is eligible or already underway",
+        "Available",
+        "Missing",
+        "Unavailable",
+        "fail silently",
+        "update-check.json",
+        "atomic",
+        "advisory",
+        "session-only",
+        "remembered",
+        "display-only",
+        "trusted local code",
+        "possible side effects",
+        "no automatic install",
+        "no download",
+        "no URL open",
+        "no clipboard",
+        "no viewed-root or Git mutation",
+        "sends no application credentials",
+        "no telemetry",
+        "no shell interpretation",
+        "no raw terminal control",
+    ] {
+        assert!(
+            remote_notices.contains(required),
+            "docs/remote-notices.md must document `{required}`"
+        );
+    }
+
+    assert!(
+        DOCS_INDEX.contains("remote-notices.md"),
+        "docs/README.md must link the canonical remote-notices reference"
+    );
+    assert!(
+        ARCHITECTURE.contains("Official Repository Gateway")
+            && ARCHITECTURE.contains("remote-notices"),
+        "ARCHITECTURE.md must map the official gateway and point to its reference"
+    );
+    assert!(
+        ARCHITECTURE.contains("update-check.json") && ARCHITECTURE.contains("spotlight"),
+        "ARCHITECTURE.md must state the advisory-cache persistent-state exception"
+    );
+    assert!(
+        SECURITY.contains("rustls")
+            && SECURITY.contains("ureq")
+            && SECURITY.contains("credentials")
+            && SECURITY.contains("remote notices")
+            && SECURITY.contains("exact object ID resolved for the detected release tag")
+            && SECURITY.contains("For an annotated tag")
+            && SECURITY.contains("resolved ID is its peeled commit")
+            && SECURITY.contains("trusted local code")
+            && SECURITY.contains("possible side effects")
+            && security.contains("accepted only when it is at most 1 MiB")
+            && security.contains("one additional sentinel byte")
+            && security.contains("sends no application credentials"),
+        "SECURITY.md must cover the remote-notice transport audit surface, accurate release pin, document acceptance cap, credential scope, and renderer trust"
+    );
+    assert!(
+        remote_notices.contains("accepted only when it is at most 1 MiB")
+            && remote_notices.contains("one additional sentinel byte")
+            && remote_notices.contains("sends no application credentials"),
+        "docs/remote-notices.md must distinguish the 1 MiB acceptance cap, sentinel-byte oversize detection, and application-credential scope"
+    );
+    assert!(
+        !REMOTE_NOTICES_DOC.contains("exact detected release tag object"),
+        "docs/remote-notices.md must not call an annotated tag object the fetched source pin"
+    );
+    assert!(
+        !SECURITY.contains("Residual trust is limited"),
+        "SECURITY.md must not limit residual trust to GitHub and TLS while executing a configured renderer"
+    );
+    for prohibited in [
+        "1 MiB plus one byte",
+        "cap-plus-one limit of **1 MiB**",
+        "The viewer has no credentials",
+    ] {
+        assert!(
+            !remote_notices.contains(prohibited),
+            "docs/remote-notices.md must not make the contradictory claim `{prohibited}`"
+        );
+    }
+    assert!(
+        !security.contains("1 MiB plus one byte"),
+        "SECURITY.md must not describe the sentinel byte as accepted document capacity"
+    );
+    assert!(
+        AGENTS.contains("remote notices") && AGENTS.contains("ureq"),
+        "AGENTS.md must preserve durable remote-notice implementation constraints"
     );
 }
 
