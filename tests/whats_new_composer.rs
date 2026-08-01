@@ -68,7 +68,6 @@ fn snapshot(remote: bool, spotlight: bool, install: bool) -> NoticeSnapshot {
             details: REMOTE.to_owned(),
         }),
         spotlight: cached_spotlight,
-        ..NoticeSnapshot::default()
     }
 }
 

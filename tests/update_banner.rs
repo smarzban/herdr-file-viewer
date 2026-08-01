@@ -12,7 +12,7 @@ use herdr_file_viewer::controller::{
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
-use herdr_file_viewer::update::cache::{self, Cache, CacheWriter};
+use herdr_file_viewer::update::cache::{self, Cache};
 use herdr_file_viewer::update::spotlight_policy::{
     SpotlightCache, SpotlightInput, cache_delta, project,
 };
@@ -323,8 +323,7 @@ fn refresh_cannot_clear_a_remote_notice_session_dismissal() {
 #[test]
 fn update_dismissal_is_session_only_and_never_persists() {
     let dir = TempDir::new();
-    let mut initial = snapshot(Some(v(9, 9, 9)), None);
-    initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
+    let initial = snapshot(Some(v(9, 9, 9)), None);
     let mut controller = controller_in(dir.path());
     controller.set_update(UpdateState { initial, rx: None });
 
@@ -384,8 +383,7 @@ fn dismissal_writes_no_identity_and_every_still_relevant_notice_returns_next_ses
     for (name, persisted, expected_body) in cases {
         let dir = TempDir::new();
         cache::store(dir.path(), &persisted);
-        let mut initial = snapshot_from_cache(persisted.clone(), session_started_at_unix);
-        initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
+        let initial = snapshot_from_cache(persisted.clone(), session_started_at_unix);
         let mut controller = controller_in(dir.path());
         controller.set_update(UpdateState { initial, rx: None });
 
@@ -448,8 +446,7 @@ fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_di
     };
     cache::store(dir.path(), &persisted);
 
-    let mut initial = snapshot_from_cache(persisted, session_started_at_unix);
-    initial.cache_writer = Some(CacheWriter::new(dir.path().to_path_buf()));
+    let initial = snapshot_from_cache(persisted.clone(), session_started_at_unix);
     let mut dismissed = controller_in(dir.path());
     dismissed.set_update(UpdateState { initial, rx: None });
     assert!(
@@ -458,11 +455,16 @@ fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_di
     );
     drop(dismissed);
 
-    let mut withdrawn = cache::load(dir.path()).expect("dismissal leaves a reusable cache");
-    withdrawn.apply(cache::CacheDelta::WithdrawSpotlight {
-        retrieved_at_unix: session_started_at_unix - 1,
-    });
-    let fresh_withdrawal = snapshot_from_cache(withdrawn.clone(), session_started_at_unix);
+    let withdrawn = Cache {
+        spotlight: None,
+        spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
+        ..persisted.clone()
+    };
+    cache::store(dir.path(), &withdrawn);
+    let fresh_withdrawal = snapshot_from_cache(
+        cache::load(dir.path()).expect("complete withdrawal snapshot is reusable"),
+        session_started_at_unix,
+    );
     assert!(fresh_withdrawal.spotlight.status_title().is_none());
     assert!(fresh_withdrawal.spotlight.whats_new_body().is_none());
     assert!(
@@ -473,20 +475,30 @@ fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_di
         "a fresh withdrawal remains fresh regardless of dismissal"
     );
 
-    withdrawn.spotlight_retrieved_at_unix = Some(session_started_at_unix - 24 * 60 * 60);
-    let stale_withdrawal = snapshot_from_cache(withdrawn, session_started_at_unix);
+    let stale_withdrawal = snapshot_from_cache(
+        Cache {
+            spotlight: None,
+            spotlight_retrieved_at_unix: Some(session_started_at_unix - 24 * 60 * 60),
+            ..withdrawn
+        },
+        session_started_at_unix,
+    );
     assert!(
         herdr_file_viewer::update::spotlight_policy::SpotlightSession::new(session_started_at_unix)
             .should_retrieve(&stale_withdrawal.spotlight),
         "a stale withdrawal retries regardless of dismissal"
     );
 
-    let mut replacement = cache::load(dir.path()).expect("dismissal leaves a reusable cache");
-    replacement.apply(cache::CacheDelta::RefreshSpotlight {
-        spotlight: b"# Project\nnew body\n".to_vec(),
-        retrieved_at_unix: session_started_at_unix,
-    });
-    let next = snapshot_from_cache(replacement, session_started_at_unix);
+    let replacement = Cache {
+        spotlight: Some(b"# Project\nnew body\n".to_vec()),
+        spotlight_retrieved_at_unix: Some(session_started_at_unix),
+        ..persisted
+    };
+    cache::store(dir.path(), &replacement);
+    let next = snapshot_from_cache(
+        cache::load(dir.path()).expect("complete replacement snapshot is reusable"),
+        session_started_at_unix,
+    );
     assert_eq!(next.spotlight.status_title(), Some("Project"));
     assert_eq!(
         next.spotlight.whats_new_body(),
