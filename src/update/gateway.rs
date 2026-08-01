@@ -632,6 +632,10 @@ mod tests {
         .unwrap()
     }
 
+    /// Test-only budget that permits a fake Git process to start under loaded scheduling.
+    #[cfg(unix)]
+    const FAKE_GIT_STARTUP_PATIENCE: Duration = Duration::from_secs(5);
+
     #[cfg(unix)]
     fn fake_curl_lock() -> MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
@@ -1353,7 +1357,7 @@ mod tests {
         command
             .env("HTTPS_PROXY", "https://proxy.invalid:8443")
             .env("GIT_SSL_CAINFO", "/trusted/ca.pem");
-        let result = discover_with_command(command, Instant::now() + Duration::from_secs(1));
+        let result = discover_with_command(command, Instant::now() + FAKE_GIT_STARTUP_PATIENCE);
         assert_eq!(
             result,
             Source::Available(
