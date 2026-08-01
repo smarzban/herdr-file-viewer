@@ -25,6 +25,13 @@ pub const DISCOVERY_MAX_BYTES: usize = 256 * 1024;
 /// an oversized source becomes unavailable before unbounded allocation.
 pub const DOCUMENT_MAX_BYTES: usize = 1024 * 1024;
 
+/// The last slice of a source call is reserved for removing its private directory.
+///
+/// Filesystem removal cannot be cancelled, so command setup, capture, termination, and reaping
+/// must finish before this slice of the caller's one absolute deadline.
+const PRIVATE_CLEANUP_RESERVE: Duration = Duration::from_millis(100);
+const PROCESS_FINALIZATION_RESERVE: Duration = Duration::from_millis(50);
+
 /// The compiled raw-content authority for documents in the official repository.
 const DOCUMENT_AUTHORITY: &str = "https://raw.githubusercontent.com";
 const CHANGELOG_PATH: &str = "CHANGELOG.md";
@@ -121,11 +128,14 @@ impl ReleaseState {
 /// The source URL is fixed by [`repo_url`], never supplied by a caller. All failures, including a
 /// fresh private-directory creation failure, become unavailable so update checks stay silent.
 pub fn discover_release_state(deadline: Instant) -> Source<ReleaseState> {
+    let Some(work_deadline) = source_work_deadline(deadline) else {
+        return Source::Unavailable;
+    };
     let Ok(run_dir) = make_private_dir() else {
         return Source::Unavailable;
     };
-    let result = discover_with_command(ls_remote_command(&run_dir), deadline);
-    let _ = std::fs::remove_dir_all(&run_dir);
+    let result = discover_with_command(ls_remote_command(&run_dir), work_deadline);
+    cleanup_private_dir(&run_dir, deadline);
     result
 }
 
@@ -160,6 +170,9 @@ impl DocumentGateway {
     }
 
     fn document(&self, object_id: &str, path: &str, deadline: Instant) -> Source<Option<Vec<u8>>> {
+        let Some(work_deadline) = source_work_deadline(deadline) else {
+            return Source::Unavailable;
+        };
         let Ok(run_dir) = make_private_dir() else {
             return Source::Unavailable;
         };
@@ -168,10 +181,11 @@ impl DocumentGateway {
             "{DOCUMENT_AUTHORITY}/{}/{object_id}/{path}",
             super::repo_slug()
         );
-        let result = curl_command_with_program(&self.program, &body, &url, remaining(deadline))
-            .map(|command| document_with_command(command, &body, deadline))
-            .unwrap_or(Source::Unavailable);
-        let _ = std::fs::remove_dir_all(&run_dir);
+        let result =
+            curl_command_with_program(&self.program, &body, &url, remaining(work_deadline))
+                .map(|command| document_with_command(command, &body, work_deadline))
+                .unwrap_or(Source::Unavailable);
+        cleanup_private_dir(&run_dir, deadline);
         result
     }
 
@@ -274,7 +288,9 @@ fn document_with_command_with_spawner(
         b"404" => Source::Available(None),
         b"200" => std::fs::File::open(body)
             .ok()
-            .and_then(|body| read_bounded(body, DOCUMENT_MAX_BYTES).ok())
+            .and_then(|body| {
+                read_bounded_with_deadline(body, DOCUMENT_MAX_BYTES, Some(deadline)).ok()
+            })
             .map(|body| Source::Available(Some(body)))
             .unwrap_or(Source::Unavailable),
         _ => Source::Unavailable,
@@ -325,11 +341,14 @@ fn harden_git(command: &mut Command, run_dir: &Path) {
         .env("GIT_TERMINAL_PROMPT", "0");
 }
 
-fn discover_with_command(mut command: Command, deadline: Instant) -> Source<ReleaseState> {
+fn discover_with_command(mut command: Command, work_deadline: Instant) -> Source<ReleaseState> {
+    if Instant::now() >= work_deadline {
+        return Source::Unavailable;
+    }
     let Ok(child) = command.spawn() else {
         return Source::Unavailable;
     };
-    discover_child_bounded(child, DISCOVERY_MAX_BYTES, deadline)
+    discover_child_bounded(child, DISCOVERY_MAX_BYTES, work_deadline)
 }
 
 fn discover_child_bounded(
@@ -382,7 +401,7 @@ fn capture_stdout_bounded_with_spawner(
     spawn_reader: &impl Fn(ReaderTask) -> io::Result<std::thread::JoinHandle<()>>,
 ) -> Result<Vec<u8>, CaptureFailure> {
     let Some(stdout) = child.stdout.take() else {
-        kill_and_reap(child);
+        kill_and_reap(child, deadline);
         return Err(CaptureFailure::Read);
     };
     let (sender, receiver) = mpsc::channel();
@@ -391,33 +410,31 @@ fn capture_stdout_bounded_with_spawner(
     })) {
         Ok(reader) => reader,
         Err(_) => {
-            kill_and_reap(child);
+            kill_and_reap(child, deadline);
             return Err(CaptureFailure::Spawn);
         }
     };
 
-    let result = receiver.recv_timeout(remaining(deadline));
+    let result = receiver.recv_timeout(remaining(capture_deadline(deadline)));
     let captured = match result {
         Ok(Ok(stdout)) => stdout,
         Ok(Err(error)) => {
-            kill_and_reap(child);
-            let _ = reader.join();
+            kill_and_reap(child, deadline);
             return Err(error);
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            kill_and_reap(child);
+            kill_and_reap(child, deadline);
             // The direct child is gone, but its descendants can retain the stdout pipe. Detach
             // their blocked reader rather than turning the caller's absolute deadline into join.
             return Err(CaptureFailure::Deadline);
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            kill_and_reap(child);
+            kill_and_reap(child, deadline);
             return Err(CaptureFailure::Read);
         }
     };
-    let _ = reader.join();
-
-    match crate::proc::wait_bounded(child, remaining(deadline)) {
+    drop(reader);
+    match crate::proc::wait_until(child, deadline) {
         Some(status) if status.success() => Ok(captured),
         Some(_) => Err(CaptureFailure::Exit),
         None => Err(CaptureFailure::Deadline),
@@ -433,11 +450,22 @@ enum CaptureFailure {
     Spawn,
 }
 
-fn read_bounded(mut stdout: impl Read, max_bytes: usize) -> Result<Vec<u8>, CaptureFailure> {
+fn read_bounded(stdout: impl Read, max_bytes: usize) -> Result<Vec<u8>, CaptureFailure> {
+    read_bounded_with_deadline(stdout, max_bytes, None)
+}
+
+fn read_bounded_with_deadline(
+    mut stdout: impl Read,
+    max_bytes: usize,
+    deadline: Option<Instant>,
+) -> Result<Vec<u8>, CaptureFailure> {
     const CHUNK: usize = 8 * 1024;
     let mut output = Vec::with_capacity(max_bytes.min(CHUNK));
     let mut chunk = [0_u8; CHUNK];
     loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(CaptureFailure::Deadline);
+        }
         let remaining = max_bytes - output.len();
         // Request at most one byte beyond the cap. That byte proves overflow without draining a
         // malicious producer's remaining pipe data into memory.
@@ -449,6 +477,9 @@ fn read_bounded(mut stdout: impl Read, max_bytes: usize) -> Result<Vec<u8>, Capt
         let read = stdout
             .read(&mut chunk[..wanted])
             .map_err(|_| CaptureFailure::Read)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(CaptureFailure::Deadline);
+        }
         if read == 0 {
             return Ok(output);
         }
@@ -463,9 +494,26 @@ fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-fn kill_and_reap(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+fn source_work_deadline(deadline: Instant) -> Option<Instant> {
+    deadline
+        .checked_sub(PRIVATE_CLEANUP_RESERVE)
+        .filter(|work_deadline| Instant::now() < *work_deadline)
+}
+
+fn capture_deadline(deadline: Instant) -> Instant {
+    deadline
+        .checked_sub(PROCESS_FINALIZATION_RESERVE)
+        .unwrap_or(deadline)
+}
+
+fn cleanup_private_dir(run_dir: &Path, deadline: Instant) {
+    if Instant::now() < deadline {
+        let _ = std::fs::remove_dir_all(run_dir);
+    }
+}
+
+fn kill_and_reap(child: &mut Child, deadline: Instant) {
+    let _ = crate::proc::terminate_and_reap(child, deadline);
 }
 
 fn parse_release_bytes(stdout: &[u8]) -> Option<ReleaseState> {
@@ -647,7 +695,6 @@ mod tests {
         dir: PathBuf,
         program: PathBuf,
         args: PathBuf,
-        path: PathBuf,
         pid: PathBuf,
     }
 
@@ -659,7 +706,6 @@ mod tests {
             let dir = make_private_dir().expect("private fake curl directory");
             let program = dir.join("fake-curl");
             let args = dir.join("args");
-            let path = dir.join("path");
             let pid = dir.join("pid");
             let quote = |path: &Path| {
                 format!(
@@ -670,9 +716,8 @@ mod tests {
             std::fs::write(
                 &program,
                 format!(
-                    "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > {}\nprintf '%s' \"$PATH\" > {}\nprintf '%s' \"$$\" > {}\nbody=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = \"--output\" ]; then\n        body=$2\n        break\n    fi\n    shift\ndone\n[ -n \"$body\" ]\n{body_script}\nprintf '%s' '{status}'\nexit {exit}\n",
+                    "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > {}\nprintf '%s' \"$$\" > {}\nbody=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = \"--output\" ]; then\n        body=$2\n        break\n    fi\n    shift\ndone\n[ -n \"$body\" ]\n{body_script}\nprintf '%s' '{status}'\nexit {exit}\n",
                     quote(&args),
-                    quote(&path),
                     quote(&pid),
                 ),
             )
@@ -683,7 +728,6 @@ mod tests {
                 dir,
                 program,
                 args,
-                path,
                 pid,
             }
         }
@@ -702,10 +746,6 @@ mod tests {
                 .find(|pair| pair[0] == "--output")
                 .map(|pair| PathBuf::from(&pair[1]))
                 .expect("fake curl received an output path")
-        }
-
-        fn path(&self) -> String {
-            std::fs::read_to_string(&self.path).expect("fake curl recorded PATH")
         }
 
         fn pid(&self) -> u32 {
@@ -968,24 +1008,30 @@ mod tests {
         assert_private_body_is_cleaned(&fake);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn document_gateway_curl_inherits_ambient_environment() {
-        let _lock = fake_curl_lock();
-        let fake = FakeCurl::new("printf 'ambient body' > \"$body\"", "200", 0);
-        let expected_path = std::env::var("PATH").expect("test process has PATH");
+    fn curl_command_inherits_proxy_and_ca_environment() {
+        let command = curl_command_with_program(
+            "curl",
+            Path::new("body"),
+            "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/CHANGELOG.md",
+            Duration::from_secs(5),
+        )
+        .expect("positive curl timeout builds a command");
 
-        assert_eq!(
-            DocumentGateway::with_test_program(&fake.program)
-                .changelog(&test_release(), Instant::now() + Duration::from_secs(5)),
-            Source::Available(Some(b"ambient body".to_vec()))
-        );
-        assert_eq!(
-            fake.path(),
-            expected_path,
-            "curl inherits the ambient environment, including proxy settings"
-        );
-        assert_private_body_is_cleaned(&fake);
+        for key in [
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "CURL_CA_BUNDLE",
+            "SSL_CERT_FILE",
+        ] {
+            assert!(
+                command
+                    .get_envs()
+                    .all(|(candidate, _)| candidate != std::ffi::OsStr::new(key)),
+                "{key} remains inherited rather than explicitly changed"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -1016,6 +1062,33 @@ mod tests {
         );
         assert_private_body_is_cleaned(&changelog);
         assert_private_body_is_cleaned(&spotlight);
+    }
+
+    #[test]
+    fn bounded_body_read_rejects_a_chunk_that_arrives_after_the_shared_deadline() {
+        struct SlowReader(bool);
+
+        impl Read for SlowReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    return Ok(0);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                self.0 = true;
+                buffer[0] = b'x';
+                Ok(1)
+            }
+        }
+
+        assert_eq!(
+            read_bounded_with_deadline(
+                SlowReader(false),
+                1,
+                Some(Instant::now() + Duration::from_millis(1))
+            ),
+            Err(CaptureFailure::Deadline),
+            "a post-read deadline check keeps a delayed body unavailable"
+        );
     }
 
     #[test]
@@ -1129,36 +1202,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn bounded_discovery_maps_exact_cap_to_available_and_cap_plus_one_to_unavailable() {
-        let response = concat!(
-            "ref: refs/heads/main\tHEAD\n",
-            "0123456789012345678901234567890123456789\tHEAD\n",
-        );
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let exact = std::process::Command::new("sh")
-            .args(["-c", &format!("printf '%s' '{response}'")])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("exact-cap child starts");
+    fn discovery_uses_the_already_derived_work_deadline() {
+        let work_deadline = source_work_deadline(Instant::now() + Duration::from_millis(180))
+            .expect("cleanup reserve leaves discovery work time");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '0123456789012345678901234567890123456789\\tHEAD\\n'")
+            .stdout(Stdio::piped());
+
         assert!(matches!(
-            discover_child_bounded(exact, response.len(), deadline),
+            discover_with_command(command, work_deadline),
             Source::Available(_)
         ));
-
-        let over_cap = std::process::Command::new("sh")
-            .args(["-c", &format!("printf '%sX' '{response}'; exec sleep 60")])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("cap-plus-one child starts");
-        assert_eq!(
-            discover_child_bounded(
-                over_cap,
-                response.len(),
-                Instant::now() + Duration::from_secs(1)
-            ),
-            Source::Unavailable,
-            "the first byte past the cap makes discovery unavailable"
-        );
     }
 
     #[test]
@@ -1215,6 +1271,41 @@ mod tests {
         assert!(
             child.try_wait().unwrap().is_some(),
             "cap-plus-one must kill and reap a child that continues producing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_discovery_returns_without_joining_a_reader_that_stalls_after_send() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "printf 1234"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("fake child starts with a stdout pipe");
+        let spawn_reader = |task: ReaderTask| {
+            Ok::<_, io::Error>(std::thread::spawn(move || {
+                task();
+                std::thread::sleep(Duration::from_millis(600));
+            }))
+        };
+        let started = Instant::now();
+
+        assert_eq!(
+            capture_stdout_bounded_with_spawner(
+                &mut child,
+                4,
+                Instant::now() + Duration::from_secs(2),
+                &spawn_reader,
+            ),
+            Ok(b"1234".to_vec())
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "a reader that stalls after sending must not hold capture or direct-child reaping"
+        );
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the direct child is handled while its reader remains detached"
         );
     }
 
