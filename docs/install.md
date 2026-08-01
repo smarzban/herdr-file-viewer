@@ -55,11 +55,12 @@ so two quick steps remain:
 
 ## Updating
 
-herdr has no plugin auto-update, so the viewer tells you when a new release exists: open it
-(`prefix+f`) and, if you're behind, a status line appears at the bottom naming the new version
-and the command to update. Press `u` to dismiss it for the session.
+herdr has no plugin auto-update. When the advisory check finds a newer release, a status line at
+the bottom names it and points to `?` for details. The install command moved from that status row
+to the **What's New** section, under **Available updates**, so the footer stays short.
 
-To update, just re-run the install. It pulls the latest:
+That command is copy only: the viewer never runs it, downloads nothing, and takes no automatic
+action. To update, copy it or just re-run the install yourself. It pulls the latest:
 
 ```bash
 herdr plugin install smarzban/herdr-file-viewer
@@ -68,7 +69,8 @@ herdr plugin install smarzban/herdr-file-viewer
 - You **don't** need `--ref` to stay current; it only *pins* a specific version (and a pin stays
   pinned until you change it).
 - Want a heads-up the moment a release ships? On GitHub, **Watch → Custom → Releases**.
-- Prefer no network check? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` in the pane's environment
-  (to any value, the var's mere presence disables the check) and both the check and banner
-  are disabled entirely. The check otherwise runs at most once per 24h, off the UI thread,
-  over a read-only `git ls-remote`, and never blocks or fails the viewer when offline.
+- Prefer no remote notices? Set `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` in the pane's environment
+  (to any value, the var's mere presence disables the check) and the check plus every remote
+  notice are disabled entirely. The check otherwise runs at most once per 24h, off the UI thread,
+  and never blocks or fails the viewer when offline. See [staying up to date](usage.md#staying-up-to-date)
+  for project spotlights, dismissal, freshness, and the status forms.

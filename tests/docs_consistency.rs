@@ -22,6 +22,9 @@ const DOCS_INDEX: &str = include_str!("../docs/README.md");
 const ARCHITECTURE: &str = include_str!("../ARCHITECTURE.md");
 const SECURITY: &str = include_str!("../SECURITY.md");
 const AGENTS: &str = include_str!("../AGENTS.md");
+const CONTEXT: &str = include_str!("../CONTEXT.md");
+const USAGE_DOC: &str = include_str!("../docs/usage.md");
+const INSTALL_DOC: &str = include_str!("../docs/install.md");
 
 /// Remove Markdown emphasis and normalize whitespace so wording guards do not depend on line wraps.
 fn normalized_markdown_text(document: &str) -> String {
@@ -428,6 +431,87 @@ fn remote_notices_reference_documents_publishing_and_trust_contract() {
         AGENTS.contains("remote notices") && AGENTS.contains("ureq"),
         "AGENTS.md must preserve durable remote-notice implementation constraints"
     );
+}
+
+#[test]
+fn remote_notice_user_docs_cover_whats_new_status_and_dismissal() {
+    // AC-56: user docs must predict the advisory remote-notice surface without duplicating the
+    // maintainer trust contract. Keep the exact status copy grounded in update::status.
+    let usage = normalized_markdown_text(USAGE_DOC);
+    let install = normalized_markdown_text(INSTALL_DOC);
+    let keys = normalized_markdown_text(KEYS_DOC);
+
+    for term in ["**remote notice**", "**project spotlight**"] {
+        assert!(
+            CONTEXT.contains(term),
+            "CONTEXT.md must define the approved `{term}` glossary term"
+        );
+    }
+    assert!(
+        README.contains("docs/usage.md#staying-up-to-date"),
+        "README.md must keep a lean remote-notice taste linked to the usage guide"
+    );
+    assert!(
+        USAGE_DOC.contains("remote-notices.md"),
+        "docs/usage.md must link the maintainer remote-notice contract instead of duplicating it"
+    );
+
+    for status in [
+        "Update vX.Y.Z available · ? details · u dismiss",
+        "Spotlight: <title> · ? details · u dismiss",
+        "Update vX.Y.Z available · Spotlight: <title> · ? details · u dismiss",
+        "F2 / F3 details · d dismiss",
+        "(unbound) details · (unbound) dismiss",
+    ] {
+        assert!(
+            usage.contains(status),
+            "docs/usage.md must show the `{status}` status form"
+        );
+    }
+    for required in [
+        "no status row",
+        "empty, disabled, or dismissed",
+        "What's New is the first section",
+        "selected when you press `?`",
+        "project spotlight, Available updates, then the full embedded released history",
+        "`[Unreleased]` is excluded",
+        "readable in What's New after you dismiss the footer",
+        "at most once every 24 hours",
+        "at session start",
+        "stale or absent spotlight",
+        "daily refresh is eligible or already underway",
+        "immutable cached release details",
+        "exact detected release",
+        "fail silently and independently",
+        "no automatic action",
+    ] {
+        assert!(
+            usage.contains(required),
+            "docs/usage.md must document `{required}`"
+        );
+    }
+    for required in [
+        "whole status row for the current session",
+        "returns next session while you are still behind",
+        "exact spotlight content is remembered until that content changes",
+        "does not remove its body from What's New",
+    ] {
+        assert!(
+            keys.contains(required),
+            "docs/keys.md must document `{required}` for `u`"
+        );
+    }
+    for required in [
+        "What's New",
+        "herdr plugin install smarzban/herdr-file-viewer",
+        "copy only",
+        "never runs it",
+    ] {
+        assert!(
+            install.contains(required),
+            "docs/install.md must document `{required}` for updates"
+        );
+    }
 }
 
 #[test]
