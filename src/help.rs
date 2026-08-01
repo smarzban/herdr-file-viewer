@@ -6,18 +6,51 @@
 /// The full `CHANGELOG.md`, embedded at compile time (AC-12, AC-13).
 pub const CHANGELOG_MD: &str = include_str!("../CHANGELOG.md");
 
-/// The What's New body source: `CHANGELOG_MD` with the file-meta preamble stripped.
+/// Extract every stable release section from an embedded changelog, excluding its preamble and
+/// any `[Unreleased]` work-in-progress section. Accepted sections retain their source bytes.
 ///
-/// The raw `CHANGELOG.md` opens with the `# Changelog` title, a "Keep a Changelog / Semantic
-/// Versioning" paragraph, and link references — file metadata an in-app "What's New" doesn't want.
-/// This returns the slice starting at the first `## [` version heading, so only the version
-/// sections (`## [..]` + their `### Added`/`### Fixed` entries) render. Falls back to the whole
-/// string if no version heading is found (the const stays whole; the newest-first test reads it).
-pub fn changelog_display() -> &'static str {
-    match CHANGELOG_MD.find("## [") {
-        Some(idx) => &CHANGELOG_MD[idx..],
-        None => CHANGELOG_MD,
+/// This is intentionally the same narrow heading grammar as the update policy: only exact stable
+/// `MAJOR.MINOR.PATCH` headings are release history. The link references after the final release
+/// remain part of that release's source slice, as they have always been in the Help display.
+pub fn released_changelog(changelog: &str) -> String {
+    let mut display = String::new();
+    let mut section_start = None;
+    let mut offset = 0;
+
+    for line in changelog.split_inclusive('\n') {
+        if line.starts_with("## ")
+            && let Some(start) = section_start.replace(offset)
+        {
+            append_released_section(&mut display, &changelog[start..offset]);
+        }
+        offset += line.len();
     }
+    if let Some(start) = section_start {
+        append_released_section(&mut display, &changelog[start..]);
+    }
+
+    display
+}
+
+fn append_released_section(display: &mut String, section: &str) {
+    let Some(heading) = section.lines().next() else {
+        return;
+    };
+    let Some(rest) = heading.trim_end_matches('\r').strip_prefix("## [") else {
+        return;
+    };
+    let Some((version, _)) = rest.split_once(']') else {
+        return;
+    };
+    if crate::update::Version::parse(version).is_some() {
+        display.push_str(section);
+    }
+}
+
+/// The What's New body source: the embedded released changelog, with file metadata and
+/// `[Unreleased]` excluded.
+pub fn changelog_display() -> String {
+    released_changelog(CHANGELOG_MD)
 }
 
 /// The built-in, fixed sections of the help overlay: What's New and About.
@@ -444,8 +477,12 @@ mod tests {
             "changelog_display() must not contain the 'Semantic Versioning' preamble line"
         );
         assert!(
-            shown.starts_with("## ["),
-            "changelog_display() must start at the first '## [' version heading"
+            shown.starts_with("## [") && !shown.starts_with("## [Unreleased]"),
+            "changelog_display() must begin at the newest released version, not Unreleased"
+        );
+        assert!(
+            !shown.contains("## [Unreleased]"),
+            "changelog_display() must exclude the unreleased work-in-progress section"
         );
         // The const stays whole — the preamble is only sliced off for display.
         assert!(

@@ -6,6 +6,7 @@
 //! the `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` env var. No new dependencies, no telemetry, no mutation.
 
 pub mod cache;
+pub mod compose;
 pub mod gateway;
 pub mod release_policy;
 pub mod spotlight_policy;
