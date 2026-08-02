@@ -141,6 +141,14 @@ pub fn discover_release_state(deadline: Instant) -> Source<ReleaseState> {
 /// Maximum curl status bytes accepted from `--write-out %{http_code}`.
 const CURL_STATUS_MAX_BYTES: usize = 3;
 
+/// How often the capture wait re-checks the transient body file's size during a curl transfer.
+///
+/// `--max-filesize` only rejects a response whose size curl learns up front; a chunked or
+/// length-less response bypasses it entirely. This watchdog is what actually bounds the on-disk
+/// body: the transfer is killed as soon as the file exceeds [`DOCUMENT_MAX_BYTES`], so the
+/// worst-case overshoot is one interval of writing, not the remaining deadline.
+const BODY_WATCH_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Bounded retrieval of immutable documents from the official repository.
 ///
 /// The public constructor fixes both the raw-content authority and the system curl program. Curl
@@ -278,7 +286,13 @@ fn document_with_command_with_spawner(
     let Ok(mut child) = spawn(command) else {
         return Source::Unavailable;
     };
-    let Ok(status) = capture_stdout_bounded(&mut child, CURL_STATUS_MAX_BYTES, deadline) else {
+    // `--max-filesize` cannot bound a chunked/length-less response, so the on-disk body is
+    // watched during the transfer and the child is killed the moment the file exceeds the cap.
+    let body_over_cap =
+        || std::fs::metadata(body).is_ok_and(|metadata| metadata.len() > DOCUMENT_MAX_BYTES as u64);
+    let Ok(status) =
+        capture_stdout_bounded_watched(&mut child, CURL_STATUS_MAX_BYTES, deadline, &body_over_cap)
+    else {
         return Source::Unavailable;
     };
     match status.as_slice() {
@@ -373,6 +387,9 @@ fn discover_child_bounded_with_spawner(
 ///
 /// On every error path this kills and reaps the child. The reader asks the pipe for at most one
 /// byte beyond the current cap, so an over-cap producer is stopped before the rest is buffered.
+/// Production callers reach this through the watched variant (curl) or the spawner seam
+/// (discovery); this convenience form serves the capture unit tests.
+#[cfg(all(test, unix))]
 fn capture_stdout_bounded(
     child: &mut Child,
     max_bytes: usize,
@@ -395,6 +412,34 @@ fn capture_stdout_bounded_with_spawner(
     deadline: Instant,
     spawn_reader: &impl Fn(ReaderTask) -> io::Result<std::thread::JoinHandle<()>>,
 ) -> Result<Vec<u8>, CaptureFailure> {
+    capture_stdout_bounded_watched_with_spawner(child, max_bytes, deadline, &|| false, spawn_reader)
+}
+
+/// [`capture_stdout_bounded`] with a side-channel cap: `over_cap` is polled between waits, and a
+/// `true` kills and reaps the child with [`CaptureFailure::OverCap`]. The curl document path uses
+/// it to bound the transient body file that curl's own `--max-filesize` cannot bound.
+fn capture_stdout_bounded_watched(
+    child: &mut Child,
+    max_bytes: usize,
+    deadline: Instant,
+    over_cap: &impl Fn() -> bool,
+) -> Result<Vec<u8>, CaptureFailure> {
+    capture_stdout_bounded_watched_with_spawner(
+        child,
+        max_bytes,
+        deadline,
+        over_cap,
+        &spawn_reader_thread,
+    )
+}
+
+fn capture_stdout_bounded_watched_with_spawner(
+    child: &mut Child,
+    max_bytes: usize,
+    deadline: Instant,
+    over_cap: &impl Fn() -> bool,
+    spawn_reader: &impl Fn(ReaderTask) -> io::Result<std::thread::JoinHandle<()>>,
+) -> Result<Vec<u8>, CaptureFailure> {
     let Some(stdout) = child.stdout.take() else {
         kill_and_reap(child);
         return Err(CaptureFailure::Read);
@@ -410,22 +455,30 @@ fn capture_stdout_bounded_with_spawner(
         }
     };
 
-    let result = receiver.recv_timeout(remaining(deadline));
-    let captured = match result {
-        Ok(Ok(stdout)) => stdout,
-        Ok(Err(error)) => {
-            kill_and_reap(child);
-            return Err(error);
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            kill_and_reap(child);
-            // The direct child is gone, but its descendants can retain the stdout pipe. Detach
-            // their blocked reader rather than turning the caller's absolute deadline into join.
-            return Err(CaptureFailure::Deadline);
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            kill_and_reap(child);
-            return Err(CaptureFailure::Read);
+    let captured = loop {
+        match receiver.recv_timeout(remaining(deadline).min(BODY_WATCH_INTERVAL)) {
+            Ok(Ok(stdout)) => break stdout,
+            Ok(Err(error)) => {
+                kill_and_reap(child);
+                return Err(error);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if over_cap() {
+                    kill_and_reap(child);
+                    return Err(CaptureFailure::OverCap);
+                }
+                if remaining(deadline).is_zero() {
+                    kill_and_reap(child);
+                    // The direct child is gone, but its descendants can retain the stdout pipe.
+                    // Detach their blocked reader rather than turning the caller's absolute
+                    // deadline into join.
+                    return Err(CaptureFailure::Deadline);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                kill_and_reap(child);
+                return Err(CaptureFailure::Read);
+            }
         }
     };
     drop(reader);
@@ -967,6 +1020,41 @@ mod tests {
                 .expect("kill utility starts")
                 .success(),
             "deadline expiry kills and reaps the direct curl process"
+        );
+        assert_private_body_is_cleaned(&fake);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_gateway_kills_a_transfer_whose_body_exceeds_the_cap_mid_stream() {
+        let _lock = fake_curl_lock();
+        // Writes past the cap, then stalls without ever printing a status — the shape of a
+        // chunked/length-less response that bypasses curl's `--max-filesize`. Only the body
+        // watchdog can stop this transfer before the deadline.
+        let fake = FakeCurl::new(
+            "dd if=/dev/zero of=\"$body\" bs=1048577 count=1 2>/dev/null\nexec sleep 60",
+            "200",
+            0,
+        );
+        let started = Instant::now();
+
+        assert_eq!(
+            DocumentGateway::with_test_program(&fake.program)
+                .changelog(&test_release(), started + Duration::from_secs(10)),
+            Source::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the body watchdog must kill an over-cap transfer well before the deadline"
+        );
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &fake.pid().to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill utility starts")
+                .success(),
+            "an over-cap mid-stream transfer is killed and reaped"
         );
         assert_private_body_is_cleaned(&fake);
     }

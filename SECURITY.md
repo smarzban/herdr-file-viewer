@@ -22,8 +22,11 @@ collaborator handed you. Its security posture is built around that.
   off the UI thread under one 15-second deadline. Private Git discovery excludes viewed-repo
   configuration but inherits global/system proxy and CA configuration; curl inherits ambient proxy
   settings and installed curl CA/TLS behavior. Curl starts with `.curlrc` disabled, uses a fixed
-  authority over HTTPS only, and follows no redirects. A 1 MiB document cap plus bounded transient
-  body and status prevent unbounded reads; `404` withdraws a spotlight, while every other failure
+  authority over HTTPS only, and follows no redirects. A 1 MiB document cap is enforced in memory
+  and on disk: curl's `--max-filesize` cannot bound a length-less (chunked) response, so the
+  transient body file's size is watched during the transfer and an over-cap transfer is killed
+  mid-stream. Accepted display content is bounded further still (spotlight title and body,
+  combined release-details text); `404` withdraws a spotlight, while every other failure
   becomes typed, fail-silent outcomes. Remote Markdown reaches the configured renderer only on
   stdin and passes the terminal-control neutralizer, with no content-triggered actions. The
   complete, atomic, safe-to-delete cache (`update-check.json`) is the sole viewer-owned write and
