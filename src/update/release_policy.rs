@@ -2,6 +2,13 @@
 
 use super::Version;
 
+/// The largest combined release-details text the policy will retain or display.
+///
+/// Real changelog sections are kilobytes; bounding here (rather than only at the 1 MiB transfer
+/// cap) keeps the cache field, the Help compose pre-pass, and the renderer input proportionate to
+/// real content. Over-cap details degrade to the plain install guidance, never an error.
+pub const MAX_DETAILS_BYTES: usize = 256 * 1024;
+
 /// Scan exact stable release sections from a changelog in source order.
 ///
 /// A section starts at a level-two heading and ends at the next level-two heading, valid or not.

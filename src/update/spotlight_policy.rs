@@ -36,12 +36,24 @@ pub enum SpotlightProjection {
     Unavailable,
 }
 
+/// The most visible title characters an accepted spotlight may contribute to the one-line status.
+///
+/// A longer neutralized heading is truncated, never rejected: the title is display copy, and a
+/// hostile length must not be able to push the status row's `details`/`dismiss` hints off screen.
+pub const MAX_TITLE_CHARS: usize = 160;
+
+/// The largest accepted spotlight body. A display-only introduction never needs more; bounding it
+/// here (rather than only at the 1 MiB transfer cap) keeps every downstream cost — the cache
+/// field, the Help compose pre-pass, and the renderer input — proportionate to real content.
+pub const MAX_BODY_BYTES: usize = 64 * 1024;
+
 /// Project remote input without side effects.
 ///
 /// A usable document is valid UTF-8 whose first nonblank line is a `# ` heading with a nonempty
-/// visible title. Leading blank lines are only locating metadata; the stored body starts directly
-/// after the consumed title line. All body bytes are copied exactly, including terminal-looking
-/// bytes which remain for the renderer's normal boundary.
+/// visible title, and whose body fits [`MAX_BODY_BYTES`]; an oversized body is a conclusive
+/// withdrawal, exactly like malformed content. Leading blank lines are only locating metadata; the
+/// stored body starts directly after the consumed title line. All body bytes are copied exactly,
+/// including terminal-looking bytes which remain for the renderer's normal boundary.
 pub fn project(input: SpotlightInput) -> SpotlightProjection {
     match input {
         SpotlightInput::Unavailable => SpotlightProjection::Unavailable,
@@ -64,7 +76,8 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
         }
         let raw_title = line_without_ending.strip_prefix("# ")?;
         // The shared scanner removes terminal controls. Status presentation also excludes
-        // Unicode formatting and line-separator characters that can reorder or split its one line.
+        // Unicode formatting and line-separator characters that can reorder or split its one
+        // line, then caps the visible length so a hostile heading cannot flood the status row.
         let title = neutralize_plain_text(raw_title)
             .chars()
             .filter(|character| {
@@ -80,6 +93,7 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
                         | '\u{feff}'
                 )
             })
+            .take(MAX_TITLE_CHARS)
             .collect::<String>()
             .trim()
             .to_string();
@@ -87,6 +101,9 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
             return None;
         }
         let body_start = offset + line.len();
+        if bytes.len() - body_start > MAX_BODY_BYTES {
+            return None;
+        }
         return Some(AcceptedSpotlight {
             source: bytes.clone(),
             title,
@@ -285,6 +302,32 @@ mod tests {
             );
             assert_eq!(spotlight.body, b"body\n", "{name}: body stays exact");
         }
+    }
+
+    #[test]
+    fn accepted_titles_are_capped_and_oversized_bodies_withdraw() {
+        let long_heading = format!("# {}\nbody\n", "T".repeat(MAX_TITLE_CHARS * 2));
+        let spotlight = accepted(&long_heading);
+        assert_eq!(
+            spotlight.title.chars().count(),
+            MAX_TITLE_CHARS,
+            "a hostile heading length is truncated, not accepted verbatim"
+        );
+
+        let exact_body = format!("# Title\n{}", "b".repeat(MAX_BODY_BYTES - 1)) + "\n";
+        assert!(
+            matches!(
+                project(SpotlightInput::Available(exact_body.into_bytes())),
+                SpotlightProjection::Accepted(_)
+            ),
+            "a body at the cap remains acceptable"
+        );
+        let oversized = format!("# Title\n{}", "b".repeat(MAX_BODY_BYTES + 1));
+        assert_eq!(
+            project(SpotlightInput::Available(oversized.into_bytes())),
+            SpotlightProjection::Withdrawn,
+            "an over-cap body is a conclusive withdrawal, like any invalid document"
+        );
     }
 
     #[test]

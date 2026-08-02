@@ -6,7 +6,7 @@ use herdr_file_viewer::update::compose::{
 };
 use herdr_file_viewer::update::release_policy::{CachedReleaseDetails, eligible_release_sections};
 use herdr_file_viewer::update::spotlight_policy::{
-    SpotlightCache, SpotlightInput, cache_delta, project,
+    MAX_BODY_BYTES, SpotlightCache, SpotlightInput, cache_delta, project,
 };
 use herdr_file_viewer::update::{NoticeSnapshot, Version};
 use ratatui::text::Text;
@@ -402,7 +402,9 @@ fn one_absolute_deadline_is_shared_and_observed_remaining_decreases() {
 fn already_expired_open_uses_precomputed_fallbacks_without_delegation() {
     let mut renderer = RecordingRenderer::default();
     let install_copy = install_guidance();
-    let spotlight = format!("# Project Spotlight\n{}", "x".repeat(1024 * 1024));
+    // The largest spotlight the policy can accept: MAX_BODY_BYTES bounds what any downstream
+    // consumer, including this expired-open fallback path, can ever be handed.
+    let spotlight = format!("# Project Spotlight\n{}", "x".repeat(MAX_BODY_BYTES - 1));
     let mut cached_spotlight = SpotlightCache::default();
     cached_spotlight.apply(cache_delta(
         project(SpotlightInput::Available(spotlight.into_bytes())),
@@ -428,12 +430,12 @@ fn already_expired_open_uses_precomputed_fallbacks_without_delegation() {
 
     assert!(
         renderer.calls.is_empty(),
-        "an expired multi-document Help open never invokes a renderer, even with a MiB fallback"
+        "an expired multi-document Help open never invokes a renderer, even at the body cap"
     );
     let shown = flatten(&body);
     assert!(
-        shown.contains(&"x".repeat(1024 * 1024)),
-        "the precomputed MiB spotlight fallback remains visible"
+        shown.contains(&"x".repeat(MAX_BODY_BYTES - 1)),
+        "the precomputed cap-sized spotlight fallback remains visible"
     );
     for document in [REMOTE, install_copy.as_str(), EMBEDDED] {
         assert!(

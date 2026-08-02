@@ -107,10 +107,12 @@ fn cached_release_details(
                 cached.release,
             )
             .concat();
-            (!details.is_empty()).then_some(release_policy::CachedReleaseDetails {
-                release: cached.release,
-                details,
-            })
+            (!details.is_empty() && details.len() <= release_policy::MAX_DETAILS_BYTES).then_some(
+                release_policy::CachedReleaseDetails {
+                    release: cached.release,
+                    details,
+                },
+            )
         }
         release_policy::CachedReleaseDetailsDecision::Hidden
         | release_policy::CachedReleaseDetailsDecision::Fetch(_) => None,
@@ -240,10 +242,12 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
                             current(),
                             detected,
                         );
-                        (!sections.is_empty()).then(|| release_policy::CachedReleaseDetails {
-                            release: detected,
-                            details: sections.concat(),
-                        })
+                        let details = sections.concat();
+                        (!details.is_empty() && details.len() <= release_policy::MAX_DETAILS_BYTES)
+                            .then_some(release_policy::CachedReleaseDetails {
+                                release: detected,
+                                details,
+                            })
                     });
                     let persisted =
                         fetched
@@ -843,6 +847,29 @@ mod tests {
             Some(CHECK_INTERVAL_SECS * 9 + 1)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_worker_drops_over_cap_release_details_but_keeps_the_release() {
+        let detected = future_version(1);
+        let oversized = format!(
+            "## [{detected}]\n- {}\n",
+            "d".repeat(release_policy::MAX_DETAILS_BYTES)
+        );
+        let snapshot = refreshed(refresh_with(
+            Some(Cache::default()),
+            Box::new(move |_| available_release(detected)),
+            TestGateway {
+                changelog: Source::Available(Some(oversized.into_bytes())),
+                spotlight: Source::Unavailable,
+            },
+        ));
+
+        assert_eq!(snapshot.detected_release, Some(detected));
+        assert!(
+            snapshot.release_details.is_none(),
+            "over-cap details degrade to the plain install guidance, never an error"
+        );
     }
 
     #[test]
