@@ -415,9 +415,10 @@ fn capture_stdout_bounded_with_spawner(
     capture_stdout_bounded_watched_with_spawner(child, max_bytes, deadline, &|| false, spawn_reader)
 }
 
-/// [`capture_stdout_bounded`] with a side-channel cap: `over_cap` is polled between waits, and a
-/// `true` kills and reaps the child with [`CaptureFailure::OverCap`]. The curl document path uses
-/// it to bound the transient body file that curl's own `--max-filesize` cannot bound.
+/// Bounded stdout capture with a side-channel cap: `over_cap` is polled between waits and
+/// re-checked when the transfer completes, and a `true` kills and reaps the child with
+/// [`CaptureFailure::OverCap`]. The curl document path uses it to bound the transient body file
+/// that curl's own `--max-filesize` cannot bound.
 fn capture_stdout_bounded_watched(
     child: &mut Child,
     max_bytes: usize,
@@ -457,7 +458,15 @@ fn capture_stdout_bounded_watched_with_spawner(
 
     let captured = loop {
         match receiver.recv_timeout(remaining(deadline).min(BODY_WATCH_INTERVAL)) {
-            Ok(Ok(stdout)) => break stdout,
+            Ok(Ok(stdout)) => {
+                // A transfer can complete between polls, so the cap is re-checked before its
+                // output is accepted — the watchdog bounds the transfer, this bounds the result.
+                if over_cap() {
+                    kill_and_reap(child);
+                    return Err(CaptureFailure::OverCap);
+                }
+                break stdout;
+            }
             Ok(Err(error)) => {
                 kill_and_reap(child);
                 return Err(error);

@@ -38,9 +38,17 @@ pub enum SpotlightProjection {
 
 /// The most visible title characters an accepted spotlight may contribute to the one-line status.
 ///
-/// A longer neutralized heading is truncated, never rejected: the title is display copy, and a
-/// hostile length must not be able to push the status row's `details`/`dismiss` hints off screen.
+/// A longer neutralized heading is truncated, never rejected: the title is display copy. The cap
+/// bounds the per-frame formatting/sanitizing cost and absurd lengths; the presenter still clips
+/// the drawn row to the pane, so display width is its concern, not this policy's.
 pub const MAX_TITLE_CHARS: usize = 160;
+
+/// The largest raw heading line accepted as a title source.
+///
+/// The whole accepted document is persisted to the cache and re-neutralized at every session
+/// start, so a megabyte single-line heading must be rejected outright rather than truncated after
+/// the neutralize pass has already paid for it.
+pub const MAX_TITLE_LINE_BYTES: usize = 4 * 1024;
 
 /// The largest accepted spotlight body. A display-only introduction never needs more; bounding it
 /// here (rather than only at the 1 MiB transfer cap) keeps every downstream cost — the cache
@@ -75,10 +83,14 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
             continue;
         }
         let raw_title = line_without_ending.strip_prefix("# ")?;
+        if line_without_ending.len() > MAX_TITLE_LINE_BYTES {
+            return None;
+        }
         // The shared scanner removes terminal controls. Status presentation also excludes
         // Unicode formatting and line-separator characters that can reorder or split its one
-        // line, then caps the visible length so a hostile heading cannot flood the status row.
-        let title = neutralize_plain_text(raw_title)
+        // line, then trims BEFORE capping the visible length — so whitespace padding cannot
+        // truncate a real title away, and a hostile heading cannot flood the status row.
+        let neutralized = neutralize_plain_text(raw_title)
             .chars()
             .filter(|character| {
                 !matches!(
@@ -93,9 +105,13 @@ fn accept(bytes: Vec<u8>) -> Option<AcceptedSpotlight> {
                         | '\u{feff}'
                 )
             })
+            .collect::<String>();
+        let title = neutralized
+            .trim()
+            .chars()
             .take(MAX_TITLE_CHARS)
             .collect::<String>()
-            .trim()
+            .trim_end()
             .to_string();
         if title.is_empty() {
             return None;
@@ -312,6 +328,22 @@ mod tests {
             spotlight.title.chars().count(),
             MAX_TITLE_CHARS,
             "a hostile heading length is truncated, not accepted verbatim"
+        );
+
+        let padded = format!("# {}Padded Title\nbody\n", " ".repeat(MAX_TITLE_CHARS * 2));
+        assert_eq!(
+            accepted(&padded).title,
+            "Padded Title",
+            "whitespace padding is trimmed before the cap, never counted against the title"
+        );
+
+        let heading_line_over_cap = format!("# {}\nbody\n", "T".repeat(MAX_TITLE_LINE_BYTES));
+        assert_eq!(
+            project(SpotlightInput::Available(
+                heading_line_over_cap.into_bytes()
+            )),
+            SpotlightProjection::Withdrawn,
+            "an over-cap heading line withdraws before the neutralize pass pays for it"
         );
 
         let exact_body = format!("# Title\n{}", "b".repeat(MAX_BODY_BYTES - 1)) + "\n";
