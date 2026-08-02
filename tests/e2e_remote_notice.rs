@@ -6,12 +6,13 @@
 
 mod common;
 
-use common::{TempDir, git, init_repo_with_commit, viewer_command_with_notices};
+use common::{
+    TempDir, git, init_repo_with_commit, viewer_command_with_notices, workspace_fingerprint,
+};
 use expectrl::process::unix::{PtyStream, UnixProcess, WaitStatus};
 use expectrl::process::{NonBlocking, Process};
 use expectrl::{Eof, Expect, Session};
 use herdr_file_viewer::update::cache::{self, Cache, PersistedReleaseDetails};
-use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -24,43 +25,6 @@ const RELEASE_DETAILS_MARKER: &str = "RELEASE_DETAILS_VISIBLE";
 const SPOTLIGHT_MARKER: &str = "REMOTE_SPOTLIGHT_VISIBLE";
 const OSC_52_PREFIX: &[u8] = b"\x1b]52;";
 const OSC_52_PAYLOAD: &[u8] = b"c3RvbGVu";
-
-#[derive(Debug, PartialEq, Eq)]
-struct WorkspaceFingerprint {
-    bytes: BTreeMap<PathBuf, Vec<u8>>,
-    head: String,
-    porcelain: String,
-    worktrees: String,
-}
-
-fn workspace_fingerprint(root: &Path) -> WorkspaceFingerprint {
-    fn collect(root: &Path, dir: &Path, bytes: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        for entry in std::fs::read_dir(dir).expect("read workspace").flatten() {
-            let path = entry.path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
-            let metadata = entry.metadata().expect("workspace metadata");
-            if metadata.is_dir() {
-                collect(root, &path, bytes);
-            } else if metadata.is_file() {
-                bytes.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    std::fs::read(path).expect("read workspace file"),
-                );
-            }
-        }
-    }
-
-    let mut bytes = BTreeMap::new();
-    collect(root, root, &mut bytes);
-    WorkspaceFingerprint {
-        bytes,
-        head: git(root, &["rev-parse", "HEAD"]),
-        porcelain: git(root, &["status", "--porcelain=v1"]),
-        worktrees: git(root, &["worktree", "list", "--porcelain"]),
-    }
-}
 
 #[derive(Clone)]
 struct Transcript(Arc<Mutex<Vec<u8>>>);

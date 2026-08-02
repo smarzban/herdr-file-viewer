@@ -2,10 +2,9 @@
 
 mod common;
 
-use common::{TempDir, git, init_repo_with_commit};
+use common::{NoopContent, TempDir, git, init_repo_with_commit, workspace_fingerprint};
 use herdr_file_viewer::controller::{
-    Clipboard, Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
+    Clipboard, Components, Controller, EditorHandoff, EditorOutcome, GitService, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
@@ -14,7 +13,6 @@ use herdr_file_viewer::update::spotlight_policy::{
     SpotlightCache, SpotlightInput, cache_delta, project,
 };
 use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
-use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,18 +42,6 @@ impl GitService for SpyGit {
     fn diff_directory(&self, _path: &Path, _baseline: Baseline) -> String {
         self.calls.lock().unwrap().push("diff_directory");
         String::new()
-    }
-}
-
-struct Content;
-
-impl ContentProvider for Content {
-    fn render(&self, _path: &Path, _mode: ViewMode, _diff: Option<&str>) -> RenderResult {
-        RenderResult {
-            content: Text::raw("content"),
-            notices: Vec::new(),
-            source: None,
-        }
     }
 }
 
@@ -100,43 +86,6 @@ impl Opener for SpyOpener {
             .unwrap()
             .push(("reveal", path.to_path_buf()));
         OpenerOutcome::Launched
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct WorkspaceFingerprint {
-    bytes: BTreeMap<PathBuf, Vec<u8>>,
-    head: String,
-    porcelain: String,
-    worktrees: String,
-}
-
-fn workspace_fingerprint(root: &Path) -> WorkspaceFingerprint {
-    fn collect(root: &Path, dir: &Path, bytes: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        for entry in std::fs::read_dir(dir).expect("read workspace").flatten() {
-            let path = entry.path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
-            let metadata = entry.metadata().expect("workspace metadata");
-            if metadata.is_dir() {
-                collect(root, &path, bytes);
-            } else if metadata.is_file() {
-                bytes.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    std::fs::read(path).expect("read workspace file"),
-                );
-            }
-        }
-    }
-
-    let mut bytes = BTreeMap::new();
-    collect(root, root, &mut bytes);
-    WorkspaceFingerprint {
-        bytes,
-        head: git(root, &["rev-parse", "HEAD"]),
-        porcelain: git(root, &["status", "--porcelain=v1"]),
-        worktrees: git(root, &["worktree", "list", "--porcelain"]),
     }
 }
 
@@ -188,7 +137,7 @@ fn displaying_and_dismissing_remote_details_never_calls_external_ports_or_mutate
         Components {
             providers: Box::new(move |_| RootProviders {
                 git: Arc::clone(&git_service),
-                content: Box::new(Content),
+                content: Box::new(NoopContent),
             }),
             editor: Box::new(SpyEditor {
                 calls: Arc::clone(&editor_calls),

@@ -2,21 +2,16 @@
 
 mod common;
 
-use common::TempDir;
-use herdr_file_viewer::controller::{
-    Components, ContentProvider, Controller, EditorHandoff, EditorOutcome, GitService,
-    RenderResult, RootProviders,
-};
-use herdr_file_viewer::git::{Baseline, Status};
+use common::{NoopContent, NoopEditor, NoopGit, TempDir};
+use herdr_file_viewer::controller::{Components, Controller, RootProviders};
+use herdr_file_viewer::git::Baseline;
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::update::gateway::Gateway;
 use herdr_file_viewer::update::{
     DiscoveryRunner, ObjectId, ReleaseState, ReleaseTag, Source, StartDeps, UpdateState, Version,
     start_with,
 };
-use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,46 +22,6 @@ const HEAD_SPOTLIGHT: &str = "# Head spotlight\nHEAD-SPOTLIGHT-BODY-ONLY\n";
 const OTHER_REF_SPOTLIGHT: &str = "# Other spotlight\nOTHER-REF-SPOTLIGHT-MUST-NOT-DISPLAY\n";
 const TAG_OBJECT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEAD_OBJECT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-struct Git;
-
-impl GitService for Git {
-    fn status(&self) -> BTreeMap<std::path::PathBuf, Status> {
-        BTreeMap::new()
-    }
-
-    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<std::path::PathBuf, Status> {
-        BTreeMap::new()
-    }
-
-    fn diff(&self, _path: &Path, _baseline: Baseline, _full_context: bool) -> String {
-        String::new()
-    }
-
-    fn diff_directory(&self, _path: &Path, _baseline: Baseline) -> String {
-        String::new()
-    }
-}
-
-struct Content;
-
-impl ContentProvider for Content {
-    fn render(&self, _path: &Path, _mode: ViewMode, _diff: Option<&str>) -> RenderResult {
-        RenderResult {
-            content: Text::raw("content"),
-            notices: Vec::new(),
-            source: None,
-        }
-    }
-}
-
-struct Editor;
-
-impl EditorHandoff for Editor {
-    fn open(&mut self, _file: &Path) -> EditorOutcome {
-        EditorOutcome::NoTakeover
-    }
-}
 
 #[derive(Clone)]
 struct GatewayStub {
@@ -149,10 +104,10 @@ fn controller(root: &Path) -> Controller {
         Baseline::Head,
         Components {
             providers: Box::new(|_| RootProviders {
-                git: Arc::new(Git),
-                content: Box::new(Content),
+                git: Arc::new(NoopGit),
+                content: Box::new(NoopContent),
             }),
-            editor: Box::new(Editor),
+            editor: Box::new(NoopEditor),
             clipboard: Box::new(common::RecordingClipboard::default()),
             renderers: None,
         },

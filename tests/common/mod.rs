@@ -4,8 +4,14 @@
 
 #![allow(dead_code)] // not every integration test uses every helper
 
-use herdr_file_viewer::controller::Clipboard;
+use herdr_file_viewer::controller::{
+    Clipboard, ContentProvider, EditorHandoff, EditorOutcome, GitService, RenderResult,
+};
+use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::root::Resolved;
+use herdr_file_viewer::view_policy::ViewMode;
+use ratatui::text::Text;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -188,4 +194,86 @@ pub fn viewer_command_with_notices(dir: &Path) -> Command {
     let mut cmd = viewer_command(dir);
     cmd.env_remove(herdr_file_viewer::update::DISABLE_ENV);
     cmd
+}
+
+/// A `GitService` stub returning empty results, for controllers whose test never exercises git.
+pub struct NoopGit;
+
+impl GitService for NoopGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        BTreeMap::new()
+    }
+
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        BTreeMap::new()
+    }
+
+    fn diff(&self, _path: &Path, _baseline: Baseline, _full_context: bool) -> String {
+        String::new()
+    }
+
+    fn diff_directory(&self, _path: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+/// A `ContentProvider` stub rendering a fixed placeholder for tests that never read the pane.
+pub struct NoopContent;
+
+impl ContentProvider for NoopContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw("content"),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// An `EditorHandoff` stub that never takes over the terminal.
+pub struct NoopEditor;
+
+impl EditorHandoff for NoopEditor {
+    fn open(&mut self, _file: &Path) -> EditorOutcome {
+        EditorOutcome::NoTakeover
+    }
+}
+
+/// A byte-level fingerprint of a workspace (every non-`.git` file) plus its git state, so a test
+/// can prove an operation was display-only by comparing before and after.
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkspaceFingerprint {
+    pub bytes: BTreeMap<PathBuf, Vec<u8>>,
+    pub head: String,
+    pub porcelain: String,
+    pub worktrees: String,
+}
+
+pub fn workspace_fingerprint(root: &Path) -> WorkspaceFingerprint {
+    fn collect(root: &Path, dir: &Path, bytes: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).expect("read workspace").flatten() {
+            let path = entry.path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            let metadata = entry.metadata().expect("workspace metadata");
+            if metadata.is_dir() {
+                collect(root, &path, bytes);
+            } else if metadata.is_file() {
+                bytes.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).expect("read workspace file"),
+                );
+            }
+        }
+    }
+
+    let mut bytes = BTreeMap::new();
+    collect(root, root, &mut bytes);
+    WorkspaceFingerprint {
+        bytes,
+        head: git(root, &["rev-parse", "HEAD"]),
+        porcelain: git(root, &["status", "--porcelain=v1"]),
+        worktrees: git(root, &["worktree", "list", "--porcelain"]),
+    }
 }
