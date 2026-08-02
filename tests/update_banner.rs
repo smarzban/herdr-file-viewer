@@ -468,10 +468,10 @@ fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_di
     assert!(fresh_withdrawal.spotlight.status_title().is_none());
     assert!(fresh_withdrawal.spotlight.whats_new_body().is_none());
     assert!(
-        !herdr_file_viewer::update::spotlight_policy::SpotlightSession::new(
-            session_started_at_unix
-        )
-        .should_retrieve(&fresh_withdrawal.spotlight),
+        !herdr_file_viewer::update::spotlight_policy::should_retrieve(
+            session_started_at_unix,
+            &fresh_withdrawal.spotlight
+        ),
         "a fresh withdrawal remains fresh regardless of dismissal"
     );
 
@@ -484,8 +484,10 @@ fn withdrawal_freshness_and_replacement_remain_independent_of_a_prior_session_di
         session_started_at_unix,
     );
     assert!(
-        herdr_file_viewer::update::spotlight_policy::SpotlightSession::new(session_started_at_unix)
-            .should_retrieve(&stale_withdrawal.spotlight),
+        herdr_file_viewer::update::spotlight_policy::should_retrieve(
+            session_started_at_unix,
+            &stale_withdrawal.spotlight
+        ),
         "a stale withdrawal retries regardless of dismissal"
     );
 

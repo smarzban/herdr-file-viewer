@@ -193,42 +193,16 @@ impl SpotlightCache {
     }
 }
 
-/// Session-only freshness state. A conclusive retrieval is fresh for the remainder of this run,
-/// rather than aging according to a later live-clock read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpotlightSession {
-    session_started_at_unix: u64,
-    resolved_in_session: bool,
-}
-
-impl SpotlightSession {
-    pub fn new(session_started_at_unix: u64) -> Self {
-        Self {
-            session_started_at_unix,
-            resolved_in_session: false,
+/// Whether a refresh for the session that started at `session_started_at_unix` should attempt one
+/// spotlight retrieval: yes unless the cache holds a retrieval that was still fresh at session
+/// start. Freshness is measured from the fixed session start, never a live clock.
+pub fn should_retrieve(session_started_at_unix: u64, cache: &SpotlightCache) -> bool {
+    match cache.retrieved_at_unix {
+        Some(retrieved_at_unix) => {
+            freshness_at_session_start(session_started_at_unix, retrieved_at_unix)
+                != Freshness::Fresh
         }
-    }
-
-    /// Whether this session should attempt retrieval. Freshness remains fixed at session start.
-    pub fn should_retrieve(&self, cache: &SpotlightCache) -> bool {
-        !self.resolved_in_session
-            && match cache.retrieved_at_unix {
-                Some(retrieved_at_unix) => {
-                    freshness_at_session_start(self.session_started_at_unix, retrieved_at_unix)
-                        != Freshness::Fresh
-                }
-                None => true,
-            }
-    }
-
-    /// Apply a result and mark a successful acceptance or withdrawal as resolved for this session.
-    /// An unavailable result preserves the cache and remains eligible for a later retry.
-    pub fn apply(&mut self, cache: &mut SpotlightCache, delta: SpotlightCacheDelta) {
-        self.resolved_in_session |= matches!(
-            &delta,
-            SpotlightCacheDelta::Accepted { .. } | SpotlightCacheDelta::Withdrawn { .. }
-        );
-        cache.apply(delta);
+        None => true,
     }
 }
 
@@ -355,23 +329,17 @@ mod tests {
     }
 
     #[test]
-    fn an_accepted_retrieval_is_fresh_for_the_rest_of_its_session() {
-        let session_start = 100;
-        let mut session = SpotlightSession::new(session_start);
+    fn a_session_start_retrieval_is_fresh_for_that_session() {
+        let session_start = 1_000_000;
         let mut cache = SpotlightCache::default();
-        let delta = cache_delta(
+        cache.apply(cache_delta(
             project(SpotlightInput::Available(b"# Current\nbody\n".to_vec())),
-            session_start + FRESHNESS_SECS * 2,
-        );
+            session_start,
+        ));
 
-        session.apply(&mut cache, delta);
         assert!(
-            !session.should_retrieve(&cache),
-            "an in-session acceptance is fresh even if its retrieval time is after session start"
-        );
-        assert!(
-            !session.should_retrieve(&cache),
-            "freshness does not age into a retrieval during the same session"
+            !should_retrieve(session_start, &cache),
+            "a retrieval stamped at session start is fresh for that session"
         );
     }
 
@@ -404,10 +372,9 @@ mod tests {
     #[test]
     fn session_retrieves_without_a_cache_and_rechecks_stale_or_future_cache_times() {
         let session_started_at_unix = 1_000_000;
-        let session = SpotlightSession::new(session_started_at_unix);
 
         assert!(
-            session.should_retrieve(&SpotlightCache::default()),
+            should_retrieve(session_started_at_unix, &SpotlightCache::default()),
             "an absent retrieval timestamp requires a first retrieval"
         );
 
@@ -416,7 +383,7 @@ mod tests {
             ..SpotlightCache::default()
         };
         assert!(
-            session.should_retrieve(&stale),
+            should_retrieve(session_started_at_unix, &stale),
             "the exact freshness boundary requires retrieval"
         );
 
@@ -425,7 +392,7 @@ mod tests {
             ..SpotlightCache::default()
         };
         assert!(
-            session.should_retrieve(&future),
+            should_retrieve(session_started_at_unix, &future),
             "a future cache timestamp requires retrieval"
         );
     }
@@ -467,7 +434,6 @@ mod tests {
     fn conclusive_withdrawals_throttle_fresh_sessions_but_unavailable_state_does_not() {
         let session_started_at_unix = 1_000_000;
         let fresh_retrieved_at_unix = session_started_at_unix - FRESHNESS_SECS + 1;
-        let session = SpotlightSession::new(session_started_at_unix);
 
         let mut withdrawn = SpotlightCache::default();
         withdrawn.apply(cache_delta(
@@ -477,7 +443,7 @@ mod tests {
         assert_eq!(withdrawn.status_title(), None);
         assert_eq!(withdrawn.whats_new_body(), None);
         assert!(
-            !session.should_retrieve(&withdrawn),
+            !should_retrieve(session_started_at_unix, &withdrawn),
             "a fresh withdrawal is a successful retrieval"
         );
 
@@ -494,11 +460,11 @@ mod tests {
             session_started_at_unix - FRESHNESS_SECS,
         ));
         assert!(
-            session.should_retrieve(&stale),
+            should_retrieve(session_started_at_unix, &stale),
             "a stale withdrawal retries"
         );
         assert!(
-            session.should_retrieve(&SpotlightCache::default()),
+            should_retrieve(session_started_at_unix, &SpotlightCache::default()),
             "unavailable state has no successful retrieval timestamp"
         );
     }

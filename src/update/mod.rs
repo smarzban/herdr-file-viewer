@@ -267,8 +267,7 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
         }
 
         let mut spotlight = refresh_initial.spotlight.clone();
-        let mut spotlight_session = spotlight_policy::SpotlightSession::new(now_unix);
-        if spotlight_session.should_retrieve(&spotlight) {
+        if spotlight_policy::should_retrieve(now_unix, &spotlight) {
             let source = match gateway.spotlight(&state, deadline) {
                 Source::Available(Some(bytes)) => {
                     spotlight_policy::SpotlightInput::Available(bytes)
@@ -292,7 +291,7 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
                 }
                 spotlight_policy::SpotlightCacheDelta::Preserve => {}
             }
-            spotlight_session.apply(&mut spotlight, policy_delta);
+            spotlight.apply(policy_delta);
         }
 
         if let Some(dir) = cache_dir.as_deref() {
@@ -572,8 +571,7 @@ mod tests {
         assert!(fresh.status_title().is_none());
         assert!(fresh.whats_new_body().is_none());
         assert!(
-            !spotlight_policy::SpotlightSession::new(session_started_at_unix)
-                .should_retrieve(&fresh),
+            !spotlight_policy::should_retrieve(session_started_at_unix, &fresh),
             "a fresh persisted withdrawal remains throttled for this session"
         );
 
@@ -591,19 +589,19 @@ mod tests {
             stale.retrieved_at_unix(),
             Some(session_started_at_unix - CHECK_INTERVAL_SECS)
         );
-        assert!(
-            spotlight_policy::SpotlightSession::new(session_started_at_unix)
-                .should_retrieve(&stale)
-        );
+        assert!(spotlight_policy::should_retrieve(
+            session_started_at_unix,
+            &stale
+        ));
 
         let unavailable = decide(false, session_started_at_unix, &Some(Cache::default()))
             .initial
             .spotlight;
         assert_eq!(unavailable.retrieved_at_unix(), None);
-        assert!(
-            spotlight_policy::SpotlightSession::new(session_started_at_unix)
-                .should_retrieve(&unavailable)
-        );
+        assert!(spotlight_policy::should_retrieve(
+            session_started_at_unix,
+            &unavailable
+        ));
 
         let invalid = decide(
             false,
@@ -620,8 +618,7 @@ mod tests {
         assert!(invalid.status_title().is_none());
         assert!(invalid.whats_new_body().is_none());
         assert!(
-            !spotlight_policy::SpotlightSession::new(session_started_at_unix)
-                .should_retrieve(&invalid),
+            !spotlight_policy::should_retrieve(session_started_at_unix, &invalid),
             "invalid present content is a conclusive withdrawal, not an unavailable result"
         );
     }
