@@ -9,69 +9,49 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const REAP_RESERVE: Duration = Duration::from_millis(50);
 
 /// Wait for `child` to exit within `grace`, polling every 10 ms; if it overruns,
-/// kill and reap it within the same wall-clock budget, then return `None`.
+/// kill and reap it, then return `None`.
 ///
-/// `grace` bounds the **total** wall-clock spent waiting — callers pass a
-/// deadline-derived remainder so a double-timeout regression can't happen.
+/// `grace` bounds the wait for **useful work** — callers pass a deadline-derived
+/// remainder so a double-timeout regression can't happen. See [`wait_until`] for
+/// the termination contract on overrun.
 pub fn wait_bounded(child: &mut Child, grace: Duration) -> Option<std::process::ExitStatus> {
     wait_until(child, Instant::now() + grace)
 }
 
-/// The latest instant a caller may wait for normal output before retaining the remainder of its
-/// absolute deadline for termination and reaping. Shared with the Help renderer so the reserve has
-/// one definition.
-pub fn capture_deadline(deadline: Instant) -> Instant {
-    deadline.checked_sub(REAP_RESERVE).unwrap_or(deadline)
-}
-
-/// Give a completed work window one bounded tail for termination and reaping.
-pub(crate) fn finalization_deadline(work_deadline: Instant) -> Instant {
-    work_deadline
-        .checked_add(REAP_RESERVE)
-        .unwrap_or(work_deadline)
-}
-
 /// Wait for `child` through its caller's absolute deadline.
 ///
-/// A small slice of that same deadline is reserved for termination and reaping, so neither path
-/// falls through to an unbounded `wait()`. A normally exited child receives its full exit status;
-/// an overrun remains `None` after it is killed and reaped.
+/// The deadline bounds only the wait for useful work: on overrun (or a wait error) the child is
+/// killed and reaped **unconditionally**, so the call may briefly outlive the deadline. That is
+/// deliberate — see [`terminate_and_reap`] — and must not be "fixed" by bounding the reap, which
+/// reintroduces zombie leaks under load. A normally exited child returns its full exit status; an
+/// overrun returns `None` after the kill and reap.
 pub fn wait_until(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStatus> {
-    let wait_deadline = capture_deadline(deadline);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < wait_deadline => sleep_until(wait_deadline),
+            Ok(None) if Instant::now() < deadline => sleep_until(deadline),
             Ok(None) | Err(_) => {
-                let _ = terminate_and_reap(child, deadline);
+                let _ = terminate_and_reap(child);
                 return None;
             }
         }
     }
 }
 
-/// Terminate and reap `child` only until the caller's absolute deadline.
+/// Kill and reap `child` unconditionally, returning its exit status when the OS reports one.
 ///
-/// This is intentionally polling-only after `kill()`: `Child::wait()` has no deadline and could
-/// otherwise extend an advisory source call indefinitely.
-pub fn terminate_and_reap(
-    child: &mut Child,
-    deadline: Instant,
-) -> Option<std::process::ExitStatus> {
+/// SIGKILL cannot be ignored, so the post-kill `wait()` returns promptly except in pathological
+/// OS stalls (e.g. uninterruptible sleep), where nothing shorter of leaking the child would help.
+/// Accepting that brief overrun is what guarantees no zombie or leaked pipe survives a caller's
+/// deadline — a deadline-bounded reap returns early under load and leaks the killed child instead.
+pub fn terminate_and_reap(child: &mut Child) -> Option<std::process::ExitStatus> {
     if let Ok(Some(status)) = child.try_wait() {
         return Some(status);
     }
     let _ = child.kill();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => sleep_until(deadline),
-            Ok(None) | Err(_) => return None,
-        }
-    }
+    child.wait().ok()
 }
 
 fn sleep_until(deadline: Instant) {

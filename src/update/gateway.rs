@@ -3,6 +3,12 @@
 //! This module is the only place the update feature asks the official repository for release state
 //! or documents. It accepts a single absolute deadline, exposes no raw source output, and turns
 //! every source or process failure into [`Source::Unavailable`].
+//!
+//! The deadline bounds useful work only: child termination, reaping, and private-directory
+//! cleanup then run unconditionally and may briefly outlive it (see
+//! [`crate::proc::terminate_and_reap`]). Do not "fix" that overrun by bounding finalization —
+//! that trades a few milliseconds of a background thread's time for zombie processes and leaked
+//! temp directories under load.
 
 use super::{Version, repo_url};
 use std::collections::BTreeMap;
@@ -24,13 +30,6 @@ pub const DISCOVERY_MAX_BYTES: usize = 256 * 1024;
 /// The reader accepts at most one byte beyond this cap, so an exact 1 MiB document succeeds while
 /// an oversized source becomes unavailable before unbounded allocation.
 pub const DOCUMENT_MAX_BYTES: usize = 1024 * 1024;
-
-/// The last slice of a source call is reserved for removing its private directory.
-///
-/// Filesystem removal cannot be cancelled, so command setup, capture, termination, and reaping
-/// must finish before this slice of the caller's one absolute deadline.
-const PRIVATE_CLEANUP_RESERVE: Duration = Duration::from_millis(100);
-const PROCESS_FINALIZATION_RESERVE: Duration = Duration::from_millis(50);
 
 /// The compiled raw-content authority for documents in the official repository.
 const DOCUMENT_AUTHORITY: &str = "https://raw.githubusercontent.com";
@@ -128,14 +127,14 @@ impl ReleaseState {
 /// The source URL is fixed by [`repo_url`], never supplied by a caller. All failures, including a
 /// fresh private-directory creation failure, become unavailable so update checks stay silent.
 pub fn discover_release_state(deadline: Instant) -> Source<ReleaseState> {
-    let Some(work_deadline) = source_work_deadline(deadline) else {
+    if Instant::now() >= deadline {
         return Source::Unavailable;
-    };
+    }
     let Ok(run_dir) = make_private_dir() else {
         return Source::Unavailable;
     };
-    let result = discover_with_command(ls_remote_command(&run_dir), work_deadline);
-    cleanup_private_dir(&run_dir, deadline);
+    let result = discover_with_command(ls_remote_command(&run_dir), deadline);
+    let _ = std::fs::remove_dir_all(&run_dir);
     result
 }
 
@@ -170,9 +169,9 @@ impl DocumentGateway {
     }
 
     fn document(&self, object_id: &str, path: &str, deadline: Instant) -> Source<Option<Vec<u8>>> {
-        let Some(work_deadline) = source_work_deadline(deadline) else {
+        if remaining(deadline) < CURL_TIMEOUT_RESOLUTION {
             return Source::Unavailable;
-        };
+        }
         let Ok(run_dir) = make_private_dir() else {
             return Source::Unavailable;
         };
@@ -181,11 +180,10 @@ impl DocumentGateway {
             "{DOCUMENT_AUTHORITY}/{}/{object_id}/{path}",
             super::repo_slug()
         );
-        let result =
-            curl_command_with_program(&self.program, &body, &url, remaining(work_deadline))
-                .map(|command| document_with_command(command, &body, work_deadline))
-                .unwrap_or(Source::Unavailable);
-        cleanup_private_dir(&run_dir, deadline);
+        let result = curl_command_with_program(&self.program, &body, &url, remaining(deadline))
+            .map(|command| document_with_command(command, &body, deadline))
+            .unwrap_or(Source::Unavailable);
+        let _ = std::fs::remove_dir_all(&run_dir);
         result
     }
 
@@ -258,9 +256,8 @@ fn curl_max_time(timeout: Duration) -> Option<String> {
 
 /// Spawn one bounded curl transfer, classify its tiny status output, and post-read its body.
 ///
-/// A second deadline check prevents a test or caller from spawning after expiry or with less than
-/// curl's one-millisecond timeout resolution. The outer capture still kills and reaps a transfer
-/// that outlives the same absolute deadline.
+/// A budget below curl's one-millisecond timeout resolution never spawns. The outer capture kills
+/// and reaps a transfer that outlives the one absolute deadline.
 fn document_with_command(
     mut command: Command,
     body: &Path,
@@ -288,9 +285,7 @@ fn document_with_command_with_spawner(
         b"404" => Source::Available(None),
         b"200" => std::fs::File::open(body)
             .ok()
-            .and_then(|body| {
-                read_bounded_with_deadline(body, DOCUMENT_MAX_BYTES, Some(deadline)).ok()
-            })
+            .and_then(|body| read_bounded(body, DOCUMENT_MAX_BYTES).ok())
             .map(|body| Source::Available(Some(body)))
             .unwrap_or(Source::Unavailable),
         _ => Source::Unavailable,
@@ -341,14 +336,14 @@ fn harden_git(command: &mut Command, run_dir: &Path) {
         .env("GIT_TERMINAL_PROMPT", "0");
 }
 
-fn discover_with_command(mut command: Command, work_deadline: Instant) -> Source<ReleaseState> {
-    if Instant::now() >= work_deadline {
+fn discover_with_command(mut command: Command, deadline: Instant) -> Source<ReleaseState> {
+    if Instant::now() >= deadline {
         return Source::Unavailable;
     }
     let Ok(child) = command.spawn() else {
         return Source::Unavailable;
     };
-    discover_child_bounded(child, DISCOVERY_MAX_BYTES, work_deadline)
+    discover_child_bounded(child, DISCOVERY_MAX_BYTES, deadline)
 }
 
 fn discover_child_bounded(
@@ -401,7 +396,7 @@ fn capture_stdout_bounded_with_spawner(
     spawn_reader: &impl Fn(ReaderTask) -> io::Result<std::thread::JoinHandle<()>>,
 ) -> Result<Vec<u8>, CaptureFailure> {
     let Some(stdout) = child.stdout.take() else {
-        kill_and_reap(child, deadline);
+        kill_and_reap(child);
         return Err(CaptureFailure::Read);
     };
     let (sender, receiver) = mpsc::channel();
@@ -410,26 +405,26 @@ fn capture_stdout_bounded_with_spawner(
     })) {
         Ok(reader) => reader,
         Err(_) => {
-            kill_and_reap(child, deadline);
+            kill_and_reap(child);
             return Err(CaptureFailure::Spawn);
         }
     };
 
-    let result = receiver.recv_timeout(remaining(capture_deadline(deadline)));
+    let result = receiver.recv_timeout(remaining(deadline));
     let captured = match result {
         Ok(Ok(stdout)) => stdout,
         Ok(Err(error)) => {
-            kill_and_reap(child, deadline);
+            kill_and_reap(child);
             return Err(error);
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            kill_and_reap(child, deadline);
+            kill_and_reap(child);
             // The direct child is gone, but its descendants can retain the stdout pipe. Detach
             // their blocked reader rather than turning the caller's absolute deadline into join.
             return Err(CaptureFailure::Deadline);
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            kill_and_reap(child, deadline);
+            kill_and_reap(child);
             return Err(CaptureFailure::Read);
         }
     };
@@ -450,22 +445,11 @@ enum CaptureFailure {
     Spawn,
 }
 
-fn read_bounded(stdout: impl Read, max_bytes: usize) -> Result<Vec<u8>, CaptureFailure> {
-    read_bounded_with_deadline(stdout, max_bytes, None)
-}
-
-fn read_bounded_with_deadline(
-    mut stdout: impl Read,
-    max_bytes: usize,
-    deadline: Option<Instant>,
-) -> Result<Vec<u8>, CaptureFailure> {
+fn read_bounded(mut stdout: impl Read, max_bytes: usize) -> Result<Vec<u8>, CaptureFailure> {
     const CHUNK: usize = 8 * 1024;
     let mut output = Vec::with_capacity(max_bytes.min(CHUNK));
     let mut chunk = [0_u8; CHUNK];
     loop {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(CaptureFailure::Deadline);
-        }
         let remaining = max_bytes - output.len();
         // Request at most one byte beyond the cap. That byte proves overflow without draining a
         // malicious producer's remaining pipe data into memory.
@@ -477,9 +461,6 @@ fn read_bounded_with_deadline(
         let read = stdout
             .read(&mut chunk[..wanted])
             .map_err(|_| CaptureFailure::Read)?;
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(CaptureFailure::Deadline);
-        }
         if read == 0 {
             return Ok(output);
         }
@@ -494,26 +475,8 @@ fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-fn source_work_deadline(deadline: Instant) -> Option<Instant> {
-    deadline
-        .checked_sub(PRIVATE_CLEANUP_RESERVE)
-        .filter(|work_deadline| Instant::now() < *work_deadline)
-}
-
-fn capture_deadline(deadline: Instant) -> Instant {
-    deadline
-        .checked_sub(PROCESS_FINALIZATION_RESERVE)
-        .unwrap_or(deadline)
-}
-
-fn cleanup_private_dir(run_dir: &Path, deadline: Instant) {
-    if Instant::now() < deadline {
-        let _ = std::fs::remove_dir_all(run_dir);
-    }
-}
-
-fn kill_and_reap(child: &mut Child, deadline: Instant) {
-    let _ = crate::proc::terminate_and_reap(child, deadline);
+fn kill_and_reap(child: &mut Child) {
+    let _ = crate::proc::terminate_and_reap(child);
 }
 
 fn parse_release_bytes(stdout: &[u8]) -> Option<ReleaseState> {
@@ -1065,33 +1028,6 @@ mod tests {
     }
 
     #[test]
-    fn bounded_body_read_rejects_a_chunk_that_arrives_after_the_shared_deadline() {
-        struct SlowReader(bool);
-
-        impl Read for SlowReader {
-            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-                if self.0 {
-                    return Ok(0);
-                }
-                std::thread::sleep(Duration::from_millis(20));
-                self.0 = true;
-                buffer[0] = b'x';
-                Ok(1)
-            }
-        }
-
-        assert_eq!(
-            read_bounded_with_deadline(
-                SlowReader(false),
-                1,
-                Some(Instant::now() + Duration::from_millis(1))
-            ),
-            Err(CaptureFailure::Deadline),
-            "a post-read deadline check keeps a delayed body unavailable"
-        );
-    }
-
-    #[test]
     fn parser_accepts_a_valid_head_without_tags() {
         let state = parse_release_state("0123456789012345678901234567890123456789\tHEAD\n")
             .expect("a valid HEAD is sufficient when the repository has no stable tags");
@@ -1202,9 +1138,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn discovery_uses_the_already_derived_work_deadline() {
-        let work_deadline = source_work_deadline(Instant::now() + Duration::from_millis(180))
-            .expect("cleanup reserve leaves discovery work time");
+    fn discovery_runs_under_the_caller_deadline() {
         let mut command = Command::new("sh");
         command
             .arg("-c")
@@ -1212,7 +1146,7 @@ mod tests {
             .stdout(Stdio::piped());
 
         assert!(matches!(
-            discover_with_command(command, work_deadline),
+            discover_with_command(command, Instant::now() + Duration::from_millis(180)),
             Source::Available(_)
         ));
     }
