@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
+- `←`/`h` on a file, or on a directory that's already collapsed, no longer no-ops. It now walks up to the nearest visible ancestor directory and collapses that instead, so repeated presses climb the tree one level at a time — including under `compact_dirs`, where it correctly skips past every folded intermediate directory to land on the next real row. → [usage](docs/usage.md#the-tree) · [keys](docs/keys.md)
 - Agent skill: the launch instructions no longer tell agents to pass `--cwd`. herdr resolves the manifest's relative pane command against it, so the launch failed with `plugin_pane_open_failed` — or worse, inside a built plugin checkout, silently ran that checkout's binary. The skill and the `docs/usage.md` snippet now explain that the viewed root follows the *focused herdr pane's* directory, so an agent's own `cd` does not move it. Thanks @AntonyKor (#139) → [agent skill](skills/herdr-file-viewer/SKILL.md) · [usage](docs/usage.md#teach-your-agent)
 
 ## [1.15.0] - 2026-08-03

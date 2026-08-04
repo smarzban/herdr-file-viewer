@@ -30,10 +30,14 @@ setting off unless you need it; `.git/` itself always stays hidden. The tree's *
 looking.
 
 Move the cursor with `↑`/`↓` (or `k`/`j`), expand/collapse a directory with `→`/`←` (or `l`/`h`) or
-`Enter`. The tree scrolls to keep the selection in view, and sideways for long or deeply-nested
-names — reachable by keyboard with `H` / `L` when the tree is focused. A scrollbar appears whenever
-there's more than fits. Narrow or widen the tree column with `<` / `>`, or drag the divider; the
-starting split, the tree's side, and a column cap are all [configurable](configuration.md).
+`Enter`. `←` on a file, or on a directory that's already collapsed, has nothing left to collapse
+there — it walks the cursor up to the nearest visible ancestor directory and collapses that instead,
+so repeated presses climb the tree one level at a time; under `compact_dirs` this correctly skips
+past every folded intermediate directory to land on the next real row. The tree scrolls to keep the
+selection in view, and sideways for long or deeply-nested names — reachable by keyboard with `H` /
+`L` when the tree is focused. A scrollbar appears whenever there's more than fits. Narrow or widen
+the tree column with `<` / `>`, or drag the divider; the starting split, the tree's side, and a
+column cap are all [configurable](configuration.md).
 
 On a **deeply nested** layout the per-segment tree spends most of a narrow column on indentation, and
 the file names — the part you came for — are what gets truncated. Set
