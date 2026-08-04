@@ -2191,18 +2191,44 @@ impl Controller {
     }
 
     /// Left (←/h): collapse the selected directory when the tree is focused, or scroll the
-    /// content pane left when it is focused.
+    /// content pane left when it is focused. When the selection has nothing left to collapse —
+    /// a **file**, or a directory that's **already collapsed** — this steps up to its nearest
+    /// *visible* ancestor directory instead, collapses that, and moves the selection onto it —
+    /// mirroring how collapsing an expanded directory leaves it selected — so Left never strands
+    /// the cursor on a row that just vanished, and repeated presses walk up the tree one visible
+    /// level at a time. "Nearest visible" walks the real filesystem ancestry rather than stopping
+    /// at one level: under `compact_dirs`, a folded chain (`src/main/java`) is a SINGLE row keyed
+    /// on its deepest directory, so the immediate filesystem parent (`src/main`) has no row of its
+    /// own — the walk has to keep climbing past every folded intermediate to reach the row that
+    /// actually represents the next directory up. A no-op once there's no parent row left to
+    /// collapse onto (the selection is directly under the tree root, which has no visible row of
+    /// its own).
     fn collapse(&mut self) -> Effects {
         if self.focus == Focus::Content {
             return self.scroll_content_h(-(HSCROLL_STEP as i32));
         }
-        if let Some(node) = self.tree.selected()
-            && node.kind == NodeKind::Dir
-        {
-            self.tree.collapse(&node.path);
-            return Effects::redraw();
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
+        match node.kind {
+            NodeKind::Dir if node.expanded => {
+                self.tree.collapse(&node.path);
+                Effects::redraw()
+            }
+            NodeKind::Dir | NodeKind::File => {
+                let mut cur = node.path.as_path();
+                loop {
+                    let Some(parent) = cur.parent() else {
+                        return Effects::noop();
+                    };
+                    if self.tree.select(parent) {
+                        self.tree.collapse(parent);
+                        return Effects::redraw();
+                    }
+                    cur = parent;
+                }
+            }
         }
-        Effects::noop()
     }
 
     /// Activate the selected node (Enter / double-click): a directory toggles expand/collapse;

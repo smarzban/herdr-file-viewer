@@ -784,6 +784,21 @@ impl TreeModel {
         None
     }
 
+    /// Move the cursor to `path`'s visible row, if it currently has one. Unlike [`reveal`], this
+    /// never expands ancestors or relaxes filters — it only repositions among what's already
+    /// shown, which is exactly what's needed right after collapsing an ancestor (the ancestor
+    /// itself stays visible; only its children disappear). Returns `false`, leaving the cursor
+    /// untouched, when `path` has no visible row (e.g. it's the tree root, which is never a row).
+    pub fn select(&mut self, path: &Path) -> bool {
+        match self.visible_nodes().iter().position(|n| n.path == path) {
+            Some(idx) => {
+                self.cursor = idx;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Keep the cursor within the (possibly shrunken) visible list after a structural or
     /// filter change, so indexing by `cursor` can never run past the end.
     fn clamp_cursor(&mut self) {

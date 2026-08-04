@@ -4107,6 +4107,73 @@ fn view_state_titles_the_tree_with_root_basename_and_branch() {
 }
 
 #[test]
+fn collapse_on_an_already_collapsed_dir_walks_up_to_the_parent() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+    std::fs::write(dir.path().join("a/b/file.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+    ctrl.handle(Intent::Expand); // expand "a" — cursor stays on "a"
+    ctrl.handle(Intent::NavDown); // select "b" (collapsed)
+    assert_eq!(ctrl.tree().selected().unwrap().path, dir.path().join("a/b"));
+
+    // "b" has nothing left to collapse (it's already collapsed), so Left steps up to "a"
+    // and collapses that instead of no-op'ing.
+    let fx = ctrl.handle(Intent::Collapse);
+    assert!(fx.redraw, "walking up to the parent redraws");
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path,
+        dir.path().join("a"),
+        "selection moves onto the parent"
+    );
+    assert!(
+        !ctrl.tree().selected().unwrap().expanded,
+        "the parent is collapsed as part of the same keypress"
+    );
+}
+
+#[test]
+fn collapse_walk_up_climbs_past_every_row_a_compacted_chain_folds_away() {
+    // `compact_dirs` draws a run of single-child directories as ONE row keyed on the deepest
+    // directory, so the immediate filesystem parent of that row has no row of its own. The
+    // walk-up in `collapse()` has to keep climbing — not stop after one `parent()` hop — to
+    // reach "mid", the nearest directory that is actually a row.
+    let dir = TempDir::new();
+    let deep = dir.path().join("mid/chain/main/java");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("App.java"), "x").unwrap();
+    // "mid" also holds a file, so — unlike "chain/main/java" below it — "mid" itself is never
+    // folded into a chain and keeps its own row.
+    std::fs::write(dir.path().join("mid/other.txt"), "x").unwrap();
+
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.apply_compact_dirs(true);
+
+    ctrl.handle(Intent::Expand); // expand "mid" — cursor stays on "mid"
+    ctrl.handle(Intent::NavDown); // select the folded "chain/main/java" row (collapsed)
+    let selected = ctrl.tree().selected().unwrap();
+    assert_eq!(selected.path, dir.path().join("mid/chain/main/java"));
+    assert_eq!(selected.label.as_deref(), Some("chain/main/java"));
+
+    // Left has to climb past "main" and "chain" (neither has a row of its own — both are
+    // folded into the "chain/main/java" row) to land on "mid".
+    let fx = ctrl.handle(Intent::Collapse);
+    assert!(
+        fx.redraw,
+        "the walk-up must not silently no-op just because the first parent() hop has no row"
+    );
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path,
+        dir.path().join("mid"),
+        "selection lands on the nearest ancestor that is actually a visible row"
+    );
+    assert!(
+        !ctrl.tree().selected().unwrap().expanded,
+        "mid is collapsed"
+    );
+}
+
+#[test]
 fn refresh_updates_the_cached_branch_after_an_external_checkout() {
     // the tree's bottom-border branch is cached on the controller, so it
     // must be refreshed by refresh_git_state (the `r` key / editor-return / focus-gain), not only at
