@@ -441,7 +441,7 @@ fn line_select_cancel_restores_the_exact_mouse_selection_snapshot() {
     ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 45, 2));
     ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 49, 5));
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 49, 5));
-    let before_view = ctrl.view_state().line_select.unwrap();
+    let before_view = ctrl.view_state().active.line_select.unwrap();
     let before_marker = before_view.marker;
     let before = before_view.char_sel.unwrap();
     let exact_before = (
@@ -460,7 +460,7 @@ fn line_select_cancel_restores_the_exact_mouse_selection_snapshot() {
     );
     ctrl.handle_annotation_editor_key(key(KeyCode::Esc));
 
-    let after_view = ctrl.view_state().line_select.unwrap();
+    let after_view = ctrl.view_state().active.line_select.unwrap();
     assert_eq!(
         after_view.marker, before_marker,
         "cancel restores the directed marker, not only the normalized span"

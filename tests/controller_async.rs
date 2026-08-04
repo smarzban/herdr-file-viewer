@@ -13,6 +13,7 @@ use herdr_file_viewer::controller::{
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
+use herdr_file_viewer::preview::BranchState;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
 use std::collections::BTreeMap;
@@ -286,6 +287,109 @@ fn flatten(text: &Text) -> String {
 }
 
 #[test]
+fn an_applied_render_exposes_one_complete_active_preview_document() {
+    struct CompleteContent;
+    impl ContentProvider for CompleteContent {
+        fn render(&self, path: &Path, mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+            let body = format!(
+                "rendered:{}:{mode:?}",
+                path.file_name().unwrap().to_string_lossy()
+            );
+            RenderResult {
+                content: Text::raw(body.clone()),
+                notices: vec!["bounded fallback notice".into()],
+                source: Some(vec![body]),
+            }
+        }
+    }
+
+    let dir = TempDir::new();
+    let path = dir.path().join("a.rs");
+    std::fs::write(&path, "fn main() {}\n").unwrap();
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(CompleteContent),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_contains(&mut ctrl, "rendered:a.rs:SyntaxContent");
+
+    let document = ctrl
+        .active_document()
+        .expect("a settled file render is one complete preview document");
+    assert_eq!(flatten(document.content()), "rendered:a.rs:SyntaxContent");
+    assert_eq!(document.notices(), ["bounded fallback notice"]);
+    assert_eq!(
+        document.source(),
+        Some(["rendered:a.rs:SyntaxContent".to_string()].as_slice())
+    );
+    assert_eq!(document.presentation().view_mode(), ViewMode::SyntaxContent);
+    assert!(!document.presentation().wrap());
+    assert!(!document.presentation().pad_left());
+    assert_eq!(document.origin().root(), dir.path());
+    assert_eq!(document.origin().branch(), &BranchState::Detached);
+    assert_eq!(document.origin().absolute_path(), path);
+    assert_eq!(document.origin().root_relative_path(), Path::new("a.rs"));
+}
+
+#[test]
+fn pinning_while_the_new_selection_is_rendering_rejects_without_capturing_it() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "2\n").unwrap();
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(SlowContent {
+                delay: Duration::from_millis(80),
+            }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_contains(&mut ctrl, "rendered:a.rs");
+    ctrl.pin_active_preview();
+    let original = ctrl
+        .view_state()
+        .pinned
+        .expect("settled initial selection was pinned")
+        .origin
+        .expect("pin retains initial identity");
+
+    ctrl.handle(Intent::NavDown);
+    assert!(
+        ctrl.view_state().active.rendering,
+        "b.rs render is in flight"
+    );
+    assert!(ctrl.pin_active_preview().redraw);
+    assert_eq!(
+        ctrl.action_notice(),
+        Some("Cannot pin while preview is rendering")
+    );
+    assert_eq!(
+        ctrl.view_state()
+            .pinned
+            .expect("rejection keeps existing pin")
+            .origin,
+        Some(original)
+    );
+}
+
+#[test]
 fn a_select_intent_does_not_block_on_a_slow_render_and_content_arrives_later() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "1\n").unwrap();
@@ -449,6 +553,14 @@ fn a_superseded_render_does_not_overwrite_a_newer_selection() {
         "rendered:c.rs",
         "a superseded render must not overwrite the newer selection"
     );
+    let document = ctrl
+        .active_document()
+        .expect("the latest settled file remains the active document");
+    assert_eq!(
+        document.origin().root_relative_path(),
+        Path::new("c.rs"),
+        "a stale result cannot replace the active document's captured identity"
+    );
 }
 
 #[test]
@@ -546,7 +658,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
     }
     // Precondition: a.rs is the displayed file — its name is the content title.
     assert_eq!(
-        ctrl.view_state().content_title.as_deref(),
+        ctrl.view_state().active.title.as_deref(),
         Some("a.rs"),
         "precondition: a.rs content landed, title is a.rs"
     );
@@ -575,7 +687,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
     // (b) The title has NOT jumped to b.rs ahead of its body — it still names the displayed
     //     content's file (a.rs).
     assert_eq!(
-        ctrl.view_state().content_title.as_deref(),
+        ctrl.view_state().active.title.as_deref(),
         Some("a.rs"),
         "the content title does not update ahead of the body — it stays on the displayed file \
          (a.rs) until b.rs's render lands"
@@ -599,7 +711,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
         "the selected file's rendered content arrived"
     );
     assert_eq!(
-        ctrl.view_state().content_title.as_deref(),
+        ctrl.view_state().active.title.as_deref(),
         Some("b.rs"),
         "the title switched to b.rs together with its body"
     );
@@ -645,7 +757,7 @@ fn the_left_gap_follows_the_displayed_file_not_the_selection_during_a_slow_rende
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        !ctrl.view_state().content_pad_left,
+        !ctrl.view_state().active.pad_left,
         "precondition: the displayed code file has no gap"
     );
 
@@ -658,7 +770,7 @@ fn the_left_gap_follows_the_displayed_file_not_the_selection_during_a_slow_rende
         "precondition: b.md's render is in flight"
     );
     assert!(
-        !ctrl.view_state().content_pad_left,
+        !ctrl.view_state().active.pad_left,
         "the gap does not flip on ahead of the body — it tracks the displayed a.rs, not selected b.md"
     );
 
@@ -673,7 +785,7 @@ fn the_left_gap_follows_the_displayed_file_not_the_selection_during_a_slow_rende
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        ctrl.view_state().content_pad_left,
+        ctrl.view_state().active.pad_left,
         "once the markdown body lands, the gap is on"
     );
 }
@@ -919,6 +1031,8 @@ fn a_width_reflow_preserves_scroll_and_recomputes_a_committed_search() {
     ctrl.scroll_to_line(20);
     let scrolled = ctrl.content_scroll();
     assert!(scrolled > 0, "precondition: scrolled away from the top");
+    let before_document = ctrl.active_document().unwrap().clone();
+    let before_search = ctrl.search().cloned();
 
     // Resize narrower (a width change) → reflow. Scroll and the committed search must survive.
     ctrl.set_content_viewport(30, 10);
@@ -935,6 +1049,22 @@ fn a_width_reflow_preserves_scroll_and_recomputes_a_committed_search() {
     assert!(
         !search.matches.is_empty(),
         "the search is recomputed against the reflowed content"
+    );
+    let after_document = ctrl.active_document().unwrap();
+    assert_ne!(
+        after_document.content(),
+        before_document.content(),
+        "the reflow replaces the active document's rendered body"
+    );
+    assert_eq!(
+        after_document.origin(),
+        before_document.origin(),
+        "a width reflow retains the render job's captured file identity"
+    );
+    assert_eq!(
+        ctrl.search().map(|state| state.query.as_str()),
+        before_search.as_ref().map(|state| state.query.as_str()),
+        "the active interaction's committed query survives document replacement"
     );
 }
 

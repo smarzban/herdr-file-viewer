@@ -392,6 +392,20 @@ pub(crate) const REGISTRY: &[Binding] = &[
         category: "View & layout",
     },
     Binding {
+        intent: Intent::ShrinkPreview,
+        name: "shrink_preview",
+        default_keys: &[KeyCode::Char('{')],
+        description: "Give the pinned preview less horizontal space.",
+        category: "View & layout",
+    },
+    Binding {
+        intent: Intent::GrowPreview,
+        name: "grow_preview",
+        default_keys: &[KeyCode::Char('}')],
+        description: "Give the pinned preview more horizontal space.",
+        category: "View & layout",
+    },
+    Binding {
         intent: Intent::ToggleWrap,
         name: "toggle_wrap",
         default_keys: &[KeyCode::Char('w')],
@@ -403,6 +417,13 @@ pub(crate) const REGISTRY: &[Binding] = &[
         name: "toggle_zoom",
         default_keys: &[KeyCode::Char('z')],
         description: "Hide the tree so the content pane fills the frame, or restore the split.",
+        category: "View & layout",
+    },
+    Binding {
+        intent: Intent::PinPreview,
+        name: "pin_preview",
+        default_keys: &[KeyCode::Char('p')],
+        description: "Pin or unpin the settled preview as a reference.",
         category: "View & layout",
     },
     Binding {
@@ -832,8 +853,11 @@ mod tests {
         (KeyCode::Tab, Intent::ToggleFocus),
         (KeyCode::Char('<'), Intent::ShrinkTree),
         (KeyCode::Char('>'), Intent::GrowTree),
+        (KeyCode::Char('{'), Intent::ShrinkPreview),
+        (KeyCode::Char('}'), Intent::GrowPreview),
         (KeyCode::Char('w'), Intent::ToggleWrap),
         (KeyCode::Char('z'), Intent::ToggleZoom),
+        (KeyCode::Char('p'), Intent::PinPreview),
         (KeyCode::Char('r'), Intent::Refresh),
         (KeyCode::Char('u'), Intent::DismissUpdate),
         (KeyCode::Char('?'), Intent::ShowHelp),
@@ -1207,7 +1231,7 @@ mod tests {
 
     #[test]
     fn shift_is_allowed_for_shifted_characters() {
-        // '<' / '>' are typed with Shift; the resize keys must fire whether or not the
+        // '<' / '>' / '{' / '}' are typed with Shift; the resize keys must fire whether or not the
         // terminal reports the Shift bit — but a Ctrl chord on the same key must not.
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT)),
@@ -1216,6 +1240,14 @@ mod tests {
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE)),
             Some(Intent::GrowTree)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::SHIFT)),
+            Some(Intent::ShrinkPreview)
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('}'), KeyModifiers::NONE)),
+            Some(Intent::GrowPreview)
         );
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::CONTROL)),
@@ -1238,6 +1270,38 @@ mod tests {
             None
         );
         assert_eq!(map_key(k(KeyCode::Char('w'))), Some(Intent::ToggleWrap));
+    }
+
+    #[test]
+    fn pin_and_preview_resize_default_and_custom_bindings_decode() {
+        // `p` reaches the pin lifecycle by default, while `{` / `}` resize only the pinned
+        // preview share. Valid `[keys]` replacements reach the same intents and drop their
+        // defaults (replace semantics).
+        assert_eq!(map_key(k(KeyCode::Char('p'))), Some(Intent::PinPreview));
+        assert_eq!(map_key(k(KeyCode::Char('{'))), Some(Intent::ShrinkPreview));
+        assert_eq!(map_key(k(KeyCode::Char('}'))), Some(Intent::GrowPreview));
+
+        let (bindings, outcome) = resolve_with(&[
+            ("pin_preview", one("P")),
+            ("shrink_preview", one("(")),
+            ("grow_preview", one(")")),
+        ]);
+        assert!(
+            outcome.is_empty(),
+            "a valid pin binding must not be rejected"
+        );
+        assert_eq!(dec(&bindings, KeyCode::Char('P')), Some(Intent::PinPreview));
+        assert_eq!(dec(&bindings, KeyCode::Char('p')), None);
+        assert_eq!(
+            dec(&bindings, KeyCode::Char('(')),
+            Some(Intent::ShrinkPreview)
+        );
+        assert_eq!(dec(&bindings, KeyCode::Char('{')), None);
+        assert_eq!(
+            dec(&bindings, KeyCode::Char(')')),
+            Some(Intent::GrowPreview)
+        );
+        assert_eq!(dec(&bindings, KeyCode::Char('}')), None);
     }
 
     #[test]

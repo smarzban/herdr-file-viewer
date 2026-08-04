@@ -240,7 +240,7 @@ fn every_remote_failure_is_silent_in_the_controller_presenter_projection() {
             "{name}: no remote diagnostic reaches the frame"
         );
         assert!(
-            ctrl.view_state().notices.is_empty(),
+            ctrl.view_state().active.notices.is_empty(),
             "{name}: no notice strip"
         );
         assert!(ctrl.view_state().prompt.is_none(), "{name}: no prompt");

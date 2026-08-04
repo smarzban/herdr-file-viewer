@@ -85,12 +85,22 @@ pub enum Intent {
     ShrinkTree,
     /// Widen the tree column (move the tree/content divider right).
     GrowTree,
+    /// Shrink the frozen preview's share of the preview area by five percentage points. Inert
+    /// without a pin; it never moves the outer tree/content divider.
+    ShrinkPreview,
+    /// Grow the frozen preview's share of the preview area by five percentage points. Inert
+    /// without a pin; it never moves the outer tree/content divider.
+    GrowPreview,
     /// Force content-line wrapping on/off, overriding the per-mode default (so long lines in
     /// code and diffs can be wrapped on demand instead of truncated).
     ToggleWrap,
     /// Hide the tree so the content pane fills the frame / restore the two-column layout — a
     /// pure layout toggle for reading a file full-screen.
     ToggleZoom,
+    /// Pin or unpin the settled active file preview as an in-memory reference alongside the
+    /// active preview. Read-only: pinning clones an already-rendered document and never starts a
+    /// render, touches a file, or mutates git.
+    PinPreview,
     /// Re-read git state (working-tree status + changed-set) and re-render, so the viewer picks
     /// up changes made outside it — a merge, pull, or commit in another pane. Read-only.
     Refresh,
@@ -162,7 +172,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 41] = [
+    pub const ALL: [Intent; 44] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::PageUp,
@@ -188,8 +198,11 @@ impl Intent {
         Intent::ToggleFocus,
         Intent::ShrinkTree,
         Intent::GrowTree,
+        Intent::ShrinkPreview,
+        Intent::GrowPreview,
         Intent::ToggleWrap,
         Intent::ToggleZoom,
+        Intent::PinPreview,
         Intent::Refresh,
         Intent::DismissUpdate,
         Intent::SwitchWorktree,
@@ -244,8 +257,11 @@ mod tests {
                 | Intent::ToggleFocus
                 | Intent::ShrinkTree
                 | Intent::GrowTree
+                | Intent::ShrinkPreview
+                | Intent::GrowPreview
                 | Intent::ToggleWrap
                 | Intent::ToggleZoom
+                | Intent::PinPreview
                 | Intent::Refresh
                 | Intent::DismissUpdate
                 | Intent::SwitchWorktree
@@ -332,11 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_41() {
+    fn all_length_is_44() {
         assert_eq!(
             Intent::ALL.len(),
-            41,
-            "Intent::ALL must have exactly 41 variants"
+            44,
+            "Intent::ALL must have exactly 44 variants"
         );
     }
 

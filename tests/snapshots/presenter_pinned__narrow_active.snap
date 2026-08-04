@@ -1,0 +1,16 @@
+---
+source: tests/presenter_pinned.rs
+expression: output
+---
+"┌active.rs─────────────────────────────────────────────────┐"
+"│active notice                                             │"
+"│ACTIVE needle                                             │"
+"│active second row                                         │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└────────────────────────────────────────────────────? help┘"

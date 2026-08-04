@@ -133,10 +133,11 @@ impl Controller {
     /// Owned persistent-indicator projection for the pure Presenter.
     pub(super) fn annotation_indicators_view(&self) -> AnnotationIndicatorsView {
         let displayed_relative = self
-            .content_path
-            .as_deref()
+            .active_display
+            .displayed_origin()
+            .map(PreviewOrigin::absolute_path)
             .and_then(|path| path.strip_prefix(&self.root).ok());
-        let source_mapped = self.content_source.is_some();
+        let source_mapped = self.active_source().is_some();
         let mut view = AnnotationIndicatorsView::default();
         let mut displayed_ranges = Vec::new();
 

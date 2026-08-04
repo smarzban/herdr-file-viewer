@@ -39,9 +39,11 @@ is additive and on by default.
 | `a` | **Add annotation**: open the annotation editor for the selected file (`←`/`→` or `Home`/`End` move the text cursor, `Enter` saves, `Esc` cancels). Annotations live only for this viewer session and never modify the file |
 | `A` (Shift+`a`) | **Show annotations**: open the session overview; fixed keys `j`/`k` or `↑`/`↓` move, `Enter`/`e` edits, `d` deletes one, `D` (Shift+`d`) clears all immediately, `y` copies all, and `Esc`/`q` closes |
 | `Tab` | Move focus between the tree and content columns |
-| `<` / `>` | Narrow / widen the tree column (move the divider) |
+| `<` / `>` | Narrow / widen the outer tree column (move the tree/content divider) |
 | `w` | Toggle line wrapping for the content pane. For rendered markdown this switches between the fit-to-pane view (wide tables sized to fit, over-long cells shown as `…`) and a wide view that renders tables at full width and scrolls horizontally (`←`/`→`) so you can read every cell |
 | `z` | Zoom: hide the tree so the content pane fills the frame; press again (or `q`/`Esc`) to restore the two-column layout |
+| `p` | Pin the settled file preview as a frozen in-memory reference alongside the active preview; press again on that same file to remove it, or on another file to replace it. `Tab` then cycles tree → pinned preview → active preview → tree |
+| `{` / `}` | With a preview pinned, shrink / grow its horizontal share in 5-point steps (20–80%) by moving the **preview divider**; the outer tree/content divider stays put. Inert with no pin |
 | `Z` (Shift+`z`) | **Full-screen a file** (toggle): open the selected file like `Enter` _and_ zoom the viewer's herdr pane to fill the whole terminal, so the file takes over the entire screen instead of just the split. Press `Z` again (or `Esc`/`q`, or `z`) to return to the normal two-column split; switching worktree or quitting also restores the pane. On a directory it just expands/collapses like `Enter`; falls back to the in-pane zoom when the host isn't herdr |
 | `r` | Refresh git state: pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `W` (Shift+`w`) | **Switch worktree**: open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels. A switch clears annotations (their targets belong to the old root), so with any held it confirms first (`y` copies them and switches, `Enter` switches and discards, `Esc` cancels) |
@@ -68,7 +70,7 @@ forces a full refresh on demand. (Focus-refresh updates the tree's status withou
 content scroll.)
 
 Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
-not trigger a viewer action; `Shift` is permitted for keys such as `<` and `>` (and `a`/`A`,
+not trigger a viewer action; `Shift` is permitted for keys such as `<`, `>`, `{`, and `}` (and `a`/`A`,
 `y`/`Y`, `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the
 annotation overview).
 
@@ -77,8 +79,8 @@ as a chord. Crossterm 0.29's Windows input path reports AltGr as the generic `Ct
 so a genuine Windows `Ctrl+Alt`+character chord is ambiguous with AltGr typing a bound character:
 pressing AltGr+`?` on a Brazilian ABNT2 keyboard still opens (or closes) the help overlay, and the
 same applies to whatever character any of your bindings use, including a custom `[keys]` remap.
-(Some layouts produce other characters via AltGr too, e.g. `[`/`]` on German and Spanish ones; those
-are unbound by default, so they trigger nothing unless you bind them yourself.) `Ctrl` alone, `Alt`
+(Some layouts produce other characters via AltGr too, e.g. `[`/`]` or `{`/`}` on German and Spanish ones;
+`[`/`]` keep their changed-file movement and `{`/`}` their pinned-preview resizing.) `Ctrl` alone, `Alt`
 alone, `Ctrl+Alt` on a non-character key (`Ctrl+Alt+↑`), and `Ctrl+Alt` plus any modifier other than
 optional `Shift` stay inert. Linux and macOS decoding is unchanged. To prevent a particular Windows
 `Ctrl+Alt` chord from triggering its viewer action, rebind that action off the character in

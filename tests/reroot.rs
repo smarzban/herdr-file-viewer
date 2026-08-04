@@ -13,9 +13,11 @@ use herdr_file_viewer::controller::{
     RenderResult, RootProviders,
 };
 use herdr_file_viewer::git::{Baseline, Status};
+use herdr_file_viewer::infile::SearchState;
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::presenter::Focus;
 use herdr_file_viewer::root::Resolved;
+use herdr_file_viewer::search::Match;
 use herdr_file_viewer::tree::NodeKind;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
@@ -188,7 +190,8 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     ctrl.handle(Intent::GrowTree); // tree-resize → split_pct changes off its default
     ctrl.handle(Intent::ToggleWrap); // `w` → wrap_override true
     ctrl.handle(Intent::ToggleChangedOnly); // changed-only on (git repo → takes effect)
-    ctrl.handle(Intent::ToggleIgnore); // show-ignored on
+    ctrl.apply_show_ignored(true); // config/startup preference carried through a re-root
+    ctrl.apply_compact_dirs(true); // likewise: fresh trees keep their compact shape
     ctrl.handle(Intent::ToggleHidden); // hide-hidden on (#46)
     ctrl.handle(Intent::ToggleBaseline); // baseline Head → Base
 
@@ -226,6 +229,31 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
         ctrl.tree().cursor() > 0,
         "cursor moved off the root row before re_root"
     );
+    // A settled snapshot is root-independent reference state: T-13 keeps it, with its ratio,
+    // while all active/root-bound state below resets.
+    poll_until(&mut ctrl, Duration::from_secs(5), |c| {
+        c.active_document().is_some()
+    });
+    {
+        let interaction = ctrl.active_interaction_mut();
+        interaction.vertical_scroll = 7;
+        interaction.horizontal_scroll = 3;
+        interaction.search = Some(SearchState {
+            query: "fake".into(),
+            matches: vec![Match {
+                line: 0,
+                start: 0,
+                end: 4,
+            }],
+            current: 0,
+        });
+    }
+    assert!(ctrl.handle(Intent::PinPreview).redraw);
+    let pinned_before = ctrl
+        .view_state()
+        .pinned
+        .expect("precondition: preview is pinned");
+    assert_eq!(ctrl.view_state().preview_split_pct, 50);
     ctrl.handle(Intent::ToggleChangedOnly); // changed-only back on (the carried pref state)
     ctrl.handle(Intent::ToggleZoom); // zoom on, focus → content
     assert!(ctrl.zoomed());
@@ -235,8 +263,8 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     // be flipped off below to inspect the real filesystem tree). ---
     let b = TempDir::new();
     common::init_repo_with_commit(b.path());
-    std::fs::create_dir_all(b.path().join("bsub")).unwrap();
-    std::fs::write(b.path().join("bsub/inner.txt"), "inner\n").unwrap();
+    std::fs::create_dir_all(b.path().join("bsub/inner")).unwrap();
+    std::fs::write(b.path().join("bsub/inner/deep.txt"), "inner\n").unwrap();
     std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
     ctrl.re_root(b.path());
 
@@ -251,13 +279,61 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(ctrl.wrap_override(), "wrap_override carried");
     assert!(ctrl.changed_only(), "changed_only carried");
     assert!(ctrl.show_ignored(), "show_ignored carried");
+    assert!(
+        ctrl.tree().show_ignored(),
+        "fresh tree kept show-ignored preference"
+    );
     assert!(ctrl.hide_hidden(), "hide_hidden carried (#46)");
     assert_eq!(ctrl.baseline(), Baseline::Base, "baseline carried");
+    let pinned_after = ctrl.view_state().pinned.expect("pin survives re_root");
+    assert_eq!(
+        pinned_after.content, pinned_before.content,
+        "frozen content"
+    );
+    assert_eq!(
+        pinned_after.notices, pinned_before.notices,
+        "content notices"
+    );
+    assert_eq!(pinned_after.origin, pinned_before.origin, "captured origin");
+    assert_eq!(pinned_after.scroll, pinned_before.scroll, "vertical scroll");
+    assert_eq!(
+        pinned_after.hscroll, pinned_before.hscroll,
+        "horizontal scroll"
+    );
+    match (&pinned_after.search, &pinned_before.search) {
+        (Some(actual), Some(expected)) => {
+            assert_eq!(actual.matches, expected.matches, "search matches");
+            assert_eq!(actual.current, expected.current, "current search match");
+        }
+        _ => panic!("re-root changed pinned search presence"),
+    }
+    assert_eq!(
+        ctrl.view_state().preview_split_pct,
+        50,
+        "pin ratio survives re_root"
+    );
 
-    // Navigation/view state is RESET (AC-13).
+    // Navigation/view state is RESET (AC-13), but the frozen pin's query is still available
+    // when focus returns to it after the switch.
     assert_eq!(ctrl.tree().cursor(), 0, "cursor back at the root row");
     assert!(!ctrl.zoomed(), "unzoomed after re_root");
     assert_eq!(ctrl.focus(), Focus::Tree, "focus back on the tree");
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Pinned);
+    assert!(
+        ctrl.view_state()
+            .prompt
+            .as_deref()
+            .is_some_and(|status| status.contains("Search: fake (1/1)")),
+        "captured pinned search query survives the re-root"
+    );
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Tree,
+        "focus cycle returns to the reset tree focus"
+    );
 
     // the git-derived state (status markers + the changed-only filter built from the
     // changed-set) now fills in ASYNCHRONOUSLY, applied by `poll` rather than synchronously in
@@ -284,6 +360,11 @@ fn re_root_rebuilds_at_the_new_root_carrying_prefs_and_resetting_nav() {
     assert!(
         !nodes.iter().any(|n| n.expanded),
         "no expansions carried into the new tree"
+    );
+    assert_eq!(
+        root_child.label.as_deref(),
+        Some("bsub/inner"),
+        "the re-rooted tree retained compact_dirs"
     );
 }
 

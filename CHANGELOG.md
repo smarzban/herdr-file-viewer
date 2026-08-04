@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Pinned preview: `p` freezes one settled file preview beside the active file for session-only comparison. The captured origin survives a worktree switch; each preview keeps independent scroll/search state, and `{` / `}` or the mouse resize their divider. → [usage](docs/usage.md#pinned-previews) · [keys](docs/keys.md)
+
 ### Fixed
 - Agent skill: the launch instructions no longer tell agents to pass `--cwd`. herdr resolves the manifest's relative pane command against it, so the launch failed with `plugin_pane_open_failed` — or worse, inside a built plugin checkout, silently ran that checkout's binary. The skill and the `docs/usage.md` snippet now explain that the viewed root follows the *focused herdr pane's* directory, so an agent's own `cd` does not move it. Thanks @AntonyKor (#139) → [agent skill](skills/herdr-file-viewer/SKILL.md) · [usage](docs/usage.md#teach-your-agent)
 

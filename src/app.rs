@@ -248,12 +248,12 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
             terminal.draw(|frame| {
                 controller.set_width(frame.area().width);
                 let view: ViewState = controller.view_state();
-                let (cw, ch) = presenter::draw(frame, &view);
+                let viewports = presenter::draw(frame, &view);
                 // Feed the drawn content viewport back so content scrolling can be clamped to
                 // it on the next intent, and the hit-test geometry so a mouse event maps to the
                 // live layout. `true` means a deferred launch-open zoom just armed (narrow
                 // tree-only pane) and we must paint again so the file is actually visible.
-                need_redraw = controller.set_content_viewport(cw, ch);
+                need_redraw = controller.set_preview_viewports(viewports);
                 controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
             })?;
             dirty = need_redraw;

@@ -20,6 +20,7 @@ const CONFIG_EXAMPLE: &str = include_str!("../config.example.toml");
 const USAGE_DOC: &str = include_str!("../docs/usage.md");
 const INSTALL_DOC: &str = include_str!("../docs/install.md");
 const SECURITY: &str = include_str!("../SECURITY.md");
+const ARCHITECTURE: &str = include_str!("../ARCHITECTURE.md");
 const AGENT_SKILL: &str = include_str!("../skills/herdr-file-viewer/SKILL.md");
 const OPEN_PANE_SCRIPT: &str = include_str!("../scripts/open-file-viewer.sh");
 const OPEN_TAB_SCRIPT: &str = include_str!("../scripts/open-file-viewer-tab.sh");
@@ -226,6 +227,25 @@ fn keys_doc_documents_line_select_key() {
 }
 
 #[test]
+fn pinned_preview_resize_docs_describe_horizontal_space() {
+    // The previews sit side-by-side. `{` / `}` move their shared horizontal divider; wording them
+    // as vertical space would describe a different layout and mislead users configuring the keys.
+    assert!(
+        KEYS_DOC.contains("shrink / grow its horizontal share"),
+        "docs/keys.md must describe pinned-preview resizing as changing its horizontal share"
+    );
+    for description in [
+        "Give the pinned preview less horizontal space",
+        "Give the pinned preview more horizontal space",
+    ] {
+        assert!(
+            CONFIG_DOC.contains(description),
+            "docs/configuration.md must describe pinned-preview resizing as changing horizontal space: {description}"
+        );
+    }
+}
+
+#[test]
 fn keys_doc_documents_reveal_open_keys() {
     assert!(
         KEYS_DOC.contains("`O`"),
@@ -428,5 +448,64 @@ fn changelog_documents_line_reference_release() {
         section.to_lowercase().contains("line reference")
             || section.to_lowercase().contains("line-select"),
         "the `## [1.9.0]` `### Added` block must document the copy-line-reference feature"
+    );
+}
+
+#[test]
+fn pinned_preview_docs_cover_the_frozen_reference_contract() {
+    // AC-40: pinning is deliberately more than a `p` row. Its session lifetime, captured origin,
+    // focus routing, independent interaction state, narrow-layout floor, and read-only boundary
+    // must stay discoverable across the feature guide, key/config reference, architecture map, and
+    // Unreleased changelog entry.
+    for phrase in [
+        "## Pinned previews",
+        "frozen in-memory snapshot",
+        "captured origin",
+        "survives a worktree switch",
+        "tree → pinned preview → active preview → tree",
+        "scroll positions and searches are independent",
+        "unavailable from the pinned preview",
+        "captured repo-relative path",
+        "captured absolute path",
+        "40-column floor",
+        "preview divider",
+        "{` / `}`",
+        "drag the preview divider",
+    ] {
+        assert!(
+            USAGE_DOC.contains(phrase),
+            "docs/usage.md must document pinned-preview contract detail: {phrase:?}"
+        );
+    }
+
+    for phrase in ["`p`", "`{` / `}`", "Shift", "AltGr", "preview divider"] {
+        assert!(
+            KEYS_DOC.contains(phrase),
+            "docs/keys.md must document pinned-preview key detail: {phrase:?}"
+        );
+    }
+    for phrase in [
+        "pin_preview",
+        "shrink_preview",
+        "grow_preview",
+        "Shift",
+        "AltGr",
+    ] {
+        assert!(
+            CONFIG_DOC.contains(phrase),
+            "docs/configuration.md must document pinned-preview remapping detail: {phrase:?}"
+        );
+    }
+    for module in ["`preview`", "`preview_layout`", "`focus_policy`"] {
+        assert!(
+            ARCHITECTURE.contains(module),
+            "ARCHITECTURE.md must map the pinned-preview module: {module}"
+        );
+    }
+
+    let unreleased = section(CHANGELOG, "## [Unreleased]", "\n## [");
+    assert!(
+        unreleased.contains("Pinned preview"),
+        "CHANGELOG.md must include the pinned-preview feature in Unreleased"
     );
 }

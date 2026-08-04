@@ -324,7 +324,7 @@ fn apply_hide_dotfiles_at_startup_re_renders_so_content_matches_the_new_selectio
     // Drain until content lands, then require the body to belong to the SAME file as the title.
     await_marker(&mut ctrl, "BODY-OF:");
     assert_eq!(
-        ctrl.view_state().content_title.as_deref(),
+        ctrl.view_state().active.title.as_deref(),
         Some("keep.txt"),
         "the title reflects the visible selection"
     );
@@ -1288,7 +1288,7 @@ fn nav_does_not_scroll_content_while_the_tree_is_focused() {
     ctrl.handle(Intent::NavDown);
     ctrl.handle(Intent::NavDown);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         0,
         "tree focus: content never scrolls"
     );
@@ -1304,18 +1304,18 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
 
     ctrl.handle(Intent::ToggleFocus);
     assert_eq!(ctrl.focus(), Focus::Content);
-    assert_eq!(ctrl.view_state().content_scroll, 0, "starts at the top");
+    assert_eq!(ctrl.view_state().active.scroll, 0, "starts at the top");
 
     ctrl.handle(Intent::NavDown);
     ctrl.handle(Intent::NavDown);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         2,
         "NavDown scrolls the content down"
     );
     ctrl.handle(Intent::NavUp);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         1,
         "NavUp scrolls the content up"
     );
@@ -1324,7 +1324,7 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
         ctrl.handle(Intent::NavUp);
     }
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         0,
         "cannot scroll above the first line"
     );
@@ -1333,7 +1333,7 @@ fn nav_scrolls_the_content_pane_when_focused_and_clamps_both_ends() {
         ctrl.handle(Intent::NavDown);
     }
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         40,
         "cannot scroll past the last screenful"
     );
@@ -1356,15 +1356,15 @@ fn page_keys_scroll_the_content_pane_by_one_viewport_and_clamp() {
 
     ctrl.handle(Intent::PageDown);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         10,
         "PageDown advances one content viewport"
     );
     ctrl.handle(Intent::PageDown);
-    assert_eq!(ctrl.view_state().content_scroll, 20, "and another");
+    assert_eq!(ctrl.view_state().active.scroll, 20, "and another");
     ctrl.handle(Intent::PageUp);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         10,
         "PageUp returns the same distance"
     );
@@ -1373,7 +1373,7 @@ fn page_keys_scroll_the_content_pane_by_one_viewport_and_clamp() {
         ctrl.handle(Intent::PageUp);
     }
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         0,
         "cannot page above the first line"
     );
@@ -1381,7 +1381,7 @@ fn page_keys_scroll_the_content_pane_by_one_viewport_and_clamp() {
         ctrl.handle(Intent::PageDown);
     }
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         40,
         "cannot page past the last screenful"
     );
@@ -1493,12 +1493,12 @@ fn selecting_a_different_file_resets_the_scroll_to_the_top() {
     for _ in 0..5 {
         ctrl.handle(Intent::NavDown);
     }
-    assert_eq!(ctrl.view_state().content_scroll, 5, "scrolled down");
+    assert_eq!(ctrl.view_state().active.scroll, 5, "scrolled down");
 
     ctrl.handle(Intent::ToggleFocus); // back to the tree
     ctrl.handle(Intent::NavDown); // select the next file
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         0,
         "a new selection resets the scroll"
     );
@@ -1515,13 +1515,16 @@ fn wrap_is_on_for_markdown_and_off_for_code() {
         ctrl_md.selected_view_mode(),
         Some(ViewMode::RenderedMarkdown)
     );
-    assert!(ctrl_md.view_state().wrap, "markdown content wraps");
+    assert!(ctrl_md.view_state().active.wrap, "markdown content wraps");
 
     let rs = TempDir::new();
     std::fs::write(rs.path().join("a.rs"), "fn main() {}\n").unwrap();
     let (ctrl_rs, _, _) = controller(rs.path(), false, StubGit::default(), false);
     assert_eq!(ctrl_rs.selected_view_mode(), Some(ViewMode::SyntaxContent));
-    assert!(!ctrl_rs.view_state().wrap, "code content does not wrap");
+    assert!(
+        !ctrl_rs.view_state().active.wrap,
+        "code content does not wrap"
+    );
 }
 
 #[test]
@@ -1541,12 +1544,12 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
         "precondition: the selected file would render as markdown"
     );
     assert!(
-        !ctrl_md.view_state().content_pad_left,
+        !ctrl_md.view_state().active.pad_left,
         "no gap until the body lands — the flag follows content_path, which is None pre-render"
     );
     await_marker(&mut ctrl_md, "stub-content");
     assert!(
-        ctrl_md.view_state().content_pad_left,
+        ctrl_md.view_state().active.pad_left,
         "rendered markdown is inset from the border once its body has landed"
     );
 
@@ -1555,7 +1558,7 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
     let (mut ctrl_rs, _, _) = controller(rs.path(), false, StubGit::default(), false);
     await_marker(&mut ctrl_rs, "stub-content");
     assert!(
-        !ctrl_rs.view_state().content_pad_left,
+        !ctrl_rs.view_state().active.pad_left,
         "syntax content stays flush (bat's gutter already gaps it)"
     );
 
@@ -1573,13 +1576,13 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
     await_marker(&mut ctrl_diff, "stub-content");
     assert_eq!(ctrl_diff.selected_view_mode(), Some(ViewMode::Diff));
     assert!(
-        ctrl_diff.view_state().content_pad_left,
+        ctrl_diff.view_state().active.pad_left,
         "a diff is inset from the border"
     );
     ctrl_diff.handle(Intent::CycleView); // Diff → FullDiff — still transformed, still inset
     await_marker(&mut ctrl_diff, "stub-content");
     assert!(
-        ctrl_diff.view_state().content_pad_left,
+        ctrl_diff.view_state().active.pad_left,
         "the full-context diff is inset too"
     );
     ctrl_diff.handle(Intent::CycleView); // FullDiff → SyntaxContent — gap drops
@@ -1589,7 +1592,7 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
         Some(ViewMode::SyntaxContent)
     );
     assert!(
-        !ctrl_diff.view_state().content_pad_left,
+        !ctrl_diff.view_state().active.pad_left,
         "cycling the diff to the syntax view drops the gap"
     );
 }
@@ -1602,13 +1605,16 @@ fn wrap_toggle_forces_wrapping_on_for_code_then_back_to_the_mode_default() {
     std::fs::write(rs.path().join("a.rs"), "fn main() {}\n").unwrap();
     let (mut ctrl, _, _) = controller(rs.path(), false, StubGit::default(), false);
 
-    assert!(!ctrl.view_state().wrap, "code does not wrap by default");
+    assert!(
+        !ctrl.view_state().active.wrap,
+        "code does not wrap by default"
+    );
     let fx = ctrl.handle(Intent::ToggleWrap);
     assert!(fx.redraw);
-    assert!(ctrl.view_state().wrap, "`w` forces wrap on for code");
+    assert!(ctrl.view_state().active.wrap, "`w` forces wrap on for code");
     ctrl.handle(Intent::ToggleWrap);
     assert!(
-        !ctrl.view_state().wrap,
+        !ctrl.view_state().active.wrap,
         "toggling again returns to the mode default"
     );
 }
@@ -1621,11 +1627,14 @@ fn w_toggles_markdown_between_the_fit_and_the_wide_unwrapped_view() {
     let md = TempDir::new();
     std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
     let (mut ctrl, _, _) = controller(md.path(), false, StubGit::default(), false);
-    assert!(ctrl.view_state().wrap, "markdown fits (wraps) by default");
+    assert!(
+        ctrl.view_state().active.wrap,
+        "markdown fits (wraps) by default"
+    );
 
     ctrl.handle(Intent::ToggleWrap);
     assert!(
-        !ctrl.view_state().wrap,
+        !ctrl.view_state().active.wrap,
         "`w` switches markdown to the wide, unwrapped (horizontal-scroll) view"
     );
     assert!(
@@ -1635,7 +1644,7 @@ fn w_toggles_markdown_between_the_fit_and_the_wide_unwrapped_view() {
 
     ctrl.handle(Intent::ToggleWrap);
     assert!(
-        ctrl.view_state().wrap,
+        ctrl.view_state().active.wrap,
         "`w` again returns markdown to the fit (wrapped) view"
     );
 }
@@ -1651,16 +1660,16 @@ fn unwrapping_markdown_does_not_force_wrap_onto_a_code_file_viewed_next() {
     let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
 
     assert!(
-        ctrl.view_state().wrap,
+        ctrl.view_state().active.wrap,
         "precondition: a.md wraps (fit view)"
     );
     ctrl.handle(Intent::ToggleWrap); // unwrap markdown → force-off everywhere
-    assert!(!ctrl.view_state().wrap);
+    assert!(!ctrl.view_state().active.wrap);
 
     ctrl.handle(Intent::NavDown); // select z.rs (code)
     assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent));
     assert!(
-        !ctrl.view_state().wrap,
+        !ctrl.view_state().active.wrap,
         "code stays unwrapped — the unwrap did not become a surprise wrap"
     );
 }
@@ -1693,29 +1702,29 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
     await_marker(&mut ctrl, "WIDE");
     ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
     assert!(
-        !ctrl.view_state().wrap,
+        !ctrl.view_state().active.wrap,
         "a .rs file does not wrap, so horizontal scroll applies"
     );
 
     ctrl.handle(Intent::ToggleFocus); // focus the content pane
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         0,
         "starts at the left edge"
     );
 
     let fx = ctrl.handle(Intent::Expand); // → scrolls right
     assert!(fx.redraw);
-    let after_one = ctrl.view_state().content_hscroll;
+    let after_one = ctrl.view_state().active.hscroll;
     assert!(after_one > 0, "→ scrolls the content right when focused");
     ctrl.handle(Intent::Expand);
     assert!(
-        ctrl.view_state().content_hscroll > after_one,
+        ctrl.view_state().active.hscroll > after_one,
         "→ again scrolls further right"
     );
     ctrl.handle(Intent::Collapse); // ← scrolls left
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         after_one,
         "← scrolls back left"
     );
@@ -1724,7 +1733,7 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
         ctrl.handle(Intent::Collapse);
     }
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         0,
         "cannot scroll left of the start"
     );
@@ -1732,7 +1741,7 @@ fn left_right_scroll_the_content_horizontally_when_focused_and_unwrapped() {
         ctrl.handle(Intent::Expand);
     }
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         80,
         "clamps at the widest line minus the viewport"
     );
@@ -1765,7 +1774,7 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
     );
     await_marker(&mut ctrl, "WIDE");
     ctrl.set_content_viewport(25, 10); // 5 lines × ceil(100/25)=4 = 20 wrapped rows; max = 10
-    assert!(ctrl.view_state().wrap, "a .md file wraps");
+    assert!(ctrl.view_state().active.wrap, "a .md file wraps");
 
     ctrl.handle(Intent::ToggleFocus); // focus content
     for _ in 0..500 {
@@ -1773,16 +1782,16 @@ fn wrapped_content_scrolls_vertically_to_the_bottom_and_not_horizontally() {
     }
     // Wrapped rows (20) are counted, not raw lines (5, which would clamp to 0): the bottom is
     // reachable. Exact count via ratatui means no over-scroll into blank past row 20.
-    let vmax = ctrl.view_state().content_scroll;
+    let vmax = ctrl.view_state().active.scroll;
     assert_eq!(
         vmax, 10,
         "scrolls to exactly the last wrapped row (20 rows − 10 tall)"
     );
 
-    let h_before = ctrl.view_state().content_hscroll;
+    let h_before = ctrl.view_state().active.hscroll;
     ctrl.handle(Intent::Expand); // → : would scroll right, but wrap leaves nothing to scroll past
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         h_before,
         "no horizontal scroll while wrapping"
     );
@@ -1802,14 +1811,14 @@ fn shrinking_the_viewport_reclamps_an_existing_scroll_offset() {
         ctrl.handle(Intent::NavDown);
     }
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         40,
         "scrolled to the bottom"
     );
 
     ctrl.set_content_viewport(40, 30); // taller viewport → max 20; the offset must re-clamp
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         20,
         "offset re-clamped to the new, smaller max"
     );
@@ -1914,7 +1923,14 @@ fn wide_geometry() -> PaneGeometry {
         }),
         content_vbar: None,
         content_hbar: None,
+        pinned_inner: None,
+        pinned_title_rect: None,
+        pinned_vbar: None,
+        pinned_hbar: None,
         divider_x: Some(40),
+        preview_area_x: 0,
+        preview_area_width: 0,
+        preview_divider_x: None,
         finder_rows: None,
         finder_scroll: 0,
         finder_max_hscroll: 0,
@@ -2186,14 +2202,14 @@ fn dragging_the_content_vertical_scrollbar_scrolls_the_content() {
     // Press at the bottom of the track (row 20 = track.y + height - 1) → max scroll.
     ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), vbar_col, 20));
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         30,
         "pressing the bottom of the content vbar jumps to max scroll"
     );
     // Drag to the top of the track → 0.
     ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), vbar_col, 1));
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         0,
         "dragging the content vbar to the top scrolls back to 0"
     );
@@ -3145,11 +3161,11 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     ctrl.set_content_viewport(20, 10); // widest line 100, viewport 20 → max hscroll = 80
     ctrl.set_pane_geometry(wide_geometry());
     assert!(
-        !ctrl.view_state().wrap,
+        !ctrl.view_state().active.wrap,
         "a .rs file is unwrapped, so horizontal scroll applies"
     );
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         0,
         "starts at the left edge"
     );
@@ -3157,12 +3173,12 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     // Wheel right over the content column (no focus change needed — scroll what's under the cursor).
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 5));
     assert!(
-        ctrl.view_state().content_hscroll > 0,
+        ctrl.view_state().active.hscroll > 0,
         "horizontal wheel-right scrolls the content right"
     );
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollLeft, 50, 5));
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         0,
         "wheel-left scrolls back to the start"
     );
@@ -3170,7 +3186,7 @@ fn horizontal_wheel_scrolls_the_content_sideways() {
     // Over the tree, horizontal wheel is inert (the tree has no horizontal scroll).
     ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 5, 5));
     assert_eq!(
-        ctrl.view_state().content_hscroll,
+        ctrl.view_state().active.hscroll,
         0,
         "horizontal wheel over the tree does nothing"
     );
@@ -3227,7 +3243,7 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
     ctrl.handle(Intent::NavDown);
     ctrl.handle(Intent::NavDown);
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         2,
         "scrolled down two lines"
     );
@@ -3240,7 +3256,7 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
         "focus-gain re-queries git"
     );
     assert_eq!(
-        ctrl.view_state().content_scroll,
+        ctrl.view_state().active.scroll,
         2,
         "focus-gain does NOT reset the content scroll"
     );

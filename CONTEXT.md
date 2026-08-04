@@ -9,7 +9,20 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
 - **tree**: the left column: a recursive, expandable directory tree of the current
   root, decorated with git status markers.
 - **content pane**: the right column: shows the selected file as rendered markdown,
-  a diff, or syntax-highlighted content, depending on the active view mode.
+  a diff, or syntax-highlighted content, depending on the active view mode. Becomes the
+  **active preview** when a **pinned snapshot** is present.
+- **active preview**: the content region that follows the current **tree** selection. When a
+  **pinned snapshot** exists and width permits, it shares the content area with that snapshot.
+- **pinned snapshot**: one session-only, frozen copy of a file's displayed preview, including its
+  **pinned origin identity**. It does not follow later file changes or refreshes, survives a
+  **worktree switch**, and remains until replaced, explicitly unpinned, or the viewer exits.
+- **pinned origin identity**: the exact `(root/worktree, branch state, root-relative path)` tuple
+  captured with a **pinned snapshot**; branch state is either the captured branch name or detached.
+- **split-preview layout**: the comparison state that presents the **tree**, one **pinned snapshot**,
+  and the **active preview** as adjacent columns when width permits; the two previews scroll
+  independently.
+- **preview divider**: the adjustable boundary between the **pinned snapshot** and **active preview**
+  in the **split-preview layout**; distinct from the tree/content divider.
 - **view mode**: which rendering the content pane is showing (rendered markdown /
   diff / content). Auto-selected per file, cyclable by the user.
 - **diff baseline**: what a diff (and the meaning of "changed") is compared against:

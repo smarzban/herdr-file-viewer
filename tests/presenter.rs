@@ -6,8 +6,8 @@ use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
     AnnotationRowView, AnnotationTargetView, CharSelView, ContentSearch, DiscardConfirmView,
-    FinderView, FlashLine, Focus, HelpView, LineSelectView, PickerRowView, PickerView, ViewState,
-    draw,
+    FinderView, FlashLine, Focus, HelpView, LineSelectView, PickerRowView, PickerView,
+    PreviewProjection, ViewState, draw,
 };
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::search::Match;
@@ -63,24 +63,24 @@ fn sample_state() -> ViewState {
             Some(Status::Untracked),
         ),
     ];
+    let mut active = PreviewProjection::new(
+        "main.rs",
+        to_text("fn main() {\n    println!(\"hello\");\n}\n"),
+    );
+    active.notices = vec![
+        "Showing first 5000 lines (truncated)".to_string(),
+        "delta not found — showing plain diff".to_string(),
+    ];
     ViewState {
         nodes,
         selected: 1, // main.rs
-        content: to_text("fn main() {\n    println!(\"hello\");\n}\n"),
-        notices: vec![
-            "Showing first 5000 lines (truncated)".to_string(), // AC-13
-            "delta not found — showing plain diff".to_string(), // AC-25
-        ],
-        flash: None,
+        active,
+        pinned: None,
         focus: Focus::Tree,
         width: 100,
-        content_scroll: 0,
-        content_hscroll: 0,
         tree_scroll: 0,
         tree_hscroll: 0,
-        content_rows: 3, // the fixture content is three lines
-        wrap: false,
-        content_pad_left: false,
+        preview_split_pct: 50,
         split_pct: 40,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
         // A high cap so the percentage governs in these fixtures (the cap only bites on very wide
@@ -99,11 +99,6 @@ fn sample_state() -> ViewState {
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
         prompt: None,
-        content_title: Some("main.rs".to_string()),
-        content_rendering: false,
-        search: None,
-        line_select: None,
-        content_selection: None,
         help: None,
     }
 }
@@ -238,7 +233,7 @@ fn dirty_directory_carries_a_non_color_glyph_marker() {
     // (LightRed) and lost to a colorblind user or a non-default theme. Files keep their M/A/D/?
     // letters; clean directories and clean files show a blank, so the column stays aligned.
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     // A dirty directory (dir_dirty = true) at the root, plus a clean directory for contrast.
     state.nodes = vec![
         Node {
@@ -286,7 +281,7 @@ fn dirty_directory_glyph_snapshot() {
     // snapshot the tree with a dirty directory so the `●` glyph is locked into the
     // recorded layout — a regression that drops the glyph (back to color-only) is caught here.
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     state.nodes = vec![
         Node {
             path: PathBuf::from("/r/changed"),
@@ -382,7 +377,7 @@ fn flash_line_renders_atop_the_notices_and_does_not_hide_them() {
     // The self-expiring flash gets its own row above the persistent notices, so the flash text
     // and both notices are all visible at once (the strip reserves a row for it).
     let mut state = sample_state();
-    state.flash = Some(FlashLine {
+    state.active.flash = Some(FlashLine {
         text: "Diff: side-by-side".to_string(),
         dim: false,
     });
@@ -447,7 +442,7 @@ fn hostile_notice_emits_no_control_bytes_to_the_buffer() {
     // content title, and picker rows — no control byte may reach the terminal as drawn.
     let hostile = "switched to \u{1b}[2J\u{1b}[10;10H\u{07}/work/pwned";
     let mut state = sample_state();
-    state.notices = vec![hostile.to_string()];
+    state.active.notices = vec![hostile.to_string()];
 
     let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
     terminal
@@ -481,10 +476,10 @@ fn content_pane_applies_the_vertical_scroll_offset() {
     // With content_scroll = N (and no wrap), the first visible content row is line N: the
     // lines above it are scrolled off the top.
     let mut state = sample_state();
-    state.notices = vec![]; // no notice strip, so content starts at the inner top row
-    state.content = to_text("c0\nc1\nc2\nc3\nc4\nc5\nc6\nc7\n");
-    state.wrap = false;
-    state.content_scroll = 3;
+    state.active.notices = vec![]; // no notice strip, so content starts at the inner top row
+    state.active.content = std::sync::Arc::new(to_text("c0\nc1\nc2\nc3\nc4\nc5\nc6\nc7\n"));
+    state.active.wrap = false;
+    state.active.scroll = 3;
     let out = render(&state, 100, 12);
     assert!(out.contains("c3"), "the scrolled-to line is visible\n{out}");
     assert!(out.contains("c7"), "lines below it are visible\n{out}");
@@ -505,7 +500,7 @@ fn tree_scrolls_to_keep_selection_visible() {
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     // 40 files — far more than fit the ~22-row tree interior at 100x24.
     state.nodes = (0..40)
         .map(|i| {
@@ -604,7 +599,7 @@ fn geometry_reports_the_tree_scroll_offset_for_hit_testing() {
 
     // Many nodes, selection near the end: the window scrolls and keeps the selection visible.
     let mut many = sample_state();
-    many.notices = vec![];
+    many.active.notices = vec![];
     many.nodes = (0..40)
         .map(|i| {
             node(
@@ -641,7 +636,7 @@ fn tree_shows_a_vertical_scrollbar_only_when_it_overflows() {
     );
 
     let mut many = sample_state();
-    many.notices = vec![];
+    many.active.notices = vec![];
     many.nodes = (0..40)
         .map(|i| {
             node(
@@ -677,7 +672,7 @@ fn tree_shows_a_horizontal_scrollbar_and_scrolls_long_rows() {
         height: 24,
     };
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     let long = format!("START_{}_END", "x".repeat(60));
     state.nodes = vec![node(&format!("/r/{long}"), NodeKind::File, 0, false, None)];
     state.selected = 0;
@@ -739,7 +734,7 @@ fn scrollbars_are_inside_the_pane_with_a_one_column_gap() {
         height: 24,
     };
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     // Overflow both ways: many rows (vbar) + one very wide row (hbar).
     state.nodes = (0..40)
         .map(|i| {
@@ -795,14 +790,14 @@ fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
     // The content pane gets a vertical scrollbar when it has more lines than the viewport is tall.
     // The tree (7 nodes) does NOT overflow a 12-row frame, so the only ▐ is the content scrollbar.
     let mut state = sample_state();
-    state.notices = vec![];
-    state.content = to_text(
+    state.active.notices = vec![];
+    state.active.content = std::sync::Arc::new(to_text(
         &(0..60)
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n"),
-    );
-    state.content_rows = 60; // the controller's rendered-row count drives the vertical bar
+    ));
+    state.active.rows = 60; // the controller's rendered-row count drives the vertical bar
     let out = render(&state, 100, 12);
     assert!(
         out.contains('▐'),
@@ -810,8 +805,8 @@ fn content_pane_shows_a_vertical_scrollbar_when_content_overflows() {
     );
 
     // A short file shows none.
-    state.content = to_text("only\ntwo\n");
-    state.content_rows = 2;
+    state.active.content = std::sync::Arc::new(to_text("only\ntwo\n"));
+    state.active.rows = 2;
     let short = render(&state, 100, 12);
     assert!(
         !short.contains('▐'),
@@ -826,18 +821,18 @@ fn content_vertical_scrollbar_is_driven_by_rendered_rows_not_raw_lines() {
     // presenter sizes the bar from `content_rows` (the controller's rendered-row count), so a single
     // raw line with a large content_rows shows a bar, and a small content_rows shows none.
     let mut state = sample_state();
-    state.notices = vec![];
-    state.content = to_text(&"word ".repeat(400)); // ONE raw line
-    state.wrap = true;
+    state.active.notices = vec![];
+    state.active.content = std::sync::Arc::new(to_text(&"word ".repeat(400))); // ONE raw line
+    state.active.wrap = true;
 
-    state.content_rows = 60; // wraps to ~60 rows >> the ~22-row viewport
+    state.active.rows = 60; // wraps to ~60 rows >> the ~22-row viewport
     let overflow = render(&state, 100, 24);
     assert!(
         overflow.contains('▐'),
         "a single long line that wraps past the viewport shows a vertical scrollbar\n{overflow}"
     );
 
-    state.content_rows = 5; // wraps to only 5 rows → fits
+    state.active.rows = 5; // wraps to only 5 rows → fits
     let fits = render(&state, 100, 24);
     assert!(
         !fits.contains('▐'),
@@ -860,7 +855,7 @@ fn tree_vertical_thumb_tracks_the_selection() {
         height: 24,
     };
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     state.nodes = (0..40)
         .map(|i| {
             node(
@@ -906,16 +901,16 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
         height: h,
     };
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     // 60 lines into a 16-row text area → max scroll 44.
-    state.content = to_text(
+    state.active.content = std::sync::Arc::new(to_text(
         &(0..60)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n"),
-    );
-    state.wrap = false;
-    state.content_rows = 60; // the rendered-row count drives the vertical bar
+    ));
+    state.active.wrap = false;
+    state.active.rows = 60; // the rendered-row count drives the vertical bar
     let track = geometry(area, &state)
         .content_vbar
         .expect("content vbar present");
@@ -925,7 +920,7 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
             .collect()
     };
 
-    state.content_scroll = 0;
+    state.active.scroll = 0;
     let top = thumb_rows(&render_buffer(&state, w, h));
     assert!(
         top.contains(&track.y),
@@ -936,7 +931,7 @@ fn content_vertical_scrollbar_thumb_reaches_the_bottom_at_max_scroll() {
         "thumb is NOT at the bottom at scroll 0"
     );
 
-    state.content_scroll = 44; // the max scroll for this content/viewport
+    state.active.scroll = 44; // the max scroll for this content/viewport
     let bottom = thumb_rows(&render_buffer(&state, w, h));
     assert!(
         bottom.contains(&(track.y + track.height - 1)),
@@ -951,17 +946,17 @@ fn content_pane_shows_a_horizontal_scrollbar_for_a_too_wide_unwrapped_line() {
     // light border (─), so it is an unambiguous marker. Wrapping the same line removes the
     // overflow, so no horizontal scrollbar is drawn.
     let mut state = sample_state();
-    state.notices = vec![];
-    state.content = to_text(&"x".repeat(300)); // far wider than the ~58-col content pane
+    state.active.notices = vec![];
+    state.active.content = std::sync::Arc::new(to_text(&"x".repeat(300))); // far wider than the ~58-col content pane
 
-    state.wrap = false;
+    state.active.wrap = false;
     let unwrapped = render(&state, 100, 24);
     assert!(
         unwrapped.contains('▄'),
         "a too-wide unwrapped line shows a horizontal scrollbar (▄)\n{unwrapped}"
     );
 
-    state.wrap = true;
+    state.active.wrap = true;
     let wrapped = render(&state, 100, 24);
     assert!(
         !wrapped.contains('▄'),
@@ -984,7 +979,7 @@ fn tree_scroll_is_sticky_when_the_selection_stays_visible() {
         height: 24,
     };
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     state.nodes = (0..40)
         .map(|i| {
             node(
@@ -1030,12 +1025,12 @@ fn wrapping_shows_more_of_a_long_line_than_truncating() {
     // it. (The sample tree/title carry no 'W', so every 'W' counted comes from the content.)
     let long = "W ".repeat(80); // ~160 cols, far wider than the ~58-col content pane
     let mut state = sample_state();
-    state.notices = vec![];
-    state.content = to_text(&long);
+    state.active.notices = vec![];
+    state.active.content = std::sync::Arc::new(to_text(&long));
 
-    state.wrap = true;
+    state.active.wrap = true;
     let wrapped = render(&state, 100, 12);
-    state.wrap = false;
+    state.active.wrap = false;
     let truncated = render(&state, 100, 12);
 
     let ws = |s: &str| s.matches('W').count();
@@ -1101,7 +1096,7 @@ fn row_fg(buf: &ratatui::buffer::Buffer, needle: &str) -> ratatui::style::Color 
 fn tree_rows_are_colored_by_git_status() {
     use ratatui::style::Color;
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     state.nodes = vec![
         // A directory that contains changes (dir_dirty), a modified file, a new file, a clean
         // file. The clean file is selected so the colored rows aren't reversed (which would
@@ -1166,10 +1161,10 @@ fn content_pane_applies_the_horizontal_scroll_offset() {
     // With content_hscroll = N (and no wrap), the leftmost N columns are scrolled off, so a
     // long line shows from column N onward.
     let mut state = sample_state();
-    state.notices = vec![];
-    state.content = to_text("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-    state.wrap = false;
-    state.content_hscroll = 5;
+    state.active.notices = vec![];
+    state.active.content = std::sync::Arc::new(to_text("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"));
+    state.active.wrap = false;
+    state.active.hscroll = 5;
     let out = render(&state, 100, 12);
     assert!(
         out.contains("FGHIJ"),
@@ -1424,6 +1419,34 @@ fn min_tree_split_pct_yields_at_least_the_min_columns() {
 }
 
 #[test]
+fn split_preview_policy_keeps_prompt_below_remote_status_outside_body() {
+    use herdr_file_viewer::preview_layout::{LayoutInput, PreviewFocus, layout};
+
+    let layout = layout(
+        LayoutInput::new(ratatui::layout::Rect::new(4, 8, 100, 12))
+            .with_prompt(true)
+            .with_remote_status(true)
+            .with_pin(true)
+            .with_focus(PreviewFocus::Active),
+    );
+
+    assert_eq!(
+        layout.prompt,
+        Some(ratatui::layout::Rect::new(4, 19, 100, 1))
+    );
+    assert_eq!(
+        layout.remote_status,
+        Some(ratatui::layout::Rect::new(4, 18, 100, 1))
+    );
+    assert_eq!(layout.body, ratatui::layout::Rect::new(4, 8, 100, 10));
+    assert!(
+        layout
+            .active
+            .is_some_and(|active| active.bottom() <= layout.remote_status.unwrap().y)
+    );
+}
+
+#[test]
 fn geometry_allows_a_narrow_manual_tree_on_a_very_wide_pane() {
     // Medium-fix: on an ultrawide pane the tree floor is pane-aware, so a manually-narrowed (or
     // capped) tree is representable instead of jumping up to a fixed 10% of the pane (100 cols here).
@@ -1491,9 +1514,9 @@ fn content_pad_left_insets_the_transformed_views_one_column() {
         height: 24,
     };
     let mut flush = sample_state();
-    flush.content_pad_left = false;
+    flush.active.pad_left = false;
     let mut padded = sample_state();
-    padded.content_pad_left = true;
+    padded.active.pad_left = true;
 
     let x_flush = geometry(area, &flush).content_inner.unwrap().x;
     let x_padded = geometry(area, &padded).content_inner.unwrap().x;
@@ -1525,9 +1548,9 @@ fn content_pad_left_shifts_the_drawn_text_one_column() {
     // renders both and compares the first content glyph's column. Zoomed so content fills the frame.
     fn first_content_glyph_x(pad: bool) -> u16 {
         let mut st = sample_state();
-        st.notices = vec![];
+        st.active.notices = vec![];
         st.zoomed = true;
-        st.content_pad_left = pad;
+        st.active.pad_left = pad;
         let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
         terminal
             .draw(|f| {
@@ -2937,7 +2960,7 @@ fn go_to_line_no_file_notice_renders_for_ac7() {
     // longer shows an "unavailable" notice — confirming there auto-switches and jumps.) This verifies
     // the Presenter surfaces that notice via the existing notices channel, with no new code path.
     let mut st = sample_state();
-    st.notices = vec!["Go to line: select a file first".into()];
+    st.active.notices = vec!["Go to line: select a file first".into()];
     let out = render(&st, 100, 24);
     assert!(
         out.contains("Go to line: select a file first"),
@@ -2955,15 +2978,15 @@ fn go_to_line_no_file_notice_renders_for_ac7() {
 fn search_state() -> ViewState {
     use herdr_file_viewer::render::to_text;
     let mut st = sample_state();
-    st.notices = vec![];
+    st.active.notices = vec![];
     // Content: exactly three lines whose text is predictable byte-by-byte.
     // "fn main() {\n    println!(\"hello\");\n}\n"  (from sample_state, but override)
     // We use simple ASCII-only content so byte offsets are trivial.
-    st.content = to_text("fn main() {\n    println!;\n}\n");
-    st.content_rows = 3;
+    st.active.content = std::sync::Arc::new(to_text("fn main() {\n    println!;\n}\n"));
+    st.active.rows = 3;
     // match 0 = "main" on line 0, bytes 3..7
     // match 1 = "}" on line 2, bytes 0..1  → current (current = 1)
-    st.search = Some(ContentSearch {
+    st.active.search = Some(ContentSearch {
         matches: vec![
             Match {
                 line: 0,
@@ -3116,11 +3139,13 @@ fn search_highlight_snapshot() {
 fn line_select_state(marker: usize, start: usize, end: usize) -> ViewState {
     use herdr_file_viewer::render::to_text;
     let mut st = sample_state();
-    st.notices = vec![];
+    st.active.notices = vec![];
     st.focus = Focus::Content;
-    st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
-    st.content_rows = 6;
-    st.line_select = Some(LineSelectView {
+    st.active.content = std::sync::Arc::new(to_text(
+        "line one\nline two\nline three\nline four\nline five\nline six\n",
+    ));
+    st.active.rows = 6;
+    st.active.line_select = Some(LineSelectView {
         marker,
         start,
         end,
@@ -3155,11 +3180,13 @@ fn passive_range_highlight_has_no_caret_gutter() {
     // Launch open-target range flash: whole-line HIGHLIGHT only — no ▶/│ column (not line-select mode).
     use herdr_file_viewer::render::to_text;
     let mut st = sample_state();
-    st.notices = vec![];
+    st.active.notices = vec![];
     st.focus = Focus::Content;
-    st.content = to_text("line one\nline two\nline three\nline four\nline five\nline six\n");
-    st.content_rows = 6;
-    st.line_select = Some(LineSelectView {
+    st.active.content = std::sync::Arc::new(to_text(
+        "line one\nline two\nline three\nline four\nline five\nline six\n",
+    ));
+    st.active.rows = 6;
+    st.active.line_select = Some(LineSelectView {
         marker: 2,
         start: 2,
         end: 4,
@@ -3266,11 +3293,11 @@ fn ambient_selection_highlights_only_selected_chars_without_shifting_content() {
 
     // Content "line one\n…"; select chars [5, 8) of line 1 → "one" (gutter 0, no bat gutter).
     let mut st = sample_state();
-    st.notices = vec![];
+    st.active.notices = vec![];
     st.focus = Focus::Content;
-    st.content = to_text("line one\nline two\nline three\n");
-    st.content_rows = 3;
-    st.content_selection = Some(CharSelView {
+    st.active.content = std::sync::Arc::new(to_text("line one\nline two\nline three\n"));
+    st.active.rows = 3;
+    st.active.selection = Some(CharSelView {
         start_line: 1,
         start_col: 5,
         end_line: 1,
@@ -3702,12 +3729,12 @@ fn selecting_a_directory_shows_empty_state_guidance_not_a_blank_pane() {
     let mut state = sample_state();
     // Select the directory row (index 0 = /r/src).
     state.selected = 0;
-    state.content = to_text("Directory: select a file to view");
-    state.notices.clear();
+    state.active.content = std::sync::Arc::new(to_text("Directory: select a file to view"));
+    state.active.notices.clear();
     // a directory selection has no displayed file content, so the title falls back to
     // the selected node's name (the directory). Mirrors the controller's `clear_content`.
-    state.content_title = None;
-    state.content_rendering = false;
+    state.active.title = None;
+    state.active.rendering = false;
     let out = render(&state, 100, 24);
     assert!(
         out.contains("Directory: select a file to view"),
@@ -3722,11 +3749,11 @@ fn an_empty_tree_shows_empty_state_guidance_not_a_blank_pane() {
     let mut state = sample_state();
     state.nodes = vec![]; // empty tree
     state.selected = 0;
-    state.content = to_text("No files");
-    state.notices.clear();
+    state.active.content = std::sync::Arc::new(to_text("No files"));
+    state.active.notices.clear();
     // no file content displayed → title falls back to "Content" (no selected node).
-    state.content_title = None;
-    state.content_rendering = false;
+    state.active.title = None;
+    state.active.rendering = false;
     let out = render(&state, 100, 24);
     assert!(
         out.contains("No files"),
@@ -3739,11 +3766,11 @@ fn empty_state_directory_snapshot() {
     // Snapshot the directory-selected empty state so the layout + the guidance are locked.
     let mut state = sample_state();
     state.selected = 0; // the /r/src directory
-    state.content = to_text("Directory: select a file to view");
-    state.notices.clear();
+    state.active.content = std::sync::Arc::new(to_text("Directory: select a file to view"));
+    state.active.notices.clear();
     // directory selected → no file content → title falls back to the directory's name.
-    state.content_title = None;
-    state.content_rendering = false;
+    state.active.title = None;
+    state.active.rendering = false;
     insta::assert_snapshot!("presenter_empty_directory", render(&state, 100, 24));
 }
 
@@ -3753,11 +3780,11 @@ fn empty_state_no_files_snapshot() {
     let mut state = sample_state();
     state.nodes = vec![];
     state.selected = 0;
-    state.content = to_text("No files");
-    state.notices.clear();
+    state.active.content = std::sync::Arc::new(to_text("No files"));
+    state.active.notices.clear();
     // no file content displayed → title falls back to "Content" (no selected node).
-    state.content_title = None;
-    state.content_rendering = false;
+    state.active.title = None;
+    state.active.rendering = false;
     insta::assert_snapshot!("presenter_empty_no_files", render(&state, 100, 24));
 }
 
@@ -3773,10 +3800,10 @@ fn loading_state_snapshot_while_a_render_is_in_flight() {
     // The cursor has moved to README.md (index 4) but its render hasn't landed — the body is the
     // placeholder and `content_title` is `None` (no content has landed at all yet, e.g. launch).
     state.selected = 4; // README.md
-    state.content = to_text("Rendering\u{2026}");
-    state.notices.clear();
-    state.content_title = None;
-    state.content_rendering = true;
+    state.active.content = std::sync::Arc::new(to_text("Rendering\u{2026}"));
+    state.active.notices.clear();
+    state.active.title = None;
+    state.active.rendering = true;
     insta::assert_snapshot!("presenter_loading", render(&state, 100, 24));
 }
 
@@ -3787,11 +3814,11 @@ fn annotation_content_state(
     ranges: Vec<LineRange>,
 ) -> ViewState {
     let mut state = sample_state();
-    state.notices.clear();
+    state.active.notices.clear();
     state.zoomed = true;
     state.focus = Focus::Content;
-    state.content_rows = lines.len().min(u16::MAX as usize) as u16;
-    state.content = ratatui::text::Text::from(lines);
+    state.active.rows = lines.len().min(u16::MAX as usize) as u16;
+    state.active.content = std::sync::Arc::new(ratatui::text::Text::from(lines));
     state.annotation_indicators.displayed_file_annotated = true;
     state.annotation_indicators.displayed_line_ranges = ranges;
     state
@@ -3804,7 +3831,7 @@ fn annotation_tree_markers_preserve_git_width_foregrounds_and_selection_style() 
     use ratatui::style::{Color, Modifier};
 
     let mut state = sample_state();
-    state.notices.clear();
+    state.active.notices.clear();
     state.nodes = vec![
         node("/r/clean.rs", NodeKind::File, 0, false, None),
         node(
@@ -3870,10 +3897,10 @@ fn annotation_tree_markers_preserve_git_width_foregrounds_and_selection_style() 
 #[test]
 fn annotation_applied_content_title_is_sanitized_then_marked_in_zoom_and_transformed_views() {
     let mut state = sample_state();
-    state.notices.clear();
+    state.active.notices.clear();
     state.zoomed = true;
-    state.content_pad_left = true;
-    state.content_title = Some("ma\u{1b}[2Jin.rs".to_string());
+    state.active.pad_left = true;
+    state.active.title = Some("ma\u{1b}[2Jin.rs".to_string());
     state.annotation_indicators.displayed_file_annotated = true;
     let out = render(&state, 40, 8);
     assert!(
@@ -3881,14 +3908,14 @@ fn annotation_applied_content_title_is_sanitized_then_marked_in_zoom_and_transfo
         "trusted marker follows sanitization\n{out}"
     );
 
-    state.content_title = None;
-    state.content_rendering = true;
+    state.active.title = None;
+    state.active.rendering = true;
     let loading = render(&state, 40, 8);
     assert!(
         !loading.contains("@Content"),
         "an unapplied selection stays neutral"
     );
-    state.content_rendering = false;
+    state.active.rendering = false;
     state.nodes[state.selected].kind = NodeKind::Dir;
     let directory = render(&state, 40, 8);
     assert!(
@@ -3955,7 +3982,7 @@ fn annotation_blank_line_cell_tracks_horizontal_vertical_and_wrapped_rows_bounde
         vec![Line::raw("x".repeat(100)), Line::raw("")],
         vec![LineRange::new(2, 2).unwrap()],
     );
-    horizontal.content_hscroll = 40;
+    horizontal.active.hscroll = 40;
     let horizontal_area = Rect::new(0, 0, 30, 8);
     let horizontal_text = geometry(horizontal_area, &horizontal)
         .content_inner
@@ -3982,8 +4009,8 @@ fn annotation_blank_line_cell_tracks_horizontal_vertical_and_wrapped_rows_bounde
             .collect(),
         vec![LineRange::new(5, 5).unwrap()],
     );
-    vertical.content_rows = 10;
-    vertical.content_scroll = 4;
+    vertical.active.rows = 10;
+    vertical.active.scroll = 4;
     let vertical_area = Rect::new(0, 0, 30, 6);
     let vertical_text = geometry(vertical_area, &vertical).content_inner.unwrap();
     let vertical_buf = render_buffer(&vertical, 30, 6);
@@ -4000,8 +4027,8 @@ fn annotation_blank_line_cell_tracks_horizontal_vertical_and_wrapped_rows_bounde
         vec![Line::raw("w".repeat(30)), Line::raw("")],
         vec![LineRange::new(2, 2).unwrap()],
     );
-    wrapped.wrap = true;
-    wrapped.content_rows = 3;
+    wrapped.active.wrap = true;
+    wrapped.active.rows = 3;
     let wrapped_area = Rect::new(0, 0, 20, 8);
     let wrapped_text = geometry(wrapped_area, &wrapped).content_inner.unwrap();
     let wrapped_buf = render_buffer(&wrapped, 20, 8);
@@ -4028,8 +4055,8 @@ fn annotation_blank_line_cell_tracks_horizontal_vertical_and_wrapped_rows_bounde
         (0..100).map(|_| Line::raw("")).collect(),
         vec![LineRange::new(1, 100).unwrap()],
     );
-    bounded.content_rows = 100;
-    bounded.content_scroll = 50;
+    bounded.active.rows = 100;
+    bounded.active.scroll = 50;
     let bounded_area = Rect::new(0, 0, 20, 6);
     let bounded_text = geometry(bounded_area, &bounded).content_inner.unwrap();
     let bounded_buf = render_buffer(&bounded, 20, 6);
@@ -4054,7 +4081,7 @@ fn annotation_blank_lines_compose_exact_line_select_and_ambient_styles() {
         vec![Line::raw(""), Line::raw("")],
         vec![LineRange::new(1, 2).unwrap()],
     );
-    state.line_select = Some(LineSelectView {
+    state.active.line_select = Some(LineSelectView {
         marker: 1,
         start: 1,
         end: 2,
@@ -4078,8 +4105,8 @@ fn annotation_blank_lines_compose_exact_line_select_and_ambient_styles() {
     assert_eq!(range.bg, Color::Cyan);
     assert_eq!(range.fg, Color::Black);
 
-    state.line_select = None;
-    state.content_selection = Some(CharSelView {
+    state.active.line_select = None;
+    state.active.selection = Some(CharSelView {
         start_line: 1,
         start_col: 0,
         end_line: 1,
@@ -4104,7 +4131,7 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
         vec![Line::raw("alpha"), Line::raw("beta")],
         vec![LineRange::new(1, 2).unwrap()],
     );
-    state.line_select = Some(LineSelectView {
+    state.active.line_select = Some(LineSelectView {
         marker: 1,
         start: 1,
         end: 2,
@@ -4124,8 +4151,8 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
     assert_eq!(selected_text.bg, Color::Cyan);
     assert_eq!(selected_text.fg, Color::Black);
 
-    state.line_select = None;
-    state.content_selection = Some(CharSelView {
+    state.active.line_select = None;
+    state.active.selection = Some(CharSelView {
         start_line: 1,
         start_col: 1,
         end_line: 1,
@@ -4137,8 +4164,8 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
     assert_eq!(ambient.cell((text.x + 1, text.y)).unwrap().bg, Color::Cyan);
     assert_eq!(ambient.cell((text.x + 1, text.y)).unwrap().fg, Color::Black);
 
-    state.content_selection = None;
-    state.search = Some(ContentSearch {
+    state.active.selection = None;
+    state.active.search = Some(ContentSearch {
         matches: vec![
             Match {
                 line: 0,
@@ -4168,8 +4195,8 @@ fn annotation_nonblank_active_overlays_have_exact_precedence_and_preserve_wrappe
         vec![Line::raw("w".repeat(45))],
         vec![LineRange::new(1, 1).unwrap()],
     );
-    wrapped.wrap = true;
-    wrapped.content_rows = 2;
+    wrapped.active.wrap = true;
+    wrapped.active.rows = 2;
     let wrapped_text = geometry(area, &wrapped).content_inner.unwrap();
     let wrapped_buf = render_buffer(&wrapped, 30, 8);
     assert_eq!(
@@ -4201,7 +4228,7 @@ fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_sear
         vec![Line::raw("alpha"), Line::raw("beta")],
         vec![LineRange::new(1, 2).unwrap()],
     );
-    state.search = Some(ContentSearch {
+    state.active.search = Some(ContentSearch {
         matches: vec![Match {
             line: 0,
             start: 0,
@@ -4209,7 +4236,7 @@ fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_sear
         }],
         current: 0,
     });
-    state.line_select = Some(LineSelectView {
+    state.active.line_select = Some(LineSelectView {
         marker: 2,
         start: 1,
         end: 2,
@@ -4227,8 +4254,8 @@ fn annotation_active_overlay_branches_keep_line_select_and_ambient_ahead_of_sear
         "line-select's non-current range style wins over the simultaneous current search match"
     );
 
-    state.line_select = None;
-    state.content_selection = Some(CharSelView {
+    state.active.line_select = None;
+    state.active.selection = Some(CharSelView {
         start_line: 1,
         start_col: 0,
         end_line: 1,
@@ -4625,7 +4652,7 @@ fn a_compacted_directory_row_renders_its_chain_label() {
     // `compact_dirs` folds a run of single-child directories into one row whose Node carries a
     // `label` (`src/main/java`); the tree must draw THAT, not the path's last component alone.
     let mut state = sample_state();
-    state.notices = vec![];
+    state.active.notices = vec![];
     state.selected = 1;
     state.nodes = vec![
         Node {

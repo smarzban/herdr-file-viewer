@@ -185,8 +185,11 @@ customized).
 | | `toggle_focus` | `Tab` | Move focus between the tree and content columns |
 | | `shrink_tree` | `<` | Narrow the tree column |
 | | `grow_tree` | `>` | Widen the tree column |
+| | `shrink_preview` | `{` | Give the pinned preview less horizontal space |
+| | `grow_preview` | `}` | Give the pinned preview more horizontal space |
 | | `toggle_wrap` | `w` | Force content-line wrapping on or off |
 | | `toggle_zoom` | `z` | Hide the tree so content fills the frame, or restore the split |
+| | `pin_preview` | `p` | Pin or unpin the settled preview as a reference |
 | | `tree_scroll_left` | `H` | Scroll the tree pane left |
 | | `tree_scroll_right` | `L` | Scroll the tree pane right |
 | **Git & filters** | `toggle_ignore` | `i` | Reveal or hide gitignored files |
@@ -222,7 +225,7 @@ and annotation-overview `j`/`k`/arrows, `Enter`/`e`, `d`, uppercase `D`, `y`, `E
 the finder and `:` / `/` prompts. Remapping a global action never changes these local modal keys.
 
 **Bindable keys** are the modifier-free surface the viewer already uses: any printable or shifted
-character (`g`, `<`, `?`, and capitals such as `A`, `D`, and `W` are each their own key), plus the named keys
+character (`g`, `<`, `{`, `?`, and capitals such as `A`, `D`, and `W` are each their own key), plus the named keys
 `Tab`, `Enter`, `Esc`, the four arrows, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Backspace`,
 `Delete`, `Insert`, and `F1` through `F12` (named keys are matched case-insensitively). There are
 **no `Ctrl` / `Alt` chords**: a chord never fires a viewer action, so terminal combinations like
@@ -242,6 +245,12 @@ config was malformed. Whatever you configure, **`Esc` always closes** the viewer
 rebound away, so you can never strand yourself (you may still move the `q` Close key or any other
 action). Only the global keys are remappable; keys handled inside a modal (including line-select
 and the annotation editor/overview) keep their fixed keys.
+
+Shifted characters are distinct bindings, so `p`, `{`, and `}` are valid values for `pin_preview`,
+`shrink_preview`, and `grow_preview` respectively; the latter two resize the pinned preview's share
+at the preview divider. On Windows, AltGr typing continues to reach whichever character binding you
+configure (including a shifted character), rather than being treated as a `Ctrl`/`Alt` shortcut; see
+the [AltGr note](keys.md#keys) for the platform-specific input details.
 
 See your bindings in effect any time in the `?` help overlay's **Keybindings** section. It groups
 the actions into sections and shows, for each, its config-var name (the `[keys]` id you type to

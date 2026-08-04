@@ -19,7 +19,7 @@ pub enum PromptMode {
 ///
 /// Fields are `pub` so the controller can read and update them without
 /// needing extra accessors, and to avoid dead-code warnings before all paths land.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchState {
     pub query: String,
     pub matches: Vec<Match>,

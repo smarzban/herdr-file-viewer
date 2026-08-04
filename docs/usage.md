@@ -8,6 +8,7 @@ customize it see [configuration](configuration.md).
 - [Finding a file fast](#finding-a-file-fast)
 - [Open at a known file](#open-at-a-known-file) (incl. [Teach your agent](#teach-your-agent))
 - [Viewing a file](#viewing-a-file)
+- [Pinned previews](#pinned-previews)
 - [Git awareness](#git-awareness)
 - [Navigating within a file](#navigating-within-a-file)
 - [Annotating files and ranges](#annotating-files-and-ranges)
@@ -186,6 +187,37 @@ numbers. No mode-switching, no commands.
 Rendering is **delegated** to `glow` (markdown), `delta` (diffs), and `bat` (syntax); when a
 renderer isn't installed the viewer falls back to plain text with a short notice. See
 [external renderers](renderers.md).
+
+## Pinned previews
+
+Press `p` on a settled file preview to keep a **frozen in-memory snapshot** beside the file you
+continue browsing. The snapshot is session-only: it does not reread the file, change after `r`, or
+follow later renders. Press `p` again on the same file to unpin it; press it on a different settled
+file to replace the reference. A directory, an empty tree, or a preview still rendering cannot be
+pinned.
+
+Every pin carries its **captured origin** — the worktree root, branch or detached state, and
+root-relative path — in its title. It therefore **survives a worktree switch** and remains useful
+even if its old worktree is no longer selected. While the pin is focused, `y` copies its **captured repo-relative path**
+and `Y` its **captured absolute path**; neither operation reads the current tree or the old file
+again.
+
+With the tree visible, `Tab` cycles focus **tree → pinned preview → active preview → tree**. In
+tree-hidden zoom the cycle is just the two previews. The pinned and active previews have separate
+scroll positions and searches are independent: arrows, paging, `/`, and `n`/`N` operate only on the
+focused preview. On a narrow pane, the focused region takes the full width instead of squeezing the
+two previews below their **40-column floor**; use `Tab` to compare the other one.
+
+The reference is display-only. Actions that need the live selection — including `Enter`, `:`, `e`,
+`L`, `O`, `R`, `a`, `A`, `v`, `D`, `w`, and `Z` — are **unavailable from the pinned preview** and
+show a short notice; `Tab` to the active preview or tree to use them. This keeps a frozen reference
+from silently acting on a newer tree selection.
+
+Use `{` / `}` to shrink or grow the pin in 5-point steps (20–80%) without moving the tree/content
+split. They move the **preview divider** between the pinned and active previews and do nothing when
+there is no pin. You can also **drag the preview divider** with the mouse; it is separate from the
+outer tree/content divider (`<` / `>`). Each preview has its own scrollbars, which you can drag or
+press just as you would the active content scrollbar.
 
 ## Git awareness
 

@@ -283,7 +283,7 @@ impl Controller {
             // tree row with the file hidden off-screen. This mirrors the tree's Enter/activate on a
             // file (content full-screen). When the content is already visible (the wide two-column
             // layout, or already zoomed), the layout is left untouched and the file just renders.
-            if self.content_width == 0 {
+            if self.active_interaction.viewport_width == 0 {
                 self.zoomed = true;
                 self.focus = Focus::Content;
             }

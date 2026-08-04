@@ -1,0 +1,16 @@
+---
+source: tests/presenter_pinned.rs
+expression: output
+---
+"┌Pinned: pinned.rs [review @ /worktrees/review]────────────┐"
+"│PINNED                                                    │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"

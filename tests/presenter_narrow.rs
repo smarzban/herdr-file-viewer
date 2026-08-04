@@ -6,8 +6,9 @@ use herdr_file_viewer::annotation::LineRange;
 use herdr_file_viewer::git::Status;
 use herdr_file_viewer::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
-    AnnotationRowView, AnnotationTargetView, Focus, ViewState, draw,
+    AnnotationRowView, AnnotationTargetView, Focus, PreviewProjection, ViewState, draw,
 };
+use herdr_file_viewer::preview_layout::{LayoutInput, PreviewFocus, layout};
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::tree::{Node, NodeKind};
 use ratatui::Terminal;
@@ -27,6 +28,8 @@ fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Nod
 }
 
 fn state(width: u16, focus: Focus) -> ViewState {
+    let mut active = PreviewProjection::new("main.rs", to_text("fn main() {}\n"));
+    active.notices = vec!["delta not found — showing plain diff".to_string()];
     ViewState {
         nodes: vec![
             node("/r/src", NodeKind::Dir, 0, None),
@@ -34,18 +37,13 @@ fn state(width: u16, focus: Focus) -> ViewState {
             node("/r/scratch.log", NodeKind::File, 0, Some(Status::Untracked)),
         ],
         selected: 1,
-        content: to_text("fn main() {}\n"),
-        notices: vec!["delta not found — showing plain diff".to_string()],
-        flash: None,
+        active,
+        pinned: None,
         focus,
         width,
-        content_scroll: 0,
-        content_hscroll: 0,
         tree_scroll: 0,
         tree_hscroll: 0,
-        content_rows: 1, // the fixture content is one line
-        wrap: false,
-        content_pad_left: false,
+        preview_split_pct: 50,
         split_pct: 40,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
         tree_max_cols: 1000, // high cap: percentage governs (narrow-layout tests ignore it anyway)
@@ -62,11 +60,6 @@ fn state(width: u16, focus: Focus) -> ViewState {
         root_name: "r".to_string(), // the fixture tree is rooted at /r
         branch: None,
         prompt: None,
-        content_title: Some("main.rs".to_string()),
-        content_rendering: false,
-        search: None,
-        line_select: None,
-        content_selection: None,
         help: None,
     }
 }
@@ -140,6 +133,36 @@ fn wide_shows_both_columns_regardless_of_focus() {
 }
 
 #[test]
+fn structural_policy_keeps_no_pin_boundary_and_pin_floor_distinct() {
+    use ratatui::layout::Rect;
+
+    for (width, tree, active) in [(79, true, false), (80, true, true)] {
+        let result = layout(LayoutInput::new(Rect::new(0, 0, width, 10)));
+        assert_eq!(result.tree.is_some(), tree, "no pin at {width} columns");
+        assert_eq!(result.active.is_some(), active, "no pin at {width} columns");
+    }
+
+    for (width, adjacent) in [(83, false), (84, true)] {
+        let result = layout(LayoutInput {
+            area: Rect::new(0, 0, width, 10),
+            has_pin: true,
+            tree_hidden: true,
+            focus: PreviewFocus::Pinned,
+            ..LayoutInput::new(Rect::default())
+        });
+        assert_eq!(
+            result.pinned.is_some() && result.active.is_some(),
+            adjacent,
+            "each 50/50 preview needs 40 interior columns at {width} columns"
+        );
+        if !adjacent {
+            assert_eq!(result.pinned, Some(Rect::new(0, 0, width, 10)));
+            assert_eq!(result.active, None);
+        }
+    }
+}
+
+#[test]
 fn split_decision_follows_the_live_frame_not_a_stale_state_width() {
     // The narrow/wide decision must come from the frame the Presenter actually draws into,
     // so a stale state.width can never disagree with the geometry. Here state.width claims
@@ -181,7 +204,7 @@ fn narrow_content_snapshot() {
 fn annotation_title_marker_remains_visible_with_tree_hidden_in_narrow_and_zoom_layouts() {
     let mut narrow = state(60, Focus::Content);
     narrow.annotation_indicators.displayed_file_annotated = true;
-    narrow.content_pad_left = true;
+    narrow.active.pad_left = true;
     let narrow_out = render(&narrow, 60, 10);
     assert!(
         narrow_out.contains("@main.rs"),

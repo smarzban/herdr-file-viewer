@@ -5,6 +5,7 @@
 //! products, one keystroke apart.
 
 use super::*;
+use crate::preview::PreviewSelection as LineSelectState;
 
 /// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
@@ -74,104 +75,6 @@ fn char_index_at_col(s: &str, col: usize) -> usize {
     col.min(s.chars().count())
 }
 
-/// In-progress selection on the content pane. `anchor` is where the selection started, `marker`
-/// the current cursor; both are 1-based source-line indices. Two granularities share this state:
-///
-/// - **Line** (keyboard `j`/`k`, Shift-extend): whole source lines. `char_mode` is `false` and the
-///   `*_col` carets are ignored — copy takes full lines.
-/// - **Character** (mouse click-drag): `anchor_col`/`marker_col` are char carets (0-based char
-///   indices into the *displayed* line, gutter included) pairing with `anchor`/`marker`. Set while
-///   `char_mode` is `true` — copy takes the exact `anchor..marker` character span.
-///
-/// A keyboard move reverts to line granularity (`char_mode = false`), so the two never tangle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LineSelectState {
-    anchor: usize,
-    marker: usize,
-    anchor_col: usize,
-    marker_col: usize,
-    char_mode: bool,
-}
-
-impl LineSelectState {
-    /// Start a new selection collapsed onto a single `line` (line granularity).
-    pub(crate) fn new(line: usize) -> Self {
-        Self {
-            anchor: line,
-            marker: line,
-            anchor_col: 0,
-            marker_col: 0,
-            char_mode: false,
-        }
-    }
-
-    /// Begin a character-granular selection collapsed at `(line, col)` — a mouse press. `col` is a
-    /// char caret into the displayed line; `line` is clamped to `[1, last]`.
-    pub(crate) fn begin_char(&mut self, line: usize, col: usize, last: usize) {
-        let l = Self::clamp(line, last);
-        self.anchor = l;
-        self.marker = l;
-        self.anchor_col = col;
-        self.marker_col = col;
-        self.char_mode = true;
-    }
-
-    /// Extend a character-granular selection: move the marker to `(line, col)` while holding the
-    /// anchor — a mouse drag. `line` is clamped to `[1, last]`.
-    pub(crate) fn drag_char(&mut self, line: usize, col: usize, last: usize) {
-        self.marker = Self::clamp(line, last);
-        self.marker_col = col;
-        self.char_mode = true;
-    }
-
-    /// Whether the selection is character-granular (a mouse drag), vs. whole-line (keyboard).
-    pub(crate) fn is_char_mode(&self) -> bool {
-        self.char_mode
-    }
-
-    /// The character selection as an ordered `((lo_line, lo_col), (hi_line, hi_col))` pair —
-    /// ascending by line then column, so a drag in either direction reads the same.
-    pub(crate) fn char_span(&self) -> ((usize, usize), (usize, usize)) {
-        let a = (self.anchor, self.anchor_col);
-        let m = (self.marker, self.marker_col);
-        if a <= m { (a, m) } else { (m, a) }
-    }
-
-    /// Move the marker to `line` (clamped to `[1, last]`) and collapse the selection onto it —
-    /// the anchor follows the marker. A keyboard move, so it reverts to line granularity.
-    pub(crate) fn move_to(&mut self, line: usize, last: usize) {
-        self.marker = Self::clamp(line, last);
-        self.anchor = self.marker;
-        self.char_mode = false;
-    }
-
-    /// Move the marker to `line` (clamped to `[1, last]`) while holding the anchor fixed,
-    /// extending (or shrinking) the selection. A keyboard extend, so it reverts to line granularity.
-    pub(crate) fn extend_to(&mut self, line: usize, last: usize) {
-        self.marker = Self::clamp(line, last);
-        self.char_mode = false;
-    }
-
-    /// The marker (cursor) line — 1-based. Exposed for the Presenter's line-select overlay (T-9),
-    /// which draws the marker emphasis distinct from the rest of the selection range.
-    pub(crate) fn marker(&self) -> usize {
-        self.marker
-    }
-
-    /// The current selection as an ascending `(start, end)` pair.
-    pub(crate) fn selection(&self) -> (usize, usize) {
-        if self.anchor <= self.marker {
-            (self.anchor, self.marker)
-        } else {
-            (self.marker, self.anchor)
-        }
-    }
-
-    fn clamp(line: usize, last: usize) -> usize {
-        line.max(1).min(last.max(1))
-    }
-}
-
 impl Controller {
     /// Enter line-select mode with the marker on the top *visible* source line (AC-1, AC-15).
     ///
@@ -200,7 +103,7 @@ impl Controller {
         // Drop any ambient selection AND in-flight drag so L mode starts clean: a still-held ambient
         // press left `drag = Some(ContentSelect)`, which the mouse drag arm would otherwise honor and
         // use to extend this freshly-opened L-mode selection from a press never made in L mode.
-        self.content_selection = None;
+        self.active_interaction.selection = None;
         self.drag = None;
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
@@ -208,9 +111,9 @@ impl Controller {
             // valid now, so open synchronously. The top visible source line is mapped from the scroll
             // offset through `line_at_content_row`, so it is correct even when the `w` wrap override is
             // on (under wrap `content_scroll` is a wrapped display-row offset, NOT a source-line index).
-            let last = self.content.lines.len().max(1);
+            let last = self.active_lines().len().max(1);
             let top = self
-                .line_at_content_row(self.content_scroll as usize)
+                .line_at_content_row(self.active_interaction.vertical_scroll as usize)
                 .clamp(1, last);
             self.modal = Modal::LineSelect(LineSelectState::new(top));
         } else if let Some(path) = self
@@ -244,7 +147,7 @@ impl Controller {
     /// newlines/tabs — hence the per-line approach). Bounds are clamped into `[1, line_count]`; an
     /// empty body yields an empty string.
     fn selected_lines_text(&self, start: usize, end: usize) -> String {
-        let total = self.content.lines.len();
+        let total = self.active_lines().len();
         if total == 0 {
             return String::new();
         }
@@ -271,8 +174,7 @@ impl Controller {
     /// source-mapped (see [`RenderResult::source`]); `None` otherwise. `content_source` is applied
     /// in lockstep with `content`, so `Some` guarantees index `n-1` IS displayed line `n`'s source.
     fn source_line(&self, n: usize) -> Option<&str> {
-        self.content_source
-            .as_ref()
+        self.active_source()
             .and_then(|src| src.get(n - 1))
             .map(String::as_str)
     }
@@ -311,7 +213,7 @@ impl Controller {
     /// [`gutter_len_of`](Self::gutter_len_of). Caller guarantees `n` is in
     /// `[1, content.lines.len()]`.
     fn filtered_display_line(&self, n: usize) -> String {
-        let joined: String = self.content.lines[n - 1]
+        let joined: String = self.active_lines()[n - 1]
             .spans
             .iter()
             .map(|s| s.content.as_ref())
@@ -333,18 +235,20 @@ impl Controller {
     /// [`crate::text_layout::wrap_row_starts`] — the same break-position port the wrapped scroll
     /// math counts rows with — so the caret lands on the character actually under the cursor.
     pub(crate) fn char_at_content_col(&self, col: u16, row: u16) -> (usize, usize) {
-        if self.content.lines.is_empty() {
+        if self.active_lines().is_empty() {
             return (1, 0); // no content to index (line-select can't open on an empty pane anyway)
         }
-        let last = self.content.lines.len();
+        let last = self.active_lines().len();
         let top = self.geom.content_inner.map_or(row, |c| c.y);
         let x = self.geom.content_inner.map_or(0, |c| c.x);
-        let display_row = self.content_scroll as usize + row.saturating_sub(top) as usize;
+        let display_row =
+            self.active_interaction.vertical_scroll as usize + row.saturating_sub(top) as usize;
         let line = self.line_at_content_row(display_row).clamp(1, last);
         // The pane-relative column, plus any horizontal scroll. The active overlay's leading glyph
         // column(s) (see `content_overlay_glyph_cols`) are subtracted per display row below — they
         // sit on the FIRST row only.
-        let within = (col.saturating_sub(x)) as usize + self.content_hscroll as usize;
+        let within =
+            (col.saturating_sub(x)) as usize + self.active_interaction.horizontal_scroll as usize;
         let overlay = self.content_overlay_glyph_cols();
         let text = self.filtered_display_line(line);
         if !self.effective_wrap() {
@@ -364,7 +268,7 @@ impl Controller {
         // the prefixed break positions.
         let starts = crate::text_layout::wrap_row_starts_prefixed(
             &text,
-            self.content_width.max(1) as usize,
+            self.active_interaction.viewport_width.max(1) as usize,
             overlay,
         );
         let row_within = display_row
@@ -399,7 +303,12 @@ impl Controller {
     /// cover the "Rendering…" placeholder (a file *is* selected mid-render) —
     /// `handle_column_mouse` blocks seeding a selection while a render is in flight instead.
     pub(super) fn copy_content_selection(&mut self) -> Effects {
-        let Some((lo, hi)) = self.content_selection.as_ref().map(|s| s.char_span()) else {
+        let Some((lo, hi)) = self
+            .active_interaction
+            .selection
+            .as_ref()
+            .map(|s| s.char_span())
+        else {
             return Effects::redraw();
         };
         let is_file = self
@@ -424,7 +333,7 @@ impl Controller {
     /// plain-text fallback / test stubs — or empty content). Both char-selection overlays subtract it
     /// so a highlight never paints the gutter. `line` is clamped into `[1, line_count]`.
     pub(crate) fn content_gutter_len(&self, line: usize) -> usize {
-        let total = self.content.lines.len();
+        let total = self.active_lines().len();
         if total == 0 {
             return 0;
         }
@@ -459,7 +368,7 @@ impl Controller {
         (lo_line, lo_col): (usize, usize),
         (hi_line, hi_col): (usize, usize),
     ) -> String {
-        let total = self.content.lines.len();
+        let total = self.active_lines().len();
         if total == 0 {
             return String::new();
         }
@@ -676,10 +585,10 @@ impl Controller {
             _ => {}
         }
 
-        let Some(marker) = self.modal.line_select().map(|s| s.marker) else {
+        let Some(marker) = self.modal.line_select().map(|s| s.marker()) else {
             return Effects::noop();
         };
-        let last = self.content.lines.len();
+        let last = self.active_lines().len();
 
         // Classify the key into a marker target + whether it extends the selection. Shift+letter
         // arrives as the uppercase char (`J`/`K`); Shift+arrow as the arrow + the SHIFT bit.
@@ -707,10 +616,10 @@ impl Controller {
         // same mapping `scroll_to_line` uses, so the two agree). If it fell above the top, pin the
         // top to it; if it fell below the bottom, pin the bottom row to it; then clamp to the last
         // screenful.
-        if let Some(marker) = self.modal.line_select().map(|s| s.marker) {
+        if let Some(marker) = self.modal.line_select().map(|s| s.marker()) {
             let row = self.content_row_of_line(marker);
-            let scroll = self.content_scroll as usize;
-            let height = self.content_height as usize;
+            let scroll = self.active_interaction.vertical_scroll as usize;
+            let height = self.active_interaction.viewport_height as usize;
             let new_scroll = if row < scroll {
                 row
             } else if height > 0 && row >= scroll + height {
@@ -718,7 +627,7 @@ impl Controller {
             } else {
                 scroll
             };
-            self.content_scroll =
+            self.active_interaction.vertical_scroll =
                 (new_scroll.min(u16::MAX as usize) as u16).min(self.max_content_scroll());
         }
 

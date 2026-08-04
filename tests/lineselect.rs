@@ -972,7 +972,10 @@ fn drag_populates_char_selection_in_the_view() {
     ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 45, 2));
 
     let vs = ctrl.view_state();
-    let ls = vs.line_select.expect("line-select overlay is present");
+    let ls = vs
+        .active
+        .line_select
+        .expect("line-select overlay is present");
     let cs = ls
         .char_sel
         .expect("a mouse drag populates the character selection for the overlay");
@@ -1283,7 +1286,7 @@ fn ambient_drag_auto_copies_on_release() {
         ctrl.notices()
     );
     assert!(
-        ctrl.view_state().content_selection.is_some(),
+        ctrl.view_state().active.selection.is_some(),
         "the selection stays highlighted after the auto-copy (feedback)"
     );
 }
@@ -1302,11 +1305,12 @@ fn ambient_drag_populates_content_selection_overlay() {
 
     let vs = ctrl.view_state();
     assert!(
-        vs.line_select.is_none(),
+        vs.active.line_select.is_none(),
         "the L-mode overlay is not used for an ambient drag"
     );
     let cs = vs
-        .content_selection
+        .active
+        .selection
         .expect("the ambient selection overlay is populated");
     assert_eq!(
         (cs.start_line, cs.start_col, cs.end_line, cs.end_col),
@@ -1335,7 +1339,7 @@ fn ambient_plain_click_focuses_and_copies_nothing() {
         "a content click focuses the content pane"
     );
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "a plain click leaves no standing selection"
     );
     assert!(
@@ -1354,14 +1358,14 @@ fn ambient_press_outside_content_clears_selection() {
     setup_ambient(&mut ctrl);
     ambient_drag_line1_to_line2(&mut ctrl);
     assert!(
-        ctrl.view_state().content_selection.is_some(),
+        ctrl.view_state().active.selection.is_some(),
         "precondition: a selection stands"
     );
 
     let fx = ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
     assert!(fx.redraw, "clearing the selection redraws");
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "a press outside the content region clears the standing selection"
     );
 }
@@ -1376,7 +1380,7 @@ fn ambient_esc_clears_selection_before_quitting() {
     setup_ambient(&mut ctrl);
     ambient_drag_line1_to_line2(&mut ctrl);
     assert!(
-        ctrl.view_state().content_selection.is_some(),
+        ctrl.view_state().active.selection.is_some(),
         "precondition: a selection stands"
     );
 
@@ -1387,7 +1391,7 @@ fn ambient_esc_clears_selection_before_quitting() {
         "the first Esc dismisses the selection, it does not quit"
     );
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "Esc clears the ambient selection"
     );
 }
@@ -1402,13 +1406,13 @@ fn ambient_selection_cleared_on_content_change() {
     setup_ambient(&mut ctrl);
     ambient_drag_line1_to_line2(&mut ctrl);
     assert!(
-        ctrl.view_state().content_selection.is_some(),
+        ctrl.view_state().active.selection.is_some(),
         "precondition: a selection stands"
     );
 
     ctrl.handle(Intent::CycleView);
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "a content change (view cycle → dispatch_render) clears the selection"
     );
 }
@@ -1425,7 +1429,7 @@ fn ambient_shift_drag_is_left_for_the_terminal() {
     let fx = ctrl.handle_mouse(shift_mouse(MouseEventKind::Down(MouseButton::Left), 45, 3));
     assert!(!fx.redraw, "a Shift+press is inert (left for the terminal)");
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "Shift+mouse must not start an ambient selection"
     );
 }
@@ -1440,7 +1444,7 @@ fn entering_line_select_clears_an_ambient_selection() {
     setup_ambient(&mut ctrl);
     ambient_drag_line1_to_line2(&mut ctrl);
     assert!(
-        ctrl.view_state().content_selection.is_some(),
+        ctrl.view_state().active.selection.is_some(),
         "precondition: a selection stands"
     );
 
@@ -1448,7 +1452,7 @@ fn entering_line_select_clears_an_ambient_selection() {
     assert!(ctrl.line_select_active(), "L mode is now active");
     let vs = ctrl.view_state();
     assert!(
-        vs.content_selection.is_none(),
+        vs.active.selection.is_none(),
         "the ambient selection is cleared on entering L mode"
     );
     assert_eq!(
@@ -1511,6 +1515,7 @@ fn held_ambient_press_does_not_leak_into_line_select() {
     );
     let ls = ctrl
         .view_state()
+        .active
         .line_select
         .expect("L-mode overlay present");
     assert!(
@@ -1539,7 +1544,7 @@ fn ambient_drag_over_rendering_placeholder_copies_nothing() {
     ctrl.set_content_viewport(80, 20);
     ctrl.set_pane_geometry(content_geometry());
     assert!(
-        ctrl.view_state().content_rendering,
+        ctrl.view_state().active.rendering,
         "precondition: a render is in flight (the placeholder is shown)"
     );
 
@@ -1548,7 +1553,7 @@ fn ambient_drag_over_rendering_placeholder_copies_nothing() {
     ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 45, 1));
 
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "no selection is seeded over the render placeholder"
     );
     assert!(
@@ -1682,7 +1687,7 @@ fn wrapped_ambient_plain_click_copies_nothing() {
         "a plain click under wrap copies nothing"
     );
     assert!(
-        ctrl.view_state().content_selection.is_none(),
+        ctrl.view_state().active.selection.is_none(),
         "no selection highlight is left standing by a plain click"
     );
 }

@@ -54,7 +54,7 @@ impl Controller {
             return Effects::noop();
         }
         let (col, row) = (ev.column, ev.row);
-        let last = self.content.lines.len().max(1);
+        let last = self.active_lines().len().max(1);
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // A press outside the content region is inert and drops any in-flight drag.
@@ -141,23 +141,42 @@ impl Controller {
                     // But not over the "Rendering…" placeholder: a file *is* selected mid-render, so
                     // the is-file guard in `copy_content_selection` wouldn't stop a drag from copying
                     // the placeholder text. (The press still focuses the pane.)
-                    if self.content_rendering {
+                    if self.active_display.is_loading() {
                         return Effects::redraw();
                     }
                     let (line, caret) = self.char_at_content_col(col, row);
-                    let last = self.content.lines.len().max(1);
-                    let mut sel = LineSelectState::new(line);
+                    let last = self.active_lines().len().max(1);
+                    let mut sel = PreviewSelection::new(line);
                     sel.begin_char(line, caret, last);
-                    self.content_selection = Some(sel);
+                    self.active_interaction.selection = Some(sel);
                     self.drag = Some(Drag::ContentSelect);
                     return Effects::redraw();
                 }
-                // A press anywhere outside the content region drops a standing ambient selection.
-                let had_selection = self.content_selection.take().is_some();
+                if matches!(region, MouseRegion::Pinned | MouseRegion::PinnedTitle) {
+                    // A pinned snapshot is scrollable and focusable, but it deliberately has no
+                    // text-selection/copy path. Treat a press as focus only and leave the active
+                    // preview's standing selection intact.
+                    self.last_click = None;
+                    self.focus = Focus::Pinned;
+                    self.drag = None;
+                    return Effects::redraw();
+                }
+                // A press anywhere outside the content region drops a standing ambient selection,
+                // except a pinned scrollbar: it only controls the frozen preview and must not
+                // dismiss a selection belonging to the active preview.
+                let had_selection =
+                    if matches!(region, MouseRegion::PinnedVBar | MouseRegion::PinnedHBar) {
+                        false
+                    } else {
+                        self.active_interaction.selection.take().is_some()
+                    };
                 self.drag = match region {
                     MouseRegion::Divider => Some(Drag::Divider),
+                    MouseRegion::PreviewDivider => Some(Drag::PreviewDivider),
                     MouseRegion::ContentVBar => Some(Drag::ContentV),
                     MouseRegion::ContentHBar => Some(Drag::ContentH),
+                    MouseRegion::PinnedVBar => Some(Drag::PinnedV),
+                    MouseRegion::PinnedHBar => Some(Drag::PinnedH),
                     MouseRegion::TreeVBar => Some(Drag::TreeV),
                     MouseRegion::TreeHBar => Some(Drag::TreeH),
                     _ => None,
@@ -165,6 +184,8 @@ impl Controller {
                 let fx = match region {
                     MouseRegion::ContentVBar => self.scroll_content_to_row(row),
                     MouseRegion::ContentHBar => self.scroll_content_h_to_col(col),
+                    MouseRegion::PinnedVBar => self.scroll_pinned_to_row(row),
+                    MouseRegion::PinnedHBar => self.scroll_pinned_h_to_col(col),
                     MouseRegion::TreeVBar => self.scroll_tree_to_row(row),
                     MouseRegion::TreeHBar => self.scroll_tree_h_to_col(col),
                     _ => Effects::noop(),
@@ -174,8 +195,11 @@ impl Controller {
             }
             MouseEventKind::Drag(MouseButton::Left) => match self.drag {
                 Some(Drag::Divider) => self.resize_split_to_col(col),
+                Some(Drag::PreviewDivider) => self.resize_preview_split_to_col(col),
                 Some(Drag::ContentV) => self.scroll_content_to_row(row),
                 Some(Drag::ContentH) => self.scroll_content_h_to_col(col),
+                Some(Drag::PinnedV) => self.scroll_pinned_to_row(row),
+                Some(Drag::PinnedH) => self.scroll_pinned_h_to_col(col),
                 Some(Drag::TreeV) => self.scroll_tree_to_row(row),
                 Some(Drag::TreeH) => self.scroll_tree_h_to_col(col),
                 // The finder is modal: its scrollbar drag is handled in handle_finder_mouse and
@@ -185,8 +209,8 @@ impl Controller {
                 // — the L-mode drag, but on the Modal-independent `content_selection`.
                 Some(Drag::ContentSelect) => {
                     let (line, caret) = self.char_at_content_col(col, row);
-                    let last = self.content.lines.len().max(1);
-                    if let Some(sel) = self.content_selection.as_mut() {
+                    let last = self.active_lines().len().max(1);
+                    if let Some(sel) = self.active_interaction.selection.as_mut() {
                         sel.drag_char(line, caret, last);
                     }
                     self.autoscroll_selection(row);
@@ -200,7 +224,8 @@ impl Controller {
                 // keeping the highlight.
                 Some(Drag::ContentSelect) => {
                     let collapsed = self
-                        .content_selection
+                        .active_interaction
+                        .selection
                         .as_ref()
                         .map(|s| {
                             let (a, b) = s.char_span();
@@ -209,7 +234,7 @@ impl Controller {
                         .unwrap_or(true);
                     self.last_click = None;
                     if collapsed {
-                        self.content_selection = None;
+                        self.active_interaction.selection = None;
                         self.focus = Focus::Content;
                         Effects::redraw()
                     } else {
@@ -277,10 +302,18 @@ impl Controller {
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
+            MouseRegion::Pinned | MouseRegion::PinnedTitle => {
+                self.last_click = None;
+                self.focus = Focus::Pinned;
+                Effects::redraw()
+            }
             // Scrollbars are handled on press/drag (above), not as a click; reaching here is inert.
             MouseRegion::Divider
+            | MouseRegion::PreviewDivider
             | MouseRegion::ContentVBar
             | MouseRegion::ContentHBar
+            | MouseRegion::PinnedVBar
+            | MouseRegion::PinnedHBar
             | MouseRegion::TreeVBar
             | MouseRegion::TreeHBar
             | MouseRegion::Outside => {
@@ -296,6 +329,10 @@ impl Controller {
         match self.hit_test(col, row) {
             MouseRegion::Content => {
                 self.scroll_content(delta);
+                Effects::redraw()
+            }
+            MouseRegion::Pinned => {
+                self.scroll_pinned(delta);
                 Effects::redraw()
             }
             MouseRegion::TreeRow(_) => {
@@ -314,6 +351,7 @@ impl Controller {
     fn hscroll_at(&mut self, col: u16, row: u16, delta: i32) -> Effects {
         match self.hit_test(col, row) {
             MouseRegion::Content => self.scroll_content_h(delta),
+            MouseRegion::Pinned => self.scroll_pinned_h(delta),
             MouseRegion::TreeRow(_) => self.scroll_tree_h(delta),
             _ => Effects::noop(),
         }
@@ -378,7 +416,7 @@ impl Controller {
         else {
             return Effects::noop();
         };
-        self.content_scroll = off as u16;
+        self.active_interaction.vertical_scroll = off as u16;
         Effects::redraw()
     }
 
@@ -392,8 +430,46 @@ impl Controller {
         else {
             return Effects::noop();
         };
-        self.content_hscroll = off as u16;
+        self.active_interaction.horizontal_scroll = off as u16;
         Effects::redraw()
+    }
+
+    /// Map a vertical press/drag on the frozen pinned preview's scrollbar to only its viewport
+    /// offset. The active preview's `content_*` geometry and interaction never participate.
+    fn scroll_pinned_to_row(&mut self, row: u16) -> Effects {
+        let Some(track) = self.geom.pinned_vbar else {
+            return Effects::noop();
+        };
+        let Some(off) =
+            Self::track_to_offset(row, track.y, track.height, self.max_pinned_scroll() as u32)
+        else {
+            return Effects::noop();
+        };
+        if let Some(interaction) = self.pinned_interaction_mut() {
+            interaction.vertical_scroll = off as u16;
+            Effects::redraw()
+        } else {
+            Effects::noop()
+        }
+    }
+
+    /// Map a horizontal press/drag on the frozen pinned preview's scrollbar to only its viewport
+    /// offset.
+    fn scroll_pinned_h_to_col(&mut self, col: u16) -> Effects {
+        let Some(track) = self.geom.pinned_hbar else {
+            return Effects::noop();
+        };
+        let Some(off) =
+            Self::track_to_offset(col, track.x, track.width, self.max_pinned_hscroll() as u32)
+        else {
+            return Effects::noop();
+        };
+        if let Some(interaction) = self.pinned_interaction_mut() {
+            interaction.horizontal_scroll = off as u16;
+            Effects::redraw()
+        } else {
+            Effects::noop()
+        }
     }
 
     /// Map a horizontal press/drag on the tree's horizontal scrollbar to a tree h-scroll offset.
@@ -463,6 +539,20 @@ impl Controller {
         Effects::redraw()
     }
 
+    /// During a pinned/active preview-divider drag, set only the frozen preview's share from the
+    /// measured preview area. This intentionally does not engage or modify the tree split: that
+    /// divider remains owned by [`resize_split_to_col`](Self::resize_split_to_col).
+    fn resize_preview_split_to_col(&mut self, col: u16) -> Effects {
+        if self.pinned_snapshot.is_none() || self.geom.preview_area_width == 0 {
+            return Effects::noop();
+        }
+        let pinned_width = col.saturating_sub(self.geom.preview_area_x) as u32;
+        self.preview_split_pct = (pinned_width * 100 / self.geom.preview_area_width as u32)
+            .clamp(PREVIEW_SPLIT_MIN as u32, PREVIEW_SPLIT_MAX as u32)
+            as u16;
+        Effects::redraw()
+    }
+
     /// Which region of the last-drawn frame a cell falls in. The divider is checked first (it
     /// sits between the columns); a tree click maps to a visible node index by its row.
     fn hit_test(&self, col: u16, row: u16) -> MouseRegion {
@@ -470,6 +560,11 @@ impl Controller {
             && (col == dx || col + 1 == dx)
         {
             return MouseRegion::Divider;
+        }
+        if let Some(dx) = self.geom.preview_divider_x
+            && (col == dx || col + 1 == dx)
+        {
+            return MouseRegion::PreviewDivider;
         }
         // Scrollbars live INSIDE the panes (a reserved gutter), fed back as 1-cell track rects that
         // are present only when that bar is drawn — so a hit on a `Some` track is a real bar. Check
@@ -480,6 +575,12 @@ impl Controller {
         }
         if self.geom.content_hbar.is_some_and(|r| r.contains(pos)) {
             return MouseRegion::ContentHBar;
+        }
+        if self.geom.pinned_vbar.is_some_and(|r| r.contains(pos)) {
+            return MouseRegion::PinnedVBar;
+        }
+        if self.geom.pinned_hbar.is_some_and(|r| r.contains(pos)) {
+            return MouseRegion::PinnedHBar;
         }
         if self.geom.tree_vbar.is_some_and(|r| r.contains(pos)) {
             return MouseRegion::TreeVBar;
@@ -505,10 +606,18 @@ impl Controller {
         {
             return MouseRegion::ContentTitle;
         }
+        if self.geom.pinned_title_rect.is_some_and(|r| r.contains(pos)) {
+            return MouseRegion::PinnedTitle;
+        }
         if let Some(c) = self.geom.content_inner
             && c.contains(Position { x: col, y: row })
         {
             return MouseRegion::Content;
+        }
+        if let Some(pinned) = self.geom.pinned_inner
+            && pinned.contains(Position { x: col, y: row })
+        {
+            return MouseRegion::Pinned;
         }
         MouseRegion::Outside
     }
