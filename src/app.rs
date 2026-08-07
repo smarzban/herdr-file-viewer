@@ -102,9 +102,10 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // as the live components below so the overlay shows what's actually in effect.
     let settings_wired = settings_wired(&eff, current_os_kind(), platform_editor);
 
-    // `Controller::new` now consumes `resolved` by value; `baseline` was already built from it
-    // above (`git::default_baseline(&resolved)`), so moving it here is the last use.
-    let mut controller = Controller::new(
+    // Seed the changed-file view policy during construction so the first render is dispatched in
+    // its final mode (the single worker cannot cancel a job it has already started). `baseline`
+    // was already built from `resolved` above, so moving the resolved root here is its last use.
+    let mut controller = Controller::new_with_changed_file_view(
         resolved,
         baseline,
         Components {
@@ -113,6 +114,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
             clipboard,
             renderers: Some(renderers),
         },
+        eff.changed_file_view,
     );
     // Apply the config-driven startup hide-dotfiles default (AC-9). The interactive `.` toggle
     // still flips it later.

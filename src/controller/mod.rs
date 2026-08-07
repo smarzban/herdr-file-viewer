@@ -48,7 +48,9 @@ use crate::render::Renderers;
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, NoticeSnapshot, UpdateState};
-use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mode};
+use crate::view_policy::{
+    ChangedFileView, FileDescriptor, ViewMode, applicable_modes, default_mode,
+};
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lineselect::LineSelectState;
@@ -626,6 +628,9 @@ pub struct Controller {
     changed: BTreeMap<PathBuf, Status>,
     /// Per-file view-mode override set by cycling (AC-11); absent ⇒ the policy default.
     overrides: HashMap<PathBuf, ViewMode>,
+    /// Configured automatic view policy for Git-changed files. Session-level and carried across
+    /// re-roots; per-file `v` overrides always win outside forced git-status mode.
+    changed_file_view: ChangedFileView,
     /// The content pane's current text and its notices (truncation/fallback).
     content: Text<'static>,
     content_notices: Vec<String>,
@@ -805,6 +810,21 @@ impl Controller {
     /// otherwise the viewer is a plain browser (AC-26). The initial selection's content is
     /// rendered so the first frame is populated.
     pub fn new(resolved: Resolved, baseline: Baseline, components: Components) -> Self {
+        Self::new_with_changed_file_view(resolved, baseline, components, ChangedFileView::default())
+    }
+
+    /// Build the controller with an explicit changed-file initial-view policy.
+    ///
+    /// This construction-time input is set before [`refresh_git_state`](Self::refresh_git_state)
+    /// and the first render dispatch, so startup queues exactly one job in the effective mode. The
+    /// ordinary [`new`](Self::new) constructor preserves the original diff-first default for tests
+    /// and callers without resolved config.
+    pub fn new_with_changed_file_view(
+        resolved: Resolved,
+        baseline: Baseline,
+        components: Components,
+        changed_file_view: ChangedFileView,
+    ) -> Self {
         let Components {
             providers,
             editor,
@@ -869,6 +889,7 @@ impl Controller {
             host_zoomed: false,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
+            changed_file_view,
             content: Text::raw(""),
             content_notices: Vec::new(),
             content_source: None,
@@ -1104,12 +1125,13 @@ impl Controller {
         self.last_click = None;
 
         // PREFERENCES ARE CARRIED (AC-12) — deliberately NOT reset: show_ignored, hide_hidden,
-        // changed_only, status_mode, split_pct, tree_position, tree_max_cols, split_manual, wrap_override, baseline keep their current values. The fresh
-        // TreeModel starts with default filter flags. `show_ignored` and `hide_hidden` are
-        // git-independent, so apply them now. The changed-only *filter* is NOT applied here: it
-        // must be applied against the REAL changed-set, which `dispatch_status_refresh` computes
-        // off-thread — applying it now would filter against the just-cleared empty set. `poll`
-        // applies it when the changed-set lands.
+        // changed_only, status_mode, changed_file_view, split_pct, tree_position, tree_max_cols,
+        // split_manual, wrap_override, baseline keep their current values. The fresh TreeModel
+        // starts with default filter flags. `show_ignored` and `hide_hidden` are git-independent,
+        // so apply them now. The changed-only *filter* is NOT applied here: it must be applied
+        // against the REAL changed-set, which `dispatch_status_refresh` computes off-thread —
+        // applying it now would filter against the just-cleared empty set. `poll` applies it when
+        // the changed-set lands.
         self.tree.set_show_ignored(self.show_ignored);
         self.tree.set_hide_hidden(self.hide_hidden);
 
@@ -2406,7 +2428,7 @@ impl Controller {
         if node.kind != NodeKind::File {
             return Effects::noop();
         }
-        let modes = applicable_modes(&self.descriptor(&node.path));
+        let modes = applicable_modes(&self.descriptor(&node.path), self.changed_file_view);
         let current = self.effective_mode(&node.path);
         let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
         let next = modes[(idx + 1) % modes.len()];
@@ -3242,30 +3264,31 @@ impl Controller {
         self.overrides
             .get(path)
             .copied()
-            .unwrap_or_else(|| default_mode(&self.descriptor(path)))
+            .unwrap_or_else(|| default_mode(&self.descriptor(path), self.changed_file_view))
     }
 
     /// The View Policy facts about a file: markdown by extension, changed by the cached
     /// changed-set (so it tracks the active baseline). In status mode, "changed" means present
     /// in the working-tree status set so Diff is always the default for filtered files.
     fn descriptor(&self, path: &Path) -> FileDescriptor {
+        let status = self.change_status(path);
         FileDescriptor {
             path: path.to_path_buf(),
             is_markdown: is_markdown(path),
-            is_changed: self.is_changed(path),
+            is_changed: status.is_some(),
+            is_deleted: status == Some(Status::Deleted) && !path.exists(),
         }
     }
 
-    fn is_changed(&self, path: &Path) -> bool {
-        self.rel(path)
-            .map(|rel| {
-                if self.status_mode {
-                    self.git_status.contains_key(&rel)
-                } else {
-                    self.changed.contains_key(&rel)
-                }
-            })
-            .unwrap_or(false)
+    /// The selected baseline/status mode's cached status for `path`.
+    fn change_status(&self, path: &Path) -> Option<Status> {
+        self.rel(path).and_then(|rel| {
+            if self.status_mode {
+                self.git_status.get(&rel).copied()
+            } else {
+                self.changed.get(&rel).copied()
+            }
+        })
     }
 
     /// `path` made relative to the tree root (how git keys its maps); `None` if outside it.

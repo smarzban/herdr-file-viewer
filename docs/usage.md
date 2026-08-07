@@ -163,9 +163,11 @@ This is launch-only. It does not retarget a Files pane that is already running; 
 
 ## Viewing a file
 
-The content pane shows **the right view for each file, automatically**: a changed file shows its
-**diff**, a markdown file **renders**, anything else is **syntax-highlighted** content with line
-numbers. No mode-switching, no commands.
+The content pane shows **the right view for each file, automatically**: by default a changed file
+shows its **diff**, a markdown file **renders**, and anything else is **syntax-highlighted** content
+with line numbers. Set [`changed_file_view = "content"`](configuration.md) if changed files should
+start in their normal file-type view instead (rendered Markdown or syntax content); deleted paths
+remain diff-first because no file content remains to display.
 
 - **Cycle the view** with `v` to override the automatic choice (e.g. see a changed markdown file's
   raw source instead of its diff).

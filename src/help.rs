@@ -280,6 +280,7 @@ pub fn settings_text(
          hide_dotfiles     = {hide_dotfiles}\n\
          show_ignored      = {show_ignored}\n\
          compact_dirs      = {compact_dirs}\n\
+         changed_file_view = {changed_file_view}\n\
          update_check      = {update_check}\n\
          confirm_discard   = {confirm_discard}\n\
          scroll_lines      = {scroll_lines}\n\
@@ -293,6 +294,7 @@ pub fn settings_text(
         hide_dotfiles = eff.hide_dotfiles,
         show_ignored = eff.show_ignored,
         compact_dirs = eff.compact_dirs,
+        changed_file_view = eff.changed_file_view.label(),
         update_check = update_check,
         confirm_discard = confirm_discard,
         scroll_lines = eff.scroll_lines,
@@ -800,6 +802,7 @@ mod tests {
             hide_dotfiles: true,
             show_ignored: true,
             compact_dirs: true,
+            changed_file_view: crate::view_policy::ChangedFileView::Content,
             update_check: false,
             confirm_discard: false,
             scroll_lines: 7,
@@ -839,6 +842,7 @@ mod tests {
             "hide_dotfiles",
             "show_ignored",
             "compact_dirs",
+            "changed_file_view",
             "update_check",
             "scroll_lines",
             "tree_width",
@@ -906,6 +910,7 @@ mod tests {
             "hide_dotfiles     = true",
             "show_ignored      = true",
             "compact_dirs      = true",
+            "changed_file_view = content",
             "update_check      = off",
             "scroll_lines      = 7",
         ] {
@@ -984,6 +989,7 @@ mod tests {
             "hide_dotfiles     = false",
             "show_ignored      = false",
             "compact_dirs      = false",
+            "changed_file_view = diff",
             "update_check      = on",
             "confirm_discard   = on",
             &format!(

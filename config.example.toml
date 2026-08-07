@@ -82,6 +82,15 @@
 # toggles it. Default:
 #compact_dirs = false
 
+# Choose the automatic initial view for Git-changed files. "diff" preserves the
+# default diff-first behavior. "content" applies the normal file-type policy
+# instead: Markdown opens rendered, while source/text opens in syntax content.
+# Deleted paths stay diff-first because there is no on-disk content to render.
+# The `v` key still cycles through both diff views either way, and git status,
+# changed-file filters, baselines, and `D` diff presentation are unaffected.
+# An unrecognized value falls back to "diff". Default:
+#changed_file_view = "diff"
+
 # `update_check` governs release details and project spotlights.
 # `false` disables all remote requests and their display. When unset,
 # $HERDR_FILE_VIEWER_NO_UPDATE_CHECK also disables it. No separate spotlight setting. Default:

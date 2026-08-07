@@ -22,7 +22,7 @@ use herdr_file_viewer::update::spotlight_policy::{
     SpotlightCache, SpotlightInput, cache_delta, project,
 };
 use herdr_file_viewer::update::{NoticeSnapshot, UpdateState, Version};
-use herdr_file_viewer::view_policy::ViewMode;
+use herdr_file_viewer::view_policy::{ChangedFileView, ViewMode};
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use std::cell::RefCell;
@@ -131,6 +131,16 @@ fn controller(
     git: StubGit,
     editor_fails: bool,
 ) -> (Controller, Recorder<Baseline>, Recorder<PathBuf>) {
+    controller_with_changed_file_view(root, is_git_repo, git, editor_fails, ChangedFileView::Diff)
+}
+
+fn controller_with_changed_file_view(
+    root: &Path,
+    is_git_repo: bool,
+    git: StubGit,
+    editor_fails: bool,
+    changed_file_view: ChangedFileView,
+) -> (Controller, Recorder<Baseline>, Recorder<PathBuf>) {
     let changed_calls = git.changed_calls.clone();
     let opened = Arc::new(Mutex::new(Vec::new()));
     let git: Arc<dyn GitService> = Arc::new(git); // build the stub Arc once; clone it inside the factory
@@ -147,10 +157,11 @@ fn controller(
         clipboard: Box::new(common::RecordingClipboard::default()),
         renderers: None,
     };
-    let ctrl = Controller::new(
+    let ctrl = Controller::new_with_changed_file_view(
         common::resolved(root.to_path_buf(), is_git_repo),
         Baseline::Head,
         components,
+        changed_file_view,
     );
     (ctrl, changed_calls, opened)
 }
@@ -724,6 +735,173 @@ fn cycle_view_on_a_changed_file_reaches_the_full_context_diff() {
         ctrl.selected_view_mode(),
         Some(ViewMode::Diff),
         "cycle wraps back to the compact diff"
+    );
+}
+
+#[test]
+fn configured_content_view_starts_changed_files_in_their_normal_file_type_mode() {
+    let unchanged = TempDir::new();
+    std::fs::write(unchanged.path().join("plain.rs"), "fn plain() {}\n").unwrap();
+    let (unchanged_ctrl, _, _) = controller_with_changed_file_view(
+        unchanged.path(),
+        false,
+        StubGit::default(),
+        false,
+        ChangedFileView::Content,
+    );
+    assert_eq!(
+        unchanged_ctrl.render_seq(),
+        1,
+        "the configured preference does not duplicate an unchanged non-Git render"
+    );
+
+    let markdown = TempDir::new();
+    std::fs::write(markdown.path().join("README.md"), "# Changed\n").unwrap();
+    let mut md_changed = BTreeMap::new();
+    md_changed.insert(PathBuf::from("README.md"), Status::Modified);
+    let md_git = StubGit {
+        status: md_changed.clone(),
+        changed: md_changed,
+        ..StubGit::default()
+    };
+    let (md_ctrl, _, _) = controller_with_changed_file_view(
+        markdown.path(),
+        true,
+        md_git,
+        false,
+        ChangedFileView::Content,
+    );
+    assert_eq!(
+        md_ctrl.render_seq(),
+        1,
+        "configured startup dispatches only its final render"
+    );
+    assert_eq!(
+        md_ctrl.selected_view_mode(),
+        Some(ViewMode::RenderedMarkdown),
+        "changed Markdown follows its normal rendered policy"
+    );
+
+    let source = TempDir::new();
+    std::fs::write(source.path().join("main.rs"), "fn main() {}\n").unwrap();
+    let mut source_changed = BTreeMap::new();
+    source_changed.insert(PathBuf::from("main.rs"), Status::Modified);
+    let source_git = StubGit {
+        status: source_changed.clone(),
+        changed: source_changed,
+        ..StubGit::default()
+    };
+    let (source_ctrl, _, _) = controller_with_changed_file_view(
+        source.path(),
+        true,
+        source_git,
+        false,
+        ChangedFileView::Content,
+    );
+    assert_eq!(
+        source_ctrl.render_seq(),
+        1,
+        "configured startup does not supersede a constructor render"
+    );
+    assert_eq!(
+        source_ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "changed source follows its normal syntax-content policy"
+    );
+}
+
+#[test]
+fn configured_content_view_keeps_deleted_files_diff_first() {
+    let dir = TempDir::new();
+    // Intentionally absent on disk: changed-only mode synthesizes deleted Git entries so their
+    // deletion remains reviewable.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("gone.rs"), Status::Deleted);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (mut ctrl, _, _) =
+        controller_with_changed_file_view(dir.path(), true, git, false, ChangedFileView::Content);
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "a deleted path has no content to render, so its deletion diff stays the initial view"
+    );
+}
+
+#[test]
+fn configured_content_view_uses_existing_replacement_for_cached_deletion() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+    // `git rm --cached kept.rs` can report the tracked version as deleted while leaving an
+    // untracked replacement at the same path. The existing file remains available to render.
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("kept.rs"), Status::Deleted);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (ctrl, _, _) =
+        controller_with_changed_file_view(dir.path(), true, git, false, ChangedFileView::Content);
+
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "an on-disk replacement follows the configured content preference"
+    );
+}
+
+#[test]
+fn configured_content_view_keeps_manual_diff_cycle_and_status_mode_semantics() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("changed.rs"), "fn main() {}\n").unwrap();
+    let mut changed = BTreeMap::new();
+    changed.insert(PathBuf::from("changed.rs"), Status::Modified);
+    let git = StubGit {
+        status: changed.clone(),
+        changed,
+        ..StubGit::default()
+    };
+    let (mut ctrl, _, _) =
+        controller_with_changed_file_view(dir.path(), true, git, false, ChangedFileView::Content);
+
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::SyntaxContent));
+    let diff_presentation = ctrl.handle(Intent::CycleDiffRender);
+    assert!(
+        !diff_presentation.redraw,
+        "D remains inert outside a diff view"
+    );
+
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "v reaches the compact diff from configured content"
+    );
+    let diff_presentation = ctrl.handle(Intent::CycleDiffRender);
+    assert!(
+        diff_presentation.redraw,
+        "D changes presentation once the selected view is a diff"
+    );
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(ctrl.selected_view_mode(), Some(ViewMode::FullDiff));
+    ctrl.handle(Intent::CycleView);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::SyntaxContent),
+        "v wraps back to configured content"
+    );
+
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert_eq!(
+        ctrl.selected_view_mode(),
+        Some(ViewMode::Diff),
+        "git-status mode still forces its working-tree diff"
     );
 }
 
@@ -10240,6 +10418,7 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         hide_dotfiles: false,
         show_ignored: false,
         compact_dirs: false,
+        changed_file_view: herdr_file_viewer::view_policy::ChangedFileView::Diff,
         update_check: true,
         confirm_discard: true,
         scroll_lines: 3,

@@ -109,6 +109,7 @@ fn config_example_documents_every_config_key() {
         "hide_dotfiles",
         "show_ignored",
         "compact_dirs",
+        "changed_file_view",
         "update_check",
         "confirm_discard",
         "scroll_lines",

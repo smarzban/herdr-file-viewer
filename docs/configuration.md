@@ -1,7 +1,7 @@
 # Configuration
 
-An optional TOML config file lets you override the editor, the renderer/opener commands, a couple
-of startup toggles, the tree layout, and the keybindings. **Read-only input** — the viewer never
+An optional TOML config file lets you override the editor, the renderer/opener commands, startup
+view and tree preferences, and the keybindings. **Read-only input** — the viewer never
 writes this file; edit it in your own editor and relaunch to pick up changes (there is no in-app
 settings editor). You can see what's currently in effect any time in the `?` help overlay's
 **Settings** section: each row shows the effective value (after config/env/default precedence). The
@@ -47,8 +47,8 @@ A config key always wins. Only two keys also have an environment-variable fallba
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
 other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
-`compact_dirs`, `confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`,
-`preview_max_lines`, `preview_max_kib`) has no
+`compact_dirs`, `changed_file_view`, `confirm_discard`, `scroll_lines`, `tree_width`,
+`tree_position`, `tree_max_cols`, `preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -68,6 +68,7 @@ reveal = "nautilus"
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 show_ignored = false        # true to show gitignored files at startup (the `i` key still toggles)
 compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
+changed_file_view = "diff"  # changed files start in "diff", or use normal "content" by file type
 update_check = true         # false disables all remote requests and their display
 confirm_discard = true      # false to discard annotations without confirming (on quit / worktree switch)
 scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 scale: 1 slow · 3 medium · 6 fast · 10 max
@@ -83,6 +84,15 @@ preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 
 and their display. When the key is unset, `$HERDR_FILE_VIEWER_NO_UPDATE_CHECK` also disables it.
 No separate spotlight setting exists.
 The system `curl` is optional: without it, document retrieval is unavailable without an error.
+
+`changed_file_view` controls only the automatic initial view for Git-changed files. Its default,
+`"diff"`, preserves the existing diff-first policy. Set it to `"content"` to apply the same normal
+file-type policy used by unchanged files: Markdown opens rendered, while source and text files open
+in syntax content. Deleted paths remain diff-first because they have no on-disk content to render.
+This does not force raw source for Markdown. The `v` cycle still includes compact and full-file diff
+views, and the setting does not change Git status markers, changed-only filtering, the active
+baseline, git-status mode (`d`), or `D`'s unified/side-by-side/plain diff presentation. Values are
+trimmed and case-insensitive; an unrecognized value falls back defensively to `"diff"`.
 
 `tree_width` and `tree_max_cols` **together** decide the tree's startup width, and the **smaller of
 the two wins**: the tree is drawn at `min(tree_width% of the pane, tree_max_cols)`. So if you set

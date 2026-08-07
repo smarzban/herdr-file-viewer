@@ -127,6 +127,12 @@ pub struct Config {
     /// turning on for a deeply-nested layout (a Java/Maven `src/main/java/...`, a nested monorepo),
     /// where the per-segment tree spends most of the column on indentation.
     pub compact_dirs: Option<bool>,
+    /// The automatic initial view for Git-changed files: `"diff"` (the default) or `"content"`
+    /// (apply the normal file-type policy to paths that still exist: rendered Markdown, syntax
+    /// content otherwise). Deleted paths remain diff-first. A lenient string resolved by
+    /// [`resolve`]; an absent or unrecognized value preserves the default diff preference. Manual
+    /// `v` cycling remains available in either mode.
+    pub changed_file_view: Option<String>,
     pub update_check: Option<bool>,
     /// Whether quitting with unexported session annotations confirms first. `None` falls back to
     /// `true`: annotations are session-only, so quitting destroys them, and the confirm is the only
@@ -291,6 +297,10 @@ pub struct EffectiveSettings {
     /// The effective **compact directory chains** switch: the config `compact_dirs` when present,
     /// else `false`. Seeds the tree at startup. Config-or-default (no env var).
     pub compact_dirs: bool,
+    /// The effective automatic view policy for Git-changed files. Config `"content"` selects the
+    /// normal file-type view; absent, invalid, or `"diff"` preserves the original diff-first
+    /// behavior. Config-or-default (no env var).
+    pub changed_file_view: crate::view_policy::ChangedFileView,
     pub update_check: bool,
     /// The effective **confirm-before-discarding-annotations** switch: the config
     /// `confirm_discard` when present, else `true`. Config-or-default (no env var).
@@ -374,6 +384,19 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     // row no longer maps 1:1 to a directory), and which side wins depends on how deep the repo is.
     let compact_dirs = config.compact_dirs.unwrap_or(false);
 
+    // Config > default; no env var. Lenient string match (trimmed, case-insensitive): only
+    // `content` bypasses the changed-file diff preference. Anything else preserves the original
+    // diff-first behavior, so a typo cannot silently hide Git context from an existing workflow.
+    let changed_file_view = match config
+        .changed_file_view
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("content") => crate::view_policy::ChangedFileView::Content,
+        _ => crate::view_policy::ChangedFileView::Diff,
+    };
+
     // Config > default; no env var. Defaults ON: the confirm only fires when annotations are held,
     // so a session that never annotates never sees it, and the one that does has work to lose.
     let confirm_discard = config.confirm_discard.unwrap_or(true);
@@ -449,6 +472,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         hide_dotfiles,
         show_ignored,
         compact_dirs,
+        changed_file_view,
         update_check,
         confirm_discard,
         scroll_lines,
@@ -611,6 +635,7 @@ mod tests {
         assert_eq!(config.open, None);
         assert_eq!(config.reveal, None);
         assert_eq!(config.hide_dotfiles, None);
+        assert_eq!(config.changed_file_view, None);
         assert_eq!(config.update_check, None);
         assert_eq!(config.confirm_discard, None);
         assert_eq!(config.scroll_lines, None);
@@ -714,6 +739,53 @@ mod tests {
             |_| None,
         );
         assert!(on.compact_dirs, "config wins");
+    }
+
+    #[test]
+    fn changed_file_view_parses_and_resolves_content_preference() {
+        let (config, outcome) = parse_config("changed_file_view = \"content\"\n");
+        assert_eq!(outcome, LoadOutcome::Loaded);
+        assert_eq!(config.changed_file_view.as_deref(), Some("content"));
+        assert_eq!(
+            resolve(&config, |_| None).changed_file_view,
+            crate::view_policy::ChangedFileView::Content
+        );
+    }
+
+    #[test]
+    fn changed_file_view_defaults_to_diff_and_invalid_names_fall_back() {
+        assert_eq!(
+            resolve(&Config::default(), |_| None).changed_file_view,
+            crate::view_policy::ChangedFileView::Diff,
+            "an absent key preserves the existing changed-file diff default"
+        );
+
+        for value in ["diff", " DIFF ", "unknown", ""] {
+            let config = Config {
+                changed_file_view: Some(value.to_string()),
+                ..Config::default()
+            };
+            assert_eq!(
+                resolve(&config, |_| None).changed_file_view,
+                crate::view_policy::ChangedFileView::Diff,
+                "{value:?} must resolve defensively to diff"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_file_view_wrong_type_degrades_the_whole_config_to_defaults() {
+        let (config, outcome) = parse_config("changed_file_view = true\nhide_dotfiles = true\n");
+        assert!(matches!(outcome, LoadOutcome::Malformed(_)));
+        assert_eq!(config.changed_file_view, None);
+        assert_eq!(
+            config.hide_dotfiles, None,
+            "a malformed scalar follows the existing whole-config fallback"
+        );
+        assert_eq!(
+            resolve(&config, |_| None).changed_file_view,
+            crate::view_policy::ChangedFileView::Diff
+        );
     }
 
     #[test]
@@ -966,6 +1038,10 @@ mod tests {
         assert!(effective.update_check);
         assert!(!effective.hide_dotfiles);
         assert!(!effective.show_ignored, "ignored entries hidden by default");
+        assert_eq!(
+            effective.changed_file_view,
+            crate::view_policy::ChangedFileView::Diff
+        );
         assert!(
             effective.confirm_discard,
             "the quit guard defaults ON: annotations are session-only, so the confirm is the only \
