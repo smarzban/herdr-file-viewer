@@ -121,6 +121,11 @@ Examples: `src/app.rs`, `src/app.rs:42`, `src/app.rs:10-20`. Treat the target as
 not shell source: prefer a structured argv or process API, or shell-escape it before assigning and
 expanding it only within double quotes.
 
+Keep `--placement split` unless the user asks for something else — a popup is session-modal and
+blocks every other surface until they exit the viewer. If you do use `--placement popup`, also pass
+`--env HERDR_FILE_VIEWER_PLACEMENT=popup`, so the viewer knows it is in a popup and not a pane;
+without that marker its `Z` full-screen key zooms the pane underneath instead.
+
 The viewed root comes from the focused herdr pane's working directory (resolved to that repository's
 worktree top level), so an agent's own `cd` does not move it. To point it at a particular repository,
 split a focused pane with `--cwd "$repo"` first, launch, then close that helper — the root is captured

@@ -95,10 +95,63 @@ fn declares_split_and_tab_open_actions() {
 }
 
 #[test]
-fn pins_minimum_herdr_version() {
+fn declares_overlay_and_popup_open_actions() {
+    // v1.16.0 adds two more ways to summon the same single [[panes]] entry — placement is chosen at
+    // CLI *open* time by the launcher, exactly as the tab action already does. Each new action runs
+    // its OWN script: the overlay launcher differs from the split one in its open argv *and* in its
+    // FOCUS branch, and the popup launcher is open-only (a popup has no pane id to toggle).
+    let m = manifest();
     assert!(
-        manifest().contains(r#"min_herdr_version = "0.7.0""#),
-        "manifest must pin min_herdr_version = \"0.7.0\""
+        m.contains(r#"id = "open-file-viewer-overlay""#),
+        "overlay action present"
+    );
+    assert!(
+        m.contains(r#"id = "open-file-viewer-popup""#),
+        "popup action present"
+    );
+    assert!(
+        m.contains(r#"command = ["bash", "scripts/open-file-viewer-overlay.sh"]"#),
+        "overlay action runs its own launcher"
+    );
+    assert!(
+        m.contains(r#"command = ["bash", "scripts/open-file-viewer-popup.sh"]"#),
+        "popup action runs its own launcher"
+    );
+}
+
+#[test]
+fn overlay_and_popup_actions_are_unix_only() {
+    // Windows is deferred for both layouts (no `.ps1` launcher, no `-windows` action id): the
+    // Windows launchers don't go through `plugin pane open` at all — they spawn the viewer by
+    // absolute path via `pane split`/`tab create` + `pane run` (GH #58) — so an overlay/popup
+    // variant there is a separate piece of work needing real hardware. Guard both halves: each new
+    // action is gated to unix, and no `-windows` sibling sneaked in.
+    let m = manifest();
+    for id in ["open-file-viewer-overlay", "open-file-viewer-popup"] {
+        assert!(
+            m.contains(&format!(
+                "id = \"{id}\"\nplatforms = [\"linux\", \"macos\"]"
+            )),
+            "{id} must be gated to exactly [\"linux\", \"macos\"]: {m}"
+        );
+        assert!(
+            !m.contains(&format!("id = \"{id}-windows\"")),
+            "Windows is deferred for the {id} layout — there must be no {id}-windows action: {m}"
+        );
+    }
+}
+
+#[test]
+fn pins_minimum_herdr_version() {
+    // 0.7.0 → 0.7.4 in v1.16.0, and this is a sanctioned change to a spec-backed assertion, not a
+    // test tidy-up: the floor genuinely moved when the popup layout shipped. herdr 0.7.4 (#1125) is
+    // the release that added session-modal popup PLUGIN panes with cell/percentage sizing, so an
+    // older host cannot honour `open-file-viewer-popup` at all. Declaring the floor the plugin
+    // actually requires beats a manifest that promises a placement the host will reject at runtime.
+    // (Overlay needed no bump — it predates 0.7.4.)
+    assert!(
+        manifest().contains(r#"min_herdr_version = "0.7.4""#),
+        "manifest must pin min_herdr_version = \"0.7.4\" (the popup floor, herdr #1125)"
     );
 }
 

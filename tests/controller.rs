@@ -14,6 +14,7 @@ use herdr_file_viewer::controller::{
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::herdr::HerdrCli;
+use herdr_file_viewer::host::Placement;
 use herdr_file_viewer::intent::Intent;
 use herdr_file_viewer::opener::{Opener, OpenerOutcome};
 use herdr_file_viewer::presenter::{Focus, PaneGeometry};
@@ -2604,6 +2605,63 @@ fn open_fullscreen_without_herdr_toggles_the_in_plugin_zoom() {
         "a second Z toggles back even with herdr absent"
     );
     assert_eq!(ctrl.focus(), Focus::Tree);
+}
+
+#[test]
+fn host_zoom_is_skipped_under_overlay_and_popup() {
+    // `Z` must not ask herdr to zoom a pane the viewer doesn't own.
+    //
+    // A POPUP is not a pane at all (no pane id, absent from `pane list`), so `pane zoom --current`
+    // would resolve to the pane UNDERNEATH the popup: `Z` would zoom someone else's window, and a
+    // later teardown would un-zoom it. An OVERLAY is already covering — herdr implements it as a
+    // split whose new half is tab-zoomed — so `--on` is redundant and `--off` would strip the cover
+    // (verified live 2026-08-07 against herdr 0.8.0). Under both, `Z` stays a working IN-PLUGIN zoom
+    // toggle: the same shape as running with no herdr at all.
+    for placement in [Placement::Popup, Placement::Overlay] {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+
+        let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+        ctrl.set_placement(placement);
+
+        ctrl.handle(Intent::OpenFullscreen);
+        assert!(ctrl.zoomed(), "{placement:?}: Z still zooms in-plugin");
+        assert_eq!(
+            ctrl.focus(),
+            Focus::Content,
+            "{placement:?}: content focused"
+        );
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{placement:?}: Z must issue no `pane zoom` call, got {:?}",
+            calls.lock().unwrap()
+        );
+
+        ctrl.handle(Intent::OpenFullscreen);
+        assert!(!ctrl.zoomed(), "{placement:?}: a second Z toggles back");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{placement:?}: the teardown must not leak an `--off` either, got {:?}",
+            calls.lock().unwrap()
+        );
+    }
+
+    // The control: a split viewer is a real pane it owns, so the host call is unchanged.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    ctrl.set_host(Box::new(PaneZoomFake::new(Arc::clone(&calls))), None);
+    ctrl.set_placement(Placement::Split);
+
+    ctrl.handle(Intent::OpenFullscreen);
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[zoom_argv(true)],
+        "a split viewer still issues `pane zoom --current --on`"
+    );
 }
 
 #[test]

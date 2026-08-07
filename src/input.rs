@@ -269,7 +269,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::OpenFullscreen,
         name: "open_fullscreen",
         default_keys: &[KeyCode::Char('Z')],
-        description: "Toggle full-screen reading of the selected file (in-pane plus herdr pane zoom).",
+        description: "Toggle full-screen reading of the selected file (in-pane, plus a herdr pane zoom outside overlay/popup).",
         category: "View & layout",
     },
     Binding {

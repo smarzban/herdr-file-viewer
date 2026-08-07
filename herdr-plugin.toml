@@ -1,8 +1,16 @@
 # herdr-plugin.toml — manifest for the herdr-file-viewer plugin.
 #
-# A git-aware, read-only file viewer that herdr opens in a split pane beside the
-# user's current work. The viewer appears ONLY in response to an explicit action
+# A git-aware, read-only file viewer that herdr opens beside (or over) the user's
+# current work. The viewer appears ONLY in response to an explicit action
 # (its keybinding) — there are no event hooks and no automatic invocation (AC-N4).
+#
+# Four layouts, all summoned by [[actions]] that pick the placement at OPEN time via the
+# herdr CLI — there is exactly one [[panes]] entry and its declared placement is only the
+# default. split + tab are available on every platform; overlay and popup are
+# linux+macos only in this release (no Windows launchers for them — see the Windows note
+# below). popup is also why min_herdr_version is 0.7.4: herdr 0.7.4 (#1125) is the release
+# that added session-modal popup plugin panes with cell/percentage sizing. Overlay alone
+# would have needed no bump.
 #
 # Windows support is preview (see README's Windows section). Cross-platform packaging:
 #  - [[build]] has a unix (/bin/sh) and a Windows (PowerShell) entry, each gated by the
@@ -24,9 +32,9 @@
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
-version = "1.15.0"
-description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
-min_herdr_version = "0.7.0"
+version = "1.16.0"
+description = "A git-aware, read-only file viewer: a keyboard-driven TUI that opens as a split, tab, or overlay pane, or in a floating popup."
+min_herdr_version = "0.7.4"
 platforms = ["linux", "macos", "windows"]
 
 # Build step herdr runs at install time. Fast path: the platform's fetch-or-build script
@@ -97,3 +105,24 @@ command = [
   "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
   '''$u=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$u; $OutputEncoding=$u; $b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
 ]
+
+# The same viewer as a temporary OVERLAY over the active pane: herdr covers the pane and restores
+# the previous focus and zoom when the overlay closes. Shares the split launcher's toggle, so it
+# reaches whichever viewer is already open in this tab. linux/macos only — no Windows variant.
+[[actions]]
+id = "open-file-viewer-overlay"
+platforms = ["linux", "macos"]
+title = "Open file viewer (overlay)"
+description = "Open the git-aware file viewer as a temporary overlay over the active pane."
+command = ["bash", "scripts/open-file-viewer-overlay.sh"]
+
+# The same viewer in a floating, session-modal POPUP — which is NOT a pane: it has no pane id,
+# never appears in `pane list`, and no herdr CLI verb can close it, so the launcher is open-only
+# and you exit the viewer to dismiss it. This is the entry that needs herdr >= 0.7.4.
+# linux/macos only — no Windows variant.
+[[actions]]
+id = "open-file-viewer-popup"
+platforms = ["linux", "macos"]
+title = "Open file viewer (popup)"
+description = "Open the git-aware file viewer in a floating, session-modal popup."
+command = ["bash", "scripts/open-file-viewer-popup.sh"]

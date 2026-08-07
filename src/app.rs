@@ -184,6 +184,12 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
         Box::new(crate::herdr::LiveHerdr::from_env()),
         ctx.workspace_id.clone(),
     );
+    // Which herdr layout summoned us, from the launcher's `--env` marker — read once, exactly like
+    // the `OPEN_ENV` read above. It gates one thing: `Z` skips the host `pane zoom` under an
+    // overlay or a popup (a popup is not a pane, so `--current` would zoom the pane underneath).
+    // Absent/unrecognized ⇒ `Placement::Unknown` ⇒ today's behaviour.
+    let placement_env = std::env::var(crate::host::PLACEMENT_ENV).ok();
+    controller.set_placement(crate::host::parse_placement(placement_env.as_deref()));
     // Inject the live OS opener for the `O` / `R` hand-offs (AC-13). Non-blocking: unlike the
     // editor hand-off it does NOT suspend the TUI; the opener runs with stdio redirected to null
     // so it cannot draw onto our screen. `with_overrides` layers the config's `open`/`reveal`

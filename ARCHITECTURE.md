@@ -8,7 +8,8 @@ this stays brief.
 
 The viewer is a **single process** that draws *both* the directory tree (left) and the content
 pane (right) inside one [ratatui](https://ratatui.rs) frame. It is **not** composed of multiple
-herdr panes: herdr opens it as one split pane and the viewer owns the whole rectangle. This
+herdr panes: herdr opens it as one pane (split, tab, or overlay) or as one popup surface, and the
+viewer owns the whole rectangle either way. This
 keeps focus, layout, and keyboard routing entirely in-process (no cross-pane IPC for the core
 UX), at the cost of drawing the two-column layout ourselves.
 
@@ -23,11 +24,11 @@ is unit-testable with stubs.
 
 | Module | Responsibility |
 | --- | --- |
-| `host` | The herdr boundary: parse the injected `HERDR_PLUGIN_CONTEXT_JSON` launch context, degrading to `{ cwd }` on anything malformed (never panics). |
+| `host` | The herdr boundary: parse the injected `HERDR_PLUGIN_CONTEXT_JSON` launch context, degrading to `{ cwd }` on anything malformed (never panics). Also parses the launcher-supplied `HERDR_FILE_VIEWER_PLACEMENT` marker into a `Placement` (split / tab / overlay / popup, else unknown) — a plain env var, not part of the context JSON — which is what lets the controller skip the host pane zoom under overlay and popup. |
 | `context` | The normalized `LaunchContext` the host hands to the resolver. |
 | `root` | Resolve the tree root (git worktree top-level, else cwd) and git-presence; the re-root engine re-resolves the root and rebuilds the tree + git services in place when you switch worktrees. |
 | `git` | Read-only git queries: status, baseline selection, changed-set, per-file diff. The **only** module that shells out to `git`, and only with read-only subcommands. |
-| `herdr` | The herdr CLI seam (`$HERDR_BIN_PATH`): read-only queries (list git worktrees / which workspaces have an active agent) plus a best-effort host **layout** command (`pane zoom --current --on`/`--off`, the `Z` full-screen toggle). Neither touches file or git state; an absent or failing herdr degrades gracefully (git-only picker; in-pane zoom only). |
+| `herdr` | The herdr CLI seam (`$HERDR_BIN_PATH`): read-only queries (list git worktrees / which workspaces have an active agent) plus a best-effort host **layout** command (`pane zoom --current --on`/`--off`, the `Z` full-screen toggle). The controller skips that layout call under the overlay and popup placements (the `host` row's `Placement`), where `Z` is the in-pane zoom alone. Neither touches file or git state; an absent or failing herdr degrades gracefully (git-only picker; in-pane zoom only). |
 | `worktree` | Enumerate the repo's git worktrees (`git worktree list --porcelain`) and overlay herdr's agent-active workspace + per-row agent status, feeding the switch-worktree picker. |
 | `tree` | The rooted, `.gitignore`-aware file tree: filters (gitignored, changed-only, hidden/dotfiles), cursor, expansion, status markers, and the `]` / `[` changed-file jump. Optionally folds a chain of single-child directories into one row (`compact_dirs`). A folded row has to look inside a **collapsed** directory, which the tree never opens otherwise, so foldability is answered by a two-entry probe rather than a listing and the answer is memoized — re-probed wherever the controller re-reads git. Listings stay uncached, so a compacted frame reads exactly the directories an uncompacted one does. |
 | `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
@@ -60,7 +61,7 @@ is unit-testable with stubs.
 ## Data flow
 
 ```
-herdr → env (HERDR_PLUGIN_CONTEXT_JSON, optional HERDR_FILE_VIEWER_OPEN)
+herdr → env (HERDR_PLUGIN_CONTEXT_JSON, optional HERDR_FILE_VIEWER_PLACEMENT / HERDR_FILE_VIEWER_OPEN)
           │
    host::from_env → root::resolve → git::default_baseline
           │

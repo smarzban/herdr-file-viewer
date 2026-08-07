@@ -36,7 +36,11 @@ pub enum Intent {
     /// The toggle is driven by the viewer's own record of whether it opened the host zoom, so it
     /// works with or without a live herdr, and every other exit path (`Esc`/`q`, the `z` zoom
     /// toggle, a worktree re-root, quit) releases the host zoom too — the pane never lingers
-    /// full-screen behind the split. On a **directory** (only reachable when not full-screen) it
+    /// full-screen behind the split. **The host call is skipped when the viewer was summoned as an
+    /// overlay or a popup** (`crate::host::Placement`): a popup is not a pane, so `--current` would
+    /// zoom the pane *underneath* it, and an overlay is already covering. There `Z` is the in-plugin
+    /// zoom alone — the same shape as running with no herdr at all. On a **directory** (only
+    /// reachable when not full-screen) it
     /// behaves like [`Intent::Activate`] (expand/collapse). Read-only: the herdr pane zoom is a host
     /// **layout** op, never a file/git mutation (AC-N1/N3), and best-effort — it degrades to the
     /// in-plugin zoom when herdr is absent. Bound to `Z` (Shift+`z`) only — no event hook.

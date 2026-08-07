@@ -25,6 +25,12 @@ PowerShell launcher scripts.
   command = "herdr-file-viewer.open-file-viewer-tab-windows"
   description = "open file viewer in tab"
   ```
+- **The overlay and popup layouts aren't available on native Windows in this release.** The two
+  Windows actions remain `open-file-viewer-windows` and `open-file-viewer-tab-windows`, unchanged;
+  there are no `-windows` variants of `open-file-viewer-overlay` / `open-file-viewer-popup`, because
+  the Windows launchers spawn the viewer by absolute path from PowerShell rather than through the
+  placement-aware `plugin pane open`. Split and tab behave exactly as before. WSL users get all
+  four layouts — WSL runs the Linux path.
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
 - **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing

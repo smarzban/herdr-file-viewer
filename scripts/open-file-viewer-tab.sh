@@ -29,7 +29,8 @@ open_tab() {
     --plugin herdr-file-viewer \
     --entrypoint file-viewer \
     --placement tab \
-    --focus
+    --focus \
+    --env HERDR_FILE_VIEWER_PLACEMENT=tab
 }
 
 decision="OPEN"

@@ -5,7 +5,15 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Entries are short on purpose; follow the
 `→` links for the full detail.
 
-## [Unreleased]
+## [1.16.0] - 2026-08-07
+
+### Added
+- Two more ways to summon the viewer, alongside the split and tab actions. `open-file-viewer-overlay` opens it as a temporary overlay over the active pane; closing it restores the previous focus and zoom. `open-file-viewer-popup` opens it in a floating, session-modal popup at 90% × 85% of the terminal — big enough to stay two-column. Both are Linux/macOS only in this release. → [summoning](docs/summoning.md)
+- The popup is open-only: herdr has no CLI verb that can close one, so exit the viewer to dismiss it (`Esc` is the un-remappable floor; with annotations held, `q` or `y` through the discard confirm). A second press while one is open is refused by herdr with `popup already open`. → [summoning](docs/summoning.md)
+
+### Changed
+- Minimum herdr version is now **0.7.4** (was 0.7.0). Session-modal popups for plugins, with cell/percentage sizing, arrived in that release, so it is the honest floor now that the popup layout ships; overlay alone would have needed no bump. → [install](docs/install.md)
+- `Z` skips the herdr pane zoom under the new overlay and popup layouts — an overlay already covers the terminal, and a popup has no pane of its own to zoom — so there it is the in-pane full-screen only. Split and tab are unchanged. → [keys](docs/keys.md)
 
 ### Fixed
 - Agent skill: the launch instructions no longer tell agents to pass `--cwd`. herdr resolves the manifest's relative pane command against it, so the launch failed with `plugin_pane_open_failed` — or worse, inside a built plugin checkout, silently ran that checkout's binary. The skill and the `docs/usage.md` snippet now explain that the viewed root follows the *focused herdr pane's* directory, so an agent's own `cd` does not move it. Thanks @AntonyKor (#139) → [agent skill](skills/herdr-file-viewer/SKILL.md) · [usage](docs/usage.md#teach-your-agent)

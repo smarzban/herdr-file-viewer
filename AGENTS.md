@@ -38,9 +38,10 @@ Companion docs:
 ### What this is
 
 A **herdr plugin**: a git-aware, read-only **file viewer**: a keyboard-driven TUI that opens in a
-herdr split pane, with a directory tree on the left and a content pane on the right (rendered
-markdown, diffs, or syntax-highlighted content). herdr is the host (a Rust+ratatui terminal agent
-multiplexer); this plugin is built to align with it.
+herdr pane — a split, its own tab, or an overlay over the active pane — or in a floating popup
+(which is *not* a pane), with a directory tree on the left and a content pane on the right
+(rendered markdown, diffs, or syntax-highlighted content). herdr is the host (a Rust+ratatui
+terminal agent multiplexer); this plugin is built to align with it.
 
 ### Current state: BUILT & SHIPPED
 
@@ -109,9 +110,15 @@ These shape every decision; violating one is a design error, not a style nit:
   current`, `herdr pane layout --current`), and the `herdr` skill when running inside herdr
   (`HERDR_ENV=1`). Pin the exact argv you verified in a test comment so a future change can't
   silently break it.
-- **Manifest** `herdr-plugin.toml`: declare the viewer as a `[[panes]]` entry with
-  `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]`, plus an
-  `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos","windows"]`
+- **Manifest** `herdr-plugin.toml`: declare the viewer as a **single** `[[panes]]` entry with
+  `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]` — that placement is
+  only the entry's default. The **four layouts (split, tab, overlay, popup) are chosen at *open*
+  time** by a launcher script's `plugin pane open --placement …`, so one pane entry is summoned by
+  **six `[[actions]]`**: the four unix ones (`open-file-viewer`, `-tab`, `-overlay`, `-popup`) plus
+  the two existing `-windows` split/tab variants. Overlay and popup are linux+macos only this
+  release. `min_herdr_version = "0.7.4"` — session-modal popups for plugins, with cell/percentage
+  sizing, landed in herdr 0.7.4 (#1125), so that is the honest floor once popup ships (overlay
+  alone would have needed no bump); `platforms = ["linux","macos","windows"]`
   (Windows is preview, with per-item launcher entries), and **platform-gated `[[build]]` steps**
   (`["/bin/sh","scripts/fetch-or-build.sh"]` on unix, `powershell … scripts/fetch-or-build.ps1` on
   Windows) that download the verified prebuilt binary and fall back to `cargo build --release`.

@@ -28,7 +28,8 @@ open_pane() {
     --entrypoint file-viewer \
     --placement split \
     --direction right \
-    --focus
+    --focus \
+    --env HERDR_FILE_VIEWER_PLACEMENT=split
 }
 
 decision="OPEN"

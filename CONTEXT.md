@@ -152,12 +152,18 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
 - **action**: a herdr plugin command bound to a keybinding, run in a workspace
   context; how the user summons the viewer.
 - **pane**: a herdr terminal surface a plugin can own (overlay / split / tab /
-  zoomed). The viewer runs in a split pane.
+  zoomed). The viewer runs as a split, tab, or overlay pane, or as a **popup** —
+  whichever the **action** that summoned it asked for.
 - **platform**: an OS the plugin declares support for in its manifest `platforms`
   set (linux / macos / windows).
 - **platform filter**: herdr skipping a manifest `[[build]]` whose declared
   **platform** doesn't match the host, and returning `platform_unsupported` for an
   unsupported action or pane; what lets unix and Windows build/launcher entries
   coexist in one manifest.
+- **popup**: a floating, session-modal herdr terminal surface, sized in cells or
+  percent at open time. Explicitly **not a pane**: it has no pane id, emits no pane
+  lifecycle events, and is invisible to herdr's pane / layout / persistence APIs, so
+  nothing can address or close it once it is open — the viewer's own exit is what
+  dismisses it. A singleton: a second open is refused while one is live.
 - **preview channel**: herdr's pre-release update channel. Native Windows herdr
   binaries ship only here, so a Windows user of the **viewer** must be on it.

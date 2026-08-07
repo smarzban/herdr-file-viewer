@@ -23,6 +23,47 @@ const SECURITY: &str = include_str!("../SECURITY.md");
 const AGENT_SKILL: &str = include_str!("../skills/herdr-file-viewer/SKILL.md");
 const OPEN_PANE_SCRIPT: &str = include_str!("../scripts/open-file-viewer.sh");
 const OPEN_TAB_SCRIPT: &str = include_str!("../scripts/open-file-viewer-tab.sh");
+const OPEN_OVERLAY_SCRIPT: &str = include_str!("../scripts/open-file-viewer-overlay.sh");
+const OPEN_POPUP_SCRIPT: &str = include_str!("../scripts/open-file-viewer-popup.sh");
+const MANIFEST: &str = include_str!("../herdr-plugin.toml");
+const SUMMONING_DOC: &str = include_str!("../docs/summoning.md");
+const WINDOWS_DOC: &str = include_str!("../docs/windows.md");
+
+/// A launch block is any run of lines joined by trailing `\` continuations that mentions the
+/// plugin-pane-open verb — i.e. one whole `herdr plugin pane open …` invocation, flattened to a
+/// single string. Shared by the `--cwd` guard and the argv guard below so both judge the same
+/// slice of text.
+fn launch_blocks(doc: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = String::new();
+    for line in doc.lines() {
+        let trimmed = line.trim_end();
+        current.push(' ');
+        current.push_str(trimmed.trim_end_matches('\\').trim());
+        if !trimmed.ends_with('\\') {
+            if current.contains("plugin pane open") {
+                blocks.push(current.clone());
+            }
+            current.clear();
+        }
+    }
+    if current.contains("plugin pane open") {
+        blocks.push(current);
+    }
+    blocks
+}
+
+/// A shell script with its whole-line `#` comments (and shebang) removed, so an assertion about
+/// the *argv* can't be satisfied — or broken — by the header prose. The launcher headers are
+/// required to name the flags they deliberately omit, so a negative assertion over the raw file
+/// would fail on its own documentation.
+fn code_lines(script: &str) -> String {
+    script
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// The `--cwd` drift guard (#139).
 ///
@@ -34,33 +75,14 @@ const OPEN_TAB_SCRIPT: &str = include_str!("../scripts/open-file-viewer-tab.sh")
 /// the build instead of reaching an agent.
 #[test]
 fn no_documented_launch_passes_cwd_to_plugin_pane_open() {
-    // A launch block is any run of lines joined by trailing `\` continuations that mentions the
-    // plugin-pane-open verb; `--cwd` must not appear inside one.
-    fn launch_blocks(doc: &str) -> Vec<String> {
-        let mut blocks = Vec::new();
-        let mut current = String::new();
-        for line in doc.lines() {
-            let trimmed = line.trim_end();
-            current.push(' ');
-            current.push_str(trimmed.trim_end_matches('\\').trim());
-            if !trimmed.ends_with('\\') {
-                if current.contains("plugin pane open") {
-                    blocks.push(current.clone());
-                }
-                current.clear();
-            }
-        }
-        if current.contains("plugin pane open") {
-            blocks.push(current);
-        }
-        blocks
-    }
-
+    // `--cwd` must not appear inside any `launch_blocks` slice.
     for (name, doc) in [
         ("skills/herdr-file-viewer/SKILL.md", AGENT_SKILL),
         ("docs/usage.md", USAGE_DOC),
         ("scripts/open-file-viewer.sh", OPEN_PANE_SCRIPT),
         ("scripts/open-file-viewer-tab.sh", OPEN_TAB_SCRIPT),
+        ("scripts/open-file-viewer-overlay.sh", OPEN_OVERLAY_SCRIPT),
+        ("scripts/open-file-viewer-popup.sh", OPEN_POPUP_SCRIPT),
     ] {
         for block in launch_blocks(doc) {
             assert!(
@@ -77,6 +99,197 @@ fn no_documented_launch_passes_cwd_to_plugin_pane_open() {
         AGENT_SKILL.contains("plugin pane open") && USAGE_DOC.contains("plugin pane open"),
         "the agent skill and usage doc must still document the launch command"
     );
+}
+
+/// Every unix launcher's `plugin pane open` argv is exactly the one verified against a live host.
+///
+/// Verified 2026-08-07 against **herdr 0.8.0** via the BARE `herdr plugin pane` usage line — the
+/// surface to trust. Two of herdr's own surfaces under-report the placement enum in 0.8.0: the
+/// `open --help` output and `herdr completion zsh` both list `overlay split tab zoomed` and omit
+/// `popup`, `--width` and `--height`. Only the bare usage string and the API schema
+/// (`$defs.PluginPanePlacement`) are right, and a live probe opened all four layouts successfully.
+///
+/// Every positive AND negative here runs against the *extracted invocation* ([`launch_blocks`] over
+/// [`code_lines`]), never the whole file: each launcher's header is required to name the flags it
+/// deliberately omits, so a whole-file `contains` negative would fail on its own documentation.
+#[test]
+fn every_launcher_uses_the_verified_argv() {
+    // (script name, source, placement marker) — all four unix launchers. The two Windows `.ps1`
+    // launchers are deliberately absent: they don't use `plugin pane open` at all (absolute-path
+    // `pane split`/`tab create` + `pane run`, GH #58), so they carry no marker and parse as
+    // `Placement::Unknown`, which keeps today's host-zoom behaviour — correct, since what they open
+    // really is a split pane.
+    let launchers = [
+        ("scripts/open-file-viewer.sh", OPEN_PANE_SCRIPT, "split"),
+        ("scripts/open-file-viewer-tab.sh", OPEN_TAB_SCRIPT, "tab"),
+        (
+            "scripts/open-file-viewer-overlay.sh",
+            OPEN_OVERLAY_SCRIPT,
+            "overlay",
+        ),
+        (
+            "scripts/open-file-viewer-popup.sh",
+            OPEN_POPUP_SCRIPT,
+            "popup",
+        ),
+    ];
+
+    for (name, script, placement) in launchers {
+        let blocks = launch_blocks(&code_lines(script));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "{name} must contain exactly one `plugin pane open` invocation (found {})",
+            blocks.len()
+        );
+        let argv = &blocks[0];
+
+        assert!(
+            argv.contains(&format!("--placement {placement}")),
+            "{name} must open with `--placement {placement}`: {argv}"
+        );
+        // The marker the viewer reads back (`src/host::PLACEMENT_ENV`) to decide whether `Z` may
+        // issue a host `pane zoom`. It must match the placement it is marking, or an overlay/popup
+        // viewer would zoom a pane it does not own.
+        assert!(
+            argv.contains(&format!("--env HERDR_FILE_VIEWER_PLACEMENT={placement}")),
+            "{name} must tag its argv with `--env HERDR_FILE_VIEWER_PLACEMENT={placement}`: {argv}"
+        );
+    }
+
+    let overlay = launch_blocks(&code_lines(OPEN_OVERLAY_SCRIPT)).remove(0);
+    let popup = launch_blocks(&code_lines(OPEN_POPUP_SCRIPT)).remove(0);
+
+    // Sizing is popup-only. herdr rejects it elsewhere: `invalid_params`, exit 1, "width and height
+    // are only supported when placement is popup".
+    for flag in ["--width", "--height"] {
+        assert!(
+            !overlay.contains(flag),
+            "an overlay open must not carry {flag} (herdr rejects it): {overlay}"
+        );
+    }
+    // 90% x 85% measured 147x43 on a 167-column tab area, against `NARROW_SPLIT = 80` in
+    // `src/presenter.rs`; an unsized popup (herdr's half-size default) measured 80x25 there — on the
+    // single-column boundary with nothing to spare.
+    assert!(
+        popup.contains("--width 90%") && popup.contains("--height 85%"),
+        "the popup open must carry the sized `--width 90% --height 85%`: {popup}"
+    );
+
+    // Neither placement may target a pane or workspace: herdr answers `invalid_params`, exit 1,
+    // "overlay and popup plugin panes target the active pane".
+    for (name, argv) in [
+        ("scripts/open-file-viewer-overlay.sh", &overlay),
+        ("scripts/open-file-viewer-popup.sh", &popup),
+    ] {
+        for flag in ["--target-pane", "--workspace"] {
+            assert!(
+                !argv.contains(flag),
+                "{name} must not carry {flag} (herdr rejects it for this placement): {argv}"
+            );
+        }
+    }
+}
+
+/// The overlay launcher's FOCUS branch must NOT be the split launcher's zoom cycle.
+///
+/// herdr implements an overlay as a 50/50 split whose new half is tab-zoomed (`pane layout
+/// --current` during a live overlay: `splits:[{direction:"right",ratio:0.5}]` + `zoomed:true`;
+/// verified 2026-08-07, herdr 0.8.0). So `pane zoom <id> --on` → `--off`, which is how
+/// `scripts/open-file-viewer.sh` pulls focus, *succeeds* against an overlay and thereby strips its
+/// covering zoom — leaving a permanent ordinary split. `plugin pane focus <id>` pulls focus and
+/// preserves `zoomed: true` (verified the same sitting), so that is the verb here. The CLOSE branch
+/// is unaffected and keeps the generic `pane close <id>`, also verified against a live overlay.
+///
+/// Asserted over the script's non-comment lines only — the header explains the zoom cycle at
+/// length, so a raw `contains` would false-positive on the explanation.
+#[test]
+fn the_overlay_launcher_focuses_without_the_zoom_cycle() {
+    let code = code_lines(OPEN_OVERLAY_SCRIPT);
+    assert!(
+        code.contains(r#"exec "$herdr_bin" plugin pane focus "$pid""#),
+        "the overlay launcher's FOCUS branch must run `plugin pane focus <pane_id>`: {code}"
+    );
+    assert!(
+        !code.contains("pane zoom"),
+        "the overlay launcher must never run `pane zoom` — it would flatten the overlay into a \
+         plain split: {code}"
+    );
+    // The split launcher keeps the zoom cycle: for a genuine split viewer it is correct, and
+    // changing it is out of scope.
+    assert!(
+        code_lines(OPEN_PANE_SCRIPT).contains("pane zoom"),
+        "the split launcher's FOCUS branch must still use the `pane zoom` cycle"
+    );
+}
+
+/// Every `[[actions]]` id the manifest declares is documented for users.
+///
+/// `docs/summoning.md` is the owning page, but the corpus is deliberately summoning.md **plus**
+/// `docs/windows.md`, scanned as one: that union is the actual doc split, not a loophole. The
+/// `open-file-viewer-windows` / `open-file-viewer-tab-windows` ids are documented only on the
+/// Windows page, which summoning.md links to as its annex, so scanning summoning.md alone would
+/// fail on day one. The name keeps the `summoning_doc_` prefix because summoning.md owns the topic.
+///
+/// Matching is whole-token, not substring: every id is a prefix of a longer one
+/// (`open-file-viewer` ⊂ `open-file-viewer-tab` ⊂ `open-file-viewer-tab-windows`), so a bare
+/// `contains` would let one long id satisfy three others and the guard would pass while documenting
+/// nothing. A match must be bounded on both sides by a non-id character — backtick, quote, comma,
+/// whitespace, `.` (as in `herdr-file-viewer.open-file-viewer-tab`), end of input.
+#[test]
+fn summoning_doc_documents_every_open_action() {
+    // Ids come from `[[actions]]` entries only. The `[[panes]]` entry also has an `id` (`file-viewer`)
+    // and it is NOT a user-invocable action — worse, it only ever appears inside the action ids, where
+    // the token boundary rule would (correctly) reject it. Track the current table header, and strip
+    // comment lines first so the manifest's own prose about `[[actions]]` doesn't open a section.
+    let mut section = "";
+    let mut ids: Vec<&str> = Vec::new();
+    for line in MANIFEST.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with("[[") {
+            section = trimmed;
+        } else if section == "[[actions]]"
+            && let Some(id) = trimmed
+                .strip_prefix("id = \"")
+                .and_then(|s| s.strip_suffix('"'))
+        {
+            ids.push(id);
+        }
+    }
+    assert!(
+        ids.len() >= 6,
+        "expected at least the six declared [[actions]] ids (4 unix + 2 Windows), found {ids:?}"
+    );
+
+    let corpus = format!("{SUMMONING_DOC}\n{WINDOWS_DOC}");
+    for id in ids {
+        assert!(
+            mentions_token(&corpus, id),
+            "the `{id}` action must be documented as a whole token in docs/summoning.md or \
+             docs/windows.md — a bare substring inside a longer id does not count"
+        );
+    }
+}
+
+/// Whether `token` occurs in `corpus` bounded on both sides by a non-id character, so a match
+/// inside a longer identifier doesn't count.
+fn mentions_token(corpus: &str, token: &str) -> bool {
+    fn is_id_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    }
+    corpus.match_indices(token).any(|(i, _)| {
+        corpus[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_id_char(c))
+            && corpus[i + token.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_id_char(c))
+    })
 }
 
 /// Whether `example` has a commented-out TOML assignment for `key` (a line that, after its leading

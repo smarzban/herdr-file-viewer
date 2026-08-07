@@ -35,6 +35,7 @@ use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
 use crate::help::{HelpSection, HelpSectionState, HelpState};
 use crate::herdr::HerdrCli;
+use crate::host::Placement;
 use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
 use crate::picker::PickerState;
@@ -609,9 +610,14 @@ pub struct Controller {
     /// Whether **this viewer** currently holds the pane in full-screen via `Z`
     /// ([`Intent::OpenFullscreen`]). Owned intent, not a herdr query: it drives the `Z` toggle and,
     /// crucially, lets every exit path (a second `Z`, `Esc`/`q`, `z`, a re-root, quit) release the
-    /// host pane zoom. Only ever set through [`host_zoom`](Self::host_zoom), so it stays paired with
-    /// the actual `pane zoom --on`/`--off` calls, and only ever in response to the user pressing
-    /// `Z` — never on its own.
+    /// host pane zoom. Only ever set through [`host_zoom`](Self::host_zoom), and only ever in
+    /// response to the user pressing `Z` — never on its own.
+    ///
+    /// It tracks the viewer's *intent*, which is not always a host call: under
+    /// [`Placement::Overlay`] / [`Placement::Popup`] `host_zoom` flips this flag but issues no
+    /// `pane zoom --on`/`--off` at all (see [`placement`](Self::placement)), so `Z` stays a working
+    /// in-plugin zoom toggle there. Under every other placement the flag does stay paired with the
+    /// actual calls.
     ///
     /// One consequence of tracking intent rather than querying herdr: pressing `Z` while the pane
     /// is *already* full-screen (because the user zoomed it with herdr's own pane-zoom key) makes
@@ -621,6 +627,11 @@ pub struct Controller {
     /// `Z`) is heavier and still can't tell "the user's zoom" from "ours". `Z` is only ever a no-op
     /// on the host when there is nothing to change.
     host_zoomed: bool,
+    /// Which herdr layout summoned this viewer, from the launcher's `--env` marker
+    /// (`crate::host::PLACEMENT_ENV`). Injected once at wiring time by
+    /// [`set_placement`](Self::set_placement); defaults to [`Placement::Unknown`], which keeps the
+    /// pre-marker behaviour. Read by [`host_zoom`](Self::host_zoom) only.
+    placement: Placement,
     tree: TreeModel,
     /// Changed-set vs the active baseline, cached; recomputed on a baseline toggle (AC-16).
     changed: BTreeMap<PathBuf, Status>,
@@ -867,6 +878,7 @@ impl Controller {
             wrap_override: None,
             zoomed: false,
             host_zoomed: false,
+            placement: Placement::Unknown,
             changed: BTreeMap::new(),
             overrides: HashMap::new(),
             content: Text::raw(""),
@@ -1332,6 +1344,14 @@ impl Controller {
     pub fn set_host(&mut self, herdr: Box<dyn HerdrCli>, workspace_id: Option<String>) {
         self.herdr = Some(herdr);
         self.our_workspace_id = workspace_id;
+    }
+
+    /// Record which herdr layout summoned this viewer (the launcher's
+    /// [`PLACEMENT_ENV`](crate::host::PLACEMENT_ENV) marker). Session-level, injected once by
+    /// `app::run` alongside [`set_host`](Self::set_host) — the layout can't change under a running
+    /// viewer. Left unset ⇒ [`Placement::Unknown`] ⇒ the pre-marker behaviour, host zoom included.
+    pub fn set_placement(&mut self, placement: Placement) {
+        self.placement = placement;
     }
 
     /// Inject the OS opener seam used by the `O` / `R` hand-offs (open-with-default-app /
@@ -2283,8 +2303,20 @@ impl Controller {
     /// interpolated — so there is no option-injection surface. Best-effort and read-only w.r.t.
     /// files/git (a herdr layout op): a missing or failing herdr is swallowed, and the flag still
     /// tracks intent so `Z` stays a toggle (and teardown still fires) even with no herdr present.
+    ///
+    /// **Skipped entirely under [`Placement::Overlay`] and [`Placement::Popup`]** — the flag still
+    /// flips (so `Z` remains the in-plugin zoom toggle, exactly the herdr-absent behaviour), but no
+    /// `pane zoom` is issued. For a popup that is load-bearing: a popup is not a pane, so
+    /// `--current` would resolve to the pane *underneath* and `Z` would zoom — and later un-zoom —
+    /// a window the viewer never owned. For an overlay it is corrective: herdr already has it
+    /// covering, and `--off` would strip that cover. Both branches route through here, so the
+    /// teardown paths (`Esc`/`q`, `z`, a re-root, quit → [`leave_host_zoom`](Self::leave_host_zoom))
+    /// are guarded by the same check and can't leak a stray `--off`.
     fn host_zoom(&mut self, on: bool) {
         self.host_zoomed = on;
+        if matches!(self.placement, Placement::Overlay | Placement::Popup) {
+            return;
+        }
         if let Some(herdr) = self.herdr.as_ref() {
             let flag = if on { "--on" } else { "--off" };
             let _ = herdr.run(&["pane", "zoom", "--current", flag]);

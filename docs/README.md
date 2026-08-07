@@ -17,7 +17,7 @@ TUI pane. New here? Start with the [README](../README.md) for what it is and a q
 | Page | What's in it |
 | --- | --- |
 | [Install & updating](install.md) | Prebuilt vs. source, pinning a version, local-dev linking, and how updates surface (the in-app "update available" banner). |
-| [Summoning the viewer](summoning.md) | The open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat. |
+| [Summoning the viewer](summoning.md) | The open actions, the idempotent launcher, the four layouts (split, tab, overlay, popup), and the `--remote` caveat. |
 | [Usage guide](usage.md) | A feature-by-feature tour: the tree, open-at-launch, view modes, git awareness, find/search, copying, hand-offs, worktrees, help. |
 | [Keys & mouse](keys.md) | The complete key table, mouse gestures, and the editor hand-off (`$EDITOR` troubleshooting). |
 | [Configuration](configuration.md) | The full `config.toml` reference — editor/renderer/opener commands, startup toggles, tree layout, and `[keys]` remapping. |
