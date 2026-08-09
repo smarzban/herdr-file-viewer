@@ -139,6 +139,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Horizontal wheel / swipe** | Scroll the content, or the tree, sideways (terminal-dependent, see below) |
 | **Drag** a scrollbar | Scroll that pane: drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
 | **Drag** the divider | Resize the tree / content split |
+| **Click / drag** a video's progress bar | Seek to that position (the bar occupies the content pane's last row while a video is selected) |
 | **Drag** over the content text | **Select and copy text**: the selection highlights character-by-character as you drag (auto-scrolling past an edge) and is copied to the clipboard on release; no mode needed. Works in wrapped views (prose/markdown) too. `Esc`, a click elsewhere, or switching files clears the highlight |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the

@@ -61,7 +61,10 @@ terminal). What ffmpeg is needed for:
   displayed. Without it ffmpeg races to the end of the file (a 7-second clip decodes in under half
   a second), the queue discards almost every frame, and playback appears to stop immediately. The
   poster frame and playback are decoded at the same target size, so pressing `p` never resizes the
-  picture.
+  picture. Pausing holds the frame you paused on rather than reverting to the poster.
+- **A progress bar** occupies the content pane's last row while a video of known duration is
+  selected — `▶ 0:03 / 0:07 ━━━━━━╸────────`. Click or drag anywhere along it to seek. The picture
+  reserves that row, so the bar and the video never overlap.
 - **A caption above the picture** reports what you are looking at, e.g.
   `[image: 3008×1546 · PNG · 8-bit RGBA · 655 KiB]` or
   `[video: 854×480 · 0:07 · HEVC · 982 KiB · p to play]`. Colour depth and type come from the PNG
