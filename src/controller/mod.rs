@@ -221,6 +221,11 @@ struct MediaPlayer {
     /// Whether a decoded frame has actually been shown. Once true, the poster still must never be
     /// put back — pausing should hold the frame you paused ON, not jump to frame 0.
     has_frame: bool,
+    /// A frame is owed even though playback is paused: the decoder was just (re)spawned by a seek
+    /// or restart, and the frame AT that position has not arrived yet. Without this a paused seek
+    /// shows nothing until you press play — the decoder produces the frame a moment after the
+    /// spawn, and a paused tick would never collect it.
+    awaiting_seek_frame: bool,
 }
 
 impl MediaPlayer {
@@ -274,6 +279,7 @@ impl MediaPlayer {
             placement,
         });
         self.has_frame = true;
+        self.awaiting_seek_frame = false; // the seek's frame has landed
         true
     }
 
@@ -1723,6 +1729,7 @@ impl Controller {
             run_started_at: Instant::now(),
             run_started_from: position,
             has_frame: false,
+            awaiting_seek_frame: true,
         };
         if !playing {
             let (rect, metrics) = (self.media_cell_rect(), self.cell_metrics);
@@ -1741,6 +1748,14 @@ impl Controller {
     /// `Space` on a selected video: play if paused/idle, pause if playing.
     fn media_play_pause(&mut self) -> Effects {
         match &mut self.media_player {
+            // Resuming a video whose decoder already drained (paused past its end, or paused long
+            // enough after a seek) needs a fresh decoder at the current position — the old one has
+            // nothing left to give.
+            Some(p) if !p.playing && p.decoder.finished() => {
+                let position = p.position;
+                self.media_start(position, true);
+                Some(Effects::redraw())
+            }
             Some(p) => {
                 p.playing = !p.playing;
                 // Freeze the position on pause, and resume the clock from there on play, so the
@@ -1776,11 +1791,15 @@ impl Controller {
 
     /// Seek to an absolute offset; `0` restarts. Preserves the playing state across the spawn.
     fn media_seek_to(&mut self, position: f64) -> Effects {
+        // Seeking preserves the play state, and an idle video (no player yet — the poster still is
+        // what is on screen) stays PAUSED. Defaulting to "playing" here meant scrubbing the bar or
+        // pressing `{`/`}` silently started playback, which then ran to the end and reset the
+        // position; `p` is the only thing that starts a video.
         let playing = self
             .media_player
             .as_ref()
             .map(|p| p.playing)
-            .unwrap_or(true);
+            .unwrap_or(false);
         self.media_start(position, playing);
         Effects::redraw()
     }
@@ -1797,25 +1816,32 @@ impl Controller {
             return false;
         };
         if player.decoder.finished() {
-            // Decoder drained: no more frames will come. Fall back to the sync_media discipline,
-            // which will clear (the video's still preview text remains) — and drop the player
-            // so `p`/seeks no longer nop into a dead decoder.
-            let ended = player.playing;
+            // Only a PLAYING video has ended. A paused one keeps its player: the decoder runs on
+            // to EOF in the background after a seek (it is `-re` paced, so this happens seconds
+            // later), and dropping the player there would silently discard the position — the bar
+            // fell back to 0:00 and the next `p` restarted from the beginning. Playback resumes by
+            // respawning at `position`; see `media_play_pause`.
+            if !player.playing {
+                return false;
+            }
             if let Some(p) = self.media_player.take() {
                 p.stop();
             }
-            return ended;
+            return true;
         }
-        if !player.playing {
+        if !player.playing && !player.awaiting_seek_frame {
             return false;
         }
         if now < player.next_frame_at {
             return false; // paced: one frame per FRAME_INTERVAL, no bursts
         }
-        // Wall-clock position: `-re` paces the decoder to real time, so elapsed time is the
-        // truthful playback offset. Counting displayed frames would drift slow, because the host
-        // ceiling means we show fewer frames than the decoder emits.
-        player.position = player.run_started_from + player.run_started_at.elapsed().as_secs_f64();
+        if player.playing {
+            // Wall-clock position: `-re` paces the decoder to real time, so elapsed time is the
+            // truthful playback offset. Counting displayed frames would drift slow, because the
+            // host ceiling means we show fewer frames than the decoder emits.
+            player.position =
+                player.run_started_from + player.run_started_at.elapsed().as_secs_f64();
+        }
         player.next_frame_at = now + crate::media::player::FRAME_INTERVAL;
         player.pull_and_show(
             &mut self.graphics,

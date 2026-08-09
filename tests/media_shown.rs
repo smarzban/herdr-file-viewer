@@ -362,6 +362,51 @@ fn build_video(root: &Path) -> (Controller, RecordingSink) {
 }
 
 #[test]
+fn seeking_an_idle_video_previews_the_frame_without_starting_playback() {
+    // Two regressions in one journey. Seeking used to default to "playing" when no player existed
+    // yet, so scrubbing the bar (or `{`/`}`) silently STARTED the video, which then ran to its end
+    // and reset the position to 0. And a paused tick pulled no frames at all, so even once the
+    // seek worked the pane showed nothing until you pressed play.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("clip.mp4"), b"not a real mp4").unwrap();
+    let (mut ctrl, sink) = build_video(dir.path());
+    ctrl.set_pane_geometry(geom_with_inner(Rect::new(0, 0, 40, 24)));
+    await_content(&mut ctrl, "p to play");
+    ctrl.sync_media();
+    let before = sink.commands.lock().unwrap().len();
+
+    ctrl.handle(Intent::MediaSeekForward);
+
+    // A frame for the sought position must arrive WITHOUT any play keypress.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        ctrl.tick_media(Instant::now());
+        if sink.commands.lock().unwrap().len() > before {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a paused seek must still show the frame at that position"
+        );
+        std::thread::yield_now();
+    }
+
+    // ...and the video must still be PAUSED. `media_progress` reports the sought offset, and the
+    // position must not advance on its own the way a playing video's would.
+    let (position, _duration) = ctrl
+        .media_progress()
+        .expect("a video with a known duration");
+    assert!(position > 0.0, "the seek moved the position: {position}");
+    std::thread::sleep(Duration::from_millis(250));
+    ctrl.tick_media(Instant::now());
+    let (later, _) = ctrl.media_progress().expect("still a video");
+    assert_eq!(
+        position, later,
+        "a paused video's position must not advance -- seeking must not have started playback"
+    );
+}
+
+#[test]
 fn video_play_pause_seek_restart_drive_the_decoder() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("clip.mp4"), b"not a real mp4").unwrap();
