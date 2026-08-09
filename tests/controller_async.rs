@@ -38,6 +38,7 @@ impl ContentProvider for SlowContent {
             content: Text::raw(format!("rendered:{name}")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -68,6 +69,7 @@ impl ContentProvider for GatedContent {
             content: Text::raw(format!("rendered:{name}")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -171,6 +173,7 @@ impl ContentProvider for PanicOnContent {
             content: Text::raw(format!("rendered:{name}")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -267,6 +270,7 @@ impl ContentProvider for EchoDiffContent {
             )),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -781,12 +785,21 @@ impl WidthProbe {
             content: Text::raw(s),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
 impl ContentProvider for WidthProbe {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            None,
+        )
     }
     fn render_at_width(
         &self,
@@ -796,6 +809,7 @@ impl ContentProvider for WidthProbe {
         width: Option<u16>,
         _pane_width: Option<u16>,
         _diff_render_mode: DiffRenderMode,
+        _media_box: Option<(u32, u32)>,
     ) -> RenderResult {
         self.widths.lock().unwrap().push(width);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -1044,6 +1058,7 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
                 content: Text::raw(format!("r:{name}:{}", raw_diff.unwrap_or("-"))),
                 notices: Vec::new(),
                 source: None,
+                media: None,
             }
         }
     }
@@ -1057,6 +1072,7 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
         Some(42),
         None,
         DiffRenderMode::default(),
+        None,
     );
     assert_eq!(
         flatten(&base.content),
@@ -1072,7 +1088,15 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
 struct WidthDependentMatches;
 impl ContentProvider for WidthDependentMatches {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            None,
+        )
     }
     fn render_at_width(
         &self,
@@ -1082,6 +1106,7 @@ impl ContentProvider for WidthDependentMatches {
         width: Option<u16>,
         _pane_width: Option<u16>,
         _diff_render_mode: DiffRenderMode,
+        _media_box: Option<(u32, u32)>,
     ) -> RenderResult {
         let n = match width {
             Some(w) if w >= 40 => 8,
@@ -1095,6 +1120,7 @@ impl ContentProvider for WidthDependentMatches {
             content: Text::raw(s),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }

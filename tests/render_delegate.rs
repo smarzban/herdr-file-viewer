@@ -29,6 +29,9 @@ fn cat() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -234,6 +237,9 @@ fn missing_renderer_falls_back_to_plain_text_with_a_notice() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -305,6 +311,9 @@ fn syntax_renderer_receives_the_file_name_via_placeholder() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -335,6 +344,9 @@ fn a_malicious_file_name_cannot_inject_via_the_placeholder() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["sh".into(), "-c".into(), "echo {name}".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     };
     let prepared = Prepared::Full {
@@ -367,6 +379,9 @@ fn full_diff_mode_renders_the_diff_text_via_the_full_diff_renderer() {
         diff: vec!["herdr-no-such-binary-xyz".into()], // would fail if FullDiff used it
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     };
     let full = "@@ -1,2 +1,2 @@\n fn main() {\n-    old();\n+    new();\n }";
@@ -428,6 +443,9 @@ fn a_hanging_renderer_times_out_and_falls_back() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_millis(150),
     };
     let prepared = Prepared::Full {
@@ -516,6 +534,9 @@ fn glow_markdown_wrapped_to_width_never_exceeds_it() {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     };
     // A table far wider than `width` at natural layout, plus a long prose paragraph — both must be

@@ -68,6 +68,17 @@ pub const MIN_PREVIEW_MAX_KIB: u32 = 64;
 /// bounded-read guarantee (AC-N1) holds at every setting; a larger value clamps down to it.
 pub const MAX_PREVIEW_MAX_KIB: u32 = 65_536;
 
+/// The built-in **media size cap**, in KiB (8 MiB): the byte-bound on reading a media file's
+/// bytes for the Media view, deliberately separate from the ~1 MiB text-preview cap (images are
+/// naturally big; a bounded read must not turn a photo into "too large"). Mirrors
+/// [`crate::render::DEFAULT_MEDIA_MAX_BYTES`].
+pub const DEFAULT_MEDIA_MAX_KIB: u32 = 8192;
+/// The smallest media size cap (KiB); a smaller configured value clamps up to it.
+pub const MIN_MEDIA_MAX_KIB: u32 = 512;
+/// The largest media size cap (KiB) — 128 MiB. Even the maximum is a finite read, so the
+/// bounded-read guarantee (AC-N1) holds at every setting.
+pub const MAX_MEDIA_MAX_KIB: u32 = 131_072;
+
 /// Which side of the content pane the directory tree is drawn on (`tree_position` config key). A
 /// pure display preference; the config value is a lenient `Option<String>` resolved into this by
 /// [`resolve`] (case-insensitive, trimmed), so this enum is never deserialized directly. `Left` is
@@ -114,6 +125,19 @@ pub struct Config {
     pub markdown: Option<String>,
     pub diff: Option<String>,
     pub syntax: Option<String>,
+    /// The command that converts a non-PNG image to PNG (fed the file bytes on **stdin**), in
+    /// the same shell-tokenized form as the other renderer commands. `None` falls back to the
+    /// built-in ffmpeg pipeline. Media-only; absent ⇒ the Media view shows its placeholder.
+    pub image: Option<String>,
+    /// The video frame-extraction template, a shell-tokenized string with `{start}` / `{fps}` /
+    /// `{width}` / `{height}` placeholders (plus `{name}` for the file path). `None` falls back
+    /// to the built-in ffmpeg template. Media-only; absent ⇒ video shows its placeholder.
+    pub video: Option<String>,
+    /// The media size cap, in KiB: past this size a media file's bytes are not read (PNG, image
+    /// conversion input) — a separate budget from the text-preview `preview_max_kib`, whose 1 MiB
+    /// default is far too small for images. `None` falls back to [`DEFAULT_MEDIA_MAX_KIB`].
+    /// Clamped to `MIN_MEDIA_MAX_KIB..=MAX_MEDIA_MAX_KIB`. Media-only.
+    pub media_max_kib: Option<u32>,
     pub open: Option<String>,
     pub reveal: Option<String>,
     pub hide_dotfiles: Option<bool>,
@@ -281,6 +305,13 @@ pub struct EffectiveSettings {
     pub markdown: Option<Vec<String>>,
     pub diff: Option<Vec<String>>,
     pub syntax: Option<Vec<String>>,
+    /// The effective non-PNG → PNG converter command argv, or `None` for the built-in default.
+    pub image: Option<Vec<String>>,
+    /// The effective video frame-extraction template argv (with placeholder fields), or `None`
+    /// for the built-in default.
+    pub video: Option<Vec<String>>,
+    /// The effective media size cap, in KiB (the `media_max_kib` config key, clamped).
+    pub media_max_kib: u32,
     pub open: Option<Vec<String>>,
     pub reveal: Option<Vec<String>>,
     pub hide_dotfiles: bool,
@@ -357,6 +388,8 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .syntax
         .as_deref()
         .map(crate::editor::tokenize_command);
+    let image = config.image.as_deref().map(crate::editor::tokenize_command);
+    let video = config.video.as_deref().map(crate::editor::tokenize_command);
     let open = config.open.as_deref().map(crate::editor::tokenize_command);
     let reveal = config
         .reveal
@@ -439,11 +472,23 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         .map(|n| n.clamp(MIN_PREVIEW_MAX_KIB, MAX_PREVIEW_MAX_KIB))
         .unwrap_or(DEFAULT_PREVIEW_MAX_KIB);
 
+    // Config > default; no env var. Clamp to `MIN_MEDIA_MAX_KIB..=MAX_MEDIA_MAX_KIB`: the upper
+    // bound keeps the bounded-read guarantee (AC-N1) even at the max, so no configured value can
+    // ask the viewer to slurp an arbitrary file whole; the lower bound keeps a photo from being
+    // unusably tiny.
+    let media_max_kib = config
+        .media_max_kib
+        .map(|n| n.clamp(MIN_MEDIA_MAX_KIB, MAX_MEDIA_MAX_KIB))
+        .unwrap_or(DEFAULT_MEDIA_MAX_KIB);
+
     EffectiveSettings {
         editor,
         markdown,
         diff,
         syntax,
+        image,
+        video,
+        media_max_kib,
         open,
         reveal,
         hide_dotfiles,
@@ -508,6 +553,10 @@ pub fn effective_renderers(
         diff,
         full_diff,
         syntax: eff.syntax.clone().unwrap_or_else(|| base.syntax.clone()),
+        image: eff.image.clone().unwrap_or_else(|| base.image.clone()),
+        video: eff.video.clone().unwrap_or_else(|| base.video.clone()),
+        // Not user-configurable: the info line is a convenience, not a rendering decision.
+        probe: base.probe.clone(),
         timeout: base.timeout,
     }
 }
@@ -1407,6 +1456,37 @@ mod tests {
     }
 
     #[test]
+    fn media_max_kib_and_bytes_defaults_are_in_lockstep() {
+        // Same lockstep guarantee for the media cap: the config-side effective KiB (used by the
+        // live renderer wiring) and the render-side byte default (used by the width-less/help
+        // paths and tests) must describe the same budget.
+        let from_config = resolve(&Config::default(), |_| None).media_max_kib as u64 * 1024;
+        assert_eq!(from_config, crate::render::DEFAULT_MEDIA_MAX_BYTES);
+    }
+
+    #[test]
+    fn media_config_keys_resolve_and_clamp() {
+        // `image`/`video` tokenize like the other renderer commands; `media_max_kib` is clamped.
+        let (config, outcome) = parse_config(
+            "image = \"ffmpeg -i pipe:0 -f image2 -vcodec png pipe:1\"\n\
+             video = \"ffmpeg -ss {start} -i {name} -vf scale={width}:{height}\"\n\
+             media_max_kib = 200000\n",
+        );
+        assert_eq!(outcome, LoadOutcome::Loaded);
+        let eff = resolve(&config, |_| None);
+        assert!(eff.image.is_some(), "image renders as an argv vec");
+        assert!(eff.video.is_some(), "video renders as a template argv vec");
+        // 200 000 KiB exceeds MAX_MEDIA_MAX_KIB, so it clamps down (not up).
+        assert!(eff.media_max_kib <= MAX_MEDIA_MAX_KIB);
+        assert_eq!(eff.media_max_kib, MAX_MEDIA_MAX_KIB);
+
+        // A tiny cap clamps up to the floor.
+        let (config, _) = parse_config("media_max_kib = 10\n");
+        let eff = resolve(&config, |_| None);
+        assert_eq!(eff.media_max_kib, MIN_MEDIA_MAX_KIB);
+    }
+
+    #[test]
     fn tree_max_cols_non_representable_degrades_to_default() {
         // A non-representable value fails the parse, degrading the whole config to defaults; the
         // resolver then yields the default cap (30).
@@ -1448,6 +1528,9 @@ mod tests {
             diff: vec!["delta".to_string()],
             full_diff: vec!["delta".to_string(), "--line-numbers".to_string()],
             syntax: vec!["bat".to_string(), "-".to_string()],
+            image: vec!["ffmpeg".to_string(), "-i".to_string(), "pipe:0".to_string()],
+            video: vec!["ffmpeg".to_string(), "{name}".to_string()],
+            probe: Vec::new(),
             timeout: std::time::Duration::from_secs(2),
         }
     }

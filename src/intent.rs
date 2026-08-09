@@ -155,6 +155,17 @@ pub enum Intent {
     /// [`Intent::TreeScrollLeft`] it only moves the in-pane scroll; no mutation. Bound to `L`
     /// (Shift+`l`) only — no event hook (AC-N6). Inert unless the tree is focused.
     TreeScrollRight,
+    /// Toggle play/pause of the currently selected video. Inert no-op unless a video is selected
+    /// in Media mode. Read-only: playback decodes frames, never mutates the file (AC-N1/N3).
+    MediaPlayPause,
+    /// Seek the selected video back by a fixed step. Inert no-op unless a video is selected.
+    /// Read-only navigation of an in-memory playback position.
+    MediaSeekBack,
+    /// Seek the selected video forward by a fixed step. Mirror of [`Intent::MediaSeekBack`],
+    /// same read-only guarantees.
+    MediaSeekForward,
+    /// Restart the selected video from its beginning. Read-only, like the other media intents.
+    MediaRestart,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,
 }
@@ -162,7 +173,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 41] = [
+    pub const ALL: [Intent; 45] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::PageUp,
@@ -202,6 +213,10 @@ impl Intent {
         Intent::PrevChanged,
         Intent::TreeScrollLeft,
         Intent::TreeScrollRight,
+        Intent::MediaPlayPause,
+        Intent::MediaSeekBack,
+        Intent::MediaSeekForward,
+        Intent::MediaRestart,
         Intent::ShowHelp,
         Intent::Close,
     ];
@@ -258,6 +273,10 @@ mod tests {
                 | Intent::PrevChanged
                 | Intent::TreeScrollLeft
                 | Intent::TreeScrollRight
+                | Intent::MediaPlayPause
+                | Intent::MediaSeekBack
+                | Intent::MediaSeekForward
+                | Intent::MediaRestart
                 | Intent::ShowHelp
                 | Intent::Close => (false, false),
             };
@@ -332,11 +351,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_41() {
+    fn all_length_is_45() {
         assert_eq!(
             Intent::ALL.len(),
-            41,
-            "Intent::ALL must have exactly 41 variants"
+            45,
+            "Intent::ALL must have exactly 45 variants"
         );
     }
 

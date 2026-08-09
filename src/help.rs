@@ -287,7 +287,8 @@ pub fn settings_text(
          tree_position     = {tree_position}\n\
          tree_max_cols     = {tree_max_cols}\n\
          preview_max_lines = {preview_max_lines}\n\
-         preview_max_kib   = {preview_max_kib}",
+         preview_max_kib   = {preview_max_kib}\n\
+         media_max_kib     = {media_max_kib}",
         open = open,
         reveal = reveal,
         hide_dotfiles = eff.hide_dotfiles,
@@ -301,6 +302,7 @@ pub fn settings_text(
         tree_max_cols = eff.tree_max_cols,
         preview_max_lines = eff.preview_max_lines,
         preview_max_kib = eff.preview_max_kib,
+        media_max_kib = eff.media_max_kib,
     )
 }
 
@@ -795,6 +797,9 @@ mod tests {
             markdown: Some(vec!["glow".to_string(), "-w".to_string(), "80".to_string()]),
             diff: None,
             syntax: None,
+            image: None,
+            video: None,
+            media_max_kib: 8192,
             open: None,
             reveal: None,
             hide_dotfiles: true,
@@ -846,6 +851,7 @@ mod tests {
             "tree_max_cols",
             "preview_max_lines",
             "preview_max_kib",
+            "media_max_kib",
         ] {
             assert!(
                 text.contains(key),

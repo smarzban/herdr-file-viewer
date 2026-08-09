@@ -33,6 +33,7 @@ mod picker;
 use crate::annotation::AnnotationStore;
 use crate::finder::FinderState;
 use crate::git::{Baseline, Status};
+use crate::graphics::{CellMetrics, GraphicsSink, NullSink, Placement};
 use crate::help::{HelpSection, HelpSectionState, HelpState};
 use crate::herdr::HerdrCli;
 use crate::infile::{PromptMode, PromptState, SearchState};
@@ -44,7 +45,7 @@ use crate::presenter::{
     FinderView, Focus, HelpView, LineSelectView, PaneGeometry, PickerRowView, PickerView,
     ViewState,
 };
-use crate::render::Renderers;
+use crate::render::{MediaPayload, Renderers};
 use crate::root::Resolved;
 use crate::tree::{Node, NodeKind, TreeModel};
 use crate::update::{self, NoticeSnapshot, UpdateState};
@@ -52,7 +53,7 @@ use crate::view_policy::{FileDescriptor, ViewMode, applicable_modes, default_mod
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lineselect::LineSelectState;
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::Text;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -181,6 +182,95 @@ pub struct RenderResult {
     /// where no per-display-line source exists) and for providers that don't supply it; the
     /// copy paths then fall back to display-text extraction.
     pub source: Option<Vec<String>>,
+    /// The still PNG payload for a media file in `Media` mode, produced off-thread so the pane
+    /// can show the image via the graphics host. `None` for every non-media mode and whenever
+    /// media rendering degraded to the text placeholder.
+    pub media: Option<MediaPayload>,
+}
+
+/// What the graphics host currently displays (the Media view's clear/set discipline). Comparing
+/// this against the freshly-computed desired value after each draw is the single point that makes
+/// "an image is on screen exactly when and where it should be" true for selection change, mode
+/// change, scroll, resize, zoom, and overlay-open alike — no call site has to remember to clear.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaShown {
+    path: PathBuf,
+    mode: ViewMode,
+    placement: Placement,
+}
+
+/// The live video player for the selected video: the ffmpeg decoder thread and the playback
+/// clock. While it exists it OWNS the graphics surface — [`Controller::sync_media`] yields to it,
+/// and [`Controller::tick_media`] sends frames. Paused playback keeps the last decoded frame up
+/// but stops stepping. Seeking re-spawns the decoder at a new offset.
+struct MediaPlayer {
+    /// The video being played (the canonicalized in-root path handed to ffmpeg).
+    path: PathBuf,
+    playing: bool,
+    /// Current playback offset, seconds — the `-ss` seek target for the next spawn.
+    position: f64,
+    decoder: crate::media::player::Decoder,
+    /// When the next frame may be pulled (pacing; see [`FRAME_INTERVAL`](crate::media::player::FRAME_INTERVAL)).
+    next_frame_at: Instant,
+}
+
+impl MediaPlayer {
+    /// Pull the newest ready frame and send it to the graphics host, updating `media_shown` so
+    /// the `sync_media` discipline treats the playing frame as the current state (no clear-then-set
+    /// fight over the same placement). Returns whether a frame was actually sent (a redraw tell).
+    fn pull_and_show(
+        &mut self,
+        graphics: &mut Box<dyn GraphicsSink>,
+        media_shown: &mut Option<MediaShown>,
+        rect: Option<ratatui::layout::Rect>,
+        metrics: Option<CellMetrics>,
+        natural: Option<(u32, u32)>,
+    ) -> bool {
+        let Some(frame) = self.decoder.next_ready() else {
+            return false;
+        };
+        let Some((w, h)) = crate::media::png_dimensions(&frame.png) else {
+            return false; // not a frame we can place; wait for the next one
+        };
+        // Recompute the placement from THIS frame's pixels against the live content box, so
+        // playback fills the pane exactly as the still did. Reusing the still's placement made
+        // video render at the preview's aspect (and, before a still existed, at a 1x1 cell); and
+        // falling back to the still's rect on a resize would leave playback stuck at the old size.
+        let placement = match (rect, metrics) {
+            (Some(rect), Some(metrics)) if rect.width > 0 && rect.height > 0 => {
+                // Size from the VIDEO's own resolution, not this frame's: frames are decoded
+                // small to fit the host's byte cap, and `fit` never upscales, so using the frame
+                // size would render playback as a fraction of the pane.
+                crate::media::fit(natural.unwrap_or((w, h)), metrics, rect)
+            }
+            // No geometry yet (no graphics host, or before the first draw): keep whatever the
+            // still established rather than inventing a placement.
+            _ => match media_shown.as_ref() {
+                Some(shown) => shown.placement,
+                None => return false,
+            },
+        };
+        graphics.send(crate::graphics::GraphicsCommand::Show(Box::new(
+            crate::graphics::Frame {
+                format: crate::graphics::Format::Png,
+                width: w,
+                height: h,
+                data: frame.png.clone(),
+                placement,
+            },
+        )));
+        *media_shown = Some(MediaShown {
+            path: self.path.clone(),
+            mode: ViewMode::Media,
+            placement,
+        });
+        true
+    }
+
+    /// Stop the decoder and join its thread.
+    fn stop(mut self) {
+        self.decoder.stop();
+    }
 }
 
 /// Produce the content-pane text for `(file, mode)`. `Send` so a later task can run it on a
@@ -207,6 +297,10 @@ pub trait ContentProvider: Send {
     /// every mode except Diff/FullDiff.
     ///
     /// `width` remains the markdown wrap width (gated by the markdown wrap preference).
+    // Seven render inputs, each independently optional and each meaningful to exactly one view
+    // mode. Bundling them into a struct would only move the same list behind a name that no
+    // caller shares, so the parameter list stays explicit.
+    #[allow(clippy::too_many_arguments)]
     fn render_at_width(
         &self,
         path: &Path,
@@ -215,10 +309,12 @@ pub trait ContentProvider: Send {
         width: Option<u16>,
         pane_width: Option<u16>,
         diff_render_mode: DiffRenderMode,
+        media_box: Option<(u32, u32)>,
     ) -> RenderResult {
         let _ = width;
         let _ = pane_width;
         let _ = diff_render_mode;
+        let _ = media_box;
         self.render(path, mode, raw_diff)
     }
 }
@@ -367,6 +463,10 @@ struct RenderJob {
     pane_width: Option<u16>,
     /// Which command a Diff/FullDiff render delegates to (`D`). Ignored by other modes.
     diff_render_mode: DiffRenderMode,
+    /// The picture area in PIXELS at dispatch (the content box minus the caption row, times the
+    /// host's cell metrics). Lets the Media render resample to the size actually shown instead of
+    /// guessing. `None` before the first draw, or with no graphics host.
+    media_box: Option<(u32, u32)>,
 }
 
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
@@ -634,6 +734,26 @@ pub struct Controller {
     /// cleared in lockstep with `content` (`poll` / `clear_content`), so the copy paths can trust
     /// that when it is `Some`, index `n-1` IS displayed line `n`'s source.
     content_source: Option<Vec<String>>,
+    /// The still PNG payload of the currently displayed content, for the Media view. Applied
+    /// from [`RenderResult::media`] in [`poll`](Self::poll) in lockstep with `content` (empty for
+    /// non-media modes and for media that degraded to the text placeholder). Cleared wherever
+    /// `content_source` is cleared so stale pixels can never paint over newer content.
+    content_media: Option<MediaPayload>,
+    /// The graphics host sink: images are handed to the host through this non-blocking outbox.
+    /// `NullSink` until [`set_graphics`](Self::set_graphics) injects the live host. Session-level.
+    graphics: Box<dyn GraphicsSink>,
+    /// The pixel size of one terminal cell, from the host's `pane.graphics.info`. Needed to turn
+    /// the pane's cell geometry into a pixel budget for placement; `None` until the host answered
+    /// (or no host — media then degrades to the text line).
+    cell_metrics: Option<CellMetrics>,
+    /// What the graphics host currently shows, or `None` when nothing is shown. Recomputed after
+    /// every draw: if the desired value differs, the controller clears then sets (and clears alone
+    /// when it is now `None`), so a stale image can never survive a selection/mode/scroll/resize/
+    /// zoom/overlay change without those paths having to remember to clear.
+    media_shown: Option<MediaShown>,
+    /// The live video player, `None` when no video is selected/played. While present it owns the
+    /// graphics surface (see [`MediaPlayer`]).
+    media_player: Option<MediaPlayer>,
     /// The path of the file whose content is currently displayed in the pane — the title's
     /// source of truth, so the border label switches in lockstep with the body. `None`
     /// while no file's content has landed yet (launch, a re-root, or a directory/empty tree
@@ -816,8 +936,13 @@ impl Controller {
         let renderers = renderers.unwrap_or_else(|| Renderers {
             markdown: vec!["herdr-no-such-markdown-renderer".into()],
             diff: vec!["herdr-no-such-diff-renderer".into()],
+            // Nothing to probe with, and nothing lost: the info line just omits codec and
+            // duration.
+            probe: Vec::new(),
             full_diff: vec!["herdr-no-such-full-diff-renderer".into()],
             syntax: vec!["herdr-no-such-syntax-renderer".into()],
+            image: vec!["herdr-no-such-image-renderer".into()],
+            video: vec!["herdr-no-such-video-renderer".into()],
             timeout: std::time::Duration::from_millis(100),
         });
         let RootProviders { git, content } = providers(&resolved);
@@ -872,6 +997,11 @@ impl Controller {
             content: Text::raw(""),
             content_notices: Vec::new(),
             content_source: None,
+            content_media: None,
+            graphics: Box::new(NullSink),
+            cell_metrics: None,
+            media_shown: None,
+            media_player: None,
             content_path: None,
             content_rendering: false,
             action_notice: None,
@@ -968,12 +1098,14 @@ impl Controller {
                         job.wrap_width,
                         job.pane_width,
                         job.diff_render_mode,
+                        job.media_box,
                     )
                 }))
                 .unwrap_or_else(|_| RenderResult {
                     content: Text::raw("[content unavailable: renderer error]"),
                     notices: vec!["the renderer failed unexpectedly; showing a placeholder".into()],
                     source: None,
+                    media: None,
                 });
                 if result_tx.send((job.seq, result)).is_err() {
                     break; // controller gone
@@ -1339,6 +1471,315 @@ impl Controller {
     /// stays hermetic in tests — a test injects a fake; production injects the live opener (AC-13).
     pub fn set_opener(&mut self, opener: Box<dyn crate::opener::Opener>) {
         self.opener = Some(opener);
+    }
+
+    /// Inject the graphics host outbox + the measured cell metrics (from the host's
+    /// `pane.graphics.info`). `cell_metrics: None` means "no host / not measurable" — the Media
+    /// view then shows its text line and nothing is placed. Session-level (the host doesn't change
+    /// when the tree does). Injected post-construction so tests inject a recorder instead.
+    pub fn set_graphics(
+        &mut self,
+        graphics: Box<dyn GraphicsSink>,
+        cell_metrics: Option<CellMetrics>,
+    ) {
+        self.graphics = graphics;
+        self.cell_metrics = cell_metrics;
+    }
+
+    /// The image the Media view should currently place, or `None` when nothing belongs on screen.
+    /// Derived from already-applied state (`content_path`/`content_media`/`effective_mode`) plus
+    /// the last measured layout (`geom.content_inner`) — so "what should be shown" needs no
+    /// bookkeeping of its own: a selection that moved off media, a `Tab` off Media, a zoom/resize
+    /// that shrank or hid the content column, an overlay that covered it — all produce a different
+    /// desired value (or `None`) automatically.
+    /// The cell rect the picture occupies: the content box with its TOP ROW RESERVED for the
+    /// info caption. Without this the image is placed over its own caption and hides it.
+    fn media_rect(inner: Rect) -> Option<Rect> {
+        (inner.width > 0 && inner.height > 1).then(|| Rect {
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
+            height: inner.height - 1,
+        })
+    }
+
+    /// [`media_rect`](Self::media_rect) in pixels, for the render worker's resample target.
+    fn media_box_px(&self) -> Option<(u32, u32)> {
+        let metrics = self.cell_metrics?;
+        let rect = Self::media_rect(self.geom.content_inner?)?;
+        Some((
+            rect.width as u32 * metrics.cell_width_px,
+            rect.height as u32 * metrics.cell_height_px,
+        ))
+    }
+
+    fn desired_media(&self) -> Option<MediaShown> {
+        // The content must be media IN Media mode.
+        let path = self.content_path.clone()?;
+        if self.effective_mode(&path) != ViewMode::Media {
+            return None;
+        }
+        let media = self.content_media.as_ref()?;
+        // A payload the host would reject is not "shown" — bail here so `media_shown` never
+        // records a picture that was never sent. The render worker downscales over-cap images
+        // (`render::fit_under_cap`), so reaching this is the give-up case, which arrives with its
+        // own notice already on the text line.
+        if media.png.len() > crate::graphics::MAX_IMAGE_BYTES {
+            return None;
+        }
+        // Placement is decided from the SOURCE's size, not the transmitted copy's: a picture that
+        // was shrunk only to satisfy the host's byte cap must still be shown at pane size, or
+        // `fit`'s never-upscale rule renders it as a small island in a large pane.
+        let (width, height) = media.natural;
+        // And the layout must give us a non-empty pixel budget.
+        let metrics = self.cell_metrics?;
+        let rect = Self::media_rect(self.geom.content_inner?)?;
+        Some(MediaShown {
+            path,
+            mode: ViewMode::Media,
+            placement: crate::media::fit((width, height), metrics, rect),
+        })
+    }
+
+    /// The clear/set discipline: after each draw, compare what the host SHOULD show against what
+    /// it DOES show, and issue `clear()` + `set()` on a difference (or `clear()` alone when the
+    /// answer became `None`). One comparison replaces a directory of "remember to clear" call
+    /// sites; correctness for selection change, mode change, scroll, resize, zoom, and overlay-open
+    /// all falls out of the desired-value being a function of the current state. The host sink is
+    /// non-blocking (its worker does the ~150 ms socket round-trips), so calling this per-draw is
+    /// cheap. Sending through the last-wins worker collapse means a superseded Show is dropped, not
+    /// queued.
+    pub fn sync_media(&mut self) {
+        // While a video is actively playing, the player owns the graphics surface. It already
+        // sends a frame every `FRAME_INTERVAL` with a placement derived from that frame, so
+        // running the still-image discipline as well makes the two alternate — frame,
+        // Hide+Show(poster), frame, Hide+Show(poster) — which doubles the socket traffic and
+        // flickers the pane between the poster and the video. Measured before this guard: ~19
+        // sets/second against an 8 fps pacer.
+        //
+        // Scoped to a player playing THIS file: a stale player must never wedge the surface for
+        // a file the user has already moved on from.
+        if let Some(player) = self.media_player.as_ref()
+            && player.playing
+            && Some(&player.path) == self.content_path.as_ref()
+        {
+            return;
+        }
+        let desired = self.desired_media();
+        if desired == self.media_shown {
+            return; // unchanged — no redundant set on every idle draw (AC-27-test parity)
+        }
+        self.graphics.send(crate::graphics::GraphicsCommand::Hide);
+        if let Some(shown) = &desired
+            && let Some(media) = self.content_media.as_ref()
+        {
+            // `desired_media` has already established the payload is under the host's cap and
+            // parses as a PNG, so there is nothing left to re-check here: a Some(desired) always
+            // sends.
+            let (w, h) =
+                crate::media::png_dimensions(&media.png).unwrap_or((shown.placement.grid_cols, 1));
+            self.graphics
+                .send(crate::graphics::GraphicsCommand::Show(Box::new(
+                    crate::graphics::Frame {
+                        format: crate::graphics::Format::Png,
+                        width: w,
+                        height: h,
+                        data: media.png.clone(),
+                        placement: shown.placement,
+                    },
+                )));
+        }
+        self.media_shown = desired;
+    }
+
+    /// Teardown: tell the host to show nothing and block until it has. Called from `run`'s exit
+    /// path (beside `suspend_tui`) so a quit never leaves a residual graphic in the pane; the
+    /// editor hand-off already forces an `Effects::clear` on its own path.
+    pub fn clear_media(&mut self) {
+        if let Some(p) = self.media_player.take() {
+            p.stop();
+        }
+        self.media_shown = None;
+        self.graphics.close();
+    }
+
+    // -- video playback ----------------------------------------------------------------
+
+    /// How far one `{`/`}` seek steps, in seconds. Roughly a tenth of a typical short clip and a
+    /// comfortable nudge on a longer one — small enough to be precise, big enough to be visible.
+    const MEDIA_SEEK_STEP: f64 = 5.0;
+    /// Playback default rate handed to ffmpeg's `-r` when no frame is pacing (the tick paces each
+    /// frame against [`FRAME_INTERVAL`](crate::media::player::FRAME_INTERVAL)); the stream rate is
+    /// informational for the decoder, which outputs whenever it can.
+    const MEDIA_FPS: u32 = 8;
+
+    /// Whether a video is selected and Media mode is active — media intents are inert otherwise.
+    fn media_active(&self) -> Option<PathBuf> {
+        let path = self.content_path.clone()?;
+        if self.effective_mode(&path) != ViewMode::Media
+            || self.content_media.as_ref().map(|m| m.kind) != Some(crate::media::MediaKind::Video)
+        {
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Build the decoder command for `path` starting at `position` seconds: the configured
+    /// `video` renderer template with `{start}/{fps}/{width}/{height}` substituted, `{name}`
+    /// replaced with the (canonical, in-root) path, and the pixel budget from the pane geometry.
+    /// The geometry must be known — the first draw has to have run.
+    fn media_command(&self, path: &Path, position: f64) -> Vec<String> {
+        let metrics = self.cell_metrics.unwrap_or(CellMetrics {
+            cell_width_px: 10,
+            cell_height_px: 20,
+        });
+        // The caption row is reserved here too, so the decoder's target matches the still's and
+        // the placement's exactly — otherwise pressing play visibly resized the video.
+        let rect = self
+            .geom
+            .content_inner
+            .and_then(Self::media_rect)
+            .unwrap_or(Rect {
+                x: 0,
+                y: 1,
+                width: 80,
+                height: 23,
+            });
+        let (width, height) = crate::media::frame_budget(rect, metrics);
+        let substituted = crate::media::player::substitute(
+            &self.renderers.video,
+            &position.to_string(),
+            &Self::MEDIA_FPS.to_string(),
+            &width.to_string(),
+            &height.to_string(),
+        );
+        crate::render::with_video_name(&substituted, &path.to_string_lossy())
+    }
+
+    /// Start (or restart) the player for the current video at `position`. Spawns the decoder and,
+    /// unless `playing`, shows the first frame without stepping (paused-on-frame-0 semantics: a
+    /// selection never starts motion unasked).
+    fn media_start(&mut self, position: f64, playing: bool) {
+        let Some(path) = self.media_active() else {
+            return;
+        };
+        if let Some(p) = self.media_player.take() {
+            p.stop();
+        }
+        let command = self.media_command(&path, position);
+        let Some(decoder) = crate::media::player::Decoder::spawn(&command) else {
+            return;
+        };
+        // A restart frames the desired absolute state as a Hide + Show so the host cannot leave a
+        // stale frame of the previous segment under the new one.
+        self.graphics.send(crate::graphics::GraphicsCommand::Hide);
+        let mut player = MediaPlayer {
+            path,
+            playing,
+            position,
+            decoder,
+            next_frame_at: Instant::now(),
+        };
+        if !playing {
+            let (rect, metrics) = (self.geom.content_inner, self.cell_metrics);
+            let natural = self.content_media.as_ref().map(|m| m.natural);
+            player.pull_and_show(
+                &mut self.graphics,
+                &mut self.media_shown,
+                rect,
+                metrics,
+                natural,
+            );
+        }
+        self.media_player = Some(player);
+    }
+
+    /// `Space` on a selected video: play if paused/idle, pause if playing.
+    fn media_play_pause(&mut self) -> Effects {
+        match &mut self.media_player {
+            Some(p) => {
+                p.playing = !p.playing;
+                // Restart the pacing clock so a resume doesn't burst past a stale deadline.
+                p.next_frame_at = Instant::now();
+                Some(Effects::redraw())
+            }
+            None => {
+                self.media_start(0.0, true);
+                None
+            }
+        }
+        .unwrap_or_else(Effects::noop)
+    }
+
+    /// `{` / `}`: seek back/forward by [`MEDIA_SEEK_STEP`], re-spawning the decoder at the new
+    /// offset (you cannot `-ss`-seek the pipe of a running ffmpeg). Keeps play state.
+    fn media_seek(&mut self, forward: bool) -> Effects {
+        let position = match &self.media_player {
+            Some(p) => p.position,
+            None => 0.0,
+        };
+        let delta = if forward {
+            Self::MEDIA_SEEK_STEP
+        } else {
+            -Self::MEDIA_SEEK_STEP
+        };
+        self.media_seek_to((position + delta).max(0.0))
+    }
+
+    /// Seek to an absolute offset; `0` restarts. Preserves the playing state across the spawn.
+    fn media_seek_to(&mut self, position: f64) -> Effects {
+        let playing = self
+            .media_player
+            .as_ref()
+            .map(|p| p.playing)
+            .unwrap_or(true);
+        self.media_start(position, playing);
+        Effects::redraw()
+    }
+
+    /// Advance playback: pull at most one frame per [`FRAME_INTERVAL`](crate::media::player::FRAME_INTERVAL),
+    /// then hand it to the graphics host. Mirrors the `tick_flash` idiom — called each run-loop
+    /// tick, returns whether a redraw is owed (a frame changed). When the decoder finishes, stop
+    /// the player (the last frame stays; the text placeholder remains beneath).
+    pub fn tick_media(&mut self, now: Instant) -> bool {
+        // Read the live geometry first: `player` borrows `self.media_player` mutably below.
+        let (rect, metrics) = (self.geom.content_inner, self.cell_metrics);
+        let natural = self.content_media.as_ref().map(|m| m.natural);
+        let Some(player) = self.media_player.as_mut() else {
+            return false;
+        };
+        if player.decoder.finished() {
+            // Decoder drained: no more frames will come. Fall back to the sync_media discipline,
+            // which will clear (the video's still preview text remains) — and drop the player
+            // so `p`/seeks no longer nop into a dead decoder.
+            let ended = player.playing;
+            if let Some(p) = self.media_player.take() {
+                p.stop();
+            }
+            return ended;
+        }
+        if !player.playing {
+            return false;
+        }
+        if now < player.next_frame_at {
+            return false; // paced: one frame per FRAME_INTERVAL, no bursts
+        }
+        player.next_frame_at = now + crate::media::player::FRAME_INTERVAL;
+        player.pull_and_show(
+            &mut self.graphics,
+            &mut self.media_shown,
+            rect,
+            metrics,
+            natural,
+        )
+    }
+
+    /// Stop the player (a selection change / mode change / re-root / quit) — kills the ffmpeg
+    /// process and clears the surface so no stale frame survives the transition.
+    fn media_stop(&mut self) {
+        if let Some(p) = self.media_player.take() {
+            p.stop();
+        }
     }
 
     /// Install the effective key bindings resolved from the registry + the config's `[keys]` table,
@@ -1964,6 +2405,10 @@ impl Controller {
                 }
             },
             Intent::ShowHelp => self.open_help(),
+            Intent::MediaPlayPause => self.media_play_pause(),
+            Intent::MediaSeekBack => self.media_seek(false),
+            Intent::MediaSeekForward => self.media_seek(true),
+            Intent::MediaRestart => self.media_seek_to(0.0),
             Intent::Close => self.close_or_unzoom(),
         }
     }
@@ -2959,6 +3404,9 @@ impl Controller {
         let reflow = match mode {
             ViewMode::RenderedMarkdown => self.effective_wrap(),
             ViewMode::Diff | ViewMode::FullDiff => self.diff_render_mode != DiffRenderMode::Raw,
+            // Media resamples to the pane's pixel box, so a resize changes the right answer;
+            // without this the picture keeps whatever resolution the old layout asked for.
+            ViewMode::Media => true,
             ViewMode::SyntaxContent => false,
         };
         if reflow {
@@ -2978,6 +3426,9 @@ impl Controller {
         self.latest_seq += 1;
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
+        // A resize changes the frame budget; restart playback at the same offset under the new
+        // geometry rather than leaving a stale-sized decoder running.
+        self.media_stop();
         let rel = self.rel(&path);
         // Status mode always diffs the working tree, so a reflow must use the SAME forced
         // `Baseline::Head` `dispatch_render` does — otherwise a resize/wrap re-render on a
@@ -3003,6 +3454,7 @@ impl Controller {
             wrap_width: self.md_wrap_width(),
             pane_width: self.pane_width(),
             diff_render_mode: self.diff_render_mode,
+            media_box: self.media_box_px(),
         });
     }
 
@@ -3014,6 +3466,8 @@ impl Controller {
     fn dispatch_render(&mut self) {
         self.latest_seq += 1;
         let seq = self.latest_seq;
+        // A new selection/mode invalidates any live video playback (it belongs to the old file).
+        self.media_stop();
         // A fresh render means new content — start it at the top-left, never inheriting the
         // previous file's scroll offsets.
         self.content_scroll = 0;
@@ -3089,12 +3543,14 @@ impl Controller {
                 wrap_width: self.md_wrap_width(),
                 pane_width: self.pane_width(),
                 diff_render_mode: self.diff_render_mode,
+                media_box: self.media_box_px(),
             })
             .is_ok()
         {
             self.content = Text::raw("Rendering\u{2026}");
             self.content_notices.clear();
             self.content_source = None; // the placeholder has no source; the landing render brings its own
+            self.content_media = None; // and no stale pixels; the landing render brings the fresh payload
             self.content_rendering = true;
         }
     }
@@ -3107,9 +3563,11 @@ impl Controller {
         self.content = Text::raw(reason.label());
         self.content_notices.clear();
         self.content_source = None; // guidance text has no source behind it
+        self.content_media = None; // ... or pixels (Media view) behind it
+        self.media_stop(); // no file → no live video player
         // No file content is displayed for a directory/empty tree, and no render is in flight
         // (this path sends no `RenderJob`), so the title falls back to the selected node's name
-        //.
+        //
         self.content_path = None;
         self.content_rendering = false;
     }
@@ -3135,6 +3593,7 @@ impl Controller {
                 self.content_selection = None;
                 self.content_notices = result.notices;
                 self.content_source = result.source; // in lockstep with `content` (copy fidelity)
+                self.content_media = result.media; // in lockstep with `content` (pixels follow text)
                 self.applied_seq = seq; // the displayed content is now this render (go-to-line guard)
                 // A reflow keeps the user's scroll position, but the reflowed body may have a
                 // different rendered-row count (a table re-lays-out at the new width), so re-clamp
@@ -3253,6 +3712,7 @@ impl Controller {
             path: path.to_path_buf(),
             is_markdown: is_markdown(path),
             is_changed: self.is_changed(path),
+            media: crate::media::MediaKind::from_path(path),
         }
     }
 
@@ -3396,6 +3856,7 @@ mod tests {
                 content: Text::raw(""),
                 notices: Vec::new(),
                 source: None,
+                media: None,
             }
         }
     }
@@ -3409,6 +3870,7 @@ mod tests {
                 content: Text::raw(body),
                 notices: Vec::new(),
                 source: Some((1..=40).map(|i| format!("body line {i}")).collect()),
+                media: None,
             }
         }
     }

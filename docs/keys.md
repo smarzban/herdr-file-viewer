@@ -48,6 +48,9 @@ is additive and on by default.
 | `?` (Shift+`/`) | Open help with **What's New** details selected first, including updates and spotlights; `Esc` / `q` closes it |
 | `u` | Dismiss the whole advisory status row for this session only; **What's New** stays available |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane. With annotations held, a confirm appears first (`y` copies them and quits, `q` quits and discards, `Esc` returns to the viewer): they are session-only, so quitting destroys them. Skip it with `confirm_discard = false` |
+| `p` | **Play/pause** the selected video. Inert unless a video is selected in Media mode. Playback starts paused on the first frame, so selecting a video never starts motion unasked |
+| `{` / `}` | **Seek** the selected video back / forward 5 seconds. Inert unless a video is selected |
+| `0` | **Restart** the selected video from the beginning. Inert unless a video is selected |
 
 These are the **default global** keys. Remap them with a `[keys]` table in the
 [config file](configuration.md#keybindings). Keys handled inside line-select mode, the annotation

@@ -30,8 +30,10 @@ is unit-testable with stubs.
 | `herdr` | The herdr CLI seam (`$HERDR_BIN_PATH`): read-only queries (list git worktrees / which workspaces have an active agent) plus a best-effort host **layout** command (`pane zoom --current --on`/`--off`, the `Z` full-screen toggle). Neither touches file or git state; an absent or failing herdr degrades gracefully (git-only picker; in-pane zoom only). |
 | `worktree` | Enumerate the repo's git worktrees (`git worktree list --porcelain`) and overlay herdr's agent-active workspace + per-row agent status, feeding the switch-worktree picker. |
 | `tree` | The rooted, `.gitignore`-aware file tree: filters (gitignored, changed-only, hidden/dotfiles), cursor, expansion, status markers, and the `]` / `[` changed-file jump. Optionally folds a chain of single-child directories into one row (`compact_dirs`). A folded row has to look inside a **collapsed** directory, which the tree never opens otherwise, so foldability is answered by a two-entry probe rather than a listing and the answer is memoized — re-probed wherever the controller re-reads git. Listings stay uncached, so a compacted frame reads exactly the directories an uncompacted one does. |
-| `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, else → syntax content) and the cycle order. |
-| `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display. |
+| `view_policy` | A pure decision: which view mode a file gets (changed → diff, markdown → rendered, media → Media, else → syntax content) and the cycle order. |
+| `render` | Produce the content-pane text: classify the file, delegate styling to an external CLI, and **neutralize escape sequences** before display; also produce the Media view's PNG payload (`render_media`: native PNG bytes, or conversion / video frame 0 through the injected `image`/`video` commands). |
+| `graphics` | The herdr graphics socket seam: the verified `pane.graphics.info`/`set`/`clear` JSON protocol over `$HERDR_SOCKET_PATH` (one request per connection), the 512 KiB decoded-image cap and ~1 MiB base64 drop, a hand-rolled base64 encoder, and the last-wins-collapsing `GraphicsWorker` that keeps 120+ ms host round-trips off the UI thread (each `set` is absolute state, so collapsing is correctness, not approximation). Media bytes reach the host base64-encoded **inside a JSON request — no ESC byte is ever written**, so AC-27's neutralizer and `tests/render_escape.rs` stay untouched. |
+| `media` | Pure media decisions: `MediaKind` by extension, PNG IHDR parsing, aspect-preserving `fit` into the pane's cell grid, the pixel clock of `frame_budget` (also clamped to the host's decoded cap), and the `player` submodule (the ffmpeg decoder thread + bounded drop-oldest frame queue). |
 | `presenter` | Draw the two-column (or zoomed / narrow) layout with ratatui, including persistent annotation markers and background-only styling; source-line backgrounds are applied beneath active line-select, ambient-selection, and search overlays, with a bounded one-cell cue for blank annotated lines. Scroll the tree/content and report viewport + pane geometry back for hit-testing. |
 | `picker` | The modal worktree-switcher overlay state (rows, cursor, horizontal scroll) drawn over the layout; captures its own nav / confirm / cancel keys while open. |
 | `proc` | Shared subprocess reaping: one `wait_bounded` (child wait + poll + timeout-kill) used by both the content renderer and the update check, so the timeout-kill semantics are defined once. |
@@ -92,6 +94,17 @@ retain file/title markers where applicable but never receive guessed source-line
 - **Delegate rendering.** Markdown, diffs, and syntax highlighting are produced by best-in-class
   external CLIs (`glow`, `delta`, `bat`): the viewer builds only the shell and ingests their
   ANSI output. Each renderer is optional; a missing one degrades to plain text + a notice.
+- **Media goes over the socket, not the terminal.** Images and video frames are handed to herdr
+  through its documented `pane.graphics.*` socket API as base64 inside JSON — never as escape
+  sequences on stdout — so a hostile image still cannot drive the terminal (AC-27, `tests/
+  render_escape.rs`, and SECURITY.md's "a malicious file cannot drive the terminal" guarantee all
+  stay intact). Placement is data (a cell rect), refreshed by the `media_shown` clear/set
+  discipline after every draw, so scrolling/resizing/zooming can never strand a stale frame.
+  Video is a deliberate scope stretch (the plan said so): it stays inside the same boundaries —
+  ffmpeg only reads, playback is keyboard-driven and paused by default.
+- **The herdr host sets the pace.** herdr re-renders its whole client frame per `set` (~120 ms
+  fixed regardless of payload), which is why video targets **~8 fps** and why the graphics worker
+  exists at all. This ceiling is herdr's, documented as such so it doesn't read as a bug.
 - **Git is first-class**, woven through the tree (status markers, colors, changed-only filter,
   baseline toggle) and the content pane (diff view), not a separate mode.
 - **In-memory, ephemeral state only**, including annotations, which start empty and are scoped to
@@ -104,7 +117,12 @@ retain file/title markers where applicable but never receive guessed source-line
 Four untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
 
 1. **File content** is untrusted: fed to renderers on **stdin** (never as an argument), and the
-   renderer output is re-sanitized so no escape sequence can drive the terminal.
+   renderer output is re-sanitized so no escape sequence can drive the terminal. Media preserves
+   the stdin rule for images (raw bytes piped into the `image` converter). **One deliberate
+   exception:** you cannot `-ss`-seek a pipe, so video decoding passes the file **path** to
+   ffmpeg (as its own argv element, no shell). The path is the already-canonicalized in-root one
+   from the render classifier, so a hostile *filename* cannot inject; this is a documented
+   narrowing of this boundary, and the reason `video` is a template with explicit placeholders.
 2. **The git repository** may be untrusted (an agent's worktree, a clone): every `git`
    invocation is hardened against repo-controlled code execution (no external diff/textconv,
    neutralized `core.fsmonitor`/`core.hooksPath`, scrubbed repo-redirecting env). This hardening

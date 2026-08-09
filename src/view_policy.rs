@@ -19,6 +19,9 @@ pub enum ViewMode {
     FullDiff,
     /// Syntax-highlighted file content.
     SyntaxContent,
+    /// An image or a video, placed inline via the herdr graphics socket. One mode covers both:
+    /// the mode is chosen per file (media kind) and playback state lives in the controller.
+    Media,
 }
 
 /// The facts the policy needs about a file — no path I/O is performed here.
@@ -27,12 +30,16 @@ pub struct FileDescriptor {
     pub path: PathBuf,
     pub is_markdown: bool,
     pub is_changed: bool,
+    /// What kind of media the path names, if any (`None` for plain text/diff files).
+    pub media: Option<crate::media::MediaKind>,
 }
 
 /// The auto-selected default view mode for a file.
 pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
     if fd.is_changed {
         ViewMode::Diff
+    } else if fd.media.is_some() {
+        ViewMode::Media
     } else if fd.is_markdown {
         ViewMode::RenderedMarkdown
     } else {
@@ -42,7 +49,8 @@ pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
 
 /// The modes a cycle key steps through for a file, default first (AC-11). A changed file
 /// also offers a full-context diff (whole file + line numbers + inline diff) right after
-/// the compact diff; markdown adds its rendered view; every file ends with syntax content.
+/// the compact diff; markdown adds its rendered view; media adds a media view; every file
+/// ends with syntax content.
 pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
     let mut modes = vec![default_mode(fd)];
     let add = |modes: &mut Vec<ViewMode>, m: ViewMode| {
@@ -53,6 +61,9 @@ pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
     if fd.is_changed {
         add(&mut modes, ViewMode::Diff);
         add(&mut modes, ViewMode::FullDiff);
+    }
+    if fd.media.is_some() {
+        add(&mut modes, ViewMode::Media);
     }
     if fd.is_markdown {
         add(&mut modes, ViewMode::RenderedMarkdown);
@@ -70,6 +81,16 @@ mod tests {
             path: PathBuf::from(name),
             is_markdown,
             is_changed,
+            media: None,
+        }
+    }
+
+    fn media_fd(name: &str, is_changed: bool) -> FileDescriptor {
+        FileDescriptor {
+            path: PathBuf::from(name),
+            is_markdown: false,
+            is_changed,
+            media: Some(crate::media::MediaKind::Png),
         }
     }
 
@@ -147,5 +168,30 @@ mod tests {
         let mut seen = modes.clone();
         seen.dedup();
         assert_eq!(modes, seen, "applicable modes must not repeat");
+    }
+
+    #[test]
+    fn media_defaults_to_media_unless_changed() {
+        // A media file defaults to Media, but a changed media file is Diff (git first).
+        assert_eq!(default_mode(&media_fd("image.png", false)), ViewMode::Media);
+        assert_eq!(default_mode(&media_fd("image.png", true)), ViewMode::Diff);
+    }
+
+    #[test]
+    fn media_cycle_offers_media_then_plain_content() {
+        // `Tab` still reaches the plain placeholder text beneath the image (AC-11).
+        let modes = applicable_modes(&media_fd("image.png", false));
+        assert_eq!(modes, vec![ViewMode::Media, ViewMode::SyntaxContent]);
+        // A changed media file puts the diffs first, media next, plain content last.
+        let changed = applicable_modes(&media_fd("image.png", true));
+        assert_eq!(
+            changed,
+            vec![
+                ViewMode::Diff,
+                ViewMode::FullDiff,
+                ViewMode::Media,
+                ViewMode::SyntaxContent
+            ]
+        );
     }
 }

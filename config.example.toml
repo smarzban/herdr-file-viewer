@@ -55,6 +55,13 @@
 #markdown = "glow -s dark -w 0 -"
 #diff = "delta"
 #syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
+#image = "ffmpeg -loglevel error -i pipe:0 -sws_flags neighbor -vf scale={width}:{height}:force_original_aspect_ratio=decrease -f image2 -vcodec png pipe:1"
+#video = "ffmpeg -loglevel error -re -ss {start} -i {name} -an -vf scale={width}:{height} -r {fps} -f image2pipe -vcodec png -"
+
+# Media size cap, in KiB: how large an image/video file may be before the Media view
+# shows its placeholder instead. Separate from the text preview cap (`preview_max_kib`,
+# below) whose 1 MiB default is far too small for media. Default: 8192 (8 MiB).
+#media_max_kib = 8192
 
 # OS hand-off commands: `O` opens the selected entry with an application, `R`
 # reveals it in a file manager. Defaults are the per-OS system openers
@@ -156,7 +163,7 @@
 # Keybindings tab (e.g. refresh, nav_up, switch_worktree). A value is a KEY SPEC:
 # a single string, or an array of strings. An entry REPLACES that action's
 # default key(s), so list every key you want it to answer to. The full list of
-# intent names (all 39 actions) is in docs/configuration.md (Keybindings) and the
+# intent names (all 45 actions) is in docs/configuration.md (Keybindings) and the
 # `?` overlay's Keybindings tab.
 #
 # Bindable keys: any single printable or shifted character (`g`, `<`, `?`, and
