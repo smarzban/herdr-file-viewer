@@ -35,11 +35,16 @@ pub struct FileDescriptor {
 }
 
 /// The auto-selected default view mode for a file.
+///
+/// Media outranks "changed", unlike every other kind of file. AC-9's changed-wins rule exists so
+/// an edited file shows what you edited, but a diff of an image or a video is a diff of compressed
+/// binary: delta renders noise, and the one thing you actually want — to see the picture — is the
+/// thing you cannot get. Media files therefore always show the media.
 pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
-    if fd.is_changed {
-        ViewMode::Diff
-    } else if fd.media.is_some() {
+    if fd.media.is_some() {
         ViewMode::Media
+    } else if fd.is_changed {
+        ViewMode::Diff
     } else if fd.is_markdown {
         ViewMode::RenderedMarkdown
     } else {
@@ -49,8 +54,11 @@ pub fn default_mode(fd: &FileDescriptor) -> ViewMode {
 
 /// The modes a cycle key steps through for a file, default first (AC-11). A changed file
 /// also offers a full-context diff (whole file + line numbers + inline diff) right after
-/// the compact diff; markdown adds its rendered view; media adds a media view; every file
-/// ends with syntax content.
+/// the compact diff; markdown adds its rendered view; every file ends with syntax content.
+///
+/// **Media offers no diff views at all**, even when changed: there is nothing legible to show.
+/// The cycle is therefore `[Media, SyntaxContent]` — and for a text-based format like SVG that
+/// second step is the real source, so nothing is actually lost but the diff itself.
 pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
     let mut modes = vec![default_mode(fd)];
     let add = |modes: &mut Vec<ViewMode>, m: ViewMode| {
@@ -58,7 +66,7 @@ pub fn applicable_modes(fd: &FileDescriptor) -> Vec<ViewMode> {
             modes.push(m);
         }
     };
-    if fd.is_changed {
+    if fd.is_changed && fd.media.is_none() {
         add(&mut modes, ViewMode::Diff);
         add(&mut modes, ViewMode::FullDiff);
     }
@@ -171,27 +179,28 @@ mod tests {
     }
 
     #[test]
-    fn media_defaults_to_media_unless_changed() {
-        // A media file defaults to Media, but a changed media file is Diff (git first).
+    fn media_always_shows_the_media_even_when_changed() {
+        // Media outranks AC-9's changed-wins rule. A diff of a PNG or an MP4 is a diff of
+        // compressed binary — delta renders noise, and the picture, which is the only thing worth
+        // looking at, is unreachable. So an edited image still shows the image.
         assert_eq!(default_mode(&media_fd("image.png", false)), ViewMode::Media);
-        assert_eq!(default_mode(&media_fd("image.png", true)), ViewMode::Diff);
+        assert_eq!(default_mode(&media_fd("image.png", true)), ViewMode::Media);
+        assert_eq!(default_mode(&media_fd("clip.mp4", true)), ViewMode::Media);
+        // The rule is scoped to media: an ordinary changed file still defaults to its diff.
+        assert_eq!(default_mode(&fd("main.rs", false, true)), ViewMode::Diff);
     }
 
     #[test]
-    fn media_cycle_offers_media_then_plain_content() {
-        // `Tab` still reaches the plain placeholder text beneath the image (AC-11).
-        let modes = applicable_modes(&media_fd("image.png", false));
-        assert_eq!(modes, vec![ViewMode::Media, ViewMode::SyntaxContent]);
-        // A changed media file puts the diffs first, media next, plain content last.
-        let changed = applicable_modes(&media_fd("image.png", true));
+    fn media_never_offers_a_diff_view_in_its_cycle() {
+        // `Tab` reaches the plain text beneath (AC-11) — for a text-based format like SVG that is
+        // the real source — but never a diff, changed or not.
+        let expected = vec![ViewMode::Media, ViewMode::SyntaxContent];
+        assert_eq!(applicable_modes(&media_fd("image.png", false)), expected);
         assert_eq!(
-            changed,
-            vec![
-                ViewMode::Diff,
-                ViewMode::FullDiff,
-                ViewMode::Media,
-                ViewMode::SyntaxContent
-            ]
+            applicable_modes(&media_fd("image.png", true)),
+            expected,
+            "a changed image must not offer a binary diff"
         );
+        assert_eq!(applicable_modes(&media_fd("clip.mp4", true)), expected);
     }
 }

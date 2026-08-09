@@ -163,9 +163,14 @@ This is launch-only. It does not retarget a Files pane that is already running; 
 
 ## Viewing a file
 
-The content pane shows **the right view for each file, automatically**: a changed file shows its
-**diff**, a markdown file **renders**, anything else is **syntax-highlighted** content with line
-numbers. No mode-switching, no commands.
+The content pane shows **the right view for each file, automatically**: an image or video shows
+**the media**, a changed file shows its **diff**, a markdown file **renders**, anything else is
+**syntax-highlighted** content with line numbers. No mode-switching, no commands.
+
+Media outranks "changed" — an edited screenshot still shows the picture, because a diff of
+compressed binary is noise and the image is the thing you wanted to see. Media files offer no diff
+views at all; `v` steps straight to the plain text beneath (for a text format like SVG, that is the
+real source).
 
 - **Cycle the view** with `v` to override the automatic choice (e.g. see a changed markdown file's
   raw source instead of its diff).
