@@ -1918,6 +1918,7 @@ fn wide_geometry() -> PaneGeometry {
         }),
         content_vbar: None,
         content_hbar: None,
+        media_bar: None,
         divider_x: Some(40),
         finder_rows: None,
         finder_scroll: 0,

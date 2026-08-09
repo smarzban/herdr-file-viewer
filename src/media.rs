@@ -120,6 +120,20 @@ pub fn human_duration(seconds: f64) -> String {
     }
 }
 
+/// The progress bar's leading label, e.g. `"▶ 0:03 / 0:07 "`.
+///
+/// Shared deliberately: the Presenter draws it and the Controller measures it to find where the
+/// scrubbable track starts. If the two ever computed it separately, every drag would map to a
+/// slightly wrong position and nothing would obviously look broken.
+pub fn progress_label(position: f64, duration: f64, playing: bool) -> String {
+    format!(
+        "{} {} / {} ",
+        if playing { "▶" } else { "⏸" },
+        human_duration(position),
+        human_duration(duration),
+    )
+}
+
 /// The pixel size of a cell rectangle, the budget an image (or a video frame) must fit within.
 ///
 /// This is the number handed to ffmpeg's `scale` filter (via `force_original_aspect_ratio`-style
@@ -283,6 +297,32 @@ mod tests {
             (30, 2),
             "anchored at the box origin"
         );
+    }
+
+    // -- progress bar ------------------------------------------------------
+
+    #[test]
+    fn progress_label_shows_play_state_and_both_times() {
+        assert_eq!(progress_label(3.0, 7.0, true), "▶ 0:03 / 0:07 ");
+        assert_eq!(progress_label(0.0, 65.0, false), "⏸ 0:00 / 1:05 ");
+    }
+
+    #[test]
+    fn progress_label_width_is_stable_across_play_state() {
+        // The Controller measures this label to locate the scrubbable track while the Presenter
+        // draws it. If pausing changed its width, every drag would land on a different position
+        // than the one under the pointer.
+        let playing = progress_label(3.0, 7.0, true).chars().count();
+        let paused = progress_label(3.0, 7.0, false).chars().count();
+        assert_eq!(playing, paused);
+    }
+
+    #[test]
+    fn human_duration_rolls_over_into_hours() {
+        assert_eq!(human_duration(0.0), "0:00");
+        assert_eq!(human_duration(65.4), "1:05");
+        assert_eq!(human_duration(3661.0), "1:01:01");
+        assert_eq!(human_duration(f64::NAN), "?");
     }
 
     // -- classification ----------------------------------------------------

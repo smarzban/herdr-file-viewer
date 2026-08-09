@@ -109,6 +109,33 @@ impl Controller {
         }
     }
 
+    /// Seek a playing/paused video to the position the pointer is over on the progress bar.
+    ///
+    /// The bar's label ("▶ 0:03 / 0:07 ") occupies its left end, so the scrubbable track starts
+    /// after it; a press on the label maps to 0.0 rather than being ignored, which is what makes
+    /// dragging off the left end behave. Inert when there is no bar or no duration.
+    fn media_seek_to_col(&mut self, col: u16) -> Effects {
+        let Some(bar) = self.geom.media_bar else {
+            return Effects::noop();
+        };
+        let Some((_, duration)) = self.media_progress() else {
+            return Effects::noop();
+        };
+        let playing = self.media_player.as_ref().is_some_and(|p| p.playing);
+        // Measured from the SAME builder the Presenter draws, so the track origin cannot drift.
+        let label = crate::media::progress_label(0.0, duration, playing)
+            .chars()
+            .count() as u16;
+        let track_x = bar.x.saturating_add(label);
+        let track_w = bar.width.saturating_sub(label);
+        if track_w == 0 || duration <= 0.0 {
+            return Effects::noop();
+        }
+        let offset = col.saturating_sub(track_x).min(track_w.saturating_sub(1));
+        let fraction = f64::from(offset) / f64::from(track_w.saturating_sub(1).max(1));
+        self.media_seek_to(fraction.clamp(0.0, 1.0) * duration)
+    }
+
     /// Handle a mouse event over the two columns, with no modal open (the [`handle_mouse`] gate
     /// routes here only for [`Modal::None`]). Shift+mouse is inert so the terminal can do its own
     /// text selection; otherwise the wheel scrolls the column under the pointer, a left press
@@ -131,6 +158,11 @@ impl Controller {
                 // selection (click-away deselect). Always (re)set `drag` from the press — so a stale
                 // drag from a release we never saw (e.g. swallowed by a modal) can't act on later moves.
                 let region = self.hit_test(col, row);
+                if region == MouseRegion::MediaBar {
+                    self.content_selection = None;
+                    self.drag = Some(Drag::MediaBar);
+                    return self.media_seek_to_col(col);
+                }
                 if region == MouseRegion::Content {
                     // Seed a fresh collapsed char selection at the pressed caret; the Drag arm
                     // extends it and Up finalizes (collapsed ⇒ a click; non-collapsed ⇒ copy).
@@ -160,6 +192,7 @@ impl Controller {
                     MouseRegion::ContentHBar => Some(Drag::ContentH),
                     MouseRegion::TreeVBar => Some(Drag::TreeV),
                     MouseRegion::TreeHBar => Some(Drag::TreeH),
+                    MouseRegion::MediaBar => Some(Drag::MediaBar),
                     _ => None,
                 };
                 let fx = match region {
@@ -178,6 +211,7 @@ impl Controller {
                 Some(Drag::ContentH) => self.scroll_content_h_to_col(col),
                 Some(Drag::TreeV) => self.scroll_tree_to_row(row),
                 Some(Drag::TreeH) => self.scroll_tree_h_to_col(col),
+                Some(Drag::MediaBar) => self.media_seek_to_col(col),
                 // The finder is modal: its scrollbar drag is handled in handle_finder_mouse and
                 // never reaches this (non-finder) path. Covered here only for exhaustiveness.
                 Some(Drag::FinderV) => Effects::noop(),
@@ -277,12 +311,14 @@ impl Controller {
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
-            // Scrollbars are handled on press/drag (above), not as a click; reaching here is inert.
+            // Scrollbars and the progress bar are handled on press/drag (above), not as a click;
+            // reaching here is inert.
             MouseRegion::Divider
             | MouseRegion::ContentVBar
             | MouseRegion::ContentHBar
             | MouseRegion::TreeVBar
             | MouseRegion::TreeHBar
+            | MouseRegion::MediaBar
             | MouseRegion::Outside => {
                 self.last_click = None;
                 Effects::noop()
@@ -486,6 +522,11 @@ impl Controller {
         }
         if self.geom.tree_hbar.is_some_and(|r| r.contains(pos)) {
             return MouseRegion::TreeHBar;
+        }
+        // Before the content text rect: the bar is drawn inside the content column, so a press on
+        // it must seek rather than start a text selection.
+        if self.geom.media_bar.is_some_and(|r| r.contains(pos)) {
+            return MouseRegion::MediaBar;
         }
         if let Some(t) = self.geom.tree_inner
             && t.contains(pos)

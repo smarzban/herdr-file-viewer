@@ -41,6 +41,7 @@ impl ContentProvider for MediaContent {
                     kind: herdr_file_viewer::media::MediaKind::Png,
                     png: png_bytes(4, 3),
                     natural: (4, 3),
+                    duration_s: None,
                 }),
             },
             Some("mp4") => RenderResult {
@@ -51,6 +52,7 @@ impl ContentProvider for MediaContent {
                     kind: herdr_file_viewer::media::MediaKind::Video,
                     png: png_bytes(4, 3), // the still preview (frame 0)
                     natural: (4, 3),
+                    duration_s: Some(12.0),
                 }),
             },
             _ => RenderResult {

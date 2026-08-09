@@ -620,7 +620,8 @@ pub const DEFAULT_MEDIA_MAX_BYTES: u64 = 8192 * 1024;
 /// Carries **raw PNG bytes**; base64 happens in `graphics.rs` at send time so the payload stays
 /// bytes. Dimensions are parsed at placement time via [`crate::media::png_dimensions`], so a
 /// re-encode (the PNG fast-path guard) can decide from the actual bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// No `Eq`: a duration is an f64. `PartialEq` is what the tests actually use.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MediaPayload {
     pub kind: crate::media::MediaKind,
     pub png: Vec<u8>,
@@ -631,6 +632,10 @@ pub struct MediaPayload {
     /// than the pane just because it had to travel small. The "is this image smaller than the
     /// box?" question is about the SOURCE, so it is answered with this.
     pub natural: (u32, u32),
+    /// A video's length in seconds, when `ffprobe` could report it. Drives the progress bar;
+    /// `None` for images, and for a video whose duration could not be determined (the bar is then
+    /// simply not drawn).
+    pub duration_s: Option<f64>,
 }
 
 /// Produce the Media view's content for a media file: a text line (so the pane is never blank —
@@ -682,6 +687,7 @@ pub fn render_media(
                                 kind,
                                 png: fitted.png,
                                 natural: (w, h),
+                                duration_s: None,
                             }),
                         ),
                         None => (
@@ -744,6 +750,7 @@ pub fn render_media(
                             kind,
                             png: fitted.png,
                             natural: (w, h),
+                            duration_s: None,
                         }),
                     ),
                     None => (
@@ -831,6 +838,7 @@ pub fn render_media(
                                 // fraction of the pane while images, which report their true size,
                                 // filled it.
                                 natural: probe.native.unwrap_or((w, h)),
+                                duration_s: probe.duration_s,
                             }),
                         ),
                         None => (

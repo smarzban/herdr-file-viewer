@@ -212,6 +212,15 @@ struct MediaPlayer {
     decoder: crate::media::player::Decoder,
     /// When the next frame may be pulled (pacing; see [`FRAME_INTERVAL`](crate::media::player::FRAME_INTERVAL)).
     next_frame_at: Instant,
+    /// Where `position` was when the current play run started, and when that was. Playback
+    /// position is wall-clock derived rather than counted in displayed frames: `-re` paces the
+    /// decoder to real time, but we display fewer frames than it produces, so counting frames
+    /// would make the progress bar drift slower than the video.
+    run_started_at: Instant,
+    run_started_from: f64,
+    /// Whether a decoded frame has actually been shown. Once true, the poster still must never be
+    /// put back — pausing should hold the frame you paused ON, not jump to frame 0.
+    has_frame: bool,
 }
 
 impl MediaPlayer {
@@ -264,6 +273,7 @@ impl MediaPlayer {
             mode: ViewMode::Media,
             placement,
         });
+        self.has_frame = true;
         true
     }
 
@@ -1492,21 +1502,56 @@ impl Controller {
     /// bookkeeping of its own: a selection that moved off media, a `Tab` off Media, a zoom/resize
     /// that shrank or hid the content column, an overlay that covered it — all produce a different
     /// desired value (or `None`) automatically.
-    /// The cell rect the picture occupies: the content box with its TOP ROW RESERVED for the
-    /// info caption. Without this the image is placed over its own caption and hides it.
-    fn media_rect(inner: Rect) -> Option<Rect> {
-        (inner.width > 0 && inner.height > 1).then(|| Rect {
+    /// The cell rect the picture occupies: the content box with its TOP ROW reserved for the
+    /// caption, and — for a video with a progress bar — its BOTTOM ROW reserved too.
+    ///
+    /// Both the still and playback go through here. Passing the raw content box for playback is
+    /// what let a playing video paint over its own caption while a paused one looked fine.
+    fn media_rect(inner: Rect, reserve_bar: bool) -> Option<Rect> {
+        let reserved = 1 + u16::from(reserve_bar); // caption row, plus the bar row for video
+        (inner.width > 0 && inner.height > reserved).then(|| Rect {
             x: inner.x,
             y: inner.y + 1,
             width: inner.width,
-            height: inner.height - 1,
+            height: inner.height - reserved,
         })
+    }
+
+    /// The reserved picture rect for the CURRENT selection, or `None` when there is no layout.
+    /// Playback and the still both go through here so they cannot disagree about which rows the
+    /// picture may use — passing the raw content box here is what let playback paint over its
+    /// own caption.
+    fn media_cell_rect(&self) -> Option<Rect> {
+        Self::media_rect(self.geom.content_inner?, self.media_has_bar())
+    }
+
+    /// Whether the selected media draws a progress bar (a video of known duration).
+    fn media_has_bar(&self) -> bool {
+        self.content_media.as_ref().is_some_and(|m| {
+            m.kind == crate::media::MediaKind::Video && m.duration_s.is_some_and(|d| d > 0.0)
+        })
+    }
+
+    /// The live playback position and length, for the progress bar. `None` unless a video with a
+    /// known duration is selected.
+    pub fn media_progress(&self) -> Option<(f64, f64)> {
+        let duration = self
+            .content_media
+            .as_ref()?
+            .duration_s
+            .filter(|d| *d > 0.0)?;
+        let position = self
+            .media_player
+            .as_ref()
+            .map(|p| p.position)
+            .unwrap_or(0.0);
+        Some((position.clamp(0.0, duration), duration))
     }
 
     /// [`media_rect`](Self::media_rect) in pixels, for the render worker's resample target.
     fn media_box_px(&self) -> Option<(u32, u32)> {
         let metrics = self.cell_metrics?;
-        let rect = Self::media_rect(self.geom.content_inner?)?;
+        let rect = Self::media_rect(self.geom.content_inner?, self.media_has_bar())?;
         Some((
             rect.width as u32 * metrics.cell_width_px,
             rect.height as u32 * metrics.cell_height_px,
@@ -1533,7 +1578,7 @@ impl Controller {
         let (width, height) = media.natural;
         // And the layout must give us a non-empty pixel budget.
         let metrics = self.cell_metrics?;
-        let rect = Self::media_rect(self.geom.content_inner?)?;
+        let rect = Self::media_rect(self.geom.content_inner?, self.media_has_bar())?;
         Some(MediaShown {
             path,
             mode: ViewMode::Media,
@@ -1560,7 +1605,7 @@ impl Controller {
         // Scoped to a player playing THIS file: a stale player must never wedge the surface for
         // a file the user has already moved on from.
         if let Some(player) = self.media_player.as_ref()
-            && player.playing
+            && (player.playing || player.has_frame)
             && Some(&player.path) == self.content_path.as_ref()
         {
             return;
@@ -1635,16 +1680,12 @@ impl Controller {
         });
         // The caption row is reserved here too, so the decoder's target matches the still's and
         // the placement's exactly — otherwise pressing play visibly resized the video.
-        let rect = self
-            .geom
-            .content_inner
-            .and_then(Self::media_rect)
-            .unwrap_or(Rect {
-                x: 0,
-                y: 1,
-                width: 80,
-                height: 23,
-            });
+        let rect = self.media_cell_rect().unwrap_or(Rect {
+            x: 0,
+            y: 1,
+            width: 80,
+            height: 23,
+        });
         let (width, height) = crate::media::frame_budget(rect, metrics);
         let substituted = crate::media::player::substitute(
             &self.renderers.video,
@@ -1679,9 +1720,12 @@ impl Controller {
             position,
             decoder,
             next_frame_at: Instant::now(),
+            run_started_at: Instant::now(),
+            run_started_from: position,
+            has_frame: false,
         };
         if !playing {
-            let (rect, metrics) = (self.geom.content_inner, self.cell_metrics);
+            let (rect, metrics) = (self.media_cell_rect(), self.cell_metrics);
             let natural = self.content_media.as_ref().map(|m| m.natural);
             player.pull_and_show(
                 &mut self.graphics,
@@ -1699,6 +1743,10 @@ impl Controller {
         match &mut self.media_player {
             Some(p) => {
                 p.playing = !p.playing;
+                // Freeze the position on pause, and resume the clock from there on play, so the
+                // progress bar neither races while paused nor rewinds on resume.
+                p.run_started_from = p.position;
+                p.run_started_at = Instant::now();
                 // Restart the pacing clock so a resume doesn't burst past a stale deadline.
                 p.next_frame_at = Instant::now();
                 Some(Effects::redraw())
@@ -1743,7 +1791,7 @@ impl Controller {
     /// the player (the last frame stays; the text placeholder remains beneath).
     pub fn tick_media(&mut self, now: Instant) -> bool {
         // Read the live geometry first: `player` borrows `self.media_player` mutably below.
-        let (rect, metrics) = (self.geom.content_inner, self.cell_metrics);
+        let (rect, metrics) = (self.media_cell_rect(), self.cell_metrics);
         let natural = self.content_media.as_ref().map(|m| m.natural);
         let Some(player) = self.media_player.as_mut() else {
             return false;
@@ -1764,6 +1812,10 @@ impl Controller {
         if now < player.next_frame_at {
             return false; // paced: one frame per FRAME_INTERVAL, no bursts
         }
+        // Wall-clock position: `-re` paces the decoder to real time, so elapsed time is the
+        // truthful playback offset. Counting displayed frames would drift slow, because the host
+        // ceiling means we show fewer frames than the decoder emits.
+        player.position = player.run_started_from + player.run_started_at.elapsed().as_secs_f64();
         player.next_frame_at = now + crate::media::player::FRAME_INTERVAL;
         player.pull_and_show(
             &mut self.graphics,
@@ -2102,6 +2154,13 @@ impl Controller {
         // here so the line-select snapshot below stays a pure read.
         let sel_gutter = self.selection_gutter_len();
         ViewState {
+            media_progress: self.media_progress().map(|(pos, dur)| {
+                (
+                    pos,
+                    dur,
+                    self.media_player.as_ref().is_some_and(|p| p.playing),
+                )
+            }),
             nodes,
             selected,
             content: self.content.clone(),
@@ -3771,6 +3830,8 @@ enum MouseRegion {
     TreeVBar,
     /// The tree's horizontal scrollbar — drag left/right to scroll the tree sideways.
     TreeHBar,
+    /// A video's progress bar — press or drag along it to seek.
+    MediaBar,
     Outside,
 }
 
@@ -3786,6 +3847,8 @@ enum Drag {
     TreeH,
     /// Dragging the finder overlay's vertical scrollbar (handled in `handle_finder_mouse`).
     FinderV,
+    /// Scrubbing a video's progress bar.
+    MediaBar,
     /// Dragging out a character-granular text selection in the content pane — in L mode (handled
     /// in `handle_line_select_mouse`, on the modal's state) or ambient (handled in
     /// `handle_column_mouse`, on `content_selection`; the release auto-copies).
@@ -3802,6 +3865,31 @@ fn is_markdown(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_rect_reserves_the_caption_row_and_the_bar_row() {
+        let inner = Rect::new(4, 2, 40, 20);
+        // An image: only the caption row is reserved.
+        let image = Controller::media_rect(inner, false).expect("fits");
+        assert_eq!((image.y, image.height), (3, 19), "caption row reserved");
+        // A video with a progress bar: the last row is reserved too, so playback cannot paint
+        // over either the caption or the bar.
+        let video = Controller::media_rect(inner, true).expect("fits");
+        assert_eq!((video.y, video.height), (3, 18));
+        assert_eq!(video.x, inner.x, "full width either way");
+        assert_eq!(video.width, inner.width);
+    }
+
+    #[test]
+    fn media_rect_is_none_when_there_is_no_room_left() {
+        // One row of content is all caption; two rows is caption + bar. Neither leaves a picture,
+        // and returning None is what stops a zero/underflowed rect reaching the host.
+        assert!(Controller::media_rect(Rect::new(0, 0, 40, 1), false).is_none());
+        assert!(Controller::media_rect(Rect::new(0, 0, 40, 2), true).is_none());
+        assert!(Controller::media_rect(Rect::new(0, 0, 0, 20), false).is_none());
+        // But one row of picture IS enough.
+        assert!(Controller::media_rect(Rect::new(0, 0, 40, 2), false).is_some());
+    }
+
     #[test]
     fn help_composition_timeout_is_the_single_200ms_budget() {
         // T-19: the controller must not retain or stack its former help-render timeout. T-17 owns
