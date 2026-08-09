@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Media view: images and video rendered inline in the content pane** through herdr's documented `pane.graphics.*` socket API — the bytes travel base64 inside JSON, so no escape sequence ever reaches the terminal and a hostile image still cannot drive it. A `.png` is shown natively; other images convert via `ffmpeg`; video plays at the host-limited ~8 fps with `p` (play/pause), `{`/`}` (seek ±5s), and `0` (restart), starting paused on frame 0. New config keys `image`, `video`, and `media_max_kib`; new remappable intents `media_play_pause`, `media_seek_back`, `media_seek_forward`, `media_restart`. → [usage](docs/usage.md#media-images-and-video) · [renderers](docs/renderers.md#media-images-and-video) · [keys](docs/keys.md) · [configuration](docs/configuration.md)
+
 ### Fixed
 - Agent skill: the launch instructions no longer tell agents to pass `--cwd`. herdr resolves the manifest's relative pane command against it, so the launch failed with `plugin_pane_open_failed` — or worse, inside a built plugin checkout, silently ran that checkout's binary. The skill and the `docs/usage.md` snippet now explain that the viewed root follows the *focused herdr pane's* directory, so an agent's own `cd` does not move it. Thanks @AntonyKor (#139) → [agent skill](skills/herdr-file-viewer/SKILL.md) · [usage](docs/usage.md#teach-your-agent)
 
