@@ -64,6 +64,7 @@ impl ContentProvider for MultiLine {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -84,6 +85,7 @@ impl ContentProvider for WrapBody {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -175,6 +177,7 @@ impl ContentProvider for EmptyContent {
             content: Text::default(),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -191,6 +194,7 @@ impl ContentProvider for ControlContent {
             content: Text::raw("\tcode\x1bhere"),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -213,6 +217,7 @@ impl ContentProvider for GutterContent {
                 "    let x = 5;".to_string(),
                 "}".to_string(),
             ]),
+            media: None,
         }
     }
 }
@@ -230,6 +235,7 @@ impl ContentProvider for PlainNoSource {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -1641,6 +1647,7 @@ fn wrapped_word_break_maps_columns_to_the_right_word() {
                 content: Text::raw(format!("{} {}", "a".repeat(50), "b".repeat(40))),
                 notices: Vec::new(),
                 source: None,
+                media: None,
             }
         }
     }
@@ -1757,6 +1764,7 @@ impl ContentProvider for GutterWithSource {
                 "\tlet x = 5;".to_string(), // REAL tab in the file; bat shows 4 spaces
                 "}".to_string(),
             ]),
+            media: None,
         }
     }
 }
@@ -1776,6 +1784,7 @@ impl ContentProvider for PlainWithSource {
                 "\tlet x = 5;".to_string(),
                 "3 loops below".to_string(),
             ]),
+            media: None,
         }
     }
 }
@@ -1942,6 +1951,7 @@ fn source_control_bytes_are_still_scrubbed() {
                 content: Text::raw("clean view"),
                 notices: Vec::new(),
                 source: Some(vec!["\tcode\x1b[2Jhere".to_string()]),
+                media: None,
             }
         }
     }
@@ -1981,6 +1991,7 @@ fn wrapped_break_dropped_space_does_not_shift_selection_to_the_line_above() {
                 content: Text::raw(format!("{line1}\nsecond\nthird")),
                 notices: Vec::new(),
                 source: None,
+                media: None,
             }
         }
     }

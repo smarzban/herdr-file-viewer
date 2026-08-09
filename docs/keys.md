@@ -48,6 +48,9 @@ is additive and on by default.
 | `?` (Shift+`/`) | Open help with **What's New** details selected first, including updates and spotlights; `Esc` / `q` closes it |
 | `u` | Dismiss the whole advisory status row for this session only; **What's New** stays available |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane. With annotations held, a confirm appears first (`y` copies them and quits, `q` quits and discards, `Esc` returns to the viewer): they are session-only, so quitting destroys them. Skip it with `confirm_discard = false` |
+| `p` | **Play/pause** the selected video. Inert unless a video is selected in Media mode. Playback starts paused on the first frame, so selecting a video never starts motion unasked |
+| `{` / `}` | **Seek** the selected video back / forward 5 seconds. Inert unless a video is selected |
+| `0` | **Restart** the selected video from the beginning. Inert unless a video is selected |
 
 These are the **default global** keys. Remap them with a `[keys]` table in the
 [config file](configuration.md#keybindings). Keys handled inside line-select mode, the annotation
@@ -136,6 +139,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Horizontal wheel / swipe** | Scroll the content, or the tree, sideways (terminal-dependent, see below) |
 | **Drag** a scrollbar | Scroll that pane: drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
 | **Drag** the divider | Resize the tree / content split |
+| **Click / drag** a video's progress bar | Seek to that position (the bar occupies the content pane's last row while a video is selected) |
 | **Drag** over the content text | **Select and copy text**: the selection highlights character-by-character as you drag (auto-scrolling past an edge) and is copied to the clipboard on release; no mode needed. Works in wrapped views (prose/markdown) too. `Esc`, a click elsewhere, or switching files clears the highlight |
 
 **`Shift`+drag is left to your terminal**, so its native select-and-copy still works while the

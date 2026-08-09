@@ -63,6 +63,7 @@ impl ContentProvider for Lines {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: self.source_mapped.then_some(lines),
+            media: None,
         }
     }
 }

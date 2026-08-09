@@ -61,6 +61,8 @@ editor = "code --wait"      # command to open a file with `e` (overrides $EDITOR
 markdown = "glow -s dark -w 0 -"   # override the markdown / diff / syntax renderers
 diff = "delta"                     # (defaults: glow / delta / bat)
 syntax = "bat --color=always --style=numbers --paging=never --file-name={name} -"
+image = "ffmpeg -loglevel error -i pipe:0 -sws_flags neighbor -vf scale={width}:{height}:force_original_aspect_ratio=decrease -f image2 -vcodec png pipe:1"  # non-PNG → PNG
+video = "ffmpeg -loglevel error -re -ss {start} -i {name} -an -vf scale={width}:{height} -r {fps} -f image2pipe -vcodec png -"  # frames
 
 open = "xdg-open"           # override the `O` open-with / `R` reveal-in-file-manager commands
 reveal = "nautilus"
@@ -77,6 +79,7 @@ tree_position = "left"      # which side the directory tree sits on: "left" (def
 
 preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
+media_max_kib = 8192        # media size cap, in KiB; separate from preview_max_kib (512–131072)
 ```
 
 `update_check` governs release details and project spotlights. `false` disables all remote requests
@@ -106,6 +109,15 @@ either to view bigger files (`preview_max_lines` up to `100000`, `preview_max_ki
 One caveat for **diffs**: a diff is additionally bounded at ~4 MB by the git-capture step, independent
 of `preview_max_kib`. So raising `preview_max_kib` above ~4 MB widens how much *file content* is shown
 but not how much of a very large *diff* is (a diff past that bound is shown up to ~4 MB).
+
+`image` and `video` are the **media** converters (see [external renderers](renderers.md)). `image`
+turns any non-PNG image into PNG — it receives the raw file bytes on **stdin** and must write PNG on
+stdout (like glow/bat's trailing `-`, the contract is "read stdin"; the default is an ffmpeg pipe).
+`video` is a frame-extraction template with `{start}` / `{fps}` / `{width}` / `{height}` placeholders
+(the pane's pixel budget is substituted for `{width}`/`{height}`) and `{name}` for the file path; the
+default is an ffmpeg invocation. `media_max_kib` caps how large a media file may be before the Media
+view shows a placeholder instead — it is **separate** from `preview_max_kib`, whose 1 MiB default is a
+*text* budget far too small for images. Default `8192` (8 MiB), clamp `512–131072`.
 
 `compact_dirs` changes the tree's **shape**, not what it shows. With it on, a chain of directories
 that each hold nothing but one subdirectory is drawn as a single row — `src/main/java/br/com` instead
@@ -189,6 +201,10 @@ customized).
 | | `toggle_zoom` | `z` | Hide the tree so content fills the frame, or restore the split |
 | | `tree_scroll_left` | `H` | Scroll the tree pane left |
 | | `tree_scroll_right` | `L` | Scroll the tree pane right |
+| | `media_play_pause` | `p` | Toggle play/pause of the selected video |
+| | `media_seek_back` | `{` | Seek the selected video back |
+| | `media_seek_forward` | `}` | Seek the selected video forward |
+| | `media_restart` | `0` | Restart the selected video from the beginning |
 | **Git & filters** | `toggle_ignore` | `i` | Reveal or hide gitignored files |
 | | `toggle_hidden` | `.` | Hide or reveal dot-prefixed (hidden) files and folders |
 | | `toggle_changed_only` | `c` | Restrict the tree to changed files (baseline-aware), or restore the full tree |

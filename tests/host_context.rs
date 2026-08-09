@@ -115,3 +115,109 @@ fn malformed_json_still_yields_none_workspace_id() {
     let ctx = parse_context(Some("{ this is not json"), PathBuf::from("/fallback"));
     assert_eq!(ctx.workspace_id, None);
 }
+
+#[test]
+fn a_focused_pane_inside_the_plugins_own_install_dir_falls_through_to_the_workspace() {
+    // Opening the viewer while a VIEWER pane is focused: herdr launches the pane from the plugin
+    // root (the manifest command is relative), so the focused pane's cwd is the plugin's own
+    // install directory. Rooting there showed the user
+    // `~/.config/herdr/plugins/github/herdr-file-viewer-…` instead of their project.
+    let plugin = "/Users/x/.config/herdr/plugins/github/herdr-file-viewer-abc123";
+    let json =
+        format!(r#"{{"focused_pane_cwd":"{plugin}","workspace_cwd":"/Users/x/dev/project"}}"#);
+    let ctx = herdr_file_viewer::host::parse_context_from(
+        Some(&json),
+        PathBuf::from("/fallback"),
+        Some(PathBuf::from(format!(
+            "{plugin}/target/release/herdr-file-viewer"
+        ))),
+    );
+    assert_eq!(
+        ctx.cwd,
+        PathBuf::from("/Users/x/dev/project"),
+        "the plugin's own dir must never be the viewed root when a workspace is known"
+    );
+}
+
+#[test]
+fn an_ordinary_focused_pane_still_wins_over_the_workspace() {
+    // The skip must be narrow: only our OWN install dir is ignored. A normal project directory —
+    // even one that happens to sit near the plugin — is still the most specific answer.
+    let json =
+        r#"{"focused_pane_cwd":"/Users/x/dev/project/src","workspace_cwd":"/Users/x/dev/project"}"#;
+    let ctx = herdr_file_viewer::host::parse_context_from(
+        Some(json),
+        PathBuf::from("/fallback"),
+        Some(PathBuf::from(
+            "/Users/x/.config/herdr/plugins/github/hfv/target/release/herdr-file-viewer",
+        )),
+    );
+    assert_eq!(ctx.cwd, PathBuf::from("/Users/x/dev/project/src"));
+}
+
+#[test]
+fn the_plugin_dir_is_still_used_when_there_is_nothing_better() {
+    // Degrade, don't break: with no workspace and no cwd in the context, the plugin dir is all we
+    // have and is better than an empty root.
+    let plugin = "/plugins/hfv";
+    let json = format!(r#"{{"focused_pane_cwd":"{plugin}"}}"#);
+    let ctx = herdr_file_viewer::host::parse_context_from(
+        Some(&json),
+        PathBuf::from("/fallback"),
+        Some(PathBuf::from(format!(
+            "{plugin}/target/release/herdr-file-viewer"
+        ))),
+    );
+    assert_eq!(ctx.cwd, PathBuf::from("/fallback"));
+}
+
+#[test]
+fn a_sibling_pane_supplies_the_root_when_the_context_only_offers_the_plugin_dir() {
+    // herdr derives BOTH context cwds from the focused pane, so opening the viewer while a viewer
+    // is focused reports the plugin's install dir twice over and the fallback chain has nothing
+    // better. The workspace's other panes do.
+    let plugin = "/Users/x/.config/herdr/plugins/github/hfv";
+    let exe = PathBuf::from(format!("{plugin}/target/release/herdr-file-viewer"));
+    let json = format!(
+        r#"{{"result":{{"panes":[
+             {{"pane_id":"w1:p1","workspace_id":"w1","cwd":"{plugin}"}},
+             {{"pane_id":"w1:p2","workspace_id":"w1","cwd":"/Users/x/dev/project"}}
+           ]}}}}"#
+    );
+    let root = herdr_file_viewer::host::root_from_sibling_panes(&json, Some("w1"), Some(&exe));
+    assert_eq!(root, Some(PathBuf::from("/Users/x/dev/project")));
+}
+
+#[test]
+fn sibling_panes_in_another_workspace_are_not_borrowed() {
+    // A pane in a different workspace is different work; rooting there would be worse than the
+    // plugin dir, because it would look plausible.
+    let plugin = "/plugins/hfv";
+    let exe = PathBuf::from(format!("{plugin}/target/release/herdr-file-viewer"));
+    let json = format!(
+        r#"{{"result":{{"panes":[
+             {{"pane_id":"w1:p1","workspace_id":"w1","cwd":"{plugin}"}},
+             {{"pane_id":"w2:p1","workspace_id":"w2","cwd":"/somewhere/else"}}
+           ]}}}}"#
+    );
+    assert_eq!(
+        herdr_file_viewer::host::root_from_sibling_panes(&json, Some("w1"), Some(&exe)),
+        None
+    );
+}
+
+#[test]
+fn malformed_pane_json_yields_no_root_rather_than_panicking() {
+    for bad in [
+        "not json",
+        "{}",
+        r#"{"result":{}}"#,
+        r#"{"result":{"panes":[]}}"#,
+    ] {
+        assert_eq!(
+            herdr_file_viewer::host::root_from_sibling_panes(bad, Some("w1"), None),
+            None,
+            "input {bad:?}"
+        );
+    }
+}

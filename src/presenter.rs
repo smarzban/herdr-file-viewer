@@ -46,6 +46,10 @@ pub struct ViewState {
     pub content: Text<'static>,
     /// Non-fatal notices to surface (truncation AC-13, renderer fallback AC-25).
     pub notices: Vec<String>,
+    /// `(position, duration)` in seconds for a playing/paused video, and whether it is playing.
+    /// `Some` only for a video of known duration; the bar occupies the content pane's last row,
+    /// which the picture placement reserves so the two never overlap.
+    pub media_progress: Option<(f64, f64, bool)>,
     /// A self-expiring status hint (e.g. `D`'s diff-presentation label), drawn as one line atop
     /// the notices strip and styled distinctly from a warning. `None` when nothing is flashing.
     pub flash: Option<FlashLine>,
@@ -1168,6 +1172,23 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
         // No ranges and no overlay: exactly main's pre-annotation path.
         state.content.clone()
     };
+    // A video's progress bar takes the content pane's last row. Reserving it here (rather than
+    // painting over the text) keeps it in lockstep with the picture placement, which reserves the
+    // same row.
+    let (text, bar_row) = match state.media_progress {
+        Some(_) if text.height > 1 => (
+            Rect {
+                height: text.height - 1,
+                ..text
+            },
+            Some(Rect {
+                y: text.y + text.height - 1,
+                height: 1,
+                ..text
+            }),
+        ),
+        _ => (text, None),
+    };
     let mut content =
         Paragraph::new(content_text).scroll((state.content_scroll, state.content_hscroll));
     if state.wrap {
@@ -1175,6 +1196,9 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
     }
     frame.render_widget(content, text);
     draw_blank_annotation_cells(frame, text, state);
+    if let (Some(track), Some((position, duration, playing))) = (bar_row, state.media_progress) {
+        draw_media_progress(frame, track, position, duration, playing);
+    }
 
     if let Some(track) = vbar {
         draw_vscrollbar(
@@ -1195,6 +1219,49 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &ViewState) -> (u16, u16) 
         );
     }
     (text.width, text.height)
+}
+
+/// Draw the video progress bar: `▶ 0:03 / 0:07 ━━━━━━╸────────` across one row.
+///
+/// The filled run is the elapsed fraction, with a distinct knob glyph at the head so the position
+/// is readable at a glance and the drag target is obvious. Purely presentational — the controller
+/// owns the position and the seek.
+fn draw_media_progress(frame: &mut Frame, row: Rect, position: f64, duration: f64, playing: bool) {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+
+    let label = crate::media::progress_label(position, duration, playing);
+    let label_width = label.chars().count() as u16;
+    let track_width = row.width.saturating_sub(label_width);
+    let fraction = if duration > 0.0 {
+        (position / duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // `round` (not floor) so the knob reaches the far end exactly at completion rather than one
+    // cell short, and saturating_sub keeps a zero-width track from underflowing.
+    let filled = ((track_width as f64) * fraction).round() as u16;
+    let filled = filled.min(track_width);
+
+    let mut spans = vec![Span::styled(
+        label,
+        Style::default().add_modifier(Modifier::DIM),
+    )];
+    if track_width > 0 {
+        let head = usize::from(filled.saturating_sub(1));
+        spans.push(Span::styled(
+            "━".repeat(head),
+            Style::default().fg(Color::Cyan),
+        ));
+        if filled > 0 {
+            spans.push(Span::styled("╸", Style::default().fg(Color::Cyan)));
+        }
+        spans.push(Span::styled(
+            "─".repeat(usize::from(track_width - filled)),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), row);
 }
 
 /// Split the frame into the body (the two columns) and an optional one-row remote-notice status.
@@ -1353,6 +1420,9 @@ pub struct PaneGeometry {
     /// The content pane's in-pane scrollbar tracks (1-cell rects), present only when drawn.
     pub content_vbar: Option<Rect>,
     pub content_hbar: Option<Rect>,
+    /// The video progress bar's row, when drawn. Hit-testing maps a press or drag along it to a
+    /// seek position.
+    pub media_bar: Option<Rect>,
     pub divider_x: Option<u16>,
     /// The screen rect where finder result rows are drawn, `None` when the finder is closed or
     /// has no rows (empty query or zero matches). Used by the controller to map a mouse click to
@@ -1460,6 +1530,26 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
             }
             None => (None, None, None),
         };
+    // The bar occupies the text area's last row — the SAME split `draw_content` performs, so a
+    // drag lands on the bar actually drawn.
+    let media_bar = content_inner
+        .filter(|_| state.media_progress.is_some())
+        .and_then(|text| {
+            (text.height > 1).then(|| Rect {
+                y: text.y + text.height - 1,
+                height: 1,
+                ..text
+            })
+        });
+    // `content_inner` is what the caller treats as the text area, so it must exclude the bar row
+    // exactly as the paint does.
+    let content_inner = match (content_inner, media_bar) {
+        (Some(text), Some(_)) => Some(Rect {
+            height: text.height - 1,
+            ..text
+        }),
+        (other, _) => other,
+    };
 
     // Finder: if the finder overlay is open, compute its layout with the same helper
     // `draw_finder_overlay` uses (same `area` = `frame.area()` = the full terminal rect),
@@ -1509,6 +1599,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
         content_title_rect,
         content_vbar,
         content_hbar,
+        media_bar,
         divider_x,
         finder_rows,
         finder_scroll,

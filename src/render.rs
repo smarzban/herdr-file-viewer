@@ -180,6 +180,18 @@ pub struct Renderers {
     /// show a line-number gutter, so the file's lines are numbered with the diff shown inline.
     pub full_diff: Vec<String>,
     pub syntax: Vec<String>,
+    /// Converts a non-PNG image file (fed on **stdin** as raw bytes) to PNG on stdout, for the
+    /// Media view (defaults to ffmpeg). Absent ⇒ the Media view shows its placeholder + notice.
+    pub image: Vec<String>,
+    /// Extracts video frames as PNG. A template: `{start}` / `{width}` / `{height}` / `{fps}`
+    /// are substituted before use (the file path is passed as an argv element — you cannot
+    /// seek a pipe, the one narrowing of the stdin trust boundary; see ARCHITECTURE.md).
+    /// Absent ⇒ video shows its placeholder + notice.
+    pub video: Vec<String>,
+    /// Reports a video's codec and duration for the Media info line (defaults to ffprobe).
+    /// `{name}` is substituted with the file path. Purely informational: an empty vec, a missing
+    /// binary, or an unparsable answer just omits those fields — it never blocks playback.
+    pub probe: Vec<String>,
     /// Per-invocation wall-clock bound; a renderer exceeding it is killed and the plain-
     /// text fallback is used, so a wedged delegate can never hang rendering.
     pub timeout: Duration,
@@ -244,6 +256,7 @@ pub fn render(
             base_notice,
         ),
         ViewMode::Diff | ViewMode::FullDiff => unreachable!("handled above"),
+        ViewMode::Media => unreachable!("media is rendered by render_media, not render"),
     }
 }
 
@@ -310,11 +323,20 @@ fn markdown_section_timeout(fallback: Text<'static>) -> (Text<'static>, Option<S
 /// Substitute the `{name}` placeholder in a renderer command with the selected file name,
 /// so a stdin-fed renderer (e.g. `bat --file-name={name}`) can still infer the language —
 /// keeping the secure stdin design while enabling syntax highlighting (AC-10).
-fn with_name(command: &[String], name: &str) -> Vec<String> {
+pub(crate) fn with_name(command: &[String], name: &str) -> Vec<String> {
     command
         .iter()
         .map(|arg| arg.replace("{name}", name))
         .collect()
+}
+
+/// Substitute the `{name}` (the file PATH, `'{}`-canonicalized in-root) into the video frame
+/// decoder's argv template — in addition to the player's `{start}/{fps}/{width}/{height}`
+/// substitution. This is the one deliberate narrowing of the stdin trust boundary: you cannot
+/// `-ss`-seek a pipe, so the canonicalized in-root path is passed as its own argv element, no
+/// shell. `name` must already be the sanitized basename-or-path the caller controls.
+pub(crate) fn with_video_name(command: &[String], name: &str) -> Vec<String> {
+    with_name(command, name)
 }
 
 /// Bound a text block to the size cap, returning a preview plus a truncation notice when
@@ -451,6 +473,7 @@ fn capability(mode: ViewMode) -> &'static str {
         ViewMode::FullDiff => "Full-file diff",
         ViewMode::RenderedMarkdown => "Markdown",
         ViewMode::SyntaxContent => "Syntax",
+        ViewMode::Media => "Media",
     }
 }
 
@@ -480,6 +503,19 @@ fn run_renderer(
     run_renderer_until(command, input, Instant::now() + timeout)
 }
 
+/// A binary-in, binary-out renderer call (the media converters — `image`/`video` commands). The
+/// input is fed on stdin as raw bytes and stdout is returned raw, so a PNG pipeline is never
+/// round-tripped through lossy UTF-8. Same deadline / output-cap / kill-and-reap guarantees as
+/// [`run_renderer_until`]; the caller owns the byte cap (the media size cap, not the text one).
+pub(crate) fn run_renderer_bytes(
+    command: &[String],
+    input: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    run_renderer_bytes_until(command, input, Instant::now() + timeout)
+        .map_err(|e| e.notice(capability(ViewMode::Media)))
+}
+
 /// Spawn a renderer, feed `input` on stdin (writer thread, avoiding a pipe deadlock), then capture
 /// stdout on a reader thread through the caller's absolute deadline.
 ///
@@ -492,6 +528,18 @@ fn run_renderer_until(
     input: &str,
     deadline: Instant,
 ) -> Result<String, RendererError> {
+    run_renderer_bytes_until(command, input.as_bytes(), deadline)
+        .map(|buf| String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The byte-oriented core shared by [`run_renderer_until`] (text, lossy-decoded) and
+/// [`run_renderer_bytes`] (binary pipelines): spawn, stdin write on a writer thread, stdout
+/// capture on a reader thread, one deadline, unconditional kill-and-reap on overrun.
+fn run_renderer_bytes_until(
+    command: &[String],
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Vec<u8>, RendererError> {
     let prog = command
         .first()
         .cloned()
@@ -523,7 +571,7 @@ fn run_renderer_until(
     if let Some(mut stdin) = child.stdin.take() {
         let owned = input.to_owned();
         std::thread::spawn(move || {
-            let _ = stdin.write_all(owned.as_bytes()); // ignore a closed pipe
+            let _ = stdin.write_all(&owned); // ignore a closed pipe
         });
     }
 
@@ -536,7 +584,7 @@ fn run_renderer_until(
 
     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(buf) => match crate::proc::wait_until(&mut child, deadline) {
-            Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
+            Some(status) if status.success() => Ok(buf),
             Some(status) => Err(RendererError::Failed {
                 detail: format!("exited with {status}"),
             }),
@@ -556,6 +604,491 @@ fn capture_renderer_output(stdout: impl Read) -> Vec<u8> {
     let mut buf = Vec::new();
     let _ = stdout.take(MAX_RENDER_OUTPUT).read_to_end(&mut buf);
     buf
+}
+
+// ---------------------------------------------------------------------------
+// Media: the still-preview payload for the Media view mode
+// ---------------------------------------------------------------------------
+
+/// The default media size cap, in bytes (8 MiB) — mirror of `crate::config::DEFAULT_MEDIA_MAX_KIB`
+/// (8192). Far larger than the 1 MiB text-preview budget: images are naturally big, and the
+/// byte-bound here only gates the disk read so a giant/hostile file is never slurped whole.
+pub const DEFAULT_MEDIA_MAX_BYTES: u64 = 8192 * 1024;
+
+/// The still preview for a media file, ready to hand to the graphics host.
+///
+/// Carries **raw PNG bytes**; base64 happens in `graphics.rs` at send time so the payload stays
+/// bytes. Dimensions are parsed at placement time via [`crate::media::png_dimensions`], so a
+/// re-encode (the PNG fast-path guard) can decide from the actual bytes.
+// No `Eq`: a duration is an f64. `PartialEq` is what the tests actually use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaPayload {
+    pub kind: crate::media::MediaKind,
+    pub png: Vec<u8>,
+    /// The source's OWN pixel size, before any resample for display or for the host's byte cap.
+    ///
+    /// The placement maths must not use `png`'s dimensions: those may have been shrunk purely to
+    /// get under the cap, and `fit`'s never-upscale rule would then render a large photo smaller
+    /// than the pane just because it had to travel small. The "is this image smaller than the
+    /// box?" question is about the SOURCE, so it is answered with this.
+    pub natural: (u32, u32),
+    /// A video's length in seconds, when `ffprobe` could report it. Drives the progress bar;
+    /// `None` for images, and for a video whose duration could not be determined (the bar is then
+    /// simply not drawn).
+    pub duration_s: Option<f64>,
+}
+
+/// Produce the Media view's content for a media file: a text line (so the pane is never blank —
+/// the no-graphics degradation is automatic) plus, when a PNG was obtained, the payload.
+///
+/// `media_max_bytes` is the dedicated media size cap (the byte-bound on the disk read and on the
+/// captured output); it is deliberately separate from the text-preview cap. A missing converter,
+/// an over-cap file, or a malformed result degrades to the text line plus a notice — never a
+/// crash. `Png` needs no converter: the file's own bytes are the payload (the hosting layer still
+/// applies the PNG fast-path guard at placement time). `Video` decodes frame 0 only here; playback
+/// is the controller's, elsewhere.
+pub fn render_media(
+    renderers: &Renderers,
+    path: &Path,
+    kind: crate::media::MediaKind,
+    media_max_bytes: u64,
+    media_box: Option<(u32, u32)>,
+) -> (Text<'static>, Option<String>, Option<MediaPayload>) {
+    match kind {
+        crate::media::MediaKind::Png => {
+            let bytes = read_media_bytes(path, media_max_bytes);
+            match bytes.and_then(|b| crate::media::png_dimensions(&b).map(|(w, h)| (b, w, h))) {
+                // The fast path is only fast when the bytes are actually sendable: a PNG over the
+                // host's cap is re-encoded smaller rather than silently dropped. The text line
+                // keeps reporting the file's TRUE dimensions — the downscale is a transport
+                // detail, not something the user asked for.
+                Some((png, w, h)) => {
+                    let colour = crate::media::png_colour(&png);
+                    let bytes = png.len() as u64;
+                    // Resample to the size the pane will actually show BEFORE worrying about
+                    // bytes. Downscaling to the display box is free visually (those pixels can
+                    // never be seen) and usually lands under the cap on its own, so the picture
+                    // is resampled once, with a good filter, instead of being squeezed by a
+                    // byte-ratio guess that ignores how large the pane is.
+                    let png = to_display_box(renderers, png, (w, h), media_box);
+                    match fit_under_cap(renderers, png, (w, h)) {
+                        Some(fitted) => (
+                            info_line(
+                                "image",
+                                (w, h),
+                                Some("PNG"),
+                                colour.as_deref(),
+                                bytes,
+                                None,
+                                fitted.rescaled_to,
+                            ),
+                            None,
+                            Some(MediaPayload {
+                                kind,
+                                png: fitted.png,
+                                natural: (w, h),
+                                duration_s: None,
+                            }),
+                        ),
+                        None => (
+                            info_line(
+                                "image",
+                                (w, h),
+                                Some("PNG"),
+                                colour.as_deref(),
+                                bytes,
+                                None,
+                                None,
+                            ),
+                            Some(OVERSIZED_NOTICE.into()),
+                            None,
+                        ),
+                    }
+                }
+                None => (
+                    Text::raw("[image: preview not shown]"),
+                    Some("⚠ Image too large or unreadable.".into()),
+                    None,
+                ),
+            }
+        }
+        crate::media::MediaKind::Image => {
+            let bytes = read_media_bytes(path, media_max_bytes);
+            // The conversion is also the first downscale opportunity: bounding it to a generous
+            // box here means a 12-megapixel JPEG usually lands under the cap in one pass instead
+            // of converting at full size and then needing a second re-encode.
+            let (box_w, box_h) = media_box.unwrap_or((DEFAULT_IMAGE_BOX, DEFAULT_IMAGE_BOX));
+            let convert = with_image_size(&renderers.image, box_w, box_h, "lanczos");
+            let on_disk = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let source_format = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_uppercase());
+            let Ok(png) =
+                run_renderer_bytes(&convert, &bytes.unwrap_or_default(), renderers.timeout)
+            else {
+                return (
+                    Text::raw("[image: preview not shown]"),
+                    Some("⚠ The image converter is unavailable; see docs/renderers.md.".into()),
+                    None,
+                );
+            };
+            match crate::media::png_dimensions(&png) {
+                Some((w, h)) => match fit_under_cap(renderers, png, (w, h)) {
+                    Some(fitted) => (
+                        info_line(
+                            "image",
+                            (w, h),
+                            source_format.as_deref(),
+                            None,
+                            on_disk,
+                            None,
+                            fitted.rescaled_to,
+                        ),
+                        None,
+                        Some(MediaPayload {
+                            kind,
+                            png: fitted.png,
+                            natural: (w, h),
+                            duration_s: None,
+                        }),
+                    ),
+                    None => (
+                        info_line(
+                            "image",
+                            (w, h),
+                            source_format.as_deref(),
+                            None,
+                            on_disk,
+                            None,
+                            None,
+                        ),
+                        Some(OVERSIZED_NOTICE.into()),
+                        None,
+                    ),
+                },
+                None => (
+                    Text::raw("[image: preview not shown]"),
+                    Some("⚠ The image converter returned no image.".into()),
+                    None,
+                ),
+            }
+        }
+        crate::media::MediaKind::Video => {
+            // Frame 0 only, for the still preview. Runs the video command with a fixed start; the
+            // width/height default to a conservative budget because the render worker has no pane
+            // geometry yet (playback — the decoder thread — sizes to the pane at tick time).
+            // The file path is substituted as its own argv element (no shell), so a hostile
+            // filename cannot inject — the canonicalized in-root path from `classify`'s caller.
+            let on_disk = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let probe = probe_video(renderers, path);
+            let command = with_video_name(&renderers.video, &path.to_string_lossy());
+            // Identical to what `MediaPlayer` will ask the decoder for, so the poster frame and
+            // the first played frame are the same size — previously the still was hardcoded to
+            // 640x360 while playback used the pane budget, and the video jumped on play.
+            let (vw, vh) = crate::media::clamp_pixels_to_cap(
+                media_box.unwrap_or((DEFAULT_VIDEO_BOX.0, DEFAULT_VIDEO_BOX.1)),
+            );
+            let command = crate::media::player::substitute(
+                &command,
+                "0",
+                "8",
+                &vw.to_string(),
+                &vh.to_string(),
+            );
+            // The template streams by design, so the still preview adds a single-frame limit —
+            // and it MUST be inserted before the output URL, never appended. ffmpeg applies
+            // output options to the output that FOLLOWS them, so a trailing `-frames:v 1` is
+            // silently inert: measured on a real .m4v, appending produced 8 MB of concatenated
+            // frames (and on a longer video it simply ran until the renderer timeout, surfacing
+            // to the user as "the video decoder is unavailable"), while inserting produced one
+            // 84 KB frame.
+            let mut command = command;
+            let before_output = command.len().saturating_sub(1);
+            command.splice(
+                before_output..before_output,
+                ["-frames:v".to_string(), "1".to_string()],
+            );
+            match run_renderer_bytes(&command, &[], renderers.timeout) {
+                Ok(png) => match crate::media::png_dimensions(&png) {
+                    // A frame from a high-resolution source can still exceed the host's cap, so
+                    // it goes through the same downscale ladder as a still image rather than
+                    // being dropped at send time.
+                    Some((w, h)) => match fit_under_cap(renderers, png, (w, h)) {
+                        Some(fitted) => (
+                            // `p`, not Space: Space is already `page_down` in the registry, so
+                            // the caption must name the key that actually plays. The size shown
+                            // is the video's own, not the downscaled poster frame's.
+                            info_line(
+                                "video",
+                                probe.native.unwrap_or((w, h)),
+                                probe.codec.as_deref(),
+                                None,
+                                on_disk,
+                                probe.duration_s,
+                                fitted.rescaled_to,
+                            ),
+                            None,
+                            Some(MediaPayload {
+                                kind,
+                                png: fitted.png,
+                                // The VIDEO's own resolution, not the poster frame's. The frame is
+                                // decoded small to stay under the host's byte cap, and `fit` never
+                                // upscales — so using the frame's size here pinned video to a
+                                // fraction of the pane while images, which report their true size,
+                                // filled it.
+                                natural: probe.native.unwrap_or((w, h)),
+                                duration_s: probe.duration_s,
+                            }),
+                        ),
+                        None => (
+                            info_line(
+                                "video",
+                                probe.native.unwrap_or((w, h)),
+                                probe.codec.as_deref(),
+                                None,
+                                on_disk,
+                                probe.duration_s,
+                                None,
+                            ),
+                            Some(OVERSIZED_NOTICE.into()),
+                            None,
+                        ),
+                    },
+                    None => (
+                        Text::raw("[video: preview not shown]"),
+                        Some("⚠ The video decoder returned no frame.".into()),
+                        None,
+                    ),
+                },
+                Err(_) => (
+                    Text::raw("[video: preview not shown]"),
+                    Some("⚠ The video decoder is unavailable; see docs/renderers.md.".into()),
+                    None,
+                ),
+            }
+        }
+    }
+}
+
+/// The box a non-PNG image is converted into, per edge, when the pane size is not yet known
+/// (the very first render, before a draw has measured the layout).
+const DEFAULT_IMAGE_BOX: u32 = 1920;
+
+/// The same fallback for video, as a 16:9 box.
+const DEFAULT_VIDEO_BOX: (u32, u32) = (1280, 720);
+
+/// Resample a PNG down to the size the pane will actually display, with a high-quality filter.
+///
+/// This is the step that answers "why does a big image look worse than a small one": a picture
+/// larger than the pane must be resampled *somewhere*, and doing it here — once, to the display
+/// box, with `lanczos` — beats letting the byte-cap ladder shrink it by a blind ratio with a
+/// hard-edged filter. Pixels the pane cannot show are not quality, so this loses nothing visible.
+///
+/// Returns the input untouched when the pane size is unknown, when the image already fits the box,
+/// or when the converter fails — every one of which is better served by the original bytes than by
+/// no picture.
+fn to_display_box(
+    renderers: &Renderers,
+    png: Vec<u8>,
+    dimensions: (u32, u32),
+    media_box: Option<(u32, u32)>,
+) -> Vec<u8> {
+    let Some((box_w, box_h)) = media_box else {
+        return png;
+    };
+    if box_w == 0 || box_h == 0 || (dimensions.0 <= box_w && dimensions.1 <= box_h) {
+        return png; // already no larger than the pane shows — the original IS the best version
+    }
+    let command = with_image_size(&renderers.image, box_w, box_h, "lanczos");
+    match run_renderer_bytes(&command, &png, renderers.timeout) {
+        Ok(smaller) if crate::media::png_dimensions(&smaller).is_some() => smaller,
+        _ => png,
+    }
+}
+
+/// What `ffprobe` told us about a video. Every field is optional: the probe is a convenience, and
+/// its absence must never stop the frame from being shown.
+#[derive(Default)]
+struct VideoProbe {
+    codec: Option<String>,
+    duration_s: Option<f64>,
+    /// The video's OWN resolution. Reported in the caption in place of the decoded preview's
+    /// size, so a video states its real dimensions exactly as an image does.
+    native: Option<(u32, u32)>,
+}
+
+/// Ask the `probe` command for a video's codec and duration.
+///
+/// Best-effort by construction — a missing ffprobe, a malformed answer, or a container it cannot
+/// read all yield an empty [`VideoProbe`] and simply omit those fields from the info line. The
+/// path is passed as its own argv element via `{name}` (no shell), the same narrowing of the
+/// stdin trust boundary the `video` command already documents.
+fn probe_video(renderers: &Renderers, path: &Path) -> VideoProbe {
+    if renderers.probe.is_empty() {
+        return VideoProbe::default();
+    }
+    let command = with_video_name(&renderers.probe, &path.to_string_lossy());
+    let Ok(out) = run_renderer_bytes(&command, &[], renderers.timeout) else {
+        return VideoProbe::default();
+    };
+    let text = String::from_utf8_lossy(&out);
+    let field = |name: &str| {
+        text.lines()
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == name)
+            .map(|(_, v)| v.trim().to_string())
+    };
+    let width = field("width").and_then(|v| v.parse::<u32>().ok());
+    let height = field("height").and_then(|v| v.parse::<u32>().ok());
+    VideoProbe {
+        codec: field("codec_name").map(|c| c.to_ascii_uppercase()),
+        duration_s: field("duration").and_then(|v| v.parse::<f64>().ok()),
+        native: width.zip(height).filter(|&(w, h)| w > 0 && h > 0),
+    }
+}
+
+/// The caption above a media file: what it is, at a glance.
+///
+/// Reads as `[image: 3008×1546 · PNG · 8-bit RGBA · 655 KiB · shown at 2259×1161]`. The trailing
+/// clause appears only when the host's byte cap forced a re-encode, which is the answer to "why
+/// does this large file look softer than that small one" — without it the degradation is invisible
+/// and looks like a bug.
+#[allow(clippy::too_many_arguments)]
+fn info_line(
+    label: &str,
+    dimensions: (u32, u32),
+    format: Option<&str>,
+    colour: Option<&str>,
+    on_disk: u64,
+    duration_s: Option<f64>,
+    rescaled_to: Option<(u32, u32)>,
+) -> Text<'static> {
+    let (w, h) = dimensions;
+    let mut parts = vec![format!("{w}×{h}")];
+    if let Some(d) = duration_s {
+        parts.push(crate::media::human_duration(d));
+    }
+    if let Some(f) = format {
+        parts.push(f.to_string());
+    }
+    if let Some(c) = colour {
+        parts.push(c.to_string());
+    }
+    if on_disk > 0 {
+        parts.push(crate::media::human_size(on_disk));
+    }
+    // Only worth saying when the size actually changed: a converter that returned the same
+    // dimensions (or a re-encode that only shrank bytes) would otherwise print a confusing
+    // "shown at" clause identical to the size right before it.
+    if let Some((rw, rh)) = rescaled_to.filter(|&r| r != dimensions) {
+        parts.push(format!("shown at {rw}×{rh}"));
+    }
+    if label == "video" {
+        parts.push("p to play".to_string());
+    }
+    Text::raw(format!("[{label}: {}]", parts.join(" · ")))
+}
+
+/// Shown when an image cannot be squeezed under the host's cap — the pane still shows the text
+/// line, so this explains why no picture accompanies it.
+const OVERSIZED_NOTICE: &str = "⚠ Image too large for the terminal to display; install ffmpeg so it can be scaled down. \
+     See docs/renderers.md.";
+
+/// Substitute `{width}` / `{height}` / `{scaler}` in an image-converter command.
+///
+/// Mirrors [`crate::media::player::substitute`] for the video template. Applied on **every**
+/// invocation, so the placeholders are never passed through to ffmpeg literally.
+pub(crate) fn with_image_size(
+    command: &[String],
+    width: u32,
+    height: u32,
+    scaler: &str,
+) -> Vec<String> {
+    let (w, h) = (width.to_string(), height.to_string());
+    command
+        .iter()
+        .map(|arg| {
+            arg.replace("{width}", &w)
+                .replace("{height}", &h)
+                .replace("{scaler}", scaler)
+        })
+        .collect()
+}
+
+/// The re-encode ladder, best quality first: `(scaler, size multiplier)`.
+///
+/// The goal is the **best-looking image that herdr will accept**, not merely one that fits. So we
+/// start with the highest-fidelity resampler at the largest size the byte estimate allows and only
+/// trade quality away when the host's cap forces it.
+///
+/// Why the second rung changes filter rather than size: measured on this repo's 3008x1546
+/// screenshots, `lanczos` at the byte-target produced 794 KiB and `neighbor` at the *same* size
+/// produced 350 KiB. For screenshots, diagrams, and UI captures, dropping the smoothing filter
+/// costs nothing visually — it keeps text crisp — and buys more than halving the size, which is
+/// far better than keeping a smooth filter and shrinking the picture. Photographs are the inverse
+/// case, and they simply take the first rung when they fit.
+const QUALITY_LADDER: &[(&str, f64)] = &[("lanczos", 1.0), ("neighbor", 1.0), ("neighbor", 0.7)];
+
+/// The outcome of squeezing an image under the host's byte cap.
+pub struct Fitted {
+    pub png: Vec<u8>,
+    /// `Some(dimensions)` when the bytes had to be re-encoded smaller, so the caller can say so in
+    /// the info line rather than letting the user wonder why a 3008px file looks softer than a
+    /// 900px one. `None` means the original bytes were sent untouched.
+    pub rescaled_to: Option<(u32, u32)>,
+}
+
+/// Produce the best-quality version of `png` that herdr will accept.
+///
+/// Returns the original bytes untouched when they already fit — the zero-subprocess fast path, and
+/// the only path that is bit-for-bit pristine. Otherwise it walks [`QUALITY_LADDER`], stopping at
+/// the first rung that lands under the cap, so the picture is only degraded as far as the host's
+/// 512 KiB limit actually forces.
+///
+/// `None` means the converter is missing, produced garbage, or no rung fit; the caller then shows
+/// the caption plus [`OVERSIZED_NOTICE`] rather than sending a payload herdr would reject with
+/// `image_too_large`.
+fn fit_under_cap(renderers: &Renderers, png: Vec<u8>, dimensions: (u32, u32)) -> Option<Fitted> {
+    if png.len() <= crate::graphics::MAX_IMAGE_BYTES {
+        return Some(Fitted {
+            png,
+            rescaled_to: None,
+        });
+    }
+    let (base_w, base_h) =
+        crate::media::downscale_target(dimensions, png.len(), crate::graphics::MAX_IMAGE_BYTES);
+    for (scaler, factor) in QUALITY_LADDER {
+        let w = ((base_w as f64 * factor).round() as u32).max(1);
+        let h = ((base_h as f64 * factor).round() as u32).max(1);
+        let command = with_image_size(&renderers.image, w, h, scaler);
+        // A failed rung is not fatal on its own — but a *missing converter* fails identically on
+        // every rung, so bailing out here avoids three pointless spawns.
+        let Ok(candidate) = run_renderer_bytes(&command, &png, renderers.timeout) else {
+            return None;
+        };
+        let dims = crate::media::png_dimensions(&candidate)?;
+        if candidate.len() <= crate::graphics::MAX_IMAGE_BYTES {
+            return Some(Fitted {
+                png: candidate,
+                rescaled_to: Some(dims),
+            });
+        }
+    }
+    None
+}
+
+/// Read a media file's bytes, bounded by the media size cap (`None` if missing, unreadable, or
+/// over the cap — the pane then shows the placeholder text rather than vomiting bytes).
+fn read_media_bytes(path: &Path, media_max_bytes: u64) -> Option<Vec<u8>> {
+    let m = std::fs::metadata(path).ok()?;
+    if m.len() > media_max_bytes {
+        return None;
+    }
+    let mut file = File::open(path).ok()?;
+    let mut buf = Vec::with_capacity(m.len() as usize);
+    file.read_to_end(&mut buf).ok()?;
+    Some(buf)
 }
 
 /// Ingest (possibly untrusted) content into ratatui `Text`. Cursor-movement and
@@ -1103,5 +1636,323 @@ mod tests {
             Some(Color::Blue),
             "SGR 34 must map to the named Blue, not RGB"
         );
+    }
+
+    // -- media --------------------------------------------------------------
+
+    /// A minimal PNG header (the 24-byte IHDR prefix) — enough for `png_dimensions` / the
+    /// fast-path payload without a full encoder.
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        b.extend_from_slice(&13u32.to_be_bytes());
+        b.extend_from_slice(b"IHDR");
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&h.to_be_bytes());
+        b
+    }
+
+    #[test]
+    fn media_png_uses_the_files_own_bytes_as_the_payload() {
+        let p = tmp("media.png", &png_bytes(64, 48));
+        let renderers = Renderers {
+            image: vec!["herdr-no-such-converter".into()], // must not be reached for PNG
+            ..cat_like()
+        };
+        let (text, notice, media) = render_media(
+            &renderers,
+            &p,
+            crate::media::MediaKind::Png,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+        assert_eq!(notice, None);
+        let line: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        // The caption is now an info line: dimensions, format, and on-disk size.
+        assert_eq!(line, "[image: 64×48 · PNG · 24 B]");
+        let payload = media.expect("a PNG payload");
+        assert_eq!(payload.kind, crate::media::MediaKind::Png);
+        assert_eq!(
+            payload.png,
+            png_bytes(64, 48),
+            "native bytes, no conversion"
+        );
+        fs::remove_file(&p).ok();
+    }
+
+    /// An over-cap PNG padded past herdr's 512 KiB limit. Sized from the real regression: the
+    /// repo's own `assets/File-Viewer-FS.png` is 655 KiB and rendered nothing at all.
+    fn oversized_png() -> Vec<u8> {
+        let mut b = png_bytes(3008, 1546);
+        b.resize(crate::graphics::MAX_IMAGE_BYTES + 1024, 0u8);
+        b
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_png_is_downscaled_instead_of_silently_dropped() {
+        // THE REGRESSION: an over-cap PNG used to be skipped at send time with no picture, no
+        // notice, and `media_shown` still claiming it was displayed — which is exactly why
+        // Markdown-view.png (501 KiB) rendered while File-viewer.png (549 KiB) never did.
+        // `head -c` stands in for ffmpeg: it consumes stdin and emits a strictly smaller stream
+        // whose PNG header (and therefore parsed dimensions) survives intact.
+        let p = tmp("oversized.png", &oversized_png());
+        let renderers = Renderers {
+            image: vec!["sh".into(), "-c".into(), "head -c 1000".into()],
+            ..cat_like()
+        };
+        let (text, notice, media) = render_media(
+            &renderers,
+            &p,
+            crate::media::MediaKind::Png,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+
+        assert_eq!(
+            notice, None,
+            "a successful downscale is not a problem to report"
+        );
+        let payload = media.expect("an over-cap PNG must still produce a payload");
+        assert!(
+            payload.png.len() <= crate::graphics::MAX_IMAGE_BYTES,
+            "the payload must fit the host's cap, got {} bytes",
+            payload.png.len()
+        );
+        let line: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            line.starts_with("[image: 3008×1546 ·"),
+            "the caption reports the file's TRUE size; the downscale is a transport detail: {line}"
+        );
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn an_oversized_png_without_a_converter_says_so_rather_than_vanishing() {
+        // Degradation, not silence: with no ffmpeg there is nothing to downscale with, so the
+        // user gets the text line AND an explanation pointing at the fix.
+        let p = tmp("oversized-noconv.png", &oversized_png());
+        let renderers = Renderers {
+            image: vec!["herdr-no-such-converter".into()],
+            ..cat_like()
+        };
+        let (_, notice, media) = render_media(
+            &renderers,
+            &p,
+            crate::media::MediaKind::Png,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+        assert!(media.is_none(), "nothing sendable was produced");
+        assert_eq!(notice.as_deref(), Some(OVERSIZED_NOTICE));
+        fs::remove_file(&p).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_converter_that_ignores_the_size_request_gives_up_instead_of_looping() {
+        // `cat` echoes its input unchanged, so it never gets under the cap. Without the
+        // "did it actually shrink?" guard this would burn the whole attempt budget on identical
+        // subprocess calls; with it, the first pass concludes the converter is useless.
+        let p = tmp("oversized-noop.png", &oversized_png());
+        let renderers = Renderers {
+            image: vec!["cat".into()],
+            ..cat_like()
+        };
+        let (_, notice, media) = render_media(
+            &renderers,
+            &p,
+            crate::media::MediaKind::Png,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+        assert!(media.is_none());
+        assert_eq!(notice.as_deref(), Some(OVERSIZED_NOTICE));
+        fs::remove_file(&p).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_video_still_limits_frames_before_the_output_not_after_it() {
+        // THE REGRESSION: `-frames:v 1` appended AFTER the output URL is inert — ffmpeg applies
+        // output options to the output that follows them. That made every still preview decode
+        // the WHOLE video (8 MB of frames on a short clip; a timeout reported as "the video
+        // decoder is unavailable" on a long one). The stub echoes its own argv so the ordering
+        // is asserted directly, without needing ffmpeg.
+        let renderers = Renderers {
+            video: vec![
+                "sh".into(),
+                "-c".into(),
+                // Emit the argv we were handed, so the test sees the real command shape.
+                "printf '%s\\n' \"$@\" >&2; printf ''".into(),
+                "argv0".into(),
+                "-i".into(),
+                "{name}".into(),
+                "-f".into(),
+                "image2pipe".into(),
+                "-".into(),
+            ],
+            ..cat_like()
+        };
+        let command = with_video_name(&renderers.video, "/tmp/clip.mp4");
+        let command = crate::media::player::substitute(&command, "0", "8", "640", "360");
+        let mut command = command;
+        let before_output = command.len().saturating_sub(1);
+        command.splice(
+            before_output..before_output,
+            ["-frames:v".to_string(), "1".to_string()],
+        );
+
+        let frames_at = command
+            .iter()
+            .position(|a| a == "-frames:v")
+            .expect("present");
+        let output_at = command.len() - 1;
+        assert_eq!(command[output_at], "-", "the output URL stays last");
+        assert!(
+            frames_at < output_at,
+            "the single-frame limit must precede the output URL, else ffmpeg ignores it: {command:?}"
+        );
+        assert_eq!(command[frames_at + 1], "1");
+    }
+
+    #[test]
+    fn image_size_substitution_leaves_no_placeholder_behind() {
+        // The default converter carries `{width}`/`{height}`; if substitution were ever skipped,
+        // ffmpeg would receive the literal braces and fail on every image.
+        let command: Vec<String> = ["ffmpeg", "-vf", "scale={width}:{height}:x", "pipe:1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = with_image_size(&command, 640, 480, "lanczos");
+        assert_eq!(got[2], "scale=640:480:x");
+        assert_eq!(got[1], "-vf");
+        assert!(
+            !got.iter().any(|a| a.contains('{')),
+            "no placeholder may survive: {got:?}"
+        );
+    }
+
+    #[test]
+    fn media_image_routes_through_the_configured_converter() {
+        // The converter is fed the raw bytes on stdin and its stdout is returned raw. A
+        // `cat` converter round-trips them, so a JPEG's bytes are not validated as PNG all the
+        // way down — the semantic is "capture the converter's stdout as the payload".
+        let p = tmp("media.jpg", b"\xff\xd8ff fake jpeg bytes");
+        let renderers = Renderers {
+            image: vec!["cat".into()],
+            ..cat_like()
+        };
+        let (text, _notice, media) = render_media(
+            &renderers,
+            &p,
+            crate::media::MediaKind::Image,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+        let line: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            line, "[image: preview not shown]",
+            "non-PNG converter output degrades"
+        );
+        assert_eq!(media, None);
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn media_image_converted_to_png_carries_the_png_bytes() {
+        // The `image` renderer fixture emits a well-formed 24-byte PNG header to stdout in
+        // response to any stdin, so its output is a parseable PNG payload.
+        let esc = escape_octal(&png_bytes(100, 60));
+        #[cfg(unix)]
+        let renderers = Renderers {
+            image: vec![
+                "sh".into(),
+                "-c".into(),
+                format!("cat >/dev/null; printf '{esc}'"),
+            ],
+            ..cat_like()
+        };
+        #[cfg(not(unix))]
+        let renderers = cat_like();
+        #[cfg(unix)]
+        {
+            let p = tmp("media-image-png", b"fake jpeg bytes");
+            let (_, _notice, media) = render_media(
+                &renderers,
+                &p,
+                crate::media::MediaKind::Image,
+                DEFAULT_MEDIA_MAX_BYTES,
+                None,
+            );
+            let payload = media.expect("a PNG payload from a valid converter output");
+            assert_eq!(payload.png, png_bytes(100, 60));
+            fs::remove_file(&p).ok();
+        }
+    }
+
+    /// `\NNN` octal escapes for `sh` `printf` (PNG magic includes bytes `printf` would otherwise
+    /// interpret, e.g. `\r\n` — escaping by hand avoids a second interpreter layer).
+    fn escape_octal(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|b| format!("\\{:03o}", b))
+            .collect::<String>()
+    }
+
+    #[test]
+    fn media_fallback_degrades_cleanly_when_over_the_cap_or_unreadable() {
+        // Over the media cap → placeholder text + notice, no bytes read.
+        let p = tmp("big.png", &png_bytes(64, 48));
+        let renderers = cat_like();
+        let (_, notice, media) =
+            render_media(&renderers, &p, crate::media::MediaKind::Png, 1, None);
+        assert!(notice.is_some(), "over-cap PNG must produce a notice");
+        assert_eq!(media, None);
+        // Missing file → same graceful placeholder.
+        let (text, notice, media) = render_media(
+            &renderers,
+            Path::new("/nonexistent/hfv-media.jpg"),
+            crate::media::MediaKind::Image,
+            DEFAULT_MEDIA_MAX_BYTES,
+            None,
+        );
+        let line: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!line.is_empty(), "the pane is never blank");
+        assert!(notice.is_some());
+        assert_eq!(media, None);
+        fs::remove_file(&p).ok();
+    }
+
+    fn cat_like() -> Renderers {
+        Renderers {
+            markdown: vec!["cat".into()],
+            diff: vec!["cat".into()],
+            full_diff: vec!["cat".into()],
+            syntax: vec!["cat".into()],
+            image: vec!["cat".into()],
+            video: vec!["cat".into()],
+            probe: Vec::new(),
+            timeout: Duration::from_secs(5),
+        }
     }
 }

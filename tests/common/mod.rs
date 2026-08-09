@@ -226,6 +226,7 @@ impl ContentProvider for NoopContent {
             content: Text::raw("content"),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }

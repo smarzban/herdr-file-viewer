@@ -48,6 +48,7 @@ impl ContentProvider for Content {
             content: Text::raw(""),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }

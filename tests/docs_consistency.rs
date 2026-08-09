@@ -117,6 +117,9 @@ fn config_example_documents_every_config_key() {
         "tree_max_cols",
         "preview_max_lines",
         "preview_max_kib",
+        "image",
+        "video",
+        "media_max_kib",
     ] {
         assert!(
             has_commented_assignment(CONFIG_EXAMPLE, key),

@@ -67,6 +67,7 @@ fn sample_state() -> ViewState {
         nodes,
         selected: 1, // main.rs
         content: to_text("fn main() {\n    println!(\"hello\");\n}\n"),
+        media_progress: None,
         notices: vec![
             "Showing first 5000 lines (truncated)".to_string(), // AC-13
             "delta not found — showing plain diff".to_string(), // AC-25

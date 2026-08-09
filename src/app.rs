@@ -47,7 +47,31 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`crate::open_target::OPEN_ENV`] (`HERDR_FILE_VIEWER_OPEN`) as flag > env; an absent/empty
 /// pair leaves startup selection unchanged.
 pub fn run(open_flag: Option<String>) -> io::Result<()> {
-    let ctx = host::from_env();
+    let mut ctx = host::from_env();
+    // If the only root herdr offered is the plugin's OWN install directory — which is what both
+    // context fields report when the viewer is opened while a viewer pane is focused — ask herdr
+    // for the workspace's other panes and root at one of those instead. Best-effort: a missing or
+    // failing herdr leaves the context exactly as parsed.
+    if host::is_own_install_dir(&ctx.cwd, std::env::current_exe().ok().as_deref()) {
+        use crate::herdr::HerdrCli;
+        let cli = crate::herdr::LiveHerdr::from_env();
+        // `herdr pane list` emits JSON by default (there is no `--json` flag — passing one makes
+        // it print "unknown option" and the parse silently yields nothing). `--workspace` scopes
+        // it host-side; the parser filters again so a herdr without that flag still behaves.
+        let args: Vec<&str> = match ctx.workspace_id.as_deref() {
+            Some(id) => vec!["pane", "list", "--workspace", id],
+            None => vec!["pane", "list"],
+        };
+        if let Ok(json) = cli.run_json(&args)
+            && let Some(better) = host::root_from_sibling_panes(
+                &json,
+                ctx.workspace_id.as_deref(),
+                std::env::current_exe().ok().as_deref(),
+            )
+        {
+            ctx.cwd = better;
+        }
+    }
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
 
@@ -87,6 +111,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
                 root: resolved.root.clone(),
                 renderers: factory_renderers.clone(),
                 caps,
+                media_max_bytes: eff.media_max_kib as u64 * 1024,
             });
             RootProviders { git, content }
         });
@@ -194,6 +219,21 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
         crate::opener::CommandOpener::new(current_os_kind(), Box::new(OpenerSpawner))
             .with_overrides(to_argv(eff.open.clone()), to_argv(eff.reveal.clone())),
     ));
+    // Inject the graphics host (kitty images in the content pane): the live socket client plus
+    // one startup probe for the cell metrics that map pane cells → image pixels. `info()`
+    // succeeding proves the pane exists but NOT that herdr's `experimental.kitty_graphics` is on —
+    // so the unavailable notice below must name that setting explicitly. Outside herdr (or when
+    // the probe fails) media degrades to the text line via the null sink.
+    match crate::graphics::LiveGraphics::from_env() {
+        Some(host) => {
+            let metrics = crate::graphics::GraphicsHost::info(&host).ok();
+            controller.set_graphics(
+                Box::new(crate::graphics::GraphicsWorker::spawn(Box::new(host))),
+                metrics,
+            );
+        }
+        None => controller.set_graphics(Box::new(crate::graphics::NullSink), None),
+    }
 
     let mut terminal = ratatui::try_init()?;
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
@@ -215,6 +255,9 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     let outcome = event_loop(&mut terminal, &mut controller);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     let _ = execute!(io::stdout(), DisableFocusChange);
+    // Teardown: leave the pane clean — block until the host reports nothing displayed, so a quit
+    // never leaves a residual graphic behind (the graphics worker joins its thread here).
+    controller.clear_media();
     ratatui::try_restore()?;
     outcome
 }
@@ -255,6 +298,10 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 // tree-only pane) and we must paint again so the file is actually visible.
                 need_redraw = controller.set_content_viewport(cw, ch);
                 controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
+                // The clear/set discipline runs on the fresh geometry: compare what the host
+                // should show against what it does, and clear/set on a difference. Non-blocking
+                // (the graphics host worker does the round-trips off this thread).
+                controller.sync_media();
             })?;
             dirty = need_redraw;
         }
@@ -398,6 +445,11 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
         if controller.tick_flash(now) {
             dirty = true;
         }
+        // Advance video playback: pull one frame per tick and send it to the graphics host. A
+        // redraw is owed when a new frame changed the surface.
+        if controller.tick_media(now) {
+            dirty = true;
+        }
         // Launch open-range passive highlight (1s); redraw once when it expires.
         if controller.tick_open_range_flash(now) {
             dirty = true;
@@ -488,14 +540,26 @@ struct LiveContent {
     /// The size caps (line + byte) for classifying/previewing content, resolved from config
     /// (`preview_max_lines` / `preview_max_kib`) at startup. `Copy`.
     caps: Caps,
+    /// The media size cap (the `media_max_kib` config key): bounds the media file read and the
+    /// captured converter output. Deliberately separate from the (much smaller) text-preview cap.
+    media_max_bytes: u64,
 }
 
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
         // The width-less entry point: no pane width known, so glow keeps its `-w 0` (no wrap).
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_at_width(
         &self,
         path: &Path,
@@ -504,7 +568,33 @@ impl ContentProvider for LiveContent {
         width: Option<u16>,
         pane_width: Option<u16>,
         diff_render_mode: DiffRenderMode,
+        media_box: Option<(u32, u32)>,
     ) -> RenderResult {
+        // Media view: the pane shows the image itself (via the graphics socket) over a text
+        // fallback line, so there is no text pipeline to classify — classify would only ever
+        // produce the binary placeholder for a PNG's NUL bytes.
+        if mode == ViewMode::Media {
+            let (content, notice, media) = match crate::media::MediaKind::from_path(path) {
+                Some(kind) => render::render_media(
+                    &self.renderers,
+                    path,
+                    kind,
+                    self.media_max_bytes,
+                    media_box,
+                ),
+                None => (
+                    ratatui::text::Text::raw("[media: unsupported file]"),
+                    None,
+                    None,
+                ),
+            };
+            return RenderResult {
+                content,
+                notices: notice.into_iter().collect(),
+                source: None,
+                media,
+            };
+        }
         // Both diff modes render from git's diff text, not the file bytes — so a deleted or
         // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
         // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
@@ -592,6 +682,7 @@ impl ContentProvider for LiveContent {
             content,
             notices: notice.into_iter().collect(),
             source,
+            media: None,
         }
     }
 }
@@ -904,6 +995,91 @@ fn default_renderers() -> Renderers {
             "--file-name={name}".into(),
             "-".into(),
         ],
+        // Non-PNG images convert to PNG through ffmpeg. Both pipes: raw file bytes on stdin,
+        // PNG on stdout — the untrusted file is never an argv element (trust boundary #1).
+        // The `{name}` placeholder stays out of this command: the file is fed by pipe, not name.
+        image: vec![
+            "ffmpeg".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-i".into(),
+            "pipe:0".into(),
+            // Nearest-neighbour, counter-intuitively, is what makes the size cap reachable.
+            // Measured on this repo's own 3008x1546 screenshots: rescaling with the default
+            // bicubic filter made the PNG *larger* than the original (655 KiB -> 711 KiB),
+            // because interpolation invents intermediate colours across the flat regions that
+            // PNG was compressing so well. At the same target width, neighbour gives 350 KiB vs
+            // bicubic's 711 KiB, area's 572 KiB, and lanczos's 794 KiB — and on screenshots,
+            // diagrams, and UI captures (what actually lives in a code repo) it is *sharper*, not
+            // worse, since it never blurs text. Photographs are the case that would prefer
+            // `area`; that is a one-word config change away.
+            "-sws_flags".into(),
+            "neighbor".into(),
+            // `{width}`/`{height}` are substituted on every invocation (see
+            // `render::with_image_size`), so this command both converts AND bounds the result.
+            // That matters because herdr rejects anything over 512 KiB decoded: an over-cap PNG is
+            // re-encoded through this same command until it fits, rather than being dropped.
+            // `force_original_aspect_ratio=decrease` never upscales and never distorts.
+            "-vf".into(),
+            "scale={width}:{height}:force_original_aspect_ratio=decrease".into(),
+            "-f".into(),
+            "image2".into(),
+            "-vcodec".into(),
+            "png".into(),
+            "pipe:1".into(),
+        ],
+        // Video frame extraction — a template, so `{start}`/`{fps}`/`{width}`/`{height}` are
+        // substituted per seek/playback. The FILE PATH is substituted via `{name}` (argv element,
+        // no shell): you cannot `-ss`-seek a pipe, the one deliberate narrowing of the stdin
+        // trust boundary (see ARCHITECTURE.md). `-an` guarantees silence, `-f image2pipe` emits
+        // standalone PNG frames, and `scale=…:force_original_aspect_ratio=decrease` keeps every
+        // frame's aspect inside the pane's pixel budget (the box it would otherwise letterbox).
+        // Codec, native resolution, and duration for the Media info line, emitted as `key=value`
+        // lines. The keys are kept deliberately: ffprobe orders stream fields internally, so
+        // parsing by position would silently mis-assign values if that order ever changed.
+        // Ships with ffmpeg, so it is present whenever the video command is; when it is not, the
+        // info line simply omits these fields.
+        probe: vec![
+            "ffprobe".into(),
+            "-v".into(),
+            "error".into(),
+            "-select_streams".into(),
+            "v:0".into(),
+            "-show_entries".into(),
+            "stream=codec_name,width,height".into(),
+            "-show_entries".into(),
+            "format=duration".into(),
+            "-of".into(),
+            "default=noprint_wrappers=1".into(),
+            "{name}".into(),
+        ],
+        video: vec![
+            "ffmpeg".into(),
+            "-loglevel".into(),
+            "error".into(),
+            // Read the input at its NATIVE frame rate. Without this ffmpeg decodes as fast as the
+            // CPU allows — measured: a 6.9-second clip emitted its entire frame stream in 0.377s —
+            // so the bounded drop-oldest queue discarded almost every frame and the decoder hit EOF
+            // before playback had begun. The result looked like "video doesn't work": four frames
+            // flashed past and playback ended. `-re` paces the producer to match the ~8 fps the
+            // consumer can actually display, which is what makes a video play for its real
+            // duration. It is an INPUT option, so it must precede `-i`.
+            "-re".into(),
+            "-ss".into(),
+            "{start}".into(),
+            "-i".into(),
+            "{name}".into(),
+            "-an".into(),
+            "-vf".into(),
+            "scale={width}:{height}:force_original_aspect_ratio=decrease".into(),
+            "-r".into(),
+            "{fps}".into(),
+            "-f".into(),
+            "image2pipe".into(),
+            "-vcodec".into(),
+            "png".into(),
+            "-".into(),
+        ],
         timeout: RENDER_TIMEOUT,
     }
 }
@@ -987,6 +1163,7 @@ mod tests {
                 content: ratatui::text::Text::raw("body"),
                 notices: Vec::new(),
                 source: None,
+                media: None,
             }
         }
     }
@@ -1369,9 +1546,15 @@ mod tests {
                 diff: vec!["cat".into()],
                 full_diff: vec!["cat".into()],
                 syntax: vec!["cat".into()],
+                image: vec!["cat".into()],
+                video: vec!["cat".into()],
+                probe: Vec::new(),
                 timeout: Duration::from_secs(5),
             },
+            // The two test LiveContent renderers above (using Renderers { .. }) share the media
+            // defaults' size cap; it only gates the disk read, so the default is always correct here.
             caps: Caps::default(),
+            media_max_bytes: render::DEFAULT_MEDIA_MAX_BYTES,
         }
     }
 
@@ -1391,6 +1574,9 @@ mod tests {
                 diff: vec!["cat".into()],
                 full_diff: vec!["cat".into()],
                 syntax: vec!["cat".into()],
+                image: vec!["cat".into()],
+                video: vec!["cat".into()],
+                probe: Vec::new(),
                 timeout: Duration::from_secs(5),
             },
             // A 50-line cap the default would never apply — proves the injected cap is what bites.
@@ -1398,6 +1584,7 @@ mod tests {
                 max_lines: 50,
                 max_bytes: 1024 * 1024,
             },
+            media_max_bytes: render::DEFAULT_MEDIA_MAX_BYTES,
         };
         let out = content.render_at_width(
             &file,
@@ -1406,6 +1593,7 @@ mod tests {
             None,
             None,
             DiffRenderMode::default(),
+            None,
         );
         assert!(
             out.notices.iter().any(|n| n.contains("50-line")),
@@ -1441,6 +1629,7 @@ mod tests {
             Some(80),
             None,
             DiffRenderMode::default(),
+            None,
         );
         assert!(
             flatten_content(&out).contains("W=80"),
@@ -1468,6 +1657,7 @@ mod tests {
                 w,
                 None,
                 DiffRenderMode::default(),
+                None,
             );
             assert!(
                 flatten_content(&out).contains("W=0"),

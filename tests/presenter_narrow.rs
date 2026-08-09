@@ -36,6 +36,7 @@ fn state(width: u16, focus: Focus) -> ViewState {
         selected: 1,
         content: to_text("fn main() {}\n"),
         notices: vec!["delta not found — showing plain diff".to_string()],
+        media_progress: None,
         flash: None,
         focus,
         width,

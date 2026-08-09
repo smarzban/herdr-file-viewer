@@ -75,6 +75,7 @@ impl ContentProvider for StubContent {
             content: Text::raw("stub-content"),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -94,6 +95,7 @@ impl ContentProvider for DelayedNamedContent {
             content: Text::raw(format!("BODY-OF:{name}")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -1207,6 +1209,7 @@ impl ContentProvider for LinesContent {
             content: Text::raw(body),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -1222,6 +1225,7 @@ impl ContentProvider for WideContent {
             content: Text::raw(body),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -1914,6 +1918,7 @@ fn wide_geometry() -> PaneGeometry {
         }),
         content_vbar: None,
         content_hbar: None,
+        media_bar: None,
         divider_x: Some(40),
         finder_rows: None,
         finder_scroll: 0,
@@ -3345,6 +3350,7 @@ impl ContentProvider for PathContent {
             content: Text::raw(format!("showing {}", path.display())),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -7290,6 +7296,7 @@ impl ContentProvider for WrapLines {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -7600,6 +7607,7 @@ impl ContentProvider for SearchContent {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -8316,6 +8324,7 @@ impl ContentProvider for SwitchingContent {
             content: Text::raw(lines.join("\n")),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -8570,6 +8579,7 @@ impl ContentProvider for ContentWithoutSentinel {
             content: Text::raw(lines),
             notices: Vec::new(),
             source: None,
+            media: None,
         }
     }
 }
@@ -9200,6 +9210,9 @@ fn uppercasing_markdown_renderers() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -9212,6 +9225,9 @@ fn absent_markdown_renderers() -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         timeout: Duration::from_secs(5),
     }
 }
@@ -9319,6 +9335,9 @@ fn slow_markdown_renderers(marker: &std::path::Path) -> Renderers {
         diff: vec!["cat".into()],
         full_diff: vec!["cat".into()],
         syntax: vec!["cat".into()],
+        image: vec!["cat".into()],
+        video: vec!["cat".into()],
+        probe: Vec::new(),
         // This is deliberately generous: Help must use its own shared 200 ms deadline.
         timeout: Duration::from_secs(5),
     }
@@ -10235,6 +10254,9 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         markdown: None,
         diff: None,
         syntax: None,
+        image: None,
+        video: None,
+        media_max_kib: 8192,
         open: None,
         reveal: None,
         hide_dotfiles: false,

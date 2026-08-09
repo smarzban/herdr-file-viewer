@@ -163,9 +163,14 @@ This is launch-only. It does not retarget a Files pane that is already running; 
 
 ## Viewing a file
 
-The content pane shows **the right view for each file, automatically**: a changed file shows its
-**diff**, a markdown file **renders**, anything else is **syntax-highlighted** content with line
-numbers. No mode-switching, no commands.
+The content pane shows **the right view for each file, automatically**: an image or video shows
+**the media**, a changed file shows its **diff**, a markdown file **renders**, anything else is
+**syntax-highlighted** content with line numbers. No mode-switching, no commands.
+
+Media outranks "changed" — an edited screenshot still shows the picture, because a diff of
+compressed binary is noise and the image is the thing you wanted to see. Media files offer no diff
+views at all; `v` steps straight to the plain text beneath (for a text format like SVG, that is the
+real source).
 
 - **Cycle the view** with `v` to override the automatic choice (e.g. see a changed markdown file's
   raw source instead of its diff).
@@ -186,6 +191,28 @@ numbers. No mode-switching, no commands.
 Rendering is **delegated** to `glow` (markdown), `delta` (diffs), and `bat` (syntax); when a
 renderer isn't installed the viewer falls back to plain text with a short notice. See
 [external renderers](renderers.md).
+
+### Media (images and video)
+
+A `.png`, another still image, or a video shows **in the content pane** through herdr's graphics
+socket — you don't need a key to reach it (it's the file's default view), and the image stays
+placed even as you scroll, zoom, or resize, because its cell rectangle is recomputed every draw.
+
+- **Images** render automatically. A `.png` is shown natively; other formats (jpg, gif, webp,
+  svg, …) convert through `ffmpeg` (see [external renderers](renderers.md)). If ffmpeg is
+  missing, or the file is larger than the `media_max_kib` cap, you get a placeholder line instead.
+- **Video** shows its first frame, paused, waiting for you to ask for motion:
+  - `p` — play/pause.
+  - `{` / `}` — seek back / forward 5 seconds (re-decodes from the new offset).
+  - `0` — restart from the beginning.
+  These keys are inert unless a video is selected. Playback **rate is host-limited to ~8 fps**:
+  herdr re-renders its whole client frame per image, which is a fixed ~120 ms cost, so the video
+  pace is herdr's ceiling, not the viewer's (see [external renderers](renderers.md)).
+- The `v` mode cycle still reaches the plain text placeholder beneath an image.
+
+Media needs herdr's own `experimental.kitty_graphics = true` (and a kitty-compatible outer
+terminal). If that's off — or you're running the viewer outside herdr — you get the text
+placeholder plus a notice; nothing crashes.
 
 ## Git awareness
 
