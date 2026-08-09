@@ -47,7 +47,31 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`crate::open_target::OPEN_ENV`] (`HERDR_FILE_VIEWER_OPEN`) as flag > env; an absent/empty
 /// pair leaves startup selection unchanged.
 pub fn run(open_flag: Option<String>) -> io::Result<()> {
-    let ctx = host::from_env();
+    let mut ctx = host::from_env();
+    // If the only root herdr offered is the plugin's OWN install directory — which is what both
+    // context fields report when the viewer is opened while a viewer pane is focused — ask herdr
+    // for the workspace's other panes and root at one of those instead. Best-effort: a missing or
+    // failing herdr leaves the context exactly as parsed.
+    if host::is_own_install_dir(&ctx.cwd, std::env::current_exe().ok().as_deref()) {
+        use crate::herdr::HerdrCli;
+        let cli = crate::herdr::LiveHerdr::from_env();
+        // `herdr pane list` emits JSON by default (there is no `--json` flag — passing one makes
+        // it print "unknown option" and the parse silently yields nothing). `--workspace` scopes
+        // it host-side; the parser filters again so a herdr without that flag still behaves.
+        let args: Vec<&str> = match ctx.workspace_id.as_deref() {
+            Some(id) => vec!["pane", "list", "--workspace", id],
+            None => vec!["pane", "list"],
+        };
+        if let Ok(json) = cli.run_json(&args)
+            && let Some(better) = host::root_from_sibling_panes(
+                &json,
+                ctx.workspace_id.as_deref(),
+                std::env::current_exe().ok().as_deref(),
+            )
+        {
+            ctx.cwd = better;
+        }
+    }
     let resolved = root::resolve(&ctx);
     let baseline = git::default_baseline(&resolved);
 
