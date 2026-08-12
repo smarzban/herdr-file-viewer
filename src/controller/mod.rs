@@ -3611,7 +3611,17 @@ impl Controller {
                 // the new content, else drop a committed search — UNLESS this was a width reflow,
                 // where a committed search must be recomputed (not dropped), so a resize does not
                 // silently clear the user's active highlighting.
-                if self.modal.prompt().map(|p| p.mode) == Some(crate::infile::PromptMode::Search) {
+                //
+                // An open Search prompt only speaks for the ACTIVE side when it targets the active
+                // side: `refresh_search` routes by `prompt_target`, so a prompt opened on the
+                // pinned preview would recompute the (frozen, unchanged) pinned matches and leave
+                // the active side's committed matches pointing at pre-render rendered lines — wrong
+                // highlights, and `n`/`N` from Content focus jumping to stale rows. When the prompt
+                // belongs to the pinned side, the active side takes the promptless rule instead:
+                // recompute on a reflow, drop on a selection-change render.
+                if self.modal.prompt().map(|p| p.mode) == Some(crate::infile::PromptMode::Search)
+                    && self.prompt_target() == PreviewTarget::Active
+                {
                     self.refresh_search();
                 } else if is_reflow {
                     self.recompute_committed_search();

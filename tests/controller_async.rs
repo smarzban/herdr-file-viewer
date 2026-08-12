@@ -13,6 +13,7 @@ use herdr_file_viewer::controller::{
 };
 use herdr_file_viewer::git::{Baseline, Status};
 use herdr_file_viewer::intent::Intent;
+use herdr_file_viewer::presenter::Focus;
 use herdr_file_viewer::preview::BranchState;
 use herdr_file_viewer::view_policy::ViewMode;
 use ratatui::text::Text;
@@ -1065,6 +1066,78 @@ fn a_width_reflow_preserves_scroll_and_recomputes_a_committed_search() {
         ctrl.search().map(|state| state.query.as_str()),
         before_search.as_ref().map(|state| state.query.as_str()),
         "the active interaction's committed query survives document replacement"
+    );
+}
+
+/// A width reflow lands for the ACTIVE preview even while a Search prompt is open on the PINNED
+/// preview, and the active side's committed search must still be recomputed against the reflowed
+/// body. `refresh_search` routes by `prompt_target`, so a pinned prompt speaks only for the frozen
+/// pinned snapshot; taking that branch for an active reflow left the active matches computed against
+/// the pre-reflow rendered lines (wrong highlights, `n`/`N` jumping to stale rows).
+///
+/// The ordering is forced, not raced: `set_content_viewport` dispatches the reflow synchronously,
+/// the pinned prompt is opened before any `poll`, and only then is the result drained — so the
+/// result provably lands with the pinned prompt open.
+#[test]
+fn a_width_reflow_recomputes_the_active_search_while_a_pinned_search_prompt_is_open() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        width_probe_components(Arc::clone(&widths), 50),
+    );
+    await_contains(&mut ctrl, "w=None:doc.md");
+    ctrl.set_content_viewport(40, 10);
+    await_contains(&mut ctrl, "w=Some(40):doc.md");
+
+    // Pin the settled active preview, then commit an ACTIVE search for a token that exists only in
+    // the width-40 body, so a recompute is observably different from carrying the stale match over.
+    ctrl.pin_active_preview();
+    ctrl.handle(Intent::OpenSearch);
+    for c in "Some(40)".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    ctrl.handle_prompt_key(key(KeyCode::Enter));
+    assert_eq!(
+        ctrl.search().map(|s| s.matches.len()),
+        Some(1),
+        "precondition: the committed active search matches the width-40 body once"
+    );
+
+    // Dispatch the reflow, THEN open a Search prompt on the pinned preview, and only then drain.
+    ctrl.set_content_viewport(30, 10);
+    // Cycle the focus ring (Tree → Content → Pinned) rather than assuming where a committed search
+    // left it; the ring is bounded, so a full lap proves the pinned region is focusable at all.
+    for _ in 0..3 {
+        if ctrl.focus() == Focus::Pinned {
+            break;
+        }
+        ctrl.handle(Intent::ToggleFocus);
+    }
+    assert_eq!(
+        ctrl.focus(),
+        Focus::Pinned,
+        "precondition: focus moved to the pinned preview"
+    );
+    ctrl.handle(Intent::OpenSearch);
+    for c in "line".chars() {
+        ctrl.handle_prompt_key(key(KeyCode::Char(c)));
+    }
+    await_contains(&mut ctrl, "w=Some(30):doc.md");
+
+    let active = ctrl
+        .active_interaction()
+        .search
+        .as_ref()
+        .expect("the active committed search survives the reflow");
+    assert_eq!(active.query, "Some(40)", "the active query is untouched");
+    assert!(
+        active.matches.is_empty(),
+        "the active search must be recomputed against the reflowed body, not left pointing at \
+         pre-reflow rendered lines: {:?}",
+        active.matches
     );
 }
 
