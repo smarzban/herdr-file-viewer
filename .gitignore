@@ -15,6 +15,9 @@
 # Review-gate run logs / dismissal records: local audit trail, not part of the plugin
 .review-gate/
 
+# pi-empanel run records: local review artifacts, not part of the plugin
+.empanel/
+
 # Private, per-working-copy agent overlay: never committed (see AGENTS.md routing guideline)
 AGENTS.local.md
 
