@@ -9,13 +9,23 @@ fn main() -> std::io::Result<()> {
         CliAction::LaunchDecision => {
             let mut json = String::new();
             std::io::stdin().read_to_string(&mut json)?;
-            println!("{}", herdr_file_viewer::launch::launch_decision(&json));
+            // the invocation context herdr hands plugin actions; a programmatic
+            // invocation's pane anchors the decision instead of the UI focus
+            let ctx = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok();
+            println!(
+                "{}",
+                herdr_file_viewer::launch::launch_decision(&json, ctx.as_deref())
+            );
             Ok(())
         }
         CliAction::LaunchDecisionTab => {
             let mut json = String::new();
             std::io::stdin().read_to_string(&mut json)?;
-            println!("{}", herdr_file_viewer::launch::launch_decision_tab(&json));
+            let ctx = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok();
+            println!(
+                "{}",
+                herdr_file_viewer::launch::launch_decision_tab(&json, ctx.as_deref())
+            );
             Ok(())
         }
         CliAction::Run { open } => herdr_file_viewer::run(open),

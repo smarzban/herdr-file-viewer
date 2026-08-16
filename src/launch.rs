@@ -23,37 +23,69 @@ struct Pane {
     tab_id: Option<String>,
 }
 
+/// The invocation-context pane, when the action was invoked WITH a context — a plugin action
+/// fired programmatically (`plugin.action.invoke` with an explicit `focused_pane_id`, e.g. a
+/// mirroring tool driving this host's viewer from another machine). The host's *UI focus* is
+/// then unrelated to where the caller wants the viewer, so the context pane replaces the
+/// focused pane as the anchor everything below scopes from. Absent, unparseable, or naming a
+/// pane that is not in the list → `None`, and the focused-pane behavior is unchanged.
+fn context_pane<'a>(panes: &'a [Pane], context_json: Option<&str>) -> Option<&'a Pane> {
+    #[derive(Deserialize)]
+    struct Ctx {
+        focused_pane_id: Option<String>,
+    }
+    let id = serde_json::from_str::<Ctx>(context_json?)
+        .ok()?
+        .focused_pane_id?;
+    panes
+        .iter()
+        .find(|p| p.pane_id.as_deref() == Some(id.as_str()))
+}
+
 /// Decide the launcher action from a herdr `pane list` JSON, returning one line: `OPEN`,
-/// `FOCUS <pane_id>`, or `CLOSE <pane_id>`.
+/// `OPEN <pane_id>`, `FOCUS <pane_id>`, or `CLOSE <pane_id>`.
 ///
-/// - Unparseable JSON, or **no focused pane** (we cannot know which tab is current) → `OPEN`:
+/// - Unparseable JSON, or **no anchor pane** (we cannot know which tab is current) → `OPEN`:
 ///   the safe default is to spawn a fresh viewer, never to act on a pane in an unknown tab.
-/// - A `"Files"` pane **in the focused pane's tab**: `CLOSE` it when it *is* the focused pane
-///   ("toggle off"), otherwise `FOCUS` it. A Files pane in any other tab is ignored.
+/// - The anchor is the **focused pane**, unless the invocation carried a context naming a live
+///   pane (see [`context_pane`]) — then that pane anchors, and `OPEN` carries its id so the
+///   launcher can split *it* (`--target-pane`) instead of whatever the host's focus sits on.
+/// - A `"Files"` pane **in the anchor's tab**: `CLOSE` it when it *is* the focused pane
+///   ("toggle off"), `CLOSE` it too under a context anchor (a repeat programmatic invocation
+///   means toggle — there is no meaningful "focused" state to flip to), otherwise `FOCUS` it.
+///   A Files pane in any other tab is ignored.
 /// - A pane id that is not flag-safe is never emitted (→ `OPEN`), so a host-supplied id can
 ///   never option-inject when the launcher passes it to `herdr pane zoom|close`.
-pub fn launch_decision(pane_list_json: &str) -> String {
+pub fn launch_decision(pane_list_json: &str, context_json: Option<&str>) -> String {
     let Ok(list) = serde_json::from_str::<PaneList>(pane_list_json) else {
         return "OPEN".to_string();
     };
     let panes = &list.result.panes;
-    // No focused pane → we cannot tell which tab is current, so open a fresh viewer rather
+    let ctx = context_pane(panes, context_json);
+    // No anchor → we cannot tell which tab is current, so open a fresh viewer rather
     // than risk focusing/closing a Files pane in some other tab.
-    let Some(focused) = panes.iter().find(|p| p.focused) else {
+    let Some(anchor) = ctx.or_else(|| panes.iter().find(|p| p.focused)) else {
         return "OPEN".to_string();
     };
-    let tab = focused.tab_id.as_deref();
+    let tab = anchor.tab_id.as_deref();
     let files = panes
         .iter()
         .find(|p| p.label.as_deref() == Some("Files") && p.tab_id.as_deref() == tab);
     let Some(files) = files else {
+        // context-anchored: tell the launcher WHERE to open (validated id, or degrade)
+        if let Some(id) = ctx
+            .and_then(|p| p.pane_id.as_deref())
+            .filter(|id| is_flag_safe(id))
+        {
+            return format!("OPEN {id}");
+        }
         return "OPEN".to_string();
     };
     // Never emit a pane id that could option-inject `herdr pane zoom|close <id>`.
     let Some(id) = files.pane_id.as_deref().filter(|id| is_flag_safe(id)) else {
         return "OPEN".to_string();
     };
-    if Some(id) == focused.pane_id.as_deref() {
+    if ctx.is_some() || Some(id) == anchor.pane_id.as_deref() {
         format!("CLOSE {id}")
     } else {
         format!("FOCUS {id}")
@@ -67,34 +99,47 @@ pub fn launch_decision(pane_list_json: &str) -> String {
 /// workspace* is **switched to** (`herdr tab focus <tab_id>`) rather than duplicated — the
 /// idempotency that makes a single keystroke reach the one viewer in this workspace.
 ///
-/// - Unparseable JSON, or no focused pane (current tab unknown) → `OPEN`.
-/// - A `"Files"` pane in the **focused** tab: `CLOSE` it when it *is* the focused pane (toggle
-///   off — herdr auto-closes the emptied tab), otherwise `FOCUS` it in place.
-/// - Else a `"Files"` pane in **another tab of the focused pane's workspace**: `SWITCHTAB` to it.
+/// - Unparseable JSON, or no anchor pane (current tab unknown) → `OPEN`.
+/// - The anchor is the **focused pane**, unless the invocation carried a context naming a live
+///   pane (see [`context_pane`]) — then that pane anchors, and `OPEN` carries its workspace id
+///   so the launcher opens the tab in *that* workspace (`--workspace`).
+/// - A `"Files"` pane in the **anchor's** tab: `CLOSE` it when it *is* the focused pane (toggle
+///   off — herdr auto-closes the emptied tab), `CLOSE` under a context anchor too (a repeat
+///   programmatic invocation means toggle), otherwise `FOCUS` it in place.
+/// - Else a `"Files"` pane in **another tab of the anchor's workspace**: `SWITCHTAB` to it.
 /// - Else `OPEN`. In particular a viewer that lives only in a **different workspace** is left
 ///   alone and a fresh viewer is opened here — switching to it would yank the user across
 ///   workspaces (the launcher is meant to reach *this* workspace's viewer, not teleport away).
 /// - A pane/tab id that is not flag-safe is never emitted (→ `OPEN`), so a host-supplied id can
 ///   never option-inject when the launcher passes it to `herdr pane`/`herdr tab`.
-pub fn launch_decision_tab(pane_list_json: &str) -> String {
+pub fn launch_decision_tab(pane_list_json: &str, context_json: Option<&str>) -> String {
     let Ok(list) = serde_json::from_str::<PaneList>(pane_list_json) else {
         return "OPEN".to_string();
     };
     let panes = &list.result.panes;
-    let Some(focused) = panes.iter().find(|p| p.focused) else {
+    let ctx = context_pane(panes, context_json);
+    let Some(anchor) = ctx.or_else(|| panes.iter().find(|p| p.focused)) else {
         return "OPEN".to_string();
     };
     let is_viewer = |p: &&Pane| p.label.as_deref() == Some("Files");
+    // context-anchored OPEN names the workspace to open in (validated, or degrade to bare OPEN)
+    let open = || {
+        if let Some(ws) = ctx.and_then(workspace_of).filter(|ws| is_flag_safe(ws)) {
+            format!("OPEN {ws}")
+        } else {
+            "OPEN".to_string()
+        }
+    };
 
-    // Prefer a viewer in the focused tab (toggle/focus in place) over one elsewhere.
+    // Prefer a viewer in the anchor's tab (toggle/focus in place) over one elsewhere.
     if let Some(here) = panes
         .iter()
-        .find(|p| is_viewer(p) && p.tab_id.as_deref() == focused.tab_id.as_deref())
+        .find(|p| is_viewer(p) && p.tab_id.as_deref() == anchor.tab_id.as_deref())
     {
         let Some(id) = here.pane_id.as_deref().filter(|id| is_flag_safe(id)) else {
-            return "OPEN".to_string();
+            return open();
         };
-        return if Some(id) == focused.pane_id.as_deref() {
+        return if ctx.is_some() || Some(id) == anchor.pane_id.as_deref() {
             format!("CLOSE {id}")
         } else {
             format!("FOCUS {id}")
@@ -104,17 +149,17 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
     // Otherwise switch to a viewer living in another tab OF THE SAME WORKSPACE, by its
     // (validated) tab id. A viewer in a different workspace is deliberately ignored: switching
     // to it would pull the user out of their current workspace, so we OPEN a fresh viewer here
-    // instead. If the focused pane's workspace is unknown, we can't scope safely → OPEN.
-    let focused_ws = workspace_of(focused);
-    if focused_ws.is_some()
+    // instead. If the anchor pane's workspace is unknown, we can't scope safely → OPEN.
+    let anchor_ws = workspace_of(anchor);
+    if anchor_ws.is_some()
         && let Some(elsewhere) = panes
             .iter()
-            .find(|p| is_viewer(p) && workspace_of(p) == focused_ws)
+            .find(|p| is_viewer(p) && workspace_of(p) == anchor_ws)
         && let Some(tab) = elsewhere.tab_id.as_deref().filter(|t| is_flag_safe(t))
     {
         return format!("SWITCHTAB {tab}");
     }
-    "OPEN".to_string()
+    open()
 }
 
 /// The workspace a pane belongs to, taken from the prefix of the id we actually act on — its
@@ -170,7 +215,7 @@ mod tests {
     #[test]
     fn no_files_pane_opens() {
         let j = list(&[pane("wE:p1", "", true, "wE:t1")]);
-        assert_eq!(launch_decision(&j), "OPEN");
+        assert_eq!(launch_decision(&j, None), "OPEN");
     }
 
     #[test]
@@ -179,7 +224,7 @@ mod tests {
             pane("wE:p1", "", false, "wE:t1"),
             pane("wE:pD", "Files", true, "wE:t1"),
         ]);
-        assert_eq!(launch_decision(&j), "CLOSE wE:pD");
+        assert_eq!(launch_decision(&j, None), "CLOSE wE:pD");
     }
 
     #[test]
@@ -188,7 +233,7 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "wE:t1"),
         ]);
-        assert_eq!(launch_decision(&j), "FOCUS wE:pD");
+        assert_eq!(launch_decision(&j, None), "FOCUS wE:pD");
     }
 
     #[test]
@@ -198,13 +243,13 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wC:pD", "Files", false, "wC:t1"),
         ]);
-        assert_eq!(launch_decision(&j), "OPEN");
+        assert_eq!(launch_decision(&j, None), "OPEN");
     }
 
     #[test]
     fn no_focused_pane_opens_rather_than_touching_an_unknown_tab() {
         let j = list(&[pane("wE:pD", "Files", false, "wE:t1")]);
-        assert_eq!(launch_decision(&j), "OPEN");
+        assert_eq!(launch_decision(&j, None), "OPEN");
     }
 
     #[test]
@@ -215,13 +260,13 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("-rf", "Files", false, "wE:t1"),
         ]);
-        assert_eq!(launch_decision(&j), "OPEN");
+        assert_eq!(launch_decision(&j, None), "OPEN");
     }
 
     #[test]
     fn garbage_json_opens() {
-        assert_eq!(launch_decision("not json"), "OPEN");
-        assert_eq!(launch_decision(""), "OPEN");
+        assert_eq!(launch_decision("not json", None), "OPEN");
+        assert_eq!(launch_decision("", None), "OPEN");
     }
 
     #[test]
@@ -237,7 +282,7 @@ mod tests {
     #[test]
     fn tab_no_files_anywhere_opens() {
         let j = list(&[pane("wE:p1", "", true, "wE:t1")]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -248,7 +293,7 @@ mod tests {
             pane("wE:p1", "", false, "wE:t1"),
             pane("wE:pD", "Files", true, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "CLOSE wE:pD");
+        assert_eq!(launch_decision_tab(&j, None), "CLOSE wE:pD");
     }
 
     #[test]
@@ -259,7 +304,7 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wE:t4");
+        assert_eq!(launch_decision_tab(&j, None), "SWITCHTAB wE:t4");
     }
 
     #[test]
@@ -271,7 +316,7 @@ mod tests {
             pane("wQ:p2K", "", true, "wQ:tH"),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -283,7 +328,7 @@ mod tests {
             pane("wQ:pV", "Files", false, "wQ:tE"),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wQ:tE");
+        assert_eq!(launch_decision_tab(&j, None), "SWITCHTAB wQ:tE");
     }
 
     #[test]
@@ -296,7 +341,7 @@ mod tests {
             pane("wQ:p2K", "", true, "wQ:tH"),
             pane_ws("w19:pT", "Files", false, "w19:tB", "wQ"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -307,7 +352,7 @@ mod tests {
             pane_ws("p2K", "", true, "tH", ""),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -317,13 +362,13 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "wE:t1"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "FOCUS wE:pD");
+        assert_eq!(launch_decision_tab(&j, None), "FOCUS wE:pD");
     }
 
     #[test]
     fn tab_no_focused_pane_opens() {
         let j = list(&[pane("wE:pD", "Files", false, "wE:t4")]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -333,7 +378,7 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "-rf"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
@@ -342,12 +387,75 @@ mod tests {
             pane("wE:p1", "", false, "wE:t4"),
             pane("-rf", "Files", true, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, None), "OPEN");
     }
 
     #[test]
     fn tab_garbage_json_opens() {
-        assert_eq!(launch_decision_tab("not json"), "OPEN");
-        assert_eq!(launch_decision_tab(""), "OPEN");
+        assert_eq!(launch_decision_tab("not json", None), "OPEN");
+        assert_eq!(launch_decision_tab("", None), "OPEN");
+    }
+
+    // ---- context anchoring (programmatic invocations) ----------------------------------
+
+    #[test]
+    fn context_pane_anchors_open_with_a_target() {
+        // focus sits in wA, but the context names wB's pane -> OPEN carries it
+        let j = list(&[
+            pane("wA:p1", "shell", true, "wA:t1"),
+            pane("wB:p1", "shell", false, "wB:t1"),
+        ]);
+        let ctx = r#"{"focused_pane_id":"wB:p1"}"#;
+        assert_eq!(launch_decision(&j, Some(ctx)), "OPEN wB:p1");
+    }
+
+    #[test]
+    fn context_repeat_toggles_the_viewer_closed() {
+        // a Files pane already lives in the context pane's tab -> CLOSE (toggle),
+        // regardless of where the host's focus sits
+        let j = list(&[
+            pane("wA:p1", "shell", true, "wA:t1"),
+            pane("wB:p1", "shell", false, "wB:t1"),
+            pane("wB:p2", "Files", false, "wB:t1"),
+        ]);
+        let ctx = r#"{"focused_pane_id":"wB:p1"}"#;
+        assert_eq!(launch_decision(&j, Some(ctx)), "CLOSE wB:p2");
+    }
+
+    #[test]
+    fn context_naming_an_absent_pane_falls_back_to_focus() {
+        let j = list(&[pane("wA:p1", "shell", true, "wA:t1")]);
+        let ctx = r#"{"focused_pane_id":"wZ:p9"}"#;
+        assert_eq!(launch_decision(&j, Some(ctx)), "OPEN");
+    }
+
+    #[test]
+    fn context_tab_open_carries_the_workspace() {
+        let j = list(&[
+            pane("wA:p1", "shell", true, "wA:t1"),
+            pane("wB:p1", "shell", false, "wB:t1"),
+        ]);
+        let ctx = r#"{"focused_pane_id":"wB:p1"}"#;
+        assert_eq!(launch_decision_tab(&j, Some(ctx)), "OPEN wB");
+    }
+
+    #[test]
+    fn context_tab_switches_within_the_context_workspace() {
+        // viewer in another tab of the CONTEXT workspace -> SWITCHTAB there,
+        // even though focus is in a different workspace entirely
+        let j = list(&[
+            pane("wA:p1", "shell", true, "wA:t1"),
+            pane("wB:p1", "shell", false, "wB:t1"),
+            pane("wB:p9", "Files", false, "wB:t7"),
+        ]);
+        let ctx = r#"{"focused_pane_id":"wB:p1"}"#;
+        assert_eq!(launch_decision_tab(&j, Some(ctx)), "SWITCHTAB wB:t7");
+    }
+
+    #[test]
+    fn garbage_context_changes_nothing() {
+        let j = list(&[pane("wE:p1", "shell", true, "wE:t2")]);
+        assert_eq!(launch_decision(&j, Some("not json")), "OPEN");
+        assert_eq!(launch_decision_tab(&j, Some("{}")), "OPEN");
     }
 }

@@ -25,11 +25,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 viewer_bin="$script_dir/../target/release/herdr-file-viewer"
 
 open_tab() {
+  # extra args: `--workspace <id>` when the decision named an anchor — a
+  # context-carrying (programmatic) invocation opens the tab in THAT
+  # workspace, not the host's focused one. Validated by --launch-decision-tab.
   exec "$herdr_bin" plugin pane open \
     --plugin herdr-file-viewer \
     --entrypoint file-viewer \
     --placement tab \
-    --focus
+    --focus "$@"
 }
 
 decision="OPEN"
@@ -56,6 +59,9 @@ case "$decision" in
   "CLOSE "*)
     pid="${decision#CLOSE }"
     exec "$herdr_bin" pane close "$pid"
+    ;;
+  "OPEN "*)
+    open_tab --workspace "${decision#OPEN }"
     ;;
   *)
     open_tab

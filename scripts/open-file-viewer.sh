@@ -23,12 +23,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 viewer_bin="$script_dir/../target/release/herdr-file-viewer"
 
 open_pane() {
+  # extra args: `--target-pane <id>` when the decision named an anchor — a
+  # context-carrying (programmatic) invocation splits THAT pane, not the
+  # host's focused one. The id was validated flag-safe by --launch-decision.
   exec "$herdr_bin" plugin pane open \
     --plugin herdr-file-viewer \
     --entrypoint file-viewer \
     --placement split \
     --direction right \
-    --focus
+    --focus "$@"
 }
 
 decision="OPEN"
@@ -48,6 +51,9 @@ case "$decision" in
   "CLOSE "*)
     pid="${decision#CLOSE }"
     exec "$herdr_bin" pane close "$pid"
+    ;;
+  "OPEN "*)
+    open_pane --target-pane "${decision#OPEN }"
     ;;
   *)
     open_pane
