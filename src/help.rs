@@ -286,6 +286,7 @@ pub fn settings_text(
          scroll_lines      = {scroll_lines}\n\
          tree_width        = {tree_width}\n\
          tree_position     = {tree_position}\n\
+         open_direction    = {open_direction}\n\
          tree_max_cols     = {tree_max_cols}\n\
          preview_max_lines = {preview_max_lines}\n\
          preview_max_kib   = {preview_max_kib}",
@@ -300,6 +301,7 @@ pub fn settings_text(
         scroll_lines = eff.scroll_lines,
         tree_width = eff.tree_width,
         tree_position = eff.tree_position.label(),
+        open_direction = eff.open_direction.label(),
         tree_max_cols = eff.tree_max_cols,
         preview_max_lines = eff.preview_max_lines,
         preview_max_kib = eff.preview_max_kib,
@@ -808,6 +810,7 @@ mod tests {
             scroll_lines: 7,
             tree_width: 25,
             tree_position: crate::config::TreePosition::Right,
+            open_direction: crate::config::OpenDirection::Down,
             tree_max_cols: 50,
             preview_max_lines: 8000,
             preview_max_kib: 2048,
@@ -847,6 +850,7 @@ mod tests {
             "scroll_lines",
             "tree_width",
             "tree_position",
+            "open_direction",
             "tree_max_cols",
             "preview_max_lines",
             "preview_max_kib",
@@ -872,6 +876,11 @@ mod tests {
             text.lines()
                 .any(|l| l.trim_start().starts_with("tree_position") && l.contains("right")),
             "settings_text must show the effective tree_position (right):\n{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("open_direction") && l.contains("down")),
+            "settings_text must show the effective open_direction (down):\n{text}"
         );
         assert!(
             text.lines()
@@ -998,6 +1007,7 @@ mod tests {
             ),
             &format!("tree_width        = {}", crate::config::DEFAULT_TREE_WIDTH),
             "tree_position     = left",
+            "open_direction    = right",
             &format!(
                 "tree_max_cols     = {}",
                 crate::config::DEFAULT_TREE_MAX_COLS

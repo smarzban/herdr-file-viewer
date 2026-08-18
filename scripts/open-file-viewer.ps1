@@ -70,9 +70,25 @@ function Get-ConfigDir {
     return ''
 }
 
+# The `open_direction` config key, read through the binary's `--open-direction` probe (the shell
+# cannot parse TOML). Anything unexpected — binary missing, probe failure, a future value —
+# degrades to `right`, today's layout. HERDR_PLUGIN_CONFIG_DIR is passed for the same reason
+# Open-Pane passes it: without it the probe cannot find config.toml on Windows and would always
+# answer the default.
+function Get-OpenDirection {
+    try {
+        $cfg = Get-ConfigDir
+        if ($cfg) { $env:HERDR_PLUGIN_CONFIG_DIR = $cfg }
+        $d = (& $ViewerBin --open-direction 2>$null | Out-String).Trim()
+        if ($d -eq 'down') { return 'down' }
+    } catch {}
+    return 'right'
+}
+
 function Open-Pane {
     $cwd = Get-UserCwd
-    $splitArgs = @('pane', 'split', '--direction', 'right', '--cwd', $cwd, '--focus')
+    $direction = Get-OpenDirection
+    $splitArgs = @('pane', 'split', '--direction', $direction, '--cwd', $cwd, '--focus')
     $cfg = Get-ConfigDir
     if ($cfg) { $splitArgs += @('--env', "HERDR_PLUGIN_CONFIG_DIR=$cfg") }
     $out = (& $HerdrBin @splitArgs | Out-String)

@@ -51,6 +51,9 @@ pub enum CliAction {
     LaunchDecision,
     /// Print a tab-launcher decision from stdin JSON, then exit.
     LaunchDecisionTab,
+    /// Print the effective `open_direction` label (`right` / `down`), then exit — the launcher
+    /// script's way of reading the config it cannot parse itself.
+    OpenDirection,
     /// Start the TUI; `open` is the raw `--open` value when present (env is layered in `app::run`).
     Run { open: Option<String> },
 }
@@ -61,6 +64,8 @@ pub enum CliAction {
 /// - unknown flags are ignored (herdr may append args we do not control)
 /// - a bare `--open` with no value is ignored (start with no open target)
 /// - `--launch-decision` / `--launch-decision-tab` win over a normal run (and over `--open`)
+/// - `--open-direction` wins over a normal run too, but yields to the launch-decision flags
+///   (probe modes never start the TUI; the decision probes stay authoritative among probes)
 ///
 /// `--open` values must not look like flags (`-…`); a following `-x` is left for the next
 /// iteration so it can be ignored as unknown rather than treated as a path.
@@ -72,6 +77,7 @@ where
     let mut open_flag: Option<String> = None;
     let mut launch_tab = false;
     let mut launch = false;
+    let mut open_direction = false;
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         let arg = arg.as_ref();
@@ -83,6 +89,9 @@ where
             "--launch-decision-tab" => {
                 launch = true;
                 launch_tab = true;
+            }
+            "--open-direction" => {
+                open_direction = true;
             }
             "--open" => {
                 let take = args
@@ -113,6 +122,8 @@ where
         } else {
             CliAction::LaunchDecision
         }
+    } else if open_direction {
+        CliAction::OpenDirection
     } else {
         CliAction::Run { open: open_flag }
     }
@@ -483,6 +494,23 @@ mod tests {
     fn parse_args_launch_decision_wins_over_open() {
         assert_eq!(
             parse_args(["--open", "src/a.rs", "--launch-decision"]),
+            CliAction::LaunchDecision
+        );
+    }
+
+    #[test]
+    fn parse_args_open_direction() {
+        assert_eq!(parse_args(["--open-direction"]), CliAction::OpenDirection);
+    }
+
+    #[test]
+    fn parse_args_open_direction_wins_over_open_but_not_launch_decision() {
+        assert_eq!(
+            parse_args(["--open", "src/a.rs", "--open-direction"]),
+            CliAction::OpenDirection
+        );
+        assert_eq!(
+            parse_args(["--open-direction", "--launch-decision"]),
             CliAction::LaunchDecision
         );
     }

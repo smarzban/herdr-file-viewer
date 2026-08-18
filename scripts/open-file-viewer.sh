@@ -23,11 +23,21 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 viewer_bin="$script_dir/../target/release/herdr-file-viewer"
 
 open_pane() {
+  # `open_direction` config key, read through the binary's `--open-direction` probe (the shell
+  # cannot parse TOML). The value is already in `--direction` vocabulary; anything unexpected —
+  # binary missing, probe failure, a future value — degrades to `right`, today's layout, rather
+  # than handing herdr a direction it would reject.
+  direction="right"
+  if [ -x "$viewer_bin" ]; then
+    case "$("$viewer_bin" --open-direction 2>/dev/null)" in
+      down) direction="down" ;;
+    esac
+  fi
   exec "$herdr_bin" plugin pane open \
     --plugin herdr-file-viewer \
     --entrypoint file-viewer \
     --placement split \
-    --direction right \
+    --direction "$direction" \
     --focus
 }
 

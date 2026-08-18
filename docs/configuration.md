@@ -48,7 +48,7 @@ config key and above the built-in default — `editor` (`$EDITOR`) and `update_c
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
 other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
 `compact_dirs`, `changed_file_view`, `confirm_discard`, `scroll_lines`, `tree_width`,
-`tree_position`, `tree_max_cols`, `preview_max_lines`, `preview_max_kib`) has no
+`tree_position`, `open_direction`, `tree_max_cols`, `preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -75,6 +75,7 @@ scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
 tree_max_cols = 30          # HARD CAP in columns; the SMALLER of this and tree_width% wins (raise both to widen)
 tree_position = "left"      # which side the directory tree sits on: "left" (default) or "right"
+open_direction = "right"    # which way the viewer PANE splits off your work pane: "right" (default) or "down"
 
 preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
@@ -103,6 +104,12 @@ instead of a mostly-blank tree (it only bites past ~100 columns). `tree_position
 the `left` (default) or `right`. All three set the **startup** split inside the viewer's own pane
 (not the herdr pane, which the host decides); you can still resize live with the grow/shrink keys or
 by dragging the divider, and an explicit resize lifts the cap.
+
+`open_direction` is the one placement key that acts **outside** the viewer's own pane: it decides
+which way the launchers split the viewer off your work pane when it opens — `"right"` (the default,
+the viewer appears beside your work) or `"down"` (below it, which suits a tall/narrow layout).
+Values are trimmed and case-insensitive; an unrecognized value falls back to `"right"`, and it
+only affects the split-pane launcher (`open-file-viewer`) — the tab variant has no split to aim.
 
 `preview_max_lines` and `preview_max_kib` cap how much of a file the content pane shows: a file is
 displayed in full until it exceeds **either** cap, then the pane shows a truncated preview with a
