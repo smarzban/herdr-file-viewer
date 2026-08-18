@@ -91,6 +91,33 @@ impl TreePosition {
     }
 }
 
+/// Which way the viewer pane is **split off the invoking pane** when it opens (`open_direction`
+/// config key): `Right` (the default — the viewer appears beside the work, today's layout) or
+/// `Down` (the viewer appears below it). The vocabulary is exactly what herdr's
+/// `plugin pane open --direction` accepts, so the config can never ask for a placement herdr
+/// cannot perform. Like [`TreePosition`], the config value is a lenient `Option<String>` resolved
+/// into this by [`resolve`] (case-insensitive, trimmed); this enum is never deserialized directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpenDirection {
+    /// Split right of the invoking pane (the default, today's layout).
+    #[default]
+    Right,
+    /// Split below the invoking pane.
+    Down,
+}
+
+impl OpenDirection {
+    /// The lowercase label: shown in the read-only Settings overlay, and the literal value the
+    /// launcher passes to `herdr plugin pane open --direction` (kept identical on purpose —
+    /// `--open-direction` prints this and the shell never re-maps it).
+    pub fn label(self) -> &'static str {
+        match self {
+            OpenDirection::Right => "right",
+            OpenDirection::Down => "down",
+        }
+    }
+}
+
 /// A `[keys]` entry's value: the key(s) an intent binds to, written **either** as a single string
 /// (`refresh = "g"`) **or** as a TOML array of strings (`nav_up = ["w", "Up"]`). `#[serde(untagged)]`
 /// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
@@ -156,6 +183,11 @@ pub struct Config {
     /// (`"left"` / `"right"`, case-insensitive, trimmed) resolved into a [`TreePosition`] by
     /// [`resolve`]; `None` or an unrecognized value falls back to [`TreePosition::Left`].
     pub tree_position: Option<String>,
+    /// The **open direction**: which way the viewer pane splits off the invoking pane when it
+    /// opens (`"right"` / `"down"`, case-insensitive, trimmed), resolved into an
+    /// [`OpenDirection`] by [`resolve`]. `None` or an unrecognized value falls back to
+    /// [`OpenDirection::Right`] — the beside-the-work split the viewer has always used.
+    pub open_direction: Option<String>,
     /// The **tree column cap**: the maximum tree width in character columns (see
     /// [`DEFAULT_TREE_MAX_COLS`]). `None` falls back to that default; the resolver clamps any present
     /// value into `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS`. Held as `u32` (like `tree_width`) so an
@@ -316,6 +348,10 @@ pub struct EffectiveSettings {
     /// The effective **tree position**: the config `tree_position` mapped to `Left`/`Right`, else
     /// [`TreePosition::Left`]. Config-or-default (no env var).
     pub tree_position: TreePosition,
+    /// The effective **open direction**: the config `open_direction` mapped to `Right`/`Down`,
+    /// else [`OpenDirection::Right`]. Consumed by the launcher scripts via `--open-direction`,
+    /// not by the running TUI. Config-or-default (no env var).
+    pub open_direction: OpenDirection,
     /// The effective **tree column cap**: the config `tree_max_cols` clamped to
     /// `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS` when present, else [`DEFAULT_TREE_MAX_COLS`]. The tree
     /// is drawn at `min(tree_width% of the pane, tree_max_cols)`. Config-or-default (no env var).
@@ -437,6 +473,20 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         _ => TreePosition::Left,
     };
 
+    // Config > default; no env var. Lenient string match (trimmed, case-insensitive): only `down`
+    // selects the non-default split; anything else — absent, unrecognized, differently-typed —
+    // keeps the default `Right`, so a fat-fingered value loses the customization without ever
+    // producing a `--direction` herdr would reject (AC-5..7).
+    let open_direction = match config
+        .open_direction
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("down") => OpenDirection::Down,
+        _ => OpenDirection::Right,
+    };
+
     // Config > default; no env var. Clamp to `MIN_TREE_MAX_COLS..=MAX_TREE_MAX_COLS` so the cap can
     // never shrink the tree to an unreadable sliver, and a huge value just becomes the effective
     // "no cap" (it never bites on a real terminal). A non-representable value degraded the whole
@@ -478,6 +528,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         scroll_lines,
         tree_width,
         tree_position,
+        open_direction,
         tree_max_cols,
         preview_max_lines,
         preview_max_kib,
@@ -1348,6 +1399,54 @@ mod tests {
             };
             assert_eq!(
                 resolve(&cfg, |_| None).tree_position,
+                want,
+                "{value:?} must resolve to {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_open_direction_config_value_wins() {
+        // AC-5: "down" -> Down, "right" -> Right (config > default).
+        for (value, want) in [
+            ("down", OpenDirection::Down),
+            ("right", OpenDirection::Right),
+        ] {
+            let cfg = Config {
+                open_direction: Some(value.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(resolve(&cfg, |_| None).open_direction, want);
+        }
+    }
+
+    #[test]
+    fn resolve_open_direction_defaults_when_absent() {
+        // AC-6: omitted -> the default split (Right, today's layout).
+        assert_eq!(
+            resolve(&Config::default(), |_| None).open_direction,
+            OpenDirection::Right
+        );
+    }
+
+    #[test]
+    fn resolve_open_direction_lenient_and_case_insensitive() {
+        // AC-7: an unrecognized value degrades to the default Right without panicking — herdr
+        // would reject an invented direction, so leniency here is what keeps the pane opening at
+        // all — and a valid value is matched case-insensitively after trimming.
+        for (value, want) in [
+            ("sideways", OpenDirection::Right),
+            ("", OpenDirection::Right),
+            (" DOWN ", OpenDirection::Down),
+            ("Right", OpenDirection::Right),
+            ("DoWn", OpenDirection::Down),
+        ] {
+            let cfg = Config {
+                open_direction: Some(value.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&cfg, |_| None).open_direction,
                 want,
                 "{value:?} must resolve to {want:?}"
             );

@@ -10504,6 +10504,7 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         scroll_lines: 3,
         tree_width: 30,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
+        open_direction: herdr_file_viewer::config::OpenDirection::Right,
         tree_max_cols: 45,
         preview_max_lines: 5000,
         preview_max_kib: 1024,
