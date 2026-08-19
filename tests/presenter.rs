@@ -86,6 +86,7 @@ fn sample_state() -> ViewState {
         // A high cap so the percentage governs in these fixtures (the cap only bites on very wide
         // panes; the cap's own behaviour is covered by dedicated tests).
         tree_max_cols: 1000,
+        tree_icons: herdr_file_viewer::config::TreeIcons::Off,
         split_manual: false,
         zoomed: false,
         remote_notice_status: None,
@@ -4681,5 +4682,44 @@ fn a_compacted_directory_row_renders_its_chain_label() {
     assert!(
         frame.contains("App.java"),
         "its child still renders one level in\n{frame}"
+    );
+}
+
+#[test]
+fn tree_icons_modes_render_expected_glyphs_in_tree_and_finder() {
+    let mut state = sample_state();
+    state.tree_icons = herdr_file_viewer::config::TreeIcons::Unicode;
+    let frame = render(&state, 100, 12);
+    assert!(
+        frame.contains("▾ ▣ src"),
+        "unicode expanded dir icon\n{frame}"
+    );
+    assert!(frame.contains("◆ main.rs"), "unicode rust icon\n{frame}");
+    assert!(
+        frame.contains("≡ README.md"),
+        "unicode markdown icon\n{frame}"
+    );
+
+    state.tree_icons = herdr_file_viewer::config::TreeIcons::Nerd;
+    let frame_nerd = render(&state, 100, 12);
+    assert!(
+        frame_nerd.contains("▾  src"),
+        "nerd expanded dir icon\n{frame_nerd}"
+    );
+    assert!(
+        frame_nerd.contains(" main.rs"),
+        "nerd rust icon\n{frame_nerd}"
+    );
+    assert!(
+        frame_nerd.contains(" README.md"),
+        "nerd markdown icon\n{frame_nerd}"
+    );
+
+    state.tree_icons = herdr_file_viewer::config::TreeIcons::Off;
+    let frame_off = render(&state, 100, 12);
+    assert!(frame_off.contains("▾ src"), "off dir icon\n{frame_off}");
+    assert!(
+        frame_off.contains("  main.rs"),
+        "off file icon\n{frame_off}"
     );
 }

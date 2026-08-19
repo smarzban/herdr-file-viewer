@@ -48,7 +48,7 @@ config key and above the built-in default — `editor` (`$EDITOR`) and `update_c
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
 other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
 `compact_dirs`, `changed_file_view`, `confirm_discard`, `scroll_lines`, `tree_width`,
-`tree_position`, `tree_max_cols`, `preview_max_lines`, `preview_max_kib`) has no
+`tree_position`, `tree_max_cols`, `file_icons`, `preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -75,6 +75,7 @@ scroll_lines = 3            # mouse-wheel step (content/search/help), a 1 to 10 
 tree_width = 30             # tree column's share of the viewer pane, percent 20-80 (content takes the rest)
 tree_max_cols = 30          # HARD CAP in columns; the SMALLER of this and tree_width% wins (raise both to widen)
 tree_position = "left"      # which side the directory tree sits on: "left" (default) or "right"
+file_icons = "unicode"      # "unicode" (default), "nerd" (Nerd Font required), or "off"
 
 preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
@@ -84,6 +85,10 @@ preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 
 and their display. When the key is unset, `$HERDR_FILE_VIEWER_NO_UPDATE_CHECK` also disables it.
 No separate spotlight setting exists.
 The system `curl` is optional: without it, document retrieval is unavailable without an error.
+
+`file_icons` controls the glyphs before file-tree entries and file-finder results: `"unicode"` (default)
+uses standard, single-cell Unicode symbols that render cleanly on any terminal without requiring a
+patched font; `"nerd"` uses rich Nerd Font glyphs; `"off"` (or `"none"`) uses plain text-only indentation.
 
 `changed_file_view` controls only the automatic initial view for Git-changed files. Its default,
 `"diff"`, preserves the existing diff-first policy. Set it to `"content"` to apply the same normal

@@ -117,6 +117,7 @@ fn config_example_documents_every_config_key() {
         "tree_width",
         "tree_position",
         "tree_max_cols",
+        "file_icons",
         "preview_max_lines",
         "preview_max_kib",
     ] {
