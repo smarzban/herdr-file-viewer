@@ -336,6 +336,13 @@ pub(crate) const REGISTRY: &[Binding] = &[
         category: "Open & copy",
     },
     Binding {
+        intent: Intent::OpenRichPreview,
+        name: "open_rich_preview",
+        default_keys: &[KeyCode::Char('g')],
+        description: "Open HTML or Markdown in terminal-browser.",
+        category: "Open & copy",
+    },
+    Binding {
         intent: Intent::RevealInFileManager,
         name: "reveal_in_file_manager",
         default_keys: &[KeyCode::Char('R')],
@@ -844,6 +851,7 @@ mod tests {
         (KeyCode::Char('H'), Intent::TreeScrollLeft),
         (KeyCode::Char('L'), Intent::TreeScrollRight),
         (KeyCode::Char('O'), Intent::OpenWithApp),
+        (KeyCode::Char('g'), Intent::OpenRichPreview),
         (KeyCode::Char('R'), Intent::RevealInFileManager),
         (KeyCode::Char('y'), Intent::CopyRepoPath),
         (KeyCode::Char('Y'), Intent::CopyAbsPath),
@@ -983,7 +991,6 @@ mod tests {
 
     #[test]
     fn unmapped_keys_are_a_noop() {
-        assert_eq!(map_key(k(KeyCode::Char('g'))), None);
         assert_eq!(map_key(k(KeyCode::Char('x'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);
@@ -1520,6 +1527,10 @@ mod tests {
         // `O` (Shift+o) opens the selected entry with the OS default app; `R` (Shift+r) reveals
         // it in the OS file manager. Lowercase `o` stays unbound (`r` is Refresh — untouched).
         // A Ctrl chord on either capital key must fire nothing.
+        assert_eq!(
+            map_key(k(KeyCode::Char('g'))),
+            Some(Intent::OpenRichPreview)
+        );
         assert_eq!(map_key(k(KeyCode::Char('O'))), Some(Intent::OpenWithApp));
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT)),
@@ -1783,7 +1794,7 @@ mod tests {
     #[test]
     fn resolve_unknown_intent_rejected_siblings_apply_ac14() {
         // AC-14: an unknown name is rejected while a sibling valid entry still applies; no panic.
-        let (b, out) = resolve_with(&[("bogus", one("g")), ("refresh", one("p"))]);
+        let (b, out) = resolve_with(&[("bogus", one("x")), ("refresh", one("p"))]);
         assert!(
             out.rejected
                 .iter()
@@ -1796,30 +1807,30 @@ mod tests {
     #[test]
     fn resolve_duplicate_key_clash_rejects_both_ac15() {
         // AC-15: two entries claiming one key both revert to their defaults.
-        let (b, out) = resolve_with(&[("refresh", one("g")), ("open_finder", one("g"))]);
+        let (b, out) = resolve_with(&[("refresh", one("x")), ("open_finder", one("x"))]);
         assert_eq!(out.rejected.len(), 2, "both clashing entries are rejected");
         assert_eq!(dec(&b, KeyCode::Char('r')), Some(Intent::Refresh));
         assert_eq!(dec(&b, KeyCode::Char('f')), Some(Intent::OpenFinder));
         assert_eq!(
-            dec(&b, KeyCode::Char('g')),
+            dec(&b, KeyCode::Char('x')),
             None,
-            "the clashed key 'g' decodes to nothing"
+            "the clashed key 'x' decodes to nothing"
         );
     }
 
     #[test]
     fn resolve_bad_key_token_rejects_whole_entry_ac12() {
         // AC-12: any unparseable token in a spec rejects the whole entry (the intent keeps defaults).
-        let (b, out) = resolve_with(&[("refresh", many(&["g", "Ctrl+x"]))]);
+        let (b, out) = resolve_with(&[("refresh", many(&["x", "Ctrl+x"]))]);
         assert!(
             out.rejected
                 .iter()
                 .any(|r| r.name == "refresh" && matches!(r.reason, RejectReason::BadKeySpec(_))),
         );
         assert_eq!(
-            dec(&b, KeyCode::Char('g')),
+            dec(&b, KeyCode::Char('x')),
             None,
-            "the whole entry is rejected, so its parseable key 'g' is not bound"
+            "the whole entry is rejected, so its parseable key 'x' is not bound"
         );
         assert_eq!(dec(&b, KeyCode::Char('r')), Some(Intent::Refresh));
     }

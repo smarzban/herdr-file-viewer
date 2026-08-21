@@ -669,6 +669,7 @@ fn pinned_unavailable_actions_are_consumed_with_a_notice() {
         Intent::TreeScrollRight,
         Intent::OpenInEditor,
         Intent::OpenWithApp,
+        Intent::OpenRichPreview,
         Intent::RevealInFileManager,
         Intent::AddAnnotation,
         Intent::ShowAnnotations,
