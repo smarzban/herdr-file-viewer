@@ -28,6 +28,7 @@ is additive and on by default.
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` (see [Opening in an editor](#opening-in-an-editor)) |
 | `O` (Shift+`o`) | **Open with default app**: hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |
+| `g` | **Rich preview**: open HTML or Markdown (converted to HTML) in `terminal-browser` in a split to the right. Also works for PDF/images. Read-only; non-blocking. PDF and images already rasterize in-pane via Kitty graphics when the terminal supports it |
 | `R` (Shift+`r`) | **Reveal in file manager**: open the OS file manager (Finder / Explorer / a Linux file manager) with the selected entry highlighted where supported, so you can drag it out (e.g. into Slack). Read-only hand-off |
 | `f` | **Go to file**: open a fuzzy finder over every file in the tree; type to filter, `↑` / `↓` move, `Enter` opens the selected file and focuses its active preview, `Esc` cancels (`←` / `→` scroll long paths) |
 | `:` | **Go to line**: open a prompt and jump the content pane to a source line by number (`Enter` jumps, `Esc` cancels; out-of-range clamps to the last line). Works in any view; in a rendered-markdown or diff view, confirming switches to the line-numbered content view and jumps there |

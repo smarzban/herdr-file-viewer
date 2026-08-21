@@ -366,6 +366,9 @@ The viewer is read-only; to *act* on a file it hands off to another tool:
   editor, and resumes when it exits. See [opening in an editor](keys.md#opening-in-an-editor).
 - **Open with default app** (`O`): hand the file or directory to the OS default application (an
   image opens in the system viewer, and so on). Non-blocking — the viewer keeps running.
+- **Rich preview** (`g`): open HTML or Markdown (converted to a temp HTML file) in
+  `terminal-browser` in a split to the right. PDF and images already show an in-pane raster via
+  Kitty graphics when the terminal supports it; `g` can still send those to the browser.
 - **Reveal in file manager** (`R`): open Finder / Explorer / a Linux file manager with the entry
   highlighted where supported, so you can drag it out (e.g. into Slack).
 

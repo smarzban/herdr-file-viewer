@@ -211,6 +211,7 @@ customized).
 | | `refresh` | `r` | Re-read git state and re-render |
 | **Open & copy** | `open_in_editor` | `e` | Hand the selected file off to an external editor |
 | | `open_with_app` | `O` | Open the selected entry with the OS default application |
+| | `open_rich_preview` | `g` | Open HTML or Markdown in terminal-browser |
 | | `reveal_in_file_manager` | `R` | Reveal the selected entry in the OS file manager |
 | | `copy_repo_path` | `y` | Copy the selected node's repo-relative path to the clipboard |
 | | `copy_abs_path` | `Y` | Copy the selected node's absolute path to the clipboard |

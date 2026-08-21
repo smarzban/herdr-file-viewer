@@ -198,6 +198,10 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     ));
 
     let mut terminal = ratatui::try_init()?;
+    // After the alt screen is up, query Kitty/sixel so PDF/image previews can paint pixels.
+    if let Ok(picker) = ratatui_image::picker::Picker::from_query_stdio() {
+        controller.set_image_picker(picker);
+    }
     // Mouse is additive to the keyboard-first design (AC-18): herdr forwards mouse events to a
     // pane that requests capture, while reserving Shift+mouse for the terminal's own
     // selection/copy. Best-effort so a terminal without mouse support still runs.
@@ -250,13 +254,16 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
             terminal.draw(|frame| {
                 controller.set_width(frame.area().width);
                 let view: ViewState = controller.view_state();
+                let geom = presenter::geometry(frame.area(), &view);
                 let viewports = presenter::draw(frame, &view);
                 // Feed the drawn content viewport back so content scrolling can be clamped to
                 // it on the next intent, and the hit-test geometry so a mouse event maps to the
                 // live layout. `true` means a deferred launch-open zoom just armed (narrow
                 // tree-only pane) and we must paint again so the file is actually visible.
                 need_redraw = controller.set_preview_viewports(viewports);
-                controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
+                let raster_area = geom.content_inner;
+                controller.set_pane_geometry(geom);
+                controller.draw_raster(frame, raster_area);
             })?;
             dirty = need_redraw;
         }

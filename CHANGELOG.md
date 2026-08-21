@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- In-pane PDF/image preview: the first PDF page (`pdftoppm`) and common image formats rasterize to PNG and draw via Kitty graphics when the terminal supports it. → [usage](docs/usage.md#handing-a-file-off) · [keys](docs/keys.md)
+- `g` (`open_rich_preview`) opens HTML or Markdown (converted to HTML) in `terminal-browser` in a right split. → [keys](docs/keys.md) · [configuration](docs/configuration.md)
+
 ## [1.16.0] - 2026-08-15
 
 ### Added

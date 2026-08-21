@@ -65,6 +65,9 @@ pub enum Intent {
     /// hand-off — launches another process, never modifies the file (AC-1, AC-N1). Non-blocking
     /// (does not suspend the TUI).
     OpenWithApp,
+    /// Open HTML or Markdown (converted to HTML) in `terminal-browser` (`g`). Read-only
+    /// external hand-off — never writes into the viewed tree. Non-blocking.
+    OpenRichPreview,
     /// Reveal the selected entry in the OS file manager (`R`). Read-only external hand-off
     /// (AC-2, AC-N1). Non-blocking.
     RevealInFileManager,
@@ -172,7 +175,7 @@ pub enum Intent {
 impl Intent {
     /// Every intent variant — lets the dispatcher and tests enumerate the closed set so
     /// keyboard-completeness (AC-18) and the no-file/git-mutation invariant (AC-N3) stay checkable.
-    pub const ALL: [Intent; 44] = [
+    pub const ALL: [Intent; 45] = [
         Intent::NavUp,
         Intent::NavDown,
         Intent::PageUp,
@@ -190,6 +193,7 @@ impl Intent {
         Intent::CycleView,
         Intent::OpenInEditor,
         Intent::OpenWithApp,
+        Intent::OpenRichPreview,
         Intent::RevealInFileManager,
         Intent::CopyRepoPath,
         Intent::CopyAbsPath,
@@ -250,6 +254,7 @@ mod tests {
                 | Intent::CycleView
                 | Intent::OpenInEditor
                 | Intent::OpenWithApp
+                | Intent::OpenRichPreview
                 | Intent::RevealInFileManager
                 | Intent::CopyRepoPath
                 | Intent::CopyAbsPath
@@ -348,11 +353,11 @@ mod tests {
     }
 
     #[test]
-    fn all_length_is_44() {
+    fn all_length_is_45() {
         assert_eq!(
             Intent::ALL.len(),
-            44,
-            "Intent::ALL must have exactly 44 variants"
+            45,
+            "Intent::ALL must have exactly 45 variants"
         );
     }
 

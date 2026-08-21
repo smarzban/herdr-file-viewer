@@ -39,6 +39,7 @@ use crate::help::{HelpSection, HelpSectionState, HelpState};
 use crate::herdr::HerdrCli;
 use crate::infile::{PromptMode, PromptState, SearchState};
 use crate::intent::Intent;
+use crate::media::{self, MediaKind};
 use crate::picker::PickerState;
 use crate::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
@@ -590,6 +591,17 @@ struct RenderCompletion {
     result: RenderResult,
 }
 
+struct RasterJob {
+    seq: u64,
+    path: PathBuf,
+}
+
+struct RasterDone {
+    seq: u64,
+    path: PathBuf,
+    png: Option<Vec<u8>>,
+}
+
 /// A re-root's off-thread git result: the working-tree status (tree markers, AC-7) and the
 /// changed-set against the active baseline (the changed-only filter, AC-6), both keyed by
 /// repo-root-relative path. Carried over a one-shot channel from the worker `re_root` spawns to
@@ -874,6 +886,14 @@ pub struct Controller {
     /// dispatched job; a `poll`ed result with a smaller seq is stale and dropped.
     job_tx: mpsc::Sender<RenderJob>,
     result_rx: mpsc::Receiver<RenderCompletion>,
+    raster_tx: mpsc::Sender<RasterJob>,
+    raster_rx: mpsc::Receiver<RasterDone>,
+    /// Kitty/sixel picker, injected after the alt screen is up so stdio queries work.
+    image_picker: Option<ratatui_image::picker::Picker>,
+    /// PNG bytes waiting for [`set_image_picker`] so a race with the first raster job is not dropped.
+    raster_pending: Option<(PathBuf, Vec<u8>)>,
+    /// In-pane raster for the currently selected PDF/image, if a job has landed.
+    raster: Option<(PathBuf, ratatui_image::protocol::StatefulProtocol)>,
     latest_seq: u64,
     /// The `seq` of an in-flight markdown re-render triggered by a content-pane *resize*
     /// ([`rerender_markdown_for_width`]), as opposed to a selection change. When [`poll`] applies a
@@ -1041,6 +1061,7 @@ impl Controller {
         // channel (AC-23). The worker exits when the job sender (held by the controller) is
         // dropped — which is also how a re-root retires the old worker.
         let (job_tx, result_rx) = Self::spawn_worker(Arc::clone(&git), content);
+        let (raster_tx, raster_rx) = Self::spawn_raster_worker();
 
         let mut ctrl = Controller {
             tree: TreeModel::new(root.clone()),
@@ -1085,6 +1106,11 @@ impl Controller {
             renderers,
             job_tx,
             result_rx,
+            raster_tx,
+            raster_rx,
+            image_picker: None,
+            raster_pending: None,
+            raster: None,
             latest_seq: 0,
             reflow_seq: None,
             geom: PaneGeometry::default(),
@@ -1182,6 +1208,65 @@ impl Controller {
         (job_tx, result_rx)
     }
 
+    fn spawn_raster_worker() -> (mpsc::Sender<RasterJob>, mpsc::Receiver<RasterDone>) {
+        let (job_tx, job_rx) = mpsc::channel::<RasterJob>();
+        let (done_tx, done_rx) = mpsc::channel::<RasterDone>();
+        std::thread::spawn(move || {
+            while let Ok(mut job) = job_rx.recv() {
+                while let Ok(newer) = job_rx.try_recv() {
+                    job = newer;
+                }
+                let png = media::rasterize_png(&job.path);
+                if done_tx
+                    .send(RasterDone {
+                        seq: job.seq,
+                        path: job.path,
+                        png,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (job_tx, done_rx)
+    }
+
+    /// Query Kitty/sixel after the alt screen is up. Tests leave this `None` (halfblock-less).
+    pub fn set_image_picker(&mut self, picker: ratatui_image::picker::Picker) {
+        self.image_picker = Some(picker);
+        if let Some((path, png)) = self.raster_pending.take()
+            && let Ok(img) = image::load_from_memory(&png)
+        {
+            self.raster = Some((
+                path,
+                self.image_picker.as_ref().unwrap().new_resize_protocol(img),
+            ));
+        }
+    }
+
+    /// Overlay a fitted raster on the content interior when the current file is a PDF/image.
+    pub fn draw_raster(&mut self, frame: &mut ratatui::Frame, area: Option<ratatui::layout::Rect>) {
+        let Some(area) = area else {
+            return;
+        };
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        let Some(node) = self.tree.selected() else {
+            return;
+        };
+        let Some((path, protocol)) = self.raster.as_mut() else {
+            return;
+        };
+        if path != &node.path {
+            return;
+        }
+        frame.render_widget(ratatui::widgets::Clear, area);
+        let image = ratatui_image::StatefulImage::new().resize(ratatui_image::Resize::Fit(None));
+        frame.render_stateful_widget(image, area, protocol);
+    }
+
     /// Re-root the running session to `target`: re-resolve it through the same Root Resolver used
     /// at launch, rebuild the root-bound providers (Git Service + Content Renderer) via the stored
     /// factory (ADR-0004), and respawn the render worker — overwriting `job_tx`/`result_rx` drops
@@ -1253,6 +1338,7 @@ impl Controller {
         self.git = git;
         self.job_tx = job_tx;
         self.result_rx = result_rx;
+        self.raster = None;
 
         // New root + fresh tree (this alone clears the cursor + expansions).
         self.root = resolved.root.clone();
@@ -2181,6 +2267,7 @@ impl Controller {
             Intent::CycleView => self.cycle_view(),
             Intent::OpenInEditor => self.open_in_editor(),
             Intent::OpenWithApp => self.open_with_app(),
+            Intent::OpenRichPreview => self.open_rich_preview(),
             Intent::RevealInFileManager => self.reveal_in_file_manager(),
             Intent::CopyRepoPath => self.copy_path(PathKind::Repo),
             Intent::CopyAbsPath => self.copy_path(PathKind::Absolute),
@@ -2766,6 +2853,42 @@ impl Controller {
     /// Open the selected entry with the OS default app (`O`).
     fn open_with_app(&mut self) -> Effects {
         self.hand_off_to_opener(false)
+    }
+
+    /// Open HTML/Markdown (or PDF/image) in terminal-browser (`g`).
+    fn open_rich_preview(&mut self) -> Effects {
+        let Some(node) = self.tree.selected() else {
+            return Effects::noop();
+        };
+        if node.kind != NodeKind::File {
+            return Effects::noop();
+        }
+        let path = node.path.clone();
+        match media::kind(&path) {
+            MediaKind::Html | MediaKind::Markdown | MediaKind::Pdf | MediaKind::Image => {
+                match media::browser_url(&path) {
+                    Some(url) => match media::open_in_terminal_browser(&url) {
+                        Ok(()) => {
+                            self.set_flash("Opened in terminal-browser");
+                            Effects::redraw()
+                        }
+                        Err(reason) => {
+                            self.action_notice = Some(reason);
+                            Effects::redraw()
+                        }
+                    },
+                    None => {
+                        self.action_notice = Some("Could not prepare browser preview".into());
+                        Effects::redraw()
+                    }
+                }
+            }
+            MediaKind::Other => {
+                self.action_notice =
+                    Some("g opens HTML, Markdown, PDF, or images in terminal-browser".into());
+                Effects::redraw()
+            }
+        }
     }
 
     /// Reveal the selected entry in the OS file manager (`R`).
@@ -3501,6 +3624,18 @@ impl Controller {
         // rendered content instead of stranding the pane on a `Rendering…` placeholder that
         // no result will ever arrive to clear (`poll` only clears `content_rendering` when a
         // matching result lands). The send never panics, so the viewer stays alive either way.
+        match media::kind(&node.path) {
+            MediaKind::Pdf | MediaKind::Image => {
+                let _ = self.raster_tx.send(RasterJob {
+                    seq,
+                    path: node.path.clone(),
+                });
+            }
+            _ => {
+                self.raster = None;
+                self.raster_pending = None;
+            }
+        }
         if self
             .job_tx
             .send(RenderJob {
@@ -3537,6 +3672,7 @@ impl Controller {
     /// tree. The strings are static and first-party, so they need no AC-27 sanitization (they
     /// carry no control bytes); they flow through the same content path the renderer uses.
     fn clear_content(&mut self, reason: EmptyReason) {
+        self.raster = None;
         self.active_display = match reason {
             EmptyReason::Directory => ActiveDisplay::Directory {
                 content: Arc::new(Text::raw(reason.label())),
@@ -3552,6 +3688,24 @@ impl Controller {
     /// fresh content was applied, so the run loop repaints; `None` when nothing arrived.
     pub fn poll(&mut self) -> Option<Effects> {
         let mut applied = false;
+        while let Ok(done) = self.raster_rx.try_recv() {
+            if done.seq != self.latest_seq {
+                continue;
+            }
+            match (done.png, self.image_picker.as_ref()) {
+                (Some(png), Some(picker)) => {
+                    if let Ok(img) = image::load_from_memory(&png) {
+                        self.raster = Some((done.path, picker.new_resize_protocol(img)));
+                        applied = true;
+                    }
+                }
+                (Some(png), None) => self.raster_pending = Some((done.path, png)),
+                _ => {
+                    self.raster = None;
+                    self.raster_pending = None;
+                }
+            }
+        }
         while let Ok(completion) = self.result_rx.try_recv() {
             let RenderCompletion { job, result } = completion;
             let seq = job.seq;
