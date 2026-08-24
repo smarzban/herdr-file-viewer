@@ -24,6 +24,10 @@ const ARCHITECTURE: &str = include_str!("../ARCHITECTURE.md");
 const AGENT_SKILL: &str = include_str!("../skills/herdr-file-viewer/SKILL.md");
 const OPEN_PANE_SCRIPT: &str = include_str!("../scripts/open-file-viewer.sh");
 const OPEN_TAB_SCRIPT: &str = include_str!("../scripts/open-file-viewer-tab.sh");
+const OPEN_OVERLAY_SCRIPT: &str = include_str!("../scripts/open-file-viewer-overlay.sh");
+const SUMMONING_DOC: &str = include_str!("../docs/summoning.md");
+const WINDOWS_DOC: &str = include_str!("../docs/windows.md");
+const MANIFEST: &str = include_str!("../herdr-plugin.toml");
 
 /// The `--cwd` drift guard (#139).
 ///
@@ -62,6 +66,7 @@ fn no_documented_launch_passes_cwd_to_plugin_pane_open() {
         ("docs/usage.md", USAGE_DOC),
         ("scripts/open-file-viewer.sh", OPEN_PANE_SCRIPT),
         ("scripts/open-file-viewer-tab.sh", OPEN_TAB_SCRIPT),
+        ("scripts/open-file-viewer-overlay.sh", OPEN_OVERLAY_SCRIPT),
     ] {
         for block in launch_blocks(doc) {
             assert!(
@@ -390,6 +395,39 @@ fn configuration_doc_documents_keys_remapping() {
         CONFIG_DOC.to_lowercase().contains("replace"),
         "docs/configuration.md must state a `[keys]` value replaces the default keys"
     );
+}
+
+#[test]
+fn summoning_docs_document_every_manifest_action() {
+    // Anti-drift for the open actions: every `[[actions]]` id the manifest declares must be
+    // documented where users learn to bind it — `docs/summoning.md` for the Linux/macOS ids and
+    // `docs/windows.md` for the `-windows` ids — so adding a launcher (split, tab, overlay, …)
+    // without teaching its keybinding fails the build. The manifest's `#` comments are stripped
+    // first so a mention in prose can't stand in for a real declaration.
+    let ids: Vec<&str> = MANIFEST
+        .lines()
+        .map(|l| l.find('#').map_or(l, |i| &l[..i]).trim())
+        .filter_map(|l| l.strip_prefix("id = \""))
+        .filter_map(|s| s.strip_suffix('"'))
+        .filter(|id| id.starts_with("open-file-viewer"))
+        .collect();
+    assert!(
+        ids.len() >= 6,
+        "expected the split, tab and overlay action pairs in the manifest, found {ids:?}"
+    );
+    for id in ids {
+        let qualified = format!("herdr-file-viewer.{id}");
+        let doc = if id.ends_with("-windows") {
+            ("docs/windows.md", WINDOWS_DOC)
+        } else {
+            ("docs/summoning.md", SUMMONING_DOC)
+        };
+        assert!(
+            doc.1.contains(&qualified),
+            "{} must show a `plugin_action` binding for `{qualified}`",
+            doc.0
+        );
+    }
 }
 
 #[test]

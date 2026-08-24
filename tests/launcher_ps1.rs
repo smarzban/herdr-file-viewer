@@ -1,6 +1,7 @@
 //! Parse-only test for the Windows launcher scripts (T-8 — AC-16).
 //!
-//! `scripts/open-file-viewer.ps1` and `scripts/open-file-viewer-tab.ps1` are thin glue over the
+//! `scripts/open-file-viewer.ps1`, `scripts/open-file-viewer-tab.ps1` and
+//! `scripts/open-file-viewer-overlay.ps1` are thin glue over the
 //! already-unit-tested, portable launch-decision logic (`src/launch.rs`). The end-to-end
 //! launch-or-focus-or-close toggle needs a live herdr on Windows and is reviewer-checked
 //! (AC-16); what we CAN cheaply assert here, hermetically, is that each script is syntactically
@@ -54,6 +55,11 @@ fn open_file_viewer_tab_ps1_parses() {
 }
 
 #[test]
+fn open_file_viewer_overlay_ps1_parses() {
+    assert_parses("open-file-viewer-overlay.ps1");
+}
+
+#[test]
 fn fetch_or_build_ps1_parses() {
     // Not a launcher, but the same hermetic parse-check is cheap insurance for the other
     // Windows-only script (T-7) — a syntax error there would otherwise only surface on a real
@@ -99,8 +105,8 @@ fn manifest_windows_action_commands_parse() {
 
     assert_eq!(
         payloads.len(),
-        2,
-        "expected exactly the two Windows action -Command payloads, found {}: {payloads:?}",
+        3,
+        "expected exactly the three Windows action -Command payloads, found {}: {payloads:?}",
         payloads.len()
     );
     for p in payloads {

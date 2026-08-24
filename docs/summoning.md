@@ -1,7 +1,7 @@
 # Summoning the viewer
 
-How the viewer gets opened: the open actions, the idempotent launcher, split vs. tab, and the
-`--remote` caveat. For a quick "install then bind a key," see the [Quick start](../README.md#quick-start);
+How the viewer gets opened: the open actions, the idempotent launcher, split vs. tab vs. overlay,
+and the `--remote` caveat. For a quick "install then bind a key," see the [Quick start](../README.md#quick-start);
 once it's open, see the [usage guide](usage.md) and [keys reference](keys.md).
 
 The viewer opens **only** in response to an explicit action. There are no event hooks and no
@@ -73,6 +73,32 @@ key = "prefix+shift+f"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-tab"
 description = "open file viewer in tab"
+```
+
+## Open as an overlay over the current pane
+
+A third action, `open-file-viewer-overlay`, opens the viewer **over** the current pane instead of
+beside it or in another tab (`scripts/open-file-viewer-overlay.sh`, `--placement overlay`). herdr
+splits the viewer beside the active pane and zooms the tab onto it, so it fills the tab and the
+layout underneath is untouched; closing it puts the tab back the way it was.
+
+Its launcher is idempotent within the current tab, like the split one, *launch-or-focus-or-toggle*:
+
+- no viewer in this tab → open it as an overlay (focused)
+- a viewer in this tab, not focused (e.g. one opened as a split) → bring it up as the overlay
+- the viewer already focused → close it
+
+All three launchers look for the same viewer pane, so there is at most one per tab: pressing the
+overlay key over a tab that already has a split viewer zooms that one instead of opening a second.
+
+Bind it to its own key, e.g. `prefix+alt+f`:
+
+```toml
+[[keys.command]]
+key = "prefix+alt+f"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-overlay"
+description = "open file viewer as overlay"
 ```
 
 ## Limitation over `herdr --remote`

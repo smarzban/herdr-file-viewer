@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- `open-file-viewer-overlay` action (`open-file-viewer-overlay-windows` on Windows): open the viewer as an overlay over the current pane — a split with the tab zoomed onto it, so the layout underneath is untouched and closing it puts the tab back. Toggles like the split action: a repeat press brings an unfocused viewer back up, or closes a focused one. Bind it to e.g. `prefix+alt+f`. → [summoning](docs/summoning.md#open-as-an-overlay-over-the-current-pane) · [windows](docs/windows.md)
+
 ## [1.16.0] - 2026-08-15
 
 ### Added
