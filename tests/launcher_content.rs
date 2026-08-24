@@ -22,7 +22,11 @@ fn read_script(name: &str) -> String {
 
 #[test]
 fn windows_launchers_spawn_via_call_operator_not_a_bare_path() {
-    for name in ["open-file-viewer.ps1", "open-file-viewer-tab.ps1"] {
+    for name in [
+        "open-file-viewer.ps1",
+        "open-file-viewer-tab.ps1",
+        "open-file-viewer-overlay.ps1",
+    ] {
         let s = read_script(name);
 
         // The bare form that splits on a space in the install path must be gone.
@@ -43,7 +47,11 @@ fn windows_launchers_spawn_via_call_operator_not_a_bare_path() {
 
 #[test]
 fn windows_json_consumers_force_utf8_before_convert_from_json() {
-    for name in ["open-file-viewer.ps1", "open-file-viewer-tab.ps1"] {
+    for name in [
+        "open-file-viewer.ps1",
+        "open-file-viewer-tab.ps1",
+        "open-file-viewer-overlay.ps1",
+    ] {
         let script = read_script(name);
         assert_utf8_before_json(name, &script);
     }
@@ -55,7 +63,11 @@ fn windows_json_consumers_force_utf8_before_convert_from_json() {
         .lines()
         .filter(|line| line.contains("ConvertFrom-Json"))
         .collect();
-    assert_eq!(actions.len(), 2, "expected both Windows action payloads");
+    assert_eq!(
+        actions.len(),
+        3,
+        "expected all three Windows action payloads"
+    );
     for action in actions {
         assert_utf8_before_json("manifest Windows action", action);
     }
@@ -87,7 +99,11 @@ fn windows_launchers_pass_the_plugin_config_dir() {
     // variable on, the viewer looks for config.toml under $XDG_CONFIG_HOME / $HOME — neither of
     // which Windows sets — resolves a RELATIVE path, and refuses to read it. The user's config
     // file is then ignored with no error, which reads as "the setting does nothing".
-    for name in ["open-file-viewer.ps1", "open-file-viewer-tab.ps1"] {
+    for name in [
+        "open-file-viewer.ps1",
+        "open-file-viewer-tab.ps1",
+        "open-file-viewer-overlay.ps1",
+    ] {
         let s = read_script(name);
         assert!(
             s.contains("plugin config-dir herdr-file-viewer"),

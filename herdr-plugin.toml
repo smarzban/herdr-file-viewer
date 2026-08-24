@@ -10,7 +10,8 @@
 #  - [[actions]] are gated the same way, but each carries a UNIQUE id — herdr rejects a
 #    duplicate action id at load time regardless of platform (verified against herdr 0.7.1),
 #    so the Windows launchers use the `-windows`-suffixed ids `open-file-viewer-windows` /
-#    `open-file-viewer-tab-windows`. On Windows, bind THOSE action ids.
+#    `open-file-viewer-tab-windows` / `open-file-viewer-overlay-windows`. On Windows, bind THOSE
+#    action ids.
 #  - Windows launch (verified on real hardware, herdr 0.7.1-preview, GH #58): herdr can NOT spawn the
 #    manifest's RELATIVE pane command on Windows — it passes the relative program to CreateProcessW,
 #    which resolves it against herdr's OWN directory (not any `--cwd` we set), failing with
@@ -96,4 +97,25 @@ description = "Open the git-aware file viewer in its own tab (switch to it if al
 command = [
   "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
   '''$u=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$u; $OutputEncoding=$u; $b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
+]
+
+# The same viewer, opened as an overlay over the current pane (herdr's `overlay` placement: a split
+# with the tab zoomed onto it, so the layout underneath is untouched). Idempotent within the current
+# tab like the split action. Bind a key to it (e.g. `prefix+alt+f`) in ~/.config/herdr/config.toml.
+[[actions]]
+id = "open-file-viewer-overlay"
+platforms = ["linux", "macos"]
+title = "Open file viewer (overlay)"
+description = "Open the git-aware file viewer as an overlay over the current pane (toggle on repeat)."
+command = ["bash", "scripts/open-file-viewer-overlay.sh"]
+
+[[actions]]
+id = "open-file-viewer-overlay-windows"
+platforms = ["windows"]
+title = "Open file viewer (overlay)"
+description = "Open the git-aware file viewer as an overlay over the current pane (toggle on repeat)."
+# See open-file-viewer-windows: locate the launcher via herdr's own plugin root, not the cwd.
+command = [
+  "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+  '''$u=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$u; $OutputEncoding=$u; $b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-overlay.ps1')''',
 ]

@@ -72,9 +72,9 @@ fn declares_at_least_one_action() {
 }
 
 #[test]
-fn declares_split_and_tab_open_actions() {
-    // The viewer can be summoned as a split pane or in its own tab; each action runs its
-    // dedicated launcher script.
+fn declares_split_tab_and_overlay_open_actions() {
+    // The viewer can be summoned as a split pane, in its own tab, or as an overlay over the
+    // current pane; each action runs its dedicated launcher script.
     let m = manifest();
     assert!(
         m.contains(r#"id = "open-file-viewer""#),
@@ -91,6 +91,14 @@ fn declares_split_and_tab_open_actions() {
     assert!(
         m.contains("scripts/open-file-viewer-tab.sh"),
         "tab action runs its launcher"
+    );
+    assert!(
+        m.contains(r#"id = "open-file-viewer-overlay""#),
+        "overlay action present"
+    );
+    assert!(
+        m.contains("scripts/open-file-viewer-overlay.sh"),
+        "overlay action runs its launcher"
     );
 }
 
@@ -180,6 +188,27 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
     assert!(
         m.contains("plugin list --json") && m.contains("'open-file-viewer-tab.ps1'"),
         "open-file-viewer-tab's Windows variant must locate the .ps1 via herdr's plugin root: {m}"
+    );
+}
+
+#[test]
+fn open_file_viewer_overlay_action_is_platform_gated_unix_and_windows() {
+    // Same shape as the split and tab pairs: a unix (bash .sh) variant and a Windows (PowerShell
+    // .ps1) variant under a DISTINCT id, each gated to its platform, the Windows one locating its
+    // launcher via herdr's own plugin root.
+    let m = manifest();
+    assert!(
+        m.contains("id = \"open-file-viewer-overlay\"\nplatforms = [\"linux\", \"macos\"]")
+            && m.contains("command = [\"bash\", \"scripts/open-file-viewer-overlay.sh\"]"),
+        "open-file-viewer-overlay's unix variant must be gated to [\"linux\", \"macos\"] and run the .sh launcher: {m}"
+    );
+    assert!(
+        m.contains("id = \"open-file-viewer-overlay-windows\"\nplatforms = [\"windows\"]"),
+        "open-file-viewer-overlay's Windows variant must use the distinct id open-file-viewer-overlay-windows, gated to [\"windows\"]: {m}"
+    );
+    assert!(
+        m.contains("plugin list --json") && m.contains("'open-file-viewer-overlay.ps1'"),
+        "open-file-viewer-overlay's Windows variant must locate the .ps1 via herdr's plugin root: {m}"
     );
 }
 

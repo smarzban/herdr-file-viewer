@@ -8,9 +8,10 @@ extra tooling required beyond the in-box Windows PowerShell 5.1. The open/toggle
 PowerShell launcher scripts.
 
 - **On Windows, bind the `-windows` action ids.** herdr requires every action id to be unique, so
-  the Windows launchers register as **`open-file-viewer-windows`** and
-  **`open-file-viewer-tab-windows`** (the unqualified `open-file-viewer` / `open-file-viewer-tab`
-  ids are the Linux/macOS variants). Point `plugin_action` bindings at the qualified Windows ids:
+  the Windows launchers register as **`open-file-viewer-windows`**,
+  **`open-file-viewer-tab-windows`** and **`open-file-viewer-overlay-windows`** (the unqualified
+  `open-file-viewer` / `open-file-viewer-tab` / `open-file-viewer-overlay` ids are the Linux/macOS
+  variants). Point `plugin_action` bindings at the qualified Windows ids:
 
   ```toml
   [[keys.command]]
@@ -24,7 +25,16 @@ PowerShell launcher scripts.
   type = "plugin_action"
   command = "herdr-file-viewer.open-file-viewer-tab-windows"
   description = "open file viewer in tab"
+
+  [[keys.command]]
+  key = "prefix+alt+f"
+  type = "plugin_action"
+  command = "herdr-file-viewer.open-file-viewer-overlay-windows"
+  description = "open file viewer as overlay"
   ```
+
+  On Windows the overlay launcher splits the viewer and then zooms the tab onto it (it can't use
+  herdr's `overlay` placement, for the same absolute-path reason as the other launchers).
 - **Requires herdr's preview channel.** Windows herdr binaries ship only on herdr's pre-release
   update channel, so you need to be on it before installing this plugin on Windows.
 - **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing
