@@ -25,6 +25,14 @@ back into the chat. It never touches your files.
 
 ![herdr-file-viewer with a pinned preview: tree on the left, the active file in the middle, a frozen pin of another file on the right](assets/Pinned-preview.png)
 
+*Press `s` for the **session view**: the files the current Claude Code session created (`+`), updated (`~`), or mentioned (`·`) — untracked files included, git letters still alongside, and files touched outside the root under their own divider:*
+
+![herdr-file-viewer in the session view: the tree lists only the files the Claude Code session touched, each with a category glyph beside its git status letter, and an outside root section listing ~/.claude files](assets/Session-view.png)
+
+*`S` picks among the root's sessions — newest first, session titles shown, the presented one marked:*
+
+![the session picker overlay listing two Claude Code sessions with their titles, ages, and a current marker](assets/Session-picker.png)
+
 ## Why you'd want it
 
 - **The right view, automatically.** A changed file opens as a diff. A README renders. Code is
