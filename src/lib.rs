@@ -33,6 +33,7 @@ pub mod prompt;
 pub mod render;
 pub mod root;
 pub mod search;
+pub mod session;
 pub mod text_layout;
 pub mod tree;
 pub mod update;

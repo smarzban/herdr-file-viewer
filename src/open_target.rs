@@ -173,7 +173,7 @@ fn parse_line_suffix(suffix: &str) -> Option<(usize, Option<usize>)> {
 /// Lexically resolve `.` and `..` with no filesystem I/O. Returns `None` if a `..` would climb
 /// above the path's root (absolute) or empty base (relative) — i.e. the path is not well-formed
 /// under a fixed root after join.
-fn lexically_normalize(path: &Path) -> Option<PathBuf> {
+pub(crate) fn lexically_normalize(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {

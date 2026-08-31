@@ -30,6 +30,7 @@ mod lineselect;
 mod mouse;
 mod picker;
 mod pinned;
+mod session;
 
 use crate::annotation::AnnotationStore;
 use crate::finder::FinderState;
@@ -307,6 +308,14 @@ pub trait ContentProvider: Send {
     /// every mode except Diff/FullDiff.
     ///
     /// `width` remains the markdown wrap width (gated by the markdown wrap preference).
+    ///
+    /// `allow_outside_root` marks a **session-view outside-root member**: the one case the
+    /// classifier's root-containment guard is waived (ADR-0012's display-not-browse carve-out);
+    /// every other content guard stays. Always `false` for ordinary tree rows.
+    // One over clippy's arity limit: the extra parameter is a per-call security decision that
+    // must travel with the render (a grouped params struct would churn every provider stub for
+    // no clarity gain on a defaulted trait method).
+    #[allow(clippy::too_many_arguments)]
     fn render_at_width(
         &self,
         path: &Path,
@@ -315,10 +324,12 @@ pub trait ContentProvider: Send {
         width: Option<u16>,
         pane_width: Option<u16>,
         diff_render_mode: DiffRenderMode,
+        allow_outside_root: bool,
     ) -> RenderResult {
         let _ = width;
         let _ = pane_width;
         let _ = diff_render_mode;
+        let _ = allow_outside_root;
         self.render(path, mode, raw_diff)
     }
 }
@@ -362,6 +373,9 @@ enum EmptyReason {
     Directory,
     /// The tree is empty or a filter matched no files (no selection at all).
     NoFiles,
+    /// A session-view member that no longer exists on disk (touched by the session, deleted
+    /// since): its row is kept as history, but there is nothing to preview.
+    SessionMissing,
 }
 
 /// What the active content region currently displays.
@@ -480,6 +494,9 @@ impl EmptyReason {
         match self {
             EmptyReason::Directory => "Directory: select a file to view",
             EmptyReason::NoFiles => "No files",
+            EmptyReason::SessionMissing => {
+                "File no longer exists (touched by this session, deleted since)"
+            }
         }
     }
 }
@@ -571,6 +588,9 @@ struct RenderJob {
     /// delegate uses it: glow lays out and wraps tables to this width so they fit the pane
     /// instead of overflowing and being shattered by the Presenter's re-wrap.
     wrap_width: Option<u16>,
+    /// A session-view outside-root member: waive the classifier's root-containment guard for
+    /// this one explicitly-displayed path (ADR-0012). `false` for every ordinary row.
+    allow_outside_root: bool,
     /// The content pane's drawable text width, unconditional — unlike `wrap_width` it is NOT
     /// gated by the markdown wrap preference (`effective_wrap`), because
     /// it feeds `delta`'s own `--width` rather than a line-wrap decision. `delta` is spawned
@@ -614,6 +634,9 @@ type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 enum Modal {
     None,
     Picker(PickerState),
+    /// The session picker (`S`) — choose which Claude Code transcript the session view
+    /// presents. A sibling of `Picker`, routed the same way (intents while open).
+    SessionPicker(session::SessionPickerState),
     Finder(FinderState),
     Prompt(PromptState),
     Help(HelpState),
@@ -667,6 +690,18 @@ impl Modal {
     fn picker_mut(&mut self) -> Option<&mut PickerState> {
         match self {
             Modal::Picker(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn session_picker(&self) -> Option<&session::SessionPickerState> {
+        match self {
+            Modal::SessionPicker(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn session_picker_mut(&mut self) -> Option<&mut session::SessionPickerState> {
+        match self {
+            Modal::SessionPicker(s) => Some(s),
             _ => None,
         }
     }
@@ -762,6 +797,22 @@ pub struct Controller {
     /// `hide_hidden`), so the new root's fresh tree is rebuilt with the same shape.
     compact_dirs: bool,
     changed_only: bool,
+    /// Session-view mirror (the tree's `session_view` flag is authoritative; this carries the
+    /// preference across a re-root, like `changed_only`). Mutually exclusive with
+    /// `changed_only` / `status_mode` — each replaces what the tree shows.
+    session_view: bool,
+    /// The transcript follower behind the session view: `None` until the view is first entered
+    /// or when the root has no transcript. Holds parse offsets so live-follow reads only what
+    /// was appended.
+    session_follower: Option<crate::session::Follower>,
+    /// Whether the presented transcript was explicitly chosen in the session picker (holds
+    /// until a worktree switch, another choice, or exit) vs auto-following the newest.
+    session_explicit: bool,
+    /// The last live-follow check, throttling the per-tick stat.
+    session_checked: Option<Instant>,
+    /// The last auto-mode newest-transcript re-scan — a much coarser throttle than the
+    /// append-follow, so two concurrently active sessions can't thrash the view.
+    session_rescanned: Option<Instant>,
     /// Which command a Diff/FullDiff render delegates to (`D`, cycling Delta →
     /// DeltaSideBySide → Raw). Carried
     /// across a re-root like the other display preferences (`show_ignored`, `hide_hidden`,
@@ -1054,6 +1105,11 @@ impl Controller {
             compact_dirs: false,
             tree_hscroll: 0,
             changed_only: false,
+            session_view: false,
+            session_follower: None,
+            session_explicit: false,
+            session_checked: None,
+            session_rescanned: None,
             diff_render_mode: DiffRenderMode::default(),
             status_mode: false,
             git_status: BTreeMap::new(),
@@ -1167,6 +1223,7 @@ impl Controller {
                         job.wrap_width,
                         job.pane_width,
                         job.diff_render_mode,
+                        job.allow_outside_root,
                     )
                 }))
                 .unwrap_or_else(|_| RenderResult {
@@ -1314,6 +1371,9 @@ impl Controller {
         // applies it when the changed-set lands.
         self.tree.set_show_ignored(self.show_ignored);
         self.tree.set_hide_hidden(self.hide_hidden);
+        // The session view is a carried preference too; the explicit transcript choice is not
+        // (it belonged to the old root) — auto-follow resumes against the new root.
+        self.reset_session_for_root();
 
         // A re-root happens mid-session, so input must never block (AC-17): compute the new root's
         // status + changed-set OFF the input thread and let `poll` apply the markers + changed-only
@@ -1994,6 +2054,8 @@ impl Controller {
             zoomed: self.zoomed,
             remote_notice_status: self.remote_notice_status(),
             picker: self.picker_view(),
+            session_view: self.tree.session_view(),
+            session_picker: self.session_picker_view(),
             finder: self.finder_view(),
             annotation_count: self.annotations.len(),
             annotation_overview: self.annotation_overview_view(),
@@ -2132,6 +2194,10 @@ impl Controller {
         if self.modal.picker().is_some() {
             return self.handle_picker_intent(intent);
         }
+        // The session picker is modal exactly like its worktree sibling.
+        if self.modal.session_picker().is_some() {
+            return self.handle_session_picker_intent(intent);
+        }
         // The finder is modal too: while it is open the run loop (app.rs) routes raw keys to
         // `handle_finder_key`, so `handle` should not be reached. Guard structurally anyway —
         // symmetric with the picker guard above — so a future or test caller can't leak an intent
@@ -2197,6 +2263,8 @@ impl Controller {
             Intent::Refresh => self.refresh(),
             Intent::DismissUpdate => self.dismiss_update(),
             Intent::SwitchWorktree => self.open_worktree_picker(),
+            Intent::ToggleSessionView => self.toggle_session_view(),
+            Intent::OpenSessionPicker => self.open_session_picker(),
             Intent::OpenFinder => self.open_finder(),
             Intent::OpenGoToLine => self.open_go_to_line(),
             Intent::OpenSearch => self.open_search(),
@@ -2284,6 +2352,24 @@ impl Controller {
     /// jump skips those rather than unfiltering the tree to reach them. Selecting re-renders, so
     /// the jump lands on the file's diff.
     fn navigate_changed(&mut self, forward: bool) -> Effects {
+        // In the session view, `]` / `[` jump across the session's file rows instead — every
+        // file row is a member, in-root and outside alike. Works without git (the session view
+        // is transcript-driven).
+        if self.tree.session_view() {
+            let Some(wrapped) = self.tree.select_next_file_row(forward) else {
+                self.action_notice = Some("No session files".into());
+                return Effects::redraw();
+            };
+            if wrapped {
+                self.action_notice = Some(if forward {
+                    "Session files: wrapped to the first".into()
+                } else {
+                    "Session files: wrapped to the last".into()
+                });
+            }
+            self.dispatch_render();
+            return Effects::redraw();
+        }
         if !self.is_git_repo {
             return Effects::noop(); // inert without git (AC-26)
         }
@@ -2328,6 +2414,8 @@ impl Controller {
         }
         self.hide_hidden = self.tree.hide_hidden();
         self.show_ignored = self.tree.show_ignored();
+        // `reveal` relaxes the session view like any filter that would hide its target.
+        self.session_view = self.tree.session_view();
     }
 
     /// Scroll the content pane by `delta` lines, clamped to `[0, max]` so it can never run
@@ -2589,6 +2677,9 @@ impl Controller {
                 self.focus = Focus::Content;
                 Effects::redraw()
             }
+            // The session view's section divider is not activatable (the cursor snaps off it,
+            // so this is defensive against a future selection path).
+            NodeKind::Separator => Effects::noop(),
         }
     }
 
@@ -2677,6 +2768,10 @@ impl Controller {
         if !self.changed_only && self.status_mode {
             self.status_mode = false;
         }
+        // …and with the session view: both are answers to "what does the tree show".
+        if !self.changed_only {
+            self.leave_session_view();
+        }
         self.changed_only = !self.changed_only;
         self.tree.set_changed_only(self.changed_only, &self.changed);
         self.dispatch_render();
@@ -2699,8 +2794,9 @@ impl Controller {
                 self.tree.set_changed_only(false, &self.changed);
             }
         } else {
-            // Entering status mode turns off baseline-aware changed-only.
+            // Entering status mode turns off baseline-aware changed-only and the session view.
             self.changed_only = false;
+            self.leave_session_view();
             self.status_mode = true;
             self.tree.set_changed_only(true, &self.git_status);
         }
@@ -3208,6 +3304,13 @@ impl Controller {
     /// refresh: it re-renders the content (resetting its scroll), since the user asked for it.
     fn refresh(&mut self) -> Effects {
         self.refresh_git_state();
+        // A manual refresh also re-checks the session immediately (bypassing both follow
+        // throttles): re-resolve the newest transcript and pick up any appends.
+        if self.tree.session_view() {
+            self.session_checked = None;
+            self.session_rescanned = None;
+            self.poll_session_follow();
+        }
         self.dispatch_render();
         Effects::redraw()
     }
@@ -3414,6 +3517,7 @@ impl Controller {
         };
         // Ignore a send error: if the worker is gone the current content simply stays; `poll` will
         // never receive a result for this seq, which is fine (nothing was cleared).
+        let allow_outside_root = self.tree.session_view() && rel.is_none();
         let _ = self.job_tx.send(RenderJob {
             seq,
             root: self.root.clone(),
@@ -3428,6 +3532,7 @@ impl Controller {
             wrap_width: self.md_wrap_width(),
             pane_width: self.pane_width(),
             diff_render_mode: self.diff_render_mode,
+            allow_outside_root,
         });
     }
 
@@ -3481,6 +3586,9 @@ impl Controller {
                     false,
                     Baseline::Head, // status mode always diffs the working tree, not merge-base
                 ),
+                // Unreachable defensively: the separator exists only in the session view, which
+                // is mutually exclusive with status mode — and the cursor snaps off it anyway.
+                NodeKind::Separator => return self.clear_content(EmptyReason::Directory),
             }
         } else if node.kind != NodeKind::File {
             // A directory is selected outside status mode — no content; show guidance.
@@ -3489,6 +3597,16 @@ impl Controller {
             (self.effective_mode(&node.path), false, self.baseline)
         };
         let rel = self.rel(&node.path);
+        // A session member deleted since the session touched it (its row is deliberately kept,
+        // cued `!`) has no bytes to classify — and an untracked one has no diff either. Show a
+        // dedicated notice instead of the misleading `[binary file]` placeholder; a git-tracked
+        // deletion still routes to its Diff view above.
+        if node.session_missing && !matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
+            return self.clear_content(EmptyReason::SessionMissing);
+        }
+        // The one case the classifier's containment guard is waived: a session-view row whose
+        // path is outside the root (`rel` is None exactly then) — ADR-0012's display carve-out.
+        let allow_outside_root = self.tree.session_view() && rel.is_none();
         // a slow render used to leave the PREVIOUS file's body visible under the NEW
         // selection's title (the title is derived from the tree cursor, which moves immediately,
         // while the body arrives off-thread). Show a loading placeholder for the body now and
@@ -3517,6 +3635,7 @@ impl Controller {
                 wrap_width: self.md_wrap_width(),
                 pane_width: self.pane_width(),
                 diff_render_mode: self.diff_render_mode,
+                allow_outside_root,
             })
             .is_ok()
         {
@@ -3538,7 +3657,9 @@ impl Controller {
     /// carry no control bytes); they flow through the same content path the renderer uses.
     fn clear_content(&mut self, reason: EmptyReason) {
         self.active_display = match reason {
-            EmptyReason::Directory => ActiveDisplay::Directory {
+            // A missing session member is placeholder-for-a-selection like a directory: the row
+            // stays selected (it is kept as history), only its body is guidance text.
+            EmptyReason::Directory | EmptyReason::SessionMissing => ActiveDisplay::Directory {
                 content: Arc::new(Text::raw(reason.label())),
                 notices: Vec::new(),
                 presentation: PreviewPresentation::new(ViewMode::SyntaxContent, false, false),
@@ -3686,7 +3807,10 @@ impl Controller {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        applied.then(Effects::redraw)
+        // The session view's live-follow rides the same tick: throttled internally, it picks up
+        // transcript appends (and, in auto mode, a brand-new newest session) without an event.
+        let session_changed = self.poll_session_follow();
+        (applied || session_changed).then(Effects::redraw)
     }
 
     /// The effective view mode for a file: the user's override, else the policy default.

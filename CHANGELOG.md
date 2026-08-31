@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Session view: press `s` to show the files the current Claude Code session created (`+`), updated (`~`), or mentioned (`·`) instead of the directory tree — untracked files included, and files touched outside the root listed under an `── outside root ──` divider (`~`-abbreviated, preview-only). Follows the session's transcript live without moving your cursor; a member deleted since it was touched stays listed with a `!` cue; `]`/`[` jump across the members. Start straight in it with `session_view = true`. → [usage](docs/usage.md#session-view) · [keys](docs/keys.md) · [configuration](docs/configuration.md)
+- Session picker: press `S` to choose which Claude Code session the session view presents (newest first, current marked, titles shown for sessions renamed with `/rename`). An explicit pick holds until a worktree switch, another pick, or exit; the default follows the newest session automatically. → [keys](docs/keys.md)
+
 ## [1.16.0] - 2026-08-15
 
 ### Added

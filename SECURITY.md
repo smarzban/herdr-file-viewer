@@ -40,6 +40,16 @@ collaborator handed you. Its security posture is built around that.
   writes, and repo-redirecting environment variables (`GIT_DIR`, `GIT_WORK_TREE`, …) are scrubbed.
   This hardening lives in a single shared builder so it cannot drift between callers.
 
+- **Untrusted session transcripts → defensive, fail-soft parsing.** The session view reads Claude
+  Code's per-project transcript files (`~/.claude/projects/…`), whose content is agent- and
+  user-derived and whose format is an undocumented internal (ADR-0011). Every line is parsed
+  defensively: malformed JSON and unknown entry shapes are skipped, extracted paths are lexically
+  normalized (relative or non-normalizable paths dropped), reads are read-only and incremental,
+  and a missing or malformed transcript degrades to an empty view with a notice — never a crash.
+  Displayed strings from a transcript (session titles, file names) pass the same control-byte
+  sanitization every filesystem-derived string gets, and previewed member content flows through
+  the standard untrusted-content pipeline above.
+
 - **Injection guards.** Host-supplied pane ids are validated before they reach an argv (so a
   flag-like id can't option-inject the herdr CLI). Paths are passed to `git` as raw `OsStr`
   arguments after a within-root check (no traversal above the root, no arbitrary reads).

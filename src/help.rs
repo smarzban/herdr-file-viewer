@@ -269,6 +269,7 @@ pub fn settings_text(
     let reveal = opener_row(&eff.reveal, &wired.reveal);
     let update_check = if eff.update_check { "on" } else { "off" };
     let confirm_discard = if eff.confirm_discard { "on" } else { "off" };
+    let session_view = if eff.session_view { "on" } else { "off" };
 
     // Keys are padded to the widest name (`preview_max_lines`, 17) so the `=` column lines up.
     format!(
@@ -281,6 +282,7 @@ pub fn settings_text(
          show_ignored      = {show_ignored}\n\
          compact_dirs      = {compact_dirs}\n\
          changed_file_view = {changed_file_view}\n\
+         session_view      = {session_view}\n\
          update_check      = {update_check}\n\
          confirm_discard   = {confirm_discard}\n\
          scroll_lines      = {scroll_lines}\n\
@@ -295,6 +297,7 @@ pub fn settings_text(
         show_ignored = eff.show_ignored,
         compact_dirs = eff.compact_dirs,
         changed_file_view = eff.changed_file_view.label(),
+        session_view = session_view,
         update_check = update_check,
         confirm_discard = confirm_discard,
         scroll_lines = eff.scroll_lines,
@@ -803,6 +806,7 @@ mod tests {
             show_ignored: true,
             compact_dirs: true,
             changed_file_view: crate::view_policy::ChangedFileView::Content,
+            session_view: true,
             update_check: false,
             confirm_discard: false,
             scroll_lines: 7,
@@ -843,6 +847,7 @@ mod tests {
             "show_ignored",
             "compact_dirs",
             "changed_file_view",
+            "session_view",
             "update_check",
             "scroll_lines",
             "tree_width",

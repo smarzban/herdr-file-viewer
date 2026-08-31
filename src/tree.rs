@@ -6,17 +6,20 @@
 
 use crate::git::Status;
 use crate::index::walk_builder;
+use crate::session::{Category, SessionSet};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-/// Whether a tree node is a directory or a file.
+/// Whether a tree node is a directory, a file, or the session view's section separator (the
+/// one non-selectable row dividing the in-root tree from the outside-root section).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     Dir,
     File,
+    Separator,
 }
 
 /// One visible row of the tree.
@@ -35,6 +38,14 @@ pub struct Node {
     /// deepest directory of the chain (`…/java`). `None` on every ordinary row, so the Presenter
     /// falls back to the file name and an uncompacted tree renders exactly as before.
     pub label: Option<String>,
+    /// The file's session category while the session view is active (`+` created, `~` updated,
+    /// `·` mentioned). `None` on every row outside the session view — and on the session view's
+    /// directory and separator rows — so every other mode renders exactly as before.
+    pub session: Option<Category>,
+    /// Session view only: the member no longer exists on disk (touched by the session, deleted
+    /// since). The transcript is history, so the row stays — with a missing cue — rather than
+    /// silently forgetting work. Always `false` outside the session view.
+    pub session_missing: bool,
 }
 
 /// The tree's sibling order, and the **single source of truth** for it: directories before
@@ -96,6 +107,24 @@ pub fn cmp_file_rows(a: &Path, b: &Path) -> Ordering {
     cmp_visual((a, NodeKind::File), (b, NodeKind::File))
 }
 
+/// The nearest selectable (non-separator) row to `at`, preferring the `forward` direction and
+/// falling back to the other; `at` itself when it is already selectable. `at` when no row is
+/// (degenerate — a tree is never all separators, but never panic over it).
+fn snap_selectable(nodes: &[Node], at: usize, forward: bool) -> usize {
+    let selectable = |i: &usize| nodes[*i].kind != NodeKind::Separator;
+    if forward {
+        (at..nodes.len())
+            .find(selectable)
+            .or_else(|| (0..at).rev().find(selectable))
+    } else {
+        (0..=at)
+            .rev()
+            .find(selectable)
+            .or_else(|| (at + 1..nodes.len()).find(selectable))
+    }
+    .unwrap_or(at)
+}
+
 /// The visible-row index of the **file** node at `path`, if it has one.
 ///
 /// Kind-checked rather than path-only: a file replaced by a directory of the same name puts one
@@ -139,6 +168,24 @@ fn children_of<'a>(set: &'a BTreeSet<PathBuf>, parent: &Path) -> Vec<&'a PathBuf
         .collect()
 }
 
+/// Every proper ancestor directory of the (root-relative) file set — the directory rows a
+/// synthesized tree needs. Shared by the changed-only and session-view syntheses so the two can
+/// never diverge on which folders appear.
+fn ancestor_dirs(files: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for rel in files {
+        let mut ancestor = rel.parent();
+        while let Some(p) = ancestor {
+            if p.as_os_str().is_empty() {
+                break;
+            }
+            dirs.insert(p.to_path_buf());
+            ancestor = p.parent();
+        }
+    }
+    dirs
+}
+
 /// The browsable file tree rooted at `root`.
 pub struct TreeModel {
     root: PathBuf,
@@ -173,6 +220,29 @@ pub struct TreeModel {
     markers: BTreeMap<PathBuf, Status>,
     /// The changed-set driving the changed-only filter (AC-6), set by `set_changed_only`.
     changed_filter: BTreeMap<PathBuf, Status>,
+    /// Whether the session view is active: the tree presents the session file set (in-root
+    /// synthesized tree + outside-root section) instead of the filesystem. Takes precedence
+    /// over `changed_only` (the controller keeps the two mutually exclusive).
+    session_view: bool,
+    /// The session file set's in-root members (root-relative, like `changed_filter`).
+    session_in_root: BTreeMap<PathBuf, Category>,
+    /// The session file set's outside-root members (absolute paths).
+    session_outside: BTreeMap<PathBuf, Category>,
+    /// The user's home directory, for `~`-abbreviating outside-root group labels. Display only.
+    session_home: Option<PathBuf>,
+    /// Which members were missing on disk when the set was applied — snapshotted ONCE per
+    /// [`set_session_view`](Self::set_session_view) (absolute paths), never re-statted per
+    /// frame: `visible_nodes` materializes several times per keypress, and a stat per member
+    /// row per materialization is exactly the per-frame filesystem cost the synthesized trees
+    /// otherwise avoid. Refreshed naturally: every live-follow change re-applies the set.
+    session_missing: HashSet<PathBuf>,
+    /// Directories the user explicitly collapsed while the session view is on (absolute paths,
+    /// covering in-root synthesized dirs AND outside-root groups). Session-view rows start
+    /// expanded — glanceability is the point — so this is the INVERSE of `expanded`; it
+    /// survives live-follow re-applications (updates never fight the user's layout) and is
+    /// cleared when the view is left. The changed-only synthesis never reads it: that mode
+    /// documents every directory expanded.
+    session_collapsed: HashSet<PathBuf>,
 }
 
 impl TreeModel {
@@ -190,6 +260,12 @@ impl TreeModel {
             probe_reads: Cell::new(0),
             markers: BTreeMap::new(),
             changed_filter: BTreeMap::new(),
+            session_view: false,
+            session_in_root: BTreeMap::new(),
+            session_outside: BTreeMap::new(),
+            session_home: None,
+            session_missing: HashSet::new(),
+            session_collapsed: HashSet::new(),
         }
     }
 
@@ -250,6 +326,41 @@ impl TreeModel {
         self.clamp_cursor();
     }
 
+    /// Present (or stop presenting) the **session view**: the session file set as an in-root
+    /// synthesized tree plus the outside-root section. `home` is used only to `~`-abbreviate
+    /// outside-root group labels. The cursor is clamped and snapped off the separator so it
+    /// always rests on a selectable row.
+    pub fn set_session_view(&mut self, on: bool, set: &SessionSet, home: Option<PathBuf>) {
+        self.session_view = on;
+        self.session_in_root = set.in_root.clone();
+        self.session_outside = set.outside.clone();
+        self.session_home = home;
+        // Missing-member snapshot: one stat per member NOW, so the per-frame syntheses below
+        // never touch the filesystem for the cue (see the `session_missing` field note).
+        self.session_missing = if on {
+            set.in_root
+                .keys()
+                .map(|rel| self.root.join(rel))
+                .chain(set.outside.keys().cloned())
+                .filter(|abs| !abs.is_file())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        // Collapse memory persists across live-follow re-applications (`on` stays true) so an
+        // update never re-expands what the user closed; leaving the view resets it.
+        if !on {
+            self.session_collapsed.clear();
+        }
+        self.clamp_cursor();
+    }
+
+    /// Whether the session view is currently active. Exposed so the controller can re-sync its
+    /// mirror field after `reveal` may have relaxed this flag.
+    pub fn session_view(&self) -> bool {
+        self.session_view
+    }
+
     /// Set the per-file status used for tree markers (AC-7), independent of the filter.
     pub fn set_status(&mut self, status: &BTreeMap<PathBuf, Status>) {
         self.markers = status.clone();
@@ -282,6 +393,9 @@ impl TreeModel {
     /// mode the tree is built from the changed-set itself (so deleted files — and files
     /// under a deleted directory — still appear, AC-6/AC-7), with every directory expanded.
     pub fn visible_nodes(&self) -> Vec<Node> {
+        if self.session_view {
+            return self.session_nodes();
+        }
         if self.changed_only {
             return self.changed_only_nodes();
         }
@@ -311,6 +425,8 @@ impl TreeModel {
                 status: self.status_for(&path),
                 dir_dirty,
                 label,
+                session: None,
+                session_missing: false,
             });
             if expanded {
                 self.collect(&path, depth + 1, out);
@@ -350,20 +466,195 @@ impl TreeModel {
     /// deletions — including whole deleted directories — are reviewable.
     fn changed_only_nodes(&self) -> Vec<Node> {
         let files: BTreeSet<PathBuf> = self.changed_filter.keys().cloned().collect();
+        let dirs = ancestor_dirs(&files);
+        let mut out = Vec::new();
+        self.emit_synthetic(Path::new(""), 0, &dirs, &files, &mut out);
+        out
+    }
+
+    /// Build the session view's rows: the in-root members through the same synthesis the
+    /// changed-only tree uses (so git decorations, compaction, and deleted-member rows all
+    /// behave identically), then — when outside-root members exist — one separator row and the
+    /// outside-root section.
+    fn session_nodes(&self) -> Vec<Node> {
+        let files: BTreeSet<PathBuf> = self.session_in_root.keys().cloned().collect();
+        let dirs = ancestor_dirs(&files);
+        let mut out = Vec::new();
+        self.emit_synthetic(Path::new(""), 0, &dirs, &files, &mut out);
+        if !self.session_outside.is_empty() {
+            out.push(Node {
+                path: PathBuf::new(),
+                kind: NodeKind::Separator,
+                depth: 0,
+                expanded: false,
+                status: None,
+                dir_dirty: false,
+                label: None,
+                session: None,
+                session_missing: false,
+            });
+            self.emit_outside(&mut out);
+        }
+        out
+    }
+
+    /// Emit the outside-root section: the outside members as compacted path groups. Chains of
+    /// single-child directories are ALWAYS folded here (independent of `compact_dirs`) — these
+    /// are absolute paths, so an unfolded `/Users/x/.claude` would burn one indent level per
+    /// component on rows that carry no information. A group's top row is labelled with its
+    /// `~`-abbreviated (or absolute) path; nested rows label like any compacted row.
+    fn emit_outside(&self, out: &mut Vec<Node>) {
+        let files: BTreeSet<PathBuf> = self.session_outside.keys().cloned().collect();
         let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        for rel in &files {
-            let mut ancestor = rel.parent();
+        for f in &files {
+            let mut ancestor = f.parent();
             while let Some(p) = ancestor {
-                if p.as_os_str().is_empty() {
-                    break;
+                if p.parent().is_none() {
+                    break; // the filesystem root (`/`, a drive prefix) never gets a row
                 }
                 dirs.insert(p.to_path_buf());
                 ancestor = p.parent();
             }
         }
-        let mut out = Vec::new();
-        self.emit_synthetic(Path::new(""), 0, &dirs, &files, &mut out);
-        out
+        // A chain start is an entry whose parent has no row of its own (it is the filesystem
+        // root, or — for a file — an unlisted directory). Platform-generic: this is what ends
+        // the ancestor walk above on both `/` and `C:\`.
+        let is_top = |p: &Path| p.parent().is_none_or(|parent| !dirs.contains(parent));
+        let mut tops: Vec<(&PathBuf, NodeKind)> = dirs
+            .iter()
+            .filter(|d| is_top(d))
+            .map(|d| (d, NodeKind::Dir))
+            .chain(
+                files
+                    .iter()
+                    .filter(|f| is_top(f))
+                    .map(|f| (f, NodeKind::File)),
+            )
+            .collect();
+        tops.sort_by(|a, b| {
+            cmp_sibling(
+                (a.0.file_name().unwrap_or_default(), a.1),
+                (b.0.file_name().unwrap_or_default(), b.1),
+            )
+        });
+        for (path, kind) in tops {
+            match kind {
+                NodeKind::Dir => {
+                    // Fold the top chain (the shared synthetic fold — its relative label is
+                    // discarded here) and label the row with the deepest directory's
+                    // abbreviated path — the group header the outside section is named for.
+                    let (deepest, _) = self.compact_synthetic_chain(path, &dirs, &files);
+                    let expanded = !self.session_collapsed.contains(&deepest);
+                    out.push(Node {
+                        path: deepest.clone(),
+                        kind: NodeKind::Dir,
+                        depth: 0,
+                        expanded,
+                        status: None,
+                        dir_dirty: false,
+                        label: Some(self.display_outside(&deepest)),
+                        session: None,
+                        session_missing: false,
+                    });
+                    if expanded {
+                        self.emit_outside_children(&deepest, 1, &dirs, &files, out);
+                    }
+                }
+                _ => {
+                    // A file directly under the filesystem root: label it absolute too.
+                    out.push(Node {
+                        path: path.clone(),
+                        kind: NodeKind::File,
+                        depth: 0,
+                        expanded: false,
+                        status: None,
+                        dir_dirty: false,
+                        label: Some(self.display_outside(path)),
+                        session: self.session_outside.get(path).copied(),
+                        session_missing: self.session_missing.contains(path),
+                    });
+                }
+            }
+        }
+    }
+
+    /// The recursive body of [`emit_outside`], below the labelled group headers: ordinary
+    /// synthesized rows, chains folded with relative labels exactly like the in-root synthesis.
+    fn emit_outside_children(
+        &self,
+        parent: &Path,
+        depth: usize,
+        dirs: &BTreeSet<PathBuf>,
+        files: &BTreeSet<PathBuf>,
+        out: &mut Vec<Node>,
+    ) {
+        let mut children: Vec<(&PathBuf, NodeKind)> = children_of(dirs, parent)
+            .into_iter()
+            .map(|d| (d, NodeKind::Dir))
+            .chain(
+                children_of(files, parent)
+                    .into_iter()
+                    .map(|f| (f, NodeKind::File)),
+            )
+            .collect();
+        children.sort_by(|a, b| {
+            cmp_sibling(
+                (a.0.file_name().unwrap_or_default(), a.1),
+                (b.0.file_name().unwrap_or_default(), b.1),
+            )
+        });
+        for (path, kind) in children {
+            match kind {
+                NodeKind::Dir => {
+                    // The same fold + relative label the in-root synthesis uses, so the two
+                    // regions can never drift in how chains compact.
+                    let (deepest, label) = self.compact_synthetic_chain(path, dirs, files);
+                    let expanded = !self.session_collapsed.contains(&deepest);
+                    out.push(Node {
+                        path: deepest.clone(),
+                        kind: NodeKind::Dir,
+                        depth,
+                        expanded,
+                        status: None,
+                        dir_dirty: false,
+                        label,
+                        session: None,
+                        session_missing: false,
+                    });
+                    if expanded {
+                        self.emit_outside_children(&deepest, depth + 1, dirs, files, out);
+                    }
+                }
+                _ => out.push(Node {
+                    path: path.clone(),
+                    kind: NodeKind::File,
+                    depth,
+                    expanded: false,
+                    status: None,
+                    dir_dirty: false,
+                    label: None,
+                    session: self.session_outside.get(path).copied(),
+                    session_missing: self.session_missing.contains(path),
+                }),
+            }
+        }
+    }
+
+    /// An outside-root path for display: `~`-relative when it sits under (or is) the home
+    /// directory (joined with `/` like every compacted label), else its absolute form.
+    fn display_outside(&self, path: &Path) -> String {
+        if let Some(home) = &self.session_home
+            && let Ok(rel) = path.strip_prefix(home)
+        {
+            // Home itself (a member directly in `$HOME` makes it a group header) is just `~`.
+            let mut label = String::from("~");
+            for c in rel.components() {
+                label.push('/');
+                label.push_str(&c.as_os_str().to_string_lossy());
+            }
+            return label;
+        }
+        path.to_string_lossy().into_owned()
     }
 
     fn emit_synthetic(
@@ -403,16 +694,32 @@ impl TreeModel {
                 (rel.clone(), None)
             };
             let abs = self.root.join(&rel);
+            // Changed-only keeps every directory expanded (documented behavior); the session
+            // view honors the user's explicit collapses (`session_collapsed` is empty there).
+            let expanded = kind == NodeKind::Dir
+                && !(self.session_view && self.session_collapsed.contains(&abs));
             out.push(Node {
                 path: abs.clone(),
                 kind,
                 depth,
-                expanded: kind == NodeKind::Dir,
+                expanded,
                 status: self.status_for(&abs),
                 dir_dirty: kind == NodeKind::Dir && self.dir_contains_change(&abs),
                 label,
+                // Session categories decorate only the session view's file rows; the
+                // changed-only synthesis shares this emitter with `session_view` off.
+                session: if self.session_view && kind == NodeKind::File {
+                    self.session_in_root.get(&rel).copied()
+                } else {
+                    None
+                },
+                // A member that vanished since the session touched it keeps its row (the
+                // transcript is history) and gains the missing cue — read from the snapshot
+                // taken at set application, never a per-frame stat (empty outside the session
+                // view, so the shared changed-only synthesis is untouched).
+                session_missing: kind == NodeKind::File && self.session_missing.contains(&abs),
             });
-            if kind == NodeKind::Dir {
+            if expanded {
                 self.emit_synthetic(&rel, depth + 1, dirs, files, out);
             }
         }
@@ -546,6 +853,13 @@ impl TreeModel {
 
     /// Expand a directory (no-op for a path outside the root — AC-N5).
     pub fn expand(&mut self, path: &Path) {
+        // Session view: expansion is tracked as an explicit-collapse set (rows START expanded,
+        // the inverse of the filesystem tree's default), and it must work on outside-root group
+        // rows too — display state only, so the root guard below doesn't apply (ADR-0012).
+        if self.session_view {
+            self.session_collapsed.remove(path);
+            return;
+        }
         if path.starts_with(&self.root) {
             self.expanded.insert(path.to_path_buf());
         }
@@ -553,26 +867,37 @@ impl TreeModel {
 
     /// Collapse a directory.
     pub fn collapse(&mut self, path: &Path) {
-        self.expanded.remove(path);
+        if self.session_view {
+            self.session_collapsed.insert(path.to_path_buf());
+        } else {
+            self.expanded.remove(path);
+        }
         self.clamp_cursor();
     }
 
     /// Set the cursor to an absolute visible-row index, clamped to the visible range (used by
-    /// a mouse click that selects the row it landed on).
+    /// a mouse click that selects the row it landed on). A separator row is not selectable:
+    /// the cursor snaps to the nearest selectable row below it, else above.
     pub fn set_cursor(&mut self, idx: usize) {
-        let len = self.visible_nodes().len();
-        self.cursor = if len == 0 { 0 } else { idx.min(len - 1) };
-    }
-
-    /// Move the cursor by `delta` rows, clamped to the visible range.
-    pub fn move_cursor(&mut self, delta: isize) {
-        let len = self.visible_nodes().len();
-        if len == 0 {
+        let nodes = self.visible_nodes();
+        if nodes.is_empty() {
             self.cursor = 0;
             return;
         }
-        let max = (len - 1) as isize;
-        self.cursor = (self.cursor as isize + delta).clamp(0, max) as usize;
+        self.cursor = snap_selectable(&nodes, idx.min(nodes.len() - 1), true);
+    }
+
+    /// Move the cursor by `delta` rows, clamped to the visible range. A separator row is
+    /// stepped over in the direction of travel (it is a divider, not a destination).
+    pub fn move_cursor(&mut self, delta: isize) {
+        let nodes = self.visible_nodes();
+        if nodes.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        let max = (nodes.len() - 1) as isize;
+        let target = (self.cursor as isize + delta).clamp(0, max) as usize;
+        self.cursor = snap_selectable(&nodes, target, delta >= 0);
     }
 
     /// The currently-selected node, if any.
@@ -636,7 +961,12 @@ impl TreeModel {
         // correctness of a one-way switch is worth a two-entry read per collapsed row.
         self.invalidate_compaction();
         self.expand_ancestors(path);
-        // Relax a filter only if it still hides the target after expansion.
+        // Relax a filter only if it still hides the target after expansion. The session view
+        // relaxes first — it replaces the tree wholesale, so no other relaxation can surface a
+        // non-member while it is on.
+        if self.session_view && !self.visible_nodes().iter().any(|n| n.path == path) {
+            self.session_view = false;
+        }
         if self.changed_only && !self.visible_nodes().iter().any(|n| n.path == path) {
             self.changed_only = false;
         }
@@ -785,9 +1115,47 @@ impl TreeModel {
     }
 
     /// Keep the cursor within the (possibly shrunken) visible list after a structural or
-    /// filter change, so indexing by `cursor` can never run past the end.
+    /// filter change — and off a separator row — so indexing by `cursor` can never run past
+    /// the end or rest on an unselectable divider.
     fn clamp_cursor(&mut self) {
-        let len = self.visible_nodes().len();
-        self.cursor = self.cursor.min(len.saturating_sub(1));
+        let nodes = self.visible_nodes();
+        if nodes.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        self.cursor = snap_selectable(&nodes, self.cursor.min(nodes.len() - 1), true);
+    }
+
+    /// Move the cursor to the next (`forward`) or previous **file** row, cyclically, and report
+    /// whether the move wrapped — the session view's `]` / `[` jump, where every file row is a
+    /// session member. Returns `None` (cursor untouched) when there is no file row at all.
+    /// Read-only navigation, like [`select_changed`](Self::select_changed).
+    pub fn select_next_file_row(&mut self, forward: bool) -> Option<bool> {
+        let nodes = self.visible_nodes();
+        let len = nodes.len();
+        if len == 0 {
+            return None;
+        }
+        let mut idx = self.cursor.min(len - 1);
+        let mut wrapped = false;
+        for _ in 0..len {
+            if forward {
+                idx += 1;
+                if idx == len {
+                    idx = 0;
+                    wrapped = true;
+                }
+            } else if idx == 0 {
+                idx = len - 1;
+                wrapped = true;
+            } else {
+                idx -= 1;
+            }
+            if nodes[idx].kind == NodeKind::File {
+                self.cursor = idx;
+                return Some(wrapped);
+            }
+        }
+        None
     }
 }

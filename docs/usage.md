@@ -265,6 +265,42 @@ Git is read through the system `git` CLI (read-only subcommands only). Without g
 viewer still opens, but the status markers, filter, baseline, and diffs are degraded — see
 [install](install.md).
 
+## Session view
+
+Press `s` to see **what the current Claude Code session touched** instead of the whole directory —
+the companion-pane view of an agent's work, in the spirit of Claude Desktop's file panel. It reads
+the session's own transcript (`~/.claude/projects/…`), so there is nothing to install or configure,
+and it **follows the session live**: files appear as the agent works, without ever moving your
+cursor. Press `s` again to restore the full tree.
+
+- **Every touched file, categorized.** Each file row carries a glyph for how the session touched
+  it — `+` created, `~` updated, `·` mentioned (read, or `@`-mentioned in a prompt) — with the
+  strongest winning (a file created then edited stays `+`). Git status letters still appear beside
+  the glyph for files in the repo, and a member deleted since the session touched it stays listed
+  with a `!` cue rather than silently vanishing.
+- **Outside the root too.** Files the session touched outside the tree root (a `~/.claude/CLAUDE.md`
+  edit, a `/tmp` scratch file) list below an `── outside root ──` divider as compacted path groups,
+  with home abbreviated to `~`. They preview like any file, but carry no git decoration and can't be
+  annotated; navigation stays root-bound — the divider displays those files, it never turns the
+  viewer into a browser of your whole disk.
+- **Membership is deterministic.** Only real signals count: the agent's file tools (reads, edits,
+  writes — including a subagent's), and files you `@`-mentioned. Shell-command side effects are
+  never guessed at, so a wrong entry can't erode trust in the panel. Denied or failed tool calls
+  don't count.
+- **Which session?** The newest transcript for this root, by default — starting a fresh `claude`
+  here re-points the view automatically. Press `S` to pick a different session (newest first,
+  titles shown when a session was renamed with `/rename`); an explicit pick holds until a worktree
+  switch, another pick, or exit.
+- **It composes.** `]` / `[` jump across the session's files, `Enter`/`p`/`e`/`O`/`y` all work on
+  members, and the changed-only (`c`) / git-status (`d`) filters displace it (each replaces what
+  the tree shows). Works in a non-git directory too. To open **straight into** the session view,
+  set `session_view = true` in the [config](configuration.md).
+
+With no Claude Code session recorded for the root, the view is empty with a notice — nothing
+breaks. The transcript format is an undocumented Claude Code internal, so the reader is
+deliberately fail-soft: unrecognized entries are skipped, and a malformed transcript degrades to
+an empty view, never a crash.
+
 ## Navigating within a file
 
 - **Go to a line**: press `:` and type a line number to jump the content pane straight there. In a

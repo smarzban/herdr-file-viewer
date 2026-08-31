@@ -11,6 +11,7 @@ use crate::annotation::LineRange;
 use crate::git::Status;
 use crate::preview::PreviewOrigin;
 use crate::preview_layout::{LayoutInput, PreviewFocus, PreviewLayout, layout};
+use crate::session::Category;
 use crate::text_layout::{line_wrapped_rows_prefixed, sanitize_control};
 use crate::tree::{Node, NodeKind};
 use ratatui::Frame;
@@ -151,6 +152,13 @@ pub struct ViewState {
     /// When `Some`, the go-to-file finder overlay is drawn on top of the columns (AC-1).
     /// `None` ⇒ no overlay.
     pub finder: Option<FinderView>,
+    /// Whether the tree column is presenting the **session view**: rows carry the leading
+    /// session-category glyph cell, the tree title gains its `[session]` tag, and the
+    /// separator row divides the in-root tree from the outside-root section.
+    pub session_view: bool,
+    /// When `Some`, the session picker overlay is drawn on top of the columns. `None` ⇒ no
+    /// overlay.
+    pub session_picker: Option<SessionPickerView>,
     /// Number of session-only annotations for the current root. A nonzero count is shown as a
     /// content-border status chip when it fits opposite the persistent help hint.
     pub annotation_count: usize,
@@ -213,6 +221,26 @@ pub struct PickerRowView {
     /// The hosting agent's status (e.g. `"working"`), or `None` when the worktree's workspace
     /// hosts no real agent. Rendered as a small trailing badge, colored by status (AC-19).
     pub agent: Option<String>,
+}
+
+/// The session picker's draw model (an owned snapshot of the controller's picker state, like
+/// [`PickerView`]). Built by the Session Controller's `view_state()`.
+pub struct SessionPickerView {
+    /// The session transcript rows, newest first.
+    pub rows: Vec<SessionPickerRowView>,
+    /// Index into `rows` of the highlighted row.
+    pub cursor: usize,
+}
+
+/// One session transcript row in the session picker overlay.
+pub struct SessionPickerRowView {
+    /// The display label: the session's user-given title when it has one, else its transcript
+    /// id prefix. Untrusted (a title is user/agent text) — sanitized at draw.
+    pub label: String,
+    /// Humanized last-activity age (e.g. `"3m ago"`). Static text, but sanitized anyway.
+    pub age: String,
+    /// Whether this transcript is the one the session view currently presents.
+    pub is_current: bool,
 }
 
 /// Search-highlight overlay for the content pane: the matches in the displayed content and which
@@ -388,6 +416,9 @@ fn status_marker(node: &Node) -> char {
             Some(Status::Added) => 'A',
             Some(Status::Deleted) => 'D',
             Some(Status::Untracked) => '?',
+            // A session-view member deleted since the session touched it: `!` fills the
+            // otherwise-blank cell (a git-tracked deletion already says `D` above).
+            None if node.session_missing => '!',
             None => ' ',
         },
         _ => ' ',
@@ -464,6 +495,7 @@ fn row_color(node: &Node) -> Option<Color> {
             Some(Status::Added | Status::Untracked) => Some(Color::LightGreen),
             None => None,
         },
+        NodeKind::Separator => None,
     }
 }
 
@@ -471,10 +503,10 @@ fn row_color(node: &Node) -> Option<Color> {
 /// the controller's horizontal-scroll clamp. Computed from the same [`tree_row`] the tree draws
 /// (selection-independent: the REVERSED highlight doesn't change a row's width), so the drawn
 /// rows and the hit-test/clamp can never disagree.
-fn tree_rows_max_width(nodes: &[Node]) -> usize {
+fn tree_rows_max_width(nodes: &[Node], session_view: bool) -> usize {
     nodes
         .iter()
-        .map(|n| tree_row(n, false, false).width())
+        .map(|n| tree_row(n, false, false, session_view).width())
         .max()
         .unwrap_or(0)
 }
@@ -491,11 +523,18 @@ const ANNOTATION_STYLE: Style = Style::new().bg(Color::DarkGray);
 /// directory at depth `d`, and puts a top-level file two columns left of the directory it sits
 /// beside. Reserving the width makes the column a node's name starts in a true function of its
 /// depth, so siblings line up and a child is always one level in from its parent.
-fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
+fn tree_row(node: &Node, selected: bool, annotated: bool, session_view: bool) -> Line<'static> {
+    // The session view's section divider: a fixed dim rule, never selected, never decorated.
+    if node.kind == NodeKind::Separator {
+        return Line::from(Span::styled(
+            "── outside root ──".to_string(),
+            Style::new().add_modifier(Modifier::DIM),
+        ));
+    }
     let glyph = match node.kind {
         NodeKind::Dir if node.expanded => "▾ ",
         NodeKind::Dir => "▸ ",
-        NodeKind::File => "  ",
+        _ => "  ",
     };
     let annotated = annotated && node.kind == NodeKind::File;
     let mut row_style = Style::new();
@@ -517,7 +556,27 @@ fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
     } else {
         row_style
     };
-    let mut spans = vec![Span::styled(prefix, row_style)];
+    let mut spans = Vec::new();
+    // The session view reserves one leading cell on EVERY row for the session-category glyph
+    // (`+` created, `~` updated, `·` mentioned), so member and non-member rows stay aligned.
+    // Absent outside the session view, so every other mode renders byte-for-byte as before.
+    if session_view {
+        // The glyph itself comes from `Category::glyph` (the single marker table); only the
+        // color is a presentation choice made here.
+        let cat_char = node.session.map_or(' ', Category::glyph);
+        let cat_color = match node.session {
+            Some(Category::Created) => Some(Color::LightGreen),
+            Some(Category::Updated) => Some(Color::LightYellow),
+            Some(Category::Mentioned) => Some(Color::DarkGray),
+            None => None,
+        };
+        let mut cat_style = row_style;
+        if let Some(c) = cat_color {
+            cat_style = cat_style.fg(c);
+        }
+        spans.push(Span::styled(cat_char.to_string(), cat_style));
+    }
+    spans.push(Span::styled(prefix, row_style));
     let name = sanitize_control(&node_name(node));
     // A compacted chain row (`src/main/java`) folds away the indentation that used to signal depth,
     // so the row needs its own anchor: draw the leading segments DIM and the last one at full
@@ -1002,11 +1061,17 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // the selected node), sanitized (a repo dir name is untrusted, AC-27) and truncated to the
     // column so a long name can't break the border. Fall back to "Files" only when it is empty.
     let name = sanitize_control(&state.root_name);
-    let title = if name.is_empty() {
+    let mut title_text = if name.is_empty() {
         "Files".to_string()
     } else {
-        truncate_title(&name, area.width)
+        name
     };
+    // The session view announces itself on the border, so a filtered tree is never mistaken
+    // for the whole directory.
+    if state.session_view {
+        title_text.push_str(" [session]");
+    }
+    let title = truncate_title(&title_text, area.width);
     let mut block = Block::bordered()
         .title(title)
         .border_style(border_style(state.focus == Focus::Tree));
@@ -1033,6 +1098,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
                     .annotation_indicators
                     .annotated_files
                     .contains(&node.path),
+                state.session_view,
             )
         })
         .collect();
@@ -1042,7 +1108,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // lets long / deeply-nested rows be read sideways (`H`/`L` scroll the tree; ←/→ are
     // expand/collapse in the tree).
     // `geometry` recomputes the SAME layout + offset, so hit-testing agrees with what is drawn.
-    let max_width = tree_rows_max_width(&state.nodes);
+    let max_width = tree_rows_max_width(&state.nodes, state.session_view);
     let (text, vbar, hbar) = tree_bars(inner, state.nodes.len(), max_width);
     let offset = sticky_scroll_offset(
         state.selected,
@@ -1447,7 +1513,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     // to the row actually drawn and a press lands on the bar actually shown. The scroll offset is
     // derived identically (over the reduced text height + last frame's offset). Saturating casts:
     // an absurd >65535 value clamps instead of wrapping.
-    let max_width = tree_rows_max_width(&state.nodes);
+    let max_width = tree_rows_max_width(&state.nodes, state.session_view);
     let (tree_inner, tree_vbar, tree_hbar) = match tree.map(inner) {
         Some(ti) => {
             let (text, v, h) = tree_bars(ti, state.nodes.len(), max_width);
@@ -1661,6 +1727,10 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> PreviewViewports {
     if let Some(confirm) = &state.discard_confirm {
         draw_discard_confirm(frame, frame.area(), confirm);
     }
+    // The session picker overlays the columns like its worktree sibling.
+    if let Some(session_picker) = &state.session_picker {
+        draw_session_picker_overlay(frame, frame.area(), session_picker);
+    }
     // The in-app help overlay draws LAST — on top of the picker/finder (AC-1, AC-5).
     if let Some(help) = &state.help {
         draw_help_overlay(frame, frame.area(), help);
@@ -1714,6 +1784,88 @@ const PICKER_ESC_CLOSE: &str = "esc close";
 /// herdr's ` · ` separator. Up/Down move the cursor, Left/Right horizontal-scroll, Enter
 /// confirms the switch, Esc cancels. Static (not repo-derived), so no sanitization is needed.
 const PICKER_FOOTER_HINT: &str = "↑↓ move · ←→ scroll · ⏎ switch · esc cancel";
+/// The session picker's top-left title (the box label).
+const SESSION_PICKER_TITLE: &str = "Claude Code session";
+/// The session picker's key-hint footer (its real bindings; static, no sanitization needed).
+const SESSION_PICKER_FOOTER_HINT: &str = "↑↓ move · ⏎ view session · esc cancel";
+
+/// Render one session picker row: a leading current marker (`●` cyan when the row is the
+/// transcript the session view presents), the sanitized label, a dim age, and a color-stripped
+/// `(current)` cue — the same idioms [`picker_row`] uses so the two pickers read as siblings.
+fn session_picker_row(row: &SessionPickerRowView, selected: bool) -> Line<'static> {
+    let base = if selected {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if row.is_current {
+        spans.push(Span::styled("● ", base.fg(Color::Cyan)));
+    } else {
+        spans.push(Span::styled("  ".to_string(), base));
+    }
+    spans.push(Span::styled(sanitize_control(&row.label), base));
+    spans.push(Span::styled(
+        format!("  {}", sanitize_control(&row.age)),
+        base.add_modifier(Modifier::DIM),
+    ));
+    if row.is_current {
+        spans.push(Span::styled(
+            " (current)".to_string(),
+            base.add_modifier(Modifier::DIM),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Draw the session picker as a centered, bordered list overlay — the worktree picker's sibling
+/// (same modal frame, chrome, size-to-content + clamp, and cursor-tracking scroll; no
+/// horizontal scroll — the labels are short). Rows are newest-first session transcripts.
+fn draw_session_picker_overlay(frame: &mut Frame, area: Rect, picker: &SessionPickerView) {
+    let rows: Vec<Line> = picker
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| session_picker_row(row, i == picker.cursor))
+        .collect();
+
+    let hint_style = Style::new().fg(Color::Reset);
+    let top_left = Line::from(SESSION_PICKER_TITLE);
+    let top_right = Line::styled(PICKER_ESC_CLOSE, hint_style).right_aligned();
+    let footer = Line::styled(SESSION_PICKER_FOOTER_HINT, hint_style).centered();
+
+    let max_row_width = rows.iter().map(Line::width).max().unwrap_or(0);
+    let desired_inner_w = max_row_width
+        .max(top_left.width() + 1 + top_right.width())
+        .max(footer.width())
+        .min(u16::MAX as usize) as u16;
+    let desired_inner_h = (rows.len().min(u16::MAX as usize) as u16).max(1);
+    let want_w = desired_inner_w
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let want_h = desired_inner_h
+        .saturating_add(2)
+        .saturating_add(PICKER_PADDING * 2);
+    let popup = centered_rect_sized(
+        want_w.min(area.width.saturating_sub(2)),
+        want_h.min(area.height.saturating_sub(2)),
+        area,
+    );
+
+    let block = modal_frame()
+        .title_top(top_left)
+        .title_top(top_right)
+        .title_bottom(footer)
+        .border_style(modal_border_style());
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let visible = inner.height as usize;
+    let offset = scroll_offset(picker.cursor, picker.rows.len(), visible);
+    let window: Vec<Line> = rows.into_iter().skip(offset).take(visible).collect();
+    frame.render_widget(Paragraph::new(window), inner);
+}
 
 /// The computed layout geometry of the worktree picker overlay, shared between
 /// [`draw_picker_overlay`] and [`geometry`] so neither can drift from the other — mirroring

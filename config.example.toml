@@ -91,6 +91,12 @@
 # An unrecognized value falls back to "diff". Default:
 #changed_file_view = "diff"
 
+# Start in the SESSION VIEW: the files the current Claude Code session created,
+# updated, or mentioned (its live companion-pane presentation) instead of the
+# directory tree. The `s` key still toggles the view either way; with no Claude
+# Code session recorded for this root the view is empty with a notice. Default:
+#session_view = false
+
 # `update_check` governs release details and project spotlights.
 # `false` disables all remote requests and their display. When unset,
 # $HERDR_FILE_VIEWER_NO_UPDATE_CHECK also disables it. No separate spotlight setting. Default:
