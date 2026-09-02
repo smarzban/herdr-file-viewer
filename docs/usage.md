@@ -263,7 +263,8 @@ Git status is woven straight into the tree, not a separate mode:
 
 Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH` the
 viewer still opens, but the status markers, filter, baseline, and diffs are degraded — see
-[install](install.md).
+[install](install.md). git 2.39 (Apple's Xcode git) is supported; a 2.40-only hardening flag is
+omitted there so awareness still activates.
 
 ## Navigating within a file
 

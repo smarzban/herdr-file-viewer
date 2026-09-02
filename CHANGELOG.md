@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Git awareness now activates on git 2.39 (Apple's Xcode git). Every git query used `--attr-source`, which that version rejects, so a valid repo looked like a plain directory — no status markers, no branch, no diffs. The flag is still used on git 2.40+. Thanks @arykhoda (#160) → [usage](docs/usage.md#git-awareness) · [install](docs/install.md)
+
 ## [1.16.0] - 2026-08-15
 
 ### Added

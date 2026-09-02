@@ -34,8 +34,9 @@ collaborator handed you. Its security posture is built around that.
 
 - **Untrusted repository → hardened git invocations.** Because the opened repo may be hostile,
   every `git` command is hardened against repo-controlled code execution: `--no-ext-diff` /
-  `--no-textconv` refuse repo-configured diff/textconv programs, `--attr-source` reads attributes
-  from the empty tree (so a planted `.gitattributes` can't designate a filter/diff driver),
+  `--no-textconv` refuse repo-configured diff/textconv programs, `--attr-source` (git ≥ 2.40)
+  reads attributes from the empty tree (so a planted `.gitattributes` can't designate a
+  filter/diff driver; older git omits the unknown flag so awareness still activates),
   `core.fsmonitor` and `core.hooksPath` are neutralized, `GIT_OPTIONAL_LOCKS=0` prevents index
   writes, and repo-redirecting environment variables (`GIT_DIR`, `GIT_WORK_TREE`, …) are scrubbed.
   This hardening lives in a single shared builder so it cannot drift between callers.
