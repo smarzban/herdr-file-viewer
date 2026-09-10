@@ -137,6 +137,12 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     controller.apply_tree_width(eff.tree_width);
     controller.apply_tree_position(eff.tree_position);
     controller.apply_tree_max_cols(eff.tree_max_cols);
+    // Apply the config-driven startup session view (`session_view`): open straight into the
+    // Claude-session companion presentation. Applied BEFORE the open target, so an explicit
+    // `--open` on a non-member still relaxes the view exactly as a live `reveal` would.
+    if eff.session_view {
+        controller.startup_session_view();
+    }
     // Launch open target (GH #109): CLI `--open` wins over `HERDR_FILE_VIEWER_OPEN`. Applied
     // after layout/config wiring so reveal + render see the same filters as a live session.
     // Soft-fails with an action notice; never aborts startup.
@@ -495,7 +501,15 @@ struct LiveContent {
 impl ContentProvider for LiveContent {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
         // The width-less entry point: no pane width known, so glow keeps its `-w 0` (no wrap).
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            false,
+        )
     }
 
     fn render_at_width(
@@ -506,13 +520,18 @@ impl ContentProvider for LiveContent {
         width: Option<u16>,
         pane_width: Option<u16>,
         diff_render_mode: DiffRenderMode,
+        allow_outside_root: bool,
     ) -> RenderResult {
         // Both diff modes render from git's diff text, not the file bytes — so a deleted or
         // binary file still shows its diff (AC-9), and there is no point classifying (a wasted
         // bounded file read). Other modes classify first (binary / size guards, AC-12/13).
-        // `Prepared::Binary` is inert for the diff path inside `render`.
+        // `Prepared::Binary` is inert for the diff path inside `render`. A session-view
+        // outside-root member waives only the containment check (ADR-0012); every other guard
+        // is identical.
         let prepared = if matches!(mode, ViewMode::Diff | ViewMode::FullDiff) {
             Prepared::Binary
+        } else if allow_outside_root {
+            render::classify_outside_root(path, self.caps)
         } else {
             render::classify(&self.root, path, self.caps)
         };
@@ -1408,6 +1427,7 @@ mod tests {
             None,
             None,
             DiffRenderMode::default(),
+            false,
         );
         assert!(
             out.notices.iter().any(|n| n.contains("50-line")),
@@ -1443,6 +1463,7 @@ mod tests {
             Some(80),
             None,
             DiffRenderMode::default(),
+            false,
         );
         assert!(
             flatten_content(&out).contains("W=80"),
@@ -1470,6 +1491,7 @@ mod tests {
                 w,
                 None,
                 DiffRenderMode::default(),
+                false,
             );
             assert!(
                 flatten_content(&out).contains("W=0"),

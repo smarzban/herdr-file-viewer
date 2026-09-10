@@ -23,6 +23,7 @@ impl Controller {
         // - None: no modal → the two-column mouse handler below.
         match self.modal {
             Modal::Picker(_)
+            | Modal::SessionPicker(_)
             | Modal::Prompt(_)
             | Modal::Annotations(_)
             | Modal::AnnotationEditor(_)
@@ -503,12 +504,15 @@ impl Controller {
         let idx = idx as usize;
         self.focus = Focus::Tree;
         // A drag fires many events on the same row; only re-select (and re-render the content, an
-        // expensive job) when the target actually changes, so a held scrub doesn't re-render the
-        // same file every tick.
-        if idx == self.tree.cursor() {
+        // expensive job) when the cursor actually moves, so a held scrub doesn't re-render the
+        // same file every tick. Compared AFTER set_cursor (not against the raw track index): a
+        // track cell can map to the session view's separator row, which set_cursor snaps off —
+        // a raw-index compare would never match there and re-dispatch on every event.
+        let before = self.tree.cursor();
+        self.tree.set_cursor(idx);
+        if self.tree.cursor() == before {
             return Effects::redraw();
         }
-        self.tree.set_cursor(idx);
         self.dispatch_render();
         Effects::redraw()
     }

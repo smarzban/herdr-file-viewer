@@ -899,7 +899,15 @@ impl WidthProbe {
 }
 impl ContentProvider for WidthProbe {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            false,
+        )
     }
     fn render_at_width(
         &self,
@@ -909,6 +917,7 @@ impl ContentProvider for WidthProbe {
         width: Option<u16>,
         _pane_width: Option<u16>,
         _diff_render_mode: DiffRenderMode,
+        _allow_outside_root: bool,
     ) -> RenderResult {
         self.widths.lock().unwrap().push(width);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -1260,6 +1269,7 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
         Some(42),
         None,
         DiffRenderMode::default(),
+        false,
     );
     assert_eq!(
         flatten(&base.content),
@@ -1275,7 +1285,15 @@ fn render_at_width_default_impl_forwards_to_render_ignoring_width() {
 struct WidthDependentMatches;
 impl ContentProvider for WidthDependentMatches {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult {
-        self.render_at_width(path, mode, raw_diff, None, None, DiffRenderMode::default())
+        self.render_at_width(
+            path,
+            mode,
+            raw_diff,
+            None,
+            None,
+            DiffRenderMode::default(),
+            false,
+        )
     }
     fn render_at_width(
         &self,
@@ -1285,6 +1303,7 @@ impl ContentProvider for WidthDependentMatches {
         width: Option<u16>,
         _pane_width: Option<u16>,
         _diff_render_mode: DiffRenderMode,
+        _allow_outside_root: bool,
     ) -> RenderResult {
         let n = match width {
             Some(w) if w >= 40 => 8,

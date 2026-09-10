@@ -31,8 +31,40 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   the baseline for reviewing the full body of work in a worktree.
 - **changed-only filter**: a toggle that restricts the tree to files git reports as
   changed against the active diff baseline.
+- **session view**: the tree column's alternate presentation showing the files the
+  current Claude Code agent session touched, in two regions: members under the **root**
+  as a synthesized tree (git decorations still apply), and the **outside-root section**.
+  Entered by a toggle key or on at startup via the **config file**; mutually exclusive
+  with the **changed-only filter** (each replaces what the tree shows). Follows the
+  **current session** live as it grows, without ever moving the user's cursor. Read-only.
+- **outside-root section**: the lower region of the **session view** listing the
+  session-touched files that are not under the **root**, shown as compacted path
+  groups. Display-and-preview only: no git decoration, no **annotation**s. Its presence
+  never enables browsing above the **root**.
+- **session transcript**: the on-disk record Claude Code keeps of one agent session in
+  its per-project directory; the **session view**'s only data source. Read-only input,
+  parsed defensively.
+- **current session**: the **session transcript** the **session view** presents: the
+  most recently active one for the **root** by default, or the one explicitly chosen in
+  the **session picker**. An explicit choice holds until a **worktree switch**, another
+  choice, or viewer exit; a **worktree switch** resets to the default. Session-only,
+  never persisted.
+- **session picker**: the keyboard-summoned overlay listing the **root**'s session
+  transcripts; choosing one sets the **current session**. A sibling of the
+  **worktree picker**.
+- **session file set**: the derived set of files the **current session** touched:
+  every file named by an agent file tool (read or write), by a user @-mention in a
+  prompt, or by a subagent's file tools within the same session. Side effects of shell
+  commands are never inferred. Each member carries one **session category**.
+- **session category**: the one label a **session file set** member displays: *created*
+  (born in this session), *updated* (written to but pre-existing), or *mentioned* (read
+  or @-mentioned only). The strongest wins: created ≻ updated ≻ mentioned. Shown as a
+  one-glyph marker beside — not replacing — the git status marker; a member later
+  deleted from disk stays listed, with a missing cue.
 - **root**: the directory the tree is rooted at: the worktree root, or the pane's cwd
-  when not in a worktree. The viewer does not browse above it.
+  when not in a worktree. The viewer does not browse above it; the **outside-root
+  section** may *display* specific session-touched files above it, but navigation
+  stays root-bound.
 - **re-root**: change the **root** at runtime: re-resolve it and rebuild the tree and
   git view from the new root, in place. Distinct from launch-time root resolution;
   read-only and session-only (a re-root never persists past relaunch).

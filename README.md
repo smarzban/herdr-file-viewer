@@ -28,6 +28,14 @@ back into the chat. It never touches your files.
 
 ![herdr-file-viewer with a pinned preview: tree on the left, the active file in the middle, a frozen pin of another file on the right](assets/Pinned-preview.png)
 
+*Press `s` for the **session view**: the files the current Claude Code session created (`+`), updated (`~`), or mentioned (`·`) — untracked files included, git letters still alongside, and files touched outside the root under their own divider:*
+
+![herdr-file-viewer in the session view: the tree lists only the files the Claude Code session touched, each with a category glyph beside its git status letter, and an outside root section listing ~/.claude files](assets/Session-view.png)
+
+*`S` picks among the root's sessions — newest first, session titles shown, the presented one marked:*
+
+![the session picker overlay listing two Claude Code sessions with their titles, ages, and a current marker](assets/Session-picker.png)
+
 ## Why you'd want it
 
 - **The right view, automatically.** A changed file opens as a diff. A README renders. Code is
@@ -37,6 +45,10 @@ back into the chat. It never touches your files.
   git client.
 - **Pin one file, keep browsing.** `p` freezes it on the right. Switch worktree (`W`) and compare
   it with another checkout, or pin the old version and walk the new one.
+- **See what your agent touched.** `s` shows the files the current Claude Code session created
+  (`+`), updated (`~`), or mentioned (`·`) — untracked files and files outside the root included —
+  following the session live, like Claude Desktop's file panel. `S` picks among sessions; set
+  `session_view = true` to open straight into it.
 - **Agents show you the spot. You send notes back.** Teach them the [bundled skill](skills/herdr-file-viewer/SKILL.md)
   and "open `src/app.rs:42` in Files" lands you there. Mark a file or a range (`a`), copy the
   notes (`A` then `y`), paste them into the chat.
@@ -59,6 +71,7 @@ A taste of what the keys do — the [full key & mouse reference](docs/keys.md) h
 | `a` / `A` | Annotate a file or range; copy the notes out for an agent |
 | `v` | Cycle the view (diff ⇄ rendered ⇄ syntax) |
 | `]` / `[` | Jump to the next / previous changed file |
+| `s` / `S` | Session view: the files the current Claude Code session touched / pick the session |
 | `b` | Flip the diff baseline: your branch's merge-base ⇄ `HEAD` |
 | `W` | Switch to another git worktree, in place |
 | `L` | Copy a `path:line` reference (or the selected lines) |

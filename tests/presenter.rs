@@ -25,6 +25,8 @@ fn node(path: &str, kind: NodeKind, depth: usize, expanded: bool, status: Option
         status,
         dir_dirty: false,
         label: None,
+        session: None,
+        session_missing: false,
     }
 }
 
@@ -90,6 +92,8 @@ fn sample_state() -> ViewState {
         zoomed: false,
         remote_notice_status: None,
         picker: None,
+        session_view: false,
+        session_picker: None,
         finder: None,
         annotation_count: 0,
         annotation_overview: None,
@@ -245,6 +249,8 @@ fn dirty_directory_carries_a_non_color_glyph_marker() {
             status: None,
             dir_dirty: true,
             label: None,
+            session: None,
+            session_missing: false,
         },
         Node {
             path: PathBuf::from("/r/clean"),
@@ -254,6 +260,8 @@ fn dirty_directory_carries_a_non_color_glyph_marker() {
             status: None,
             dir_dirty: false,
             label: None,
+            session: None,
+            session_missing: false,
         },
     ];
     state.selected = 1; // the clean dir, so the dirty dir row isn't REVERSED
@@ -292,6 +300,8 @@ fn dirty_directory_glyph_snapshot() {
             status: None,
             dir_dirty: true,
             label: None,
+            session: None,
+            session_missing: false,
         },
         node(
             "/r/changed/a.rs",
@@ -315,6 +325,8 @@ fn dirty_directory_glyph_snapshot() {
             status: None,
             dir_dirty: false,
             label: None,
+            session: None,
+            session_missing: false,
         },
         node(
             "/r/gone.txt",
@@ -1110,6 +1122,8 @@ fn tree_rows_are_colored_by_git_status() {
             status: None,
             dir_dirty: true,
             label: None,
+            session: None,
+            session_missing: false,
         },
         node(
             "/r/src/mod.rs",
@@ -4664,6 +4678,8 @@ fn a_compacted_directory_row_renders_its_chain_label() {
             status: None,
             dir_dirty: false,
             label: Some("src/main/java".to_string()),
+            session: None,
+            session_missing: false,
         },
         node(
             "/r/src/main/java/App.java",
@@ -4681,5 +4697,105 @@ fn a_compacted_directory_row_renders_its_chain_label() {
     assert!(
         frame.contains("App.java"),
         "its child still renders one level in\n{frame}"
+    );
+}
+
+// ---- session view (tree decoration, separator, title tag, picker overlay) ------------------
+
+#[test]
+fn session_view_rows_carry_glyphs_separator_and_title_tag() {
+    use herdr_file_viewer::session::Category;
+
+    let mut state = sample_state();
+    state.session_view = true;
+    state.root_name = "myrepo".to_string();
+    let mut created = node("/r/src/new.rs", NodeKind::File, 1, false, None);
+    created.session = Some(Category::Created);
+    let mut mentioned = node("/r/README.md", NodeKind::File, 0, false, None);
+    mentioned.session = Some(Category::Mentioned);
+    let separator = Node {
+        path: std::path::PathBuf::new(),
+        kind: NodeKind::Separator,
+        depth: 0,
+        expanded: false,
+        status: None,
+        dir_dirty: false,
+        label: None,
+        session: None,
+        session_missing: false,
+    };
+    let mut outside_dir = node("/tmp", NodeKind::Dir, 0, true, None);
+    outside_dir.label = Some("/tmp".to_string());
+    let mut outside_file = node("/tmp/scratch.txt", NodeKind::File, 1, false, None);
+    outside_file.session = Some(Category::Updated);
+    state.nodes = vec![
+        node("/r/src", NodeKind::Dir, 0, true, None),
+        created,
+        mentioned,
+        separator,
+        outside_dir,
+        outside_file,
+    ];
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("myrepo [session]"),
+        "the tree title announces the session view\n{out}"
+    );
+    assert!(
+        out.contains("── outside root ──"),
+        "the divider separates the sections\n{out}"
+    );
+    assert!(out.contains("+"), "created glyph\n{out}");
+    assert!(out.contains("~"), "updated glyph\n{out}");
+    assert!(out.contains("·"), "mentioned glyph\n{out}");
+    assert!(out.contains("/tmp"), "outside group label\n{out}");
+}
+
+#[test]
+fn missing_member_shows_the_bang_cue() {
+    use herdr_file_viewer::session::Category;
+
+    let mut state = sample_state();
+    state.session_view = true;
+    let mut gone = node("/r/gone.rs", NodeKind::File, 0, false, None);
+    gone.session = Some(Category::Updated);
+    gone.session_missing = true;
+    state.nodes = vec![gone];
+    let out = render(&state, 100, 24);
+    assert!(
+        out.contains("! "),
+        "a vanished member is cued with `!` in the status cell\n{out}"
+    );
+}
+
+#[test]
+fn session_picker_overlay_lists_sessions_with_current_marker() {
+    use herdr_file_viewer::presenter::{SessionPickerRowView, SessionPickerView};
+
+    let mut state = sample_state();
+    state.session_picker = Some(SessionPickerView {
+        rows: vec![
+            SessionPickerRowView {
+                label: "feat-cc-session".to_string(),
+                age: "3m ago".to_string(),
+                is_current: true,
+            },
+            SessionPickerRowView {
+                label: "7819f839".to_string(),
+                age: "2h ago".to_string(),
+                is_current: false,
+            },
+        ],
+        cursor: 0,
+    });
+    let out = render(&state, 100, 24);
+    assert!(out.contains("Claude Code session"), "overlay title\n{out}");
+    assert!(out.contains("feat-cc-session"), "titled row\n{out}");
+    assert!(out.contains("(current)"), "current cue\n{out}");
+    assert!(out.contains("3m ago"), "age column\n{out}");
+    assert!(out.contains("7819f839"), "id-labelled row\n{out}");
+    assert!(
+        out.contains("⏎ view session"),
+        "footer hints the picker's keys\n{out}"
     );
 }

@@ -24,6 +24,8 @@ fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Nod
         status,
         dir_dirty: false,
         label: None,
+        session: None,
+        session_missing: false,
     }
 }
 
@@ -51,6 +53,8 @@ fn state(width: u16, focus: Focus) -> ViewState {
         zoomed: false,
         remote_notice_status: None,
         picker: None,
+        session_view: false,
+        session_picker: None,
         finder: None,
         annotation_count: 0,
         annotation_overview: None,

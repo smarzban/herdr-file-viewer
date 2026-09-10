@@ -97,11 +97,29 @@ pub enum Prepared {
 /// (AC-N5), and a FIFO/device/dir is never opened (no hang, no garbage). Such paths
 /// return `Binary` (a placeholder, no bytes).
 pub fn classify(root: &Path, path: &Path, caps: Caps) -> Prepared {
-    let (Ok(canonical), Ok(canon_root)) = (path.canonicalize(), root.canonicalize()) else {
+    classify_within(Some(root), path, caps)
+}
+
+/// [`classify`] for a **session-view outside-root member**: the containment check is
+/// deliberately waived — the path is one the user's agent session explicitly touched, shown by
+/// the outside-root section's display-not-browse carve-out (ADR-0012) — while every other guard
+/// (regular file only, bounded read, NUL check, downstream escape neutralization) stays exactly
+/// as for an in-root file. Never used for ordinary tree rows.
+pub fn classify_outside_root(path: &Path, caps: Caps) -> Prepared {
+    classify_within(None, path, caps)
+}
+
+fn classify_within(root: Option<&Path>, path: &Path, caps: Caps) -> Prepared {
+    let Ok(canonical) = path.canonicalize() else {
         return Prepared::Binary; // unresolvable / missing
     };
-    if !canonical.starts_with(&canon_root) {
-        return Prepared::Binary; // escapes the root (AC-N5)
+    if let Some(root) = root {
+        let Ok(canon_root) = root.canonicalize() else {
+            return Prepared::Binary;
+        };
+        if !canonical.starts_with(&canon_root) {
+            return Prepared::Binary; // escapes the root (AC-N5)
+        }
     }
     match std::fs::metadata(&canonical) {
         Ok(m) if m.is_file() => {}

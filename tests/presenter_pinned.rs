@@ -49,6 +49,8 @@ fn state(pinned: PreviewProjection) -> ViewState {
         zoomed: false,
         remote_notice_status: None,
         picker: None,
+        session_view: false,
+        session_picker: None,
         finder: None,
         annotation_count: 0,
         annotation_overview: None,
