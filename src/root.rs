@@ -50,10 +50,10 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
 /// Built through the Git Service's shared [`crate::git::git_command`] so the untrusted-repo
 /// hardening (no optional index locks, neutralized `core.fsmonitor`/`core.hooksPath`, dropped
 /// repo-redirecting env so the *root* resolves against `dir`) is applied identically here and
-/// in the Git Service — it cannot drift between the two. The shared builder also pins
-/// `--attr-source`, so root resolution (like the rest of the Git Service) needs git ≥ 2.40;
-/// an older git makes these queries fail and the directory degrades to a plain, non-git
-/// browser (AC-26) rather than a half-working repo view.
+/// in the Git Service — it cannot drift between the two. The shared builder pins
+/// `--attr-source` only when the installed git accepts it (git ≥ 2.40); older git (Apple's
+/// 2.39.x) omits the flag so root resolution still sees a real repo instead of degrading to a
+/// plain browser (#160).
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
     let out = crate::git::git_command(dir, args).output().ok()?;
     if out.status.success() {

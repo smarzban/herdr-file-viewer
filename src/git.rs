@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -353,6 +354,29 @@ pub fn diff_directory(
     output
 }
 
+/// Cached answer to [`probe_attr_source`]. One probe per process; every later query reuses it.
+static ATTR_SOURCE_SUPPORTED: OnceLock<bool> = OnceLock::new();
+
+/// Whether this `git` accepts `--attr-source` (git ≥ 2.40). Apple's Xcode git is still 2.39.x
+/// and treats the unknown flag as a hard error, so passing it unconditionally made every query
+/// fail and the viewer degraded to a plain, non-git browser (#160).
+fn attr_source_supported() -> bool {
+    *ATTR_SOURCE_SUPPORTED.get_or_init(probe_attr_source)
+}
+
+/// Probe: `git --attr-source=<empty-tree> --version`. Success means the flag is known; any
+/// failure (unknown option, git missing) means omit it. `--version` needs no repository.
+fn probe_attr_source() -> bool {
+    Command::new("git")
+        .arg(format!("--attr-source={EMPTY_TREE}"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
 /// repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the index (AC-N2);
 /// `core.fsmonitor` / `core.hooksPath` are neutralized so a planted `.git/config` can't run a
@@ -361,7 +385,17 @@ pub fn diff_directory(
 /// against. **This is the single source of that hardening** — the Root Resolver
 /// ([`crate::root`]) builds its queries through this same function, so the guards cannot drift
 /// between the two.
+///
+/// `--attr-source` (empty tree) is included only when the installed git accepts it, so a
+/// planted `.gitattributes` cannot designate a filter/diff driver on git ≥ 2.40, while older
+/// git still gets status, branch, and diffs.
 pub(crate) fn git_command(repo_root: &Path, args: &[&str]) -> Command {
+    git_command_with(repo_root, args, attr_source_supported())
+}
+
+/// Shared builder with an explicit `--attr-source` pin so unit tests can cover both git ≥ 2.40
+/// and the Apple-git 2.39 omit path without depending on the runner's git version.
+fn git_command_with(repo_root: &Path, args: &[&str], pin_attr_source: bool) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_OPTIONAL_LOCKS", "0")
         // Drop inherited repo-redirecting env so queries resolve against `-C <repo>`, not
@@ -372,12 +406,15 @@ pub(crate) fn git_command(repo_root: &Path, args: &[&str]) -> Command {
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
-        .arg(repo_root)
-        // Read attributes from the empty tree, not the worktree `.gitattributes`, so a
-        // repo-planted `filter=<driver>` (clean/smudge) or `diff=<driver>` (textconv)
-        // cannot run a configured program during a read-only query.
-        .arg(format!("--attr-source={EMPTY_TREE}"))
-        .args(["-c", "core.fsmonitor=false"])
+        .arg(repo_root);
+    // Read attributes from the empty tree, not the worktree `.gitattributes`, so a
+    // repo-planted `filter=<driver>` (clean/smudge) or `diff=<driver>` (textconv)
+    // cannot run a configured program during a read-only query. Omitted on git < 2.40
+    // (unknown option → every query would fail; #160).
+    if pin_attr_source {
+        cmd.arg(format!("--attr-source={EMPTY_TREE}"));
+    }
+    cmd.args(["-c", "core.fsmonitor=false"])
         .arg("-c")
         .arg(format!("core.hooksPath={NULL_DEVICE}"))
         .args(args);
@@ -647,14 +684,8 @@ mod tests {
         );
     }
 
-    /// The shared hardened builder must apply *every* untrusted-repo guard. This is the
-    /// regression guard that keeps the Git Service and the Root Resolver — which now build
-    /// their queries through this one function — from silently dropping a protection (AC-N2).
-    #[test]
-    fn git_command_applies_every_untrusted_repo_guard() {
-        let cmd = git_command(Path::new("/some/repo"), &["status"]);
-
-        // CLI guards: -C <dir>, neutralized fsmonitor/hooks, attr-source pinned to empty tree.
+    /// Shared assertions for the untrusted-repo guards that never depend on git's version.
+    fn assert_version_independent_guards(cmd: &Command) {
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -671,12 +702,7 @@ mod tests {
             args.contains(&format!("core.hooksPath={NULL_DEVICE}")),
             "hooks neutralized: {args:?}"
         );
-        assert!(
-            args.iter().any(|a| a.starts_with("--attr-source=")),
-            "attr-source pinned to the empty tree: {args:?}"
-        );
 
-        // GIT_OPTIONAL_LOCKS=0 is set; the repo-redirecting vars are scrubbed (env value None).
         let envs: Vec<(String, Option<String>)> = cmd
             .get_envs()
             .map(|(k, v)| {
@@ -703,6 +729,74 @@ mod tests {
                 "{var} is scrubbed from the child env: {envs:?}"
             );
         }
+    }
+
+    fn command_args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The shared hardened builder must apply *every* untrusted-repo guard that does not
+    /// depend on git's version. This is the regression guard that keeps the Git Service and
+    /// the Root Resolver — which now build their queries through this one function — from
+    /// silently dropping a protection (AC-N2). `--attr-source` is version-gated (#160) and
+    /// covered separately so a 2.39 runner cannot fail this test.
+    #[test]
+    fn git_command_applies_every_untrusted_repo_guard() {
+        assert_version_independent_guards(&git_command_with(
+            Path::new("/some/repo"),
+            &["status"],
+            true,
+        ));
+        assert_version_independent_guards(&git_command_with(
+            Path::new("/some/repo"),
+            &["status"],
+            false,
+        ));
+    }
+
+    /// git ≥ 2.40: `--attr-source` is pinned to the empty tree so a planted `.gitattributes`
+    /// cannot designate a filter/diff driver.
+    #[test]
+    fn git_command_pins_attr_source_when_supported() {
+        let cmd = git_command_with(Path::new("/some/repo"), &["status"], true);
+        let args = command_args(&cmd);
+        assert!(
+            args.iter().any(|a| a.starts_with("--attr-source=")),
+            "attr-source pinned to the empty tree: {args:?}"
+        );
+        assert!(
+            args.contains(&format!("--attr-source={EMPTY_TREE}")),
+            "attr-source uses the empty-tree object: {args:?}"
+        );
+    }
+
+    /// git < 2.40 (Apple Git 2.39.x): omit `--attr-source` so queries still succeed. The
+    /// other hardenings stay on — this is the #160 path, not a security-off switch.
+    #[test]
+    fn git_command_omits_attr_source_when_unsupported() {
+        let cmd = git_command_with(Path::new("/some/repo"), &["status"], false);
+        let args = command_args(&cmd);
+        assert!(
+            args.iter().all(|a| !a.starts_with("--attr-source=")),
+            "attr-source must be omitted on older git: {args:?}"
+        );
+        assert_version_independent_guards(&cmd);
+    }
+
+    /// The live builder's `--attr-source` decision must match the probe, so a runner's git
+    /// version cannot silently desync the two.
+    #[test]
+    fn live_git_command_matches_attr_source_probe() {
+        let cmd = git_command(Path::new("/some/repo"), &["status"]);
+        let args = command_args(&cmd);
+        let pinned = args.iter().any(|a| a.starts_with("--attr-source="));
+        assert_eq!(
+            pinned,
+            attr_source_supported(),
+            "live git_command attr-source pin must match the probe: {args:?}"
+        );
     }
 
     // ---- classify: every porcelain XY code → Status -----------------------------
