@@ -11,6 +11,9 @@ that file deserves: a **diff** if it changed, **rendered markdown**, or **highli
 Agents can drop you on a file or a line. You pin one file, mark a range, and paste those notes
 back into the chat. It never touches your files.
 
+> [!TIP]
+> Get **[tsk](https://github.com/smarzban/herdr-tsk)** to keep your work and your agents’ work on one board. TUI for you, CLI for them.
+
 ![herdr-file-viewer open in a herdr split beside your work: the directory tree on the left, syntax-highlighted content on the right](assets/File-viewer.png)
 
 *The right view per file, here a markdown file rendered (headings, inline code, tables) in your terminal's theme:*
