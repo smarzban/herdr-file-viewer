@@ -134,6 +134,8 @@ pub struct ViewState {
     /// drawn at `min(split_pct% of the pane, tree_max_cols)`, so on a very wide pane it stops
     /// growing instead of over-allocating. Used only in the wide two-column layout.
     pub tree_max_cols: u16,
+    /// File/folder icon style used by the tree presenter.
+    pub tree_icons: crate::config::TreeIcons,
     /// Whether the user has resized the split by hand this session (a divider drag or the
     /// grow/shrink keys). While `false`, `tree_max_cols` caps the tree; once `true` the cap is
     /// lifted so an explicit resize is honoured exactly (otherwise the resize would look frozen on a
@@ -471,10 +473,10 @@ fn row_color(node: &Node) -> Option<Color> {
 /// the controller's horizontal-scroll clamp. Computed from the same [`tree_row`] the tree draws
 /// (selection-independent: the REVERSED highlight doesn't change a row's width), so the drawn
 /// rows and the hit-test/clamp can never disagree.
-fn tree_rows_max_width(nodes: &[Node]) -> usize {
+fn tree_rows_max_width(nodes: &[Node], icons: crate::config::TreeIcons) -> usize {
     nodes
         .iter()
-        .map(|n| tree_row(n, false, false).width())
+        .map(|n| tree_row(n, false, false, icons).width())
         .max()
         .unwrap_or(0)
 }
@@ -484,19 +486,168 @@ const ANNOTATION_STYLE: Style = Style::new().bg(Color::DarkGray);
 
 /// Render one tree row: `<git><annotation><indent><glyph><name>`. The annotation marker replaces
 /// the reserved blank prefix cell, so git coexistence and row geometry stay unchanged.
-///
-/// A file's glyph is two BLANKS, not an empty string. The expand arrow is two columns wide, so
-/// without that placeholder a file's name starts two columns left of where a directory's name
-/// starts at the same depth — which puts a file at depth `d+1` in exactly the column of its parent
-/// directory at depth `d`, and puts a top-level file two columns left of the directory it sits
-/// beside. Reserving the width makes the column a node's name starts in a true function of its
-/// depth, so siblings line up and a child is always one level in from its parent.
-fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
-    let glyph = match node.kind {
-        NodeKind::Dir if node.expanded => "▾ ",
-        NodeKind::Dir => "▸ ",
-        NodeKind::File => "  ",
+fn tree_icon(node: &Node, mode: crate::config::TreeIcons) -> (&'static str, Option<Color>) {
+    use crate::config::TreeIcons;
+    if mode == TreeIcons::Off {
+        return match node.kind {
+            NodeKind::Dir if node.expanded => ("▾ ", None),
+            NodeKind::Dir => ("▸ ", None),
+            NodeKind::File => ("  ", None),
+        };
+    }
+    if node.kind == NodeKind::Dir {
+        return match mode {
+            TreeIcons::Unicode if node.expanded => ("▾ ▣ ", Some(Color::LightBlue)),
+            TreeIcons::Unicode => ("▸ ▣ ", Some(Color::LightBlue)),
+            TreeIcons::Nerd if node.expanded => ("▾  ", Some(Color::LightBlue)),
+            TreeIcons::Nerd => ("▸  ", Some(Color::LightBlue)),
+            TreeIcons::Off => unreachable!(),
+        };
+    }
+    file_icon(&node.path, mode)
+}
+
+/// File glyph shared by tree rows and finder results, so `file_icons` has one visual vocabulary
+/// everywhere a file path is listed.
+fn file_icon(
+    path: &std::path::Path,
+    mode: crate::config::TreeIcons,
+) -> (&'static str, Option<Color>) {
+    use crate::config::TreeIcons;
+    if mode == TreeIcons::Off {
+        return ("  ", None);
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let name_lower = name.to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Standard Unicode approximations of common DevOps Nerd Font glyphs. Keep these to
+    // single-cell, text-font characters: Windows Terminal + Cascadia Mono renders them reliably
+    // and ratatui keeps every tree/search row aligned without a bundled font.
+    let path_lower = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let is_yaml = matches!(ext.as_str(), "yaml" | "yml");
+    let in_dir = |dir: &str| path_lower.starts_with(dir) || path_lower.contains(&format!("/{dir}"));
+    let is_github_workflow = in_dir(".github/workflows/");
+    let is_helm_chart = matches!(name_lower.as_str(), "chart.yaml" | "chart.yml")
+        || (is_yaml && in_dir("templates/"));
+    let is_kubernetes_manifest = is_yaml
+        && (in_dir("k8s/")
+            || in_dir("kubernetes/")
+            || in_dir("manifests/")
+            || matches!(
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "deployment"
+                    | "service"
+                    | "ingress"
+                    | "configmap"
+                    | "secret"
+                    | "daemonset"
+                    | "statefulset"
+                    | "namespace"
+                    | "kustomization"
+            ));
+    match mode {
+        TreeIcons::Unicode
+            if name_lower == "jenkinsfile"
+                || name_lower.starts_with("jenkinsfile.")
+                || name_lower.ends_with(".jenkinsfile") =>
+        {
+            ("⚙ ", Some(Color::LightRed))
+        }
+        TreeIcons::Unicode
+            if name_lower == "dockerfile"
+                || name_lower.starts_with("dockerfile.")
+                || name_lower.starts_with("docker-compose")
+                || name_lower.starts_with("compose.") =>
+        {
+            ("▰ ", Some(Color::LightCyan))
+        }
+        TreeIcons::Unicode if is_helm_chart => ("⎈ ", Some(Color::LightCyan)),
+        TreeIcons::Unicode if is_github_workflow => ("↻ ", Some(Color::LightBlue)),
+        TreeIcons::Unicode if is_kubernetes_manifest => ("☸ ", Some(Color::LightBlue)),
+        TreeIcons::Unicode => match ext.as_str() {
+            "yaml" | "yml" => ("≋ ", Some(Color::Yellow)),
+            "tf" | "hcl" => ("△ ", Some(Color::LightMagenta)),
+            "tfvars" => ("◇ ", Some(Color::LightMagenta)),
+            "rs" => ("◆ ", Some(Color::LightRed)),
+            "md" | "mdx" => ("≡ ", Some(Color::LightBlue)),
+            "json" => ("▦ ", Some(Color::Yellow)),
+            "toml" | "ini" | "conf" | "cfg" => ("⚙ ", Some(Color::Yellow)),
+            "js" | "jsx" => ("■ ", Some(Color::Yellow)),
+            "ts" | "tsx" => ("■ ", Some(Color::LightBlue)),
+            "py" => ("● ", Some(Color::Yellow)),
+            "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" => {
+                ("❯ ", Some(Color::LightGreen))
+            }
+            "html" | "htm" | "css" | "scss" | "sass" | "less" => ("◆ ", Some(Color::LightMagenta)),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => {
+                ("▧ ", Some(Color::LightMagenta))
+            }
+            "zip" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "tar" => {
+                ("▤ ", Some(Color::LightRed))
+            }
+            _ => ("· ", Some(Color::DarkGray)),
+        },
+        TreeIcons::Nerd => match (name, ext.as_str()) {
+            (_, "rs") => (" ", Some(Color::LightRed)),
+            (_, "md" | "mdx") => (" ", Some(Color::LightBlue)),
+            (_, "json") => (" ", Some(Color::Yellow)),
+            (_, "toml") => (" ", Some(Color::Yellow)),
+            (_, "yaml" | "yml") => (" ", Some(Color::Yellow)),
+            (".gitignore" | ".gitattributes" | ".gitmodules", _) => (" ", Some(Color::LightRed)),
+            ("Cargo.lock" | "Cargo.toml", _) => (" ", Some(Color::LightRed)),
+            _ => (" ", Some(Color::Gray)),
+        },
+        TreeIcons::Off => unreachable!(),
+    }
+}
+
+/// Render one finder result with the configured file glyph. The selection modifier is patched
+/// onto both spans, while the icon keeps its type-specific foreground color.
+fn finder_match_line(path: &str, selected: bool, icons: crate::config::TreeIcons) -> Line<'static> {
+    let row_style = if selected {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
     };
+    let path_obj = std::path::Path::new(path);
+    let (glyph, glyph_color) = file_icon(path_obj, icons);
+    let text = sanitize_control(path);
+    if icons == crate::config::TreeIcons::Off || glyph.trim().is_empty() {
+        Line::styled(text, row_style)
+    } else {
+        let glyph_style = if selected {
+            row_style
+        } else {
+            glyph_color.map_or(row_style, |color| row_style.fg(color))
+        };
+        Line::from(vec![
+            Span::styled(glyph, glyph_style),
+            Span::styled(text, row_style),
+        ])
+    }
+}
+
+fn tree_row(
+    node: &Node,
+    selected: bool,
+    annotated: bool,
+    icons: crate::config::TreeIcons,
+) -> Line<'static> {
+    let (glyph, glyph_color) = tree_icon(node, icons);
     let annotated = annotated && node.kind == NodeKind::File;
     let mut row_style = Style::new();
     if let Some(color) = row_color(node) {
@@ -506,18 +657,25 @@ fn tree_row(node: &Node, selected: bool, annotated: bool) -> Line<'static> {
         row_style = row_style.add_modifier(Modifier::REVERSED);
     }
     let prefix = format!(
-        "{}{}{}{}",
+        "{}{}{}",
         status_marker(node),
         if annotated { '@' } else { ' ' },
         "  ".repeat(node.depth),
-        glyph,
     );
     let name_style = if annotated && !selected {
         row_style.patch(ANNOTATION_STYLE)
     } else {
         row_style
     };
-    let mut spans = vec![Span::styled(prefix, row_style)];
+    let glyph_style = if selected {
+        row_style
+    } else {
+        glyph_color.map_or(row_style, |c| row_style.fg(c))
+    };
+    let mut spans = vec![
+        Span::styled(prefix, row_style),
+        Span::styled(glyph, glyph_style),
+    ];
     let name = sanitize_control(&node_name(node));
     // A compacted chain row (`src/main/java`) folds away the indentation that used to signal depth,
     // so the row needs its own anchor: draw the leading segments DIM and the last one at full
@@ -1033,6 +1191,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
                     .annotation_indicators
                     .annotated_files
                     .contains(&node.path),
+                state.tree_icons,
             )
         })
         .collect();
@@ -1042,7 +1201,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
     // lets long / deeply-nested rows be read sideways (`H`/`L` scroll the tree; ←/→ are
     // expand/collapse in the tree).
     // `geometry` recomputes the SAME layout + offset, so hit-testing agrees with what is drawn.
-    let max_width = tree_rows_max_width(&state.nodes);
+    let max_width = tree_rows_max_width(&state.nodes, state.tree_icons);
     let (text, vbar, hbar) = tree_bars(inner, state.nodes.len(), max_width);
     let offset = sticky_scroll_offset(
         state.selected,
@@ -1447,7 +1606,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     // to the row actually drawn and a press lands on the bar actually shown. The scroll offset is
     // derived identically (over the reduced text height + last frame's offset). Saturating casts:
     // an absurd >65535 value clamps instead of wrapping.
-    let max_width = tree_rows_max_width(&state.nodes);
+    let max_width = tree_rows_max_width(&state.nodes, state.tree_icons);
     let (tree_inner, tree_vbar, tree_hbar) = match tree.map(inner) {
         Some(ti) => {
             let (text, v, h) = tree_bars(ti, state.nodes.len(), max_width);
@@ -1536,7 +1695,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     // so the hit-test geometry agrees with what is drawn.
     let (finder_rows, finder_scroll, finder_max_hscroll, finder_vbar) = match &state.finder {
         Some(finder) => {
-            let fl = finder_overlay_layout(area, finder);
+            let fl = finder_overlay_layout(area, finder, state.tree_icons);
             (
                 fl.rows_area,
                 fl.offset.min(u16::MAX as usize) as u16,
@@ -1648,7 +1807,7 @@ pub fn draw(frame: &mut Frame, state: &ViewState) -> PreviewViewports {
     // The go-to-file finder is also a modal overlay (AC-1). Only one modal is ever open, but
     // an independent check is correct — if both are somehow set, both draw (last wins).
     if let Some(finder) = &state.finder {
-        draw_finder_overlay(frame, frame.area(), finder);
+        draw_finder_overlay(frame, frame.area(), finder, state.tree_icons);
     }
     // Annotation modals are keyboard-only overlays. They add no hit-test geometry; their owned,
     // typed draw models contain raw fields and the Presenter formats/sanitizes them here.
@@ -2052,7 +2211,11 @@ struct FinderLayout {
 /// model. This is the **single authoritative place** for all the sizing + centering + scroll
 /// math — both [`draw_finder_overlay`] and [`geometry`] call it, so the drawn rects and the
 /// hit-test geometry are guaranteed to agree.
-fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
+fn finder_overlay_layout(
+    area: Rect,
+    finder: &FinderView,
+    icons: crate::config::TreeIcons,
+) -> FinderLayout {
     // Build the query line for width measurement (same logic as draw).
     let query_line: Line<'static> = if finder.query.is_empty() {
         Line::styled(
@@ -2069,15 +2232,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
         .matches
         .iter()
         .enumerate()
-        .map(|(i, path)| {
-            let text = sanitize_control(path);
-            let style = if i == finder.cursor {
-                Style::new().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::new()
-            };
-            Line::styled(text, style)
-        })
+        .map(|(i, path)| finder_match_line(path, i == finder.cursor, icons))
         .collect();
 
     // Chrome widths (same as draw_finder_overlay). No top-right chip — the footer is the single
@@ -2177,10 +2332,15 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
 ///
 /// Reuses [`centered_rect_sized`], [`scroll_offset`], `PICKER_PADDING`, and the Scrollbar/
 /// Block primitives from the picker overlay — no duplication of their internals.
-fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
+fn draw_finder_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    finder: &FinderView,
+    icons: crate::config::TreeIcons,
+) {
     // Delegate all sizing + centering + scroll math to the shared layout helper, so this
     // function and `geometry()` can never drift from each other.
-    let layout = finder_overlay_layout(area, finder);
+    let layout = finder_overlay_layout(area, finder, icons);
 
     // Build the query line for rendering (same logic as the layout helper, which built it only
     // for measurement). Re-built here because `Line` is not `Copy` and the helper doesn't need
@@ -2201,15 +2361,7 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         .matches
         .iter()
         .enumerate()
-        .map(|(i, path)| {
-            let text = sanitize_control(path);
-            let style = if i == finder.cursor {
-                Style::new().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::new()
-            };
-            Line::styled(text, style)
-        })
+        .map(|(i, path)| finder_match_line(path, i == finder.cursor, icons))
         .collect();
 
     // Chrome: static strings, no sanitization needed. Only FINDER_TITLE on the top border —

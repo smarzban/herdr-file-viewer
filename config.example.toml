@@ -140,6 +140,13 @@
 # unrecognized value falls back to "left". Default:
 #tree_position = "left"
 
+# file_icons: the file/folder icon style in the tree and file finder:
+#   "unicode"   - standard Unicode glyphs (default; works without a patched font)
+#   "nerd"      - rich glyphs (requires a Nerd Font in your terminal)
+#   "off"       - plain text-only tree with no file icons
+# Default:
+#file_icons = "unicode"
+
 # --- Content preview ---------------------------------------------------------
 #
 # A file is shown in FULL until it exceeds one of two caps, then the content pane

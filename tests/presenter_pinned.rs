@@ -45,6 +45,7 @@ fn state(pinned: PreviewProjection) -> ViewState {
         split_pct: 20,
         tree_position: herdr_file_viewer::config::TreePosition::Left,
         tree_max_cols: 20,
+        tree_icons: herdr_file_viewer::config::TreeIcons::Off,
         split_manual: false,
         zoomed: false,
         remote_notice_status: None,

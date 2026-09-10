@@ -812,6 +812,8 @@ pub struct Controller {
     /// Seeded at startup via [`apply_tree_max_cols`](Self::apply_tree_max_cols); read by the
     /// Presenter through the view state. Carried across a re-root (like `split_pct`).
     tree_max_cols: u16,
+    /// File/folder icon style used by the tree presenter.
+    tree_icons: crate::config::TreeIcons,
     /// Whether the user has resized the split by hand this session (grow/shrink keys or a divider
     /// drag). `tree_max_cols` caps the tree only while this is `false`; the first manual resize seeds
     /// `split_pct` from the currently-displayed width and lifts the cap, so the resize is honoured
@@ -1067,6 +1069,7 @@ impl Controller {
             split_pct: SPLIT_DEFAULT,
             tree_position: crate::config::TreePosition::Left,
             tree_max_cols: crate::config::DEFAULT_TREE_MAX_COLS,
+            tree_icons: crate::config::TreeIcons::default(),
             split_manual: false,
             wrap_override: None,
             zoomed: false,
@@ -1755,6 +1758,11 @@ impl Controller {
         self.tree_max_cols = cols.max(crate::config::MIN_TREE_MAX_COLS);
     }
 
+    /// Seed the startup file/folder icon style from config.
+    pub fn apply_tree_icons(&mut self, icons: crate::config::TreeIcons) {
+        self.tree_icons = icons;
+    }
+
     /// Record the active content viewport `(width, height)` the Presenter last drew into, so content
     /// scrolling can be clamped to it. Called by the run loop after each draw.
     ///
@@ -1990,6 +1998,7 @@ impl Controller {
             split_pct: self.split_pct,
             tree_position: self.tree_position,
             tree_max_cols: self.tree_max_cols,
+            tree_icons: self.tree_icons,
             split_manual: self.split_manual,
             zoomed: self.zoomed,
             remote_notice_status: self.remote_notice_status(),
