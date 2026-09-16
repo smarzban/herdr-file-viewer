@@ -18,7 +18,6 @@ All notable changes to this project are documented here. The format is based on
 - Content placeholders now distinguish a binary file from a broken symlink, an out-of-root path, an unreadable file, or a non-regular file. (#171)
 
 ### Changed
-- The About tab now includes the project X profile after the GitHub-star link.
 - `baseline = "base"` or `"head"` selects the Git diff baseline used when the viewer starts. Omitting it keeps the existing context-smart default, and `b` still toggles during the session. Thanks @AntonyKor (#138) → [configuration](docs/configuration.md)
 - `←`/`h` now walks up from a file or already-collapsed directory in the normal tree, collapsing the nearest visible parent and updating the content pane. Changed-only and status trees keep their existing behavior. → [usage](docs/usage.md#the-tree) · [keys](docs/keys.md)
 
