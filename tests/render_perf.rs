@@ -26,7 +26,7 @@ fn classify_and_ingest_one_megabyte_within_300ms() {
     let prepared = classify(dir.path(), &path, Caps::default());
     let text = match &prepared {
         Prepared::Full { text } | Prepared::Truncated { text, .. } => text.clone(),
-        Prepared::Binary => String::new(),
+        Prepared::Binary | Prepared::Unavailable { .. } => String::new(),
     };
     let _ingested = to_text(&text);
     let elapsed = start.elapsed();

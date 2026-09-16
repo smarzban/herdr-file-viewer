@@ -164,15 +164,17 @@ impl HelpState {
 ///
 /// Lines, in order:
 /// 1. `Herdr File Viewer` (the display title, alone — the nice form, not the raw package name)
-/// 2. package description
-/// 3. *(blank)*
-/// 4. bare repo host+path (the `https://` scheme + any `Repository:` label stripped)
-/// 5. *(blank)*
-/// 6. `vX.Y.Z · <status>` (version + update status: `Up to date` or `Update available: vX.Y.Z`)
-/// 7. `<SPDX> License`
-/// 8. *(blank)*
-/// 9. GitHub-star call-to-action — the closing line (a plain `★`, U+2605, not the `⭐️` emoji,
-///    whose double-width mis-renders in the TUI)
+/// 2. *(blank)*
+/// 3. package description
+/// 4. *(blank)*
+/// 5. bare repo host+path (the `https://` scheme + any `Repository:` label stripped)
+/// 6. *(blank)*
+/// 7. `vX.Y.Z · <status>` (version + update status: `Up to date` or `Update available: vX.Y.Z`)
+/// 8. `<SPDX> License`
+/// 9. *(blank)*
+/// 10. GitHub-star call-to-action (a plain `★`, U+2605, not the `⭐️` emoji, whose double-width
+///     mis-renders in the TUI)
+/// 11. X profile link, the closing line
 ///
 /// (AC-16, AC-17, AC-18, AC-19)
 ///
@@ -190,6 +192,7 @@ pub fn about_text(snapshot: &crate::update::NoticeSnapshot) -> String {
         .trim_start_matches("http://");
     format!(
         "{title}\n\
+         \n\
          {description}\n\
          \n\
          {repository}\n\
@@ -197,7 +200,8 @@ pub fn about_text(snapshot: &crate::update::NoticeSnapshot) -> String {
          v{version} · {status}\n\
          {license} License\n\
          \n\
-         {star_cta}",
+         {star_cta}\n\
+         {x_handle}",
         // The display title (the nice form) — NOT the raw `CARGO_PKG_NAME` (`herdr-file-viewer`),
         // which still appears verbatim in the bare repo URL below.
         title = "Herdr File Viewer",
@@ -207,6 +211,7 @@ pub fn about_text(snapshot: &crate::update::NoticeSnapshot) -> String {
         status = status,
         license = env!("CARGO_PKG_LICENSE"),
         star_cta = "If you enjoy the file viewer, don't forget to give it a ★ on GitHub!",
+        x_handle = "Say hi at https://x.com/smarzbanX",
     )
 }
 
@@ -508,8 +513,8 @@ mod tests {
             "about_text must contain the bare repository URL (AC-17)"
         );
         assert!(
-            !text.contains("https://") && !text.contains("Repository:"),
-            "about_text must strip the URL scheme and the 'Repository:' label (AC-17)"
+            !text.contains("https://github.com") && !text.contains("Repository:"),
+            "about_text must strip the GitHub repository scheme and its 'Repository:' label (AC-17)"
         );
         // The license reads "<SPDX> License" (e.g. "MIT License").
         assert!(
@@ -518,10 +523,10 @@ mod tests {
         );
     }
 
-    // (c) AC-18: the GitHub-star CTA uses a plain ★ (U+2605, not the ⭐️ emoji) and is the CLOSING
-    // line of About — the last non-empty line, below "<SPDX> License".
+    // The GitHub-star CTA uses a plain ★ (U+2605, not the ⭐️ emoji), follows the license, and
+    // is followed by the closing X profile link.
     #[test]
-    fn star_cta_is_the_closing_line() {
+    fn about_ctas_follow_license_with_x_profile_closing() {
         let text = about_text(&crate::update::NoticeSnapshot::default());
         let lines: Vec<&str> = text.split('\n').collect();
 
@@ -542,14 +547,21 @@ mod tests {
             license_pos < cta_pos,
             "the CTA (line {cta_pos}) must come BELOW the License line (line {license_pos}) — AC-18"
         );
-        // It is the LAST non-empty line of About.
+        let x_pos = lines
+            .iter()
+            .position(|line| *line == "Say hi at https://x.com/smarzbanX")
+            .expect("about_text must contain the X profile link");
+        assert!(
+            cta_pos < x_pos,
+            "the X profile link must follow the GitHub CTA"
+        );
         let last_non_empty = lines
             .iter()
-            .rposition(|l| !l.trim().is_empty())
+            .rposition(|line| !line.trim().is_empty())
             .expect("about_text has a non-empty line");
         assert_eq!(
-            cta_pos, last_non_empty,
-            "the CTA must be the closing (last non-empty) line of About (AC-18)"
+            x_pos, last_non_empty,
+            "the X profile link must be the closing line of About"
         );
     }
 
