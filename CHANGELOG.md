@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format is based on
 ### Fixed
 - Restore Git status, branch, and diffs on git 2.39 (Apple’s Xcode git), while disabling configured filter commands. Thanks @arykhoda (#160, #162) → [usage](docs/usage.md#git-awareness) · [install](docs/install.md)
 - The tree and Go-to-file index no longer inherit `.gitignore` rules from an unrelated directory or repository above a browsed Git repository. The ancestor-`.gitignore` search climbed to the filesystem root with no repo-boundary check, so a repo nested under an unrelated enclosing `.gitignore` (a monorepo checkout, a dotfiles-managed home directory) could render a completely empty tree with no error. Thanks @rubenvarela (#166).
-- Content placeholders now distinguish a binary file from a broken symlink, an out-of-root path, an unreadable file, or a non-regular file. (#171)
+- Content placeholders now distinguish a binary file from a broken symlink, an out-of-root path, an unreadable file, or a non-regular file. Thanks @samsimsom (#171)
 
 ### Changed
 - `baseline = "base"` or `"head"` selects the Git diff baseline used when the viewer starts. Omitting it keeps the existing context-smart default, and `b` still toggles during the session. Thanks @AntonyKor (#138) → [configuration](docs/configuration.md)
