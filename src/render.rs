@@ -135,17 +135,20 @@ pub fn classify(root: &Path, path: &Path, caps: Caps) -> Prepared {
     let canonical = match path.canonicalize() {
         Ok(path) => path,
         Err(error) => {
-            let reason = match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    UnavailableReason::BrokenSymlink
+            // A link whose target exists but cannot be traversed also has symlink metadata, so
+            // preserve PermissionDenied before inferring that a link is broken from `lstat`.
+            let reason = if error.kind() == ErrorKind::PermissionDenied {
+                UnavailableReason::Unreadable
+            } else {
+                match std::fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        UnavailableReason::BrokenSymlink
+                    }
+                    Err(metadata_error) if metadata_error.kind() == ErrorKind::PermissionDenied => {
+                        UnavailableReason::Unreadable
+                    }
+                    _ => UnavailableReason::Missing,
                 }
-                Err(metadata_error)
-                    if error.kind() == ErrorKind::PermissionDenied
-                        || metadata_error.kind() == ErrorKind::PermissionDenied =>
-                {
-                    UnavailableReason::Unreadable
-                }
-                _ => UnavailableReason::Missing,
             };
             return Prepared::Unavailable { reason };
         }
@@ -1047,6 +1050,73 @@ mod tests {
                 reason: UnavailableReason::Missing,
             }
         );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn labels_an_unreadable_regular_file_without_calling_it_binary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_dir("root");
+        let file = root.join("locked.txt");
+        fs::write(&file, "secret").unwrap();
+        let original_permissions = fs::metadata(&file).unwrap().permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o000);
+        fs::set_permissions(&file, locked_permissions).unwrap();
+
+        // A privileged test identity can read mode-000 files. In that environment this fixture
+        // cannot exercise the File::open error branch, so skip rather than asserting a false OS
+        // guarantee. The test runs on ordinary Unix CI identities.
+        if File::open(&file).is_ok() {
+            fs::set_permissions(&file, original_permissions).unwrap();
+            fs::remove_dir_all(&root).ok();
+            return;
+        }
+
+        assert_eq!(
+            classify(&root, &file, Caps::default()),
+            Prepared::Unavailable {
+                reason: UnavailableReason::Unreadable,
+            }
+        );
+        fs::set_permissions(&file, original_permissions).unwrap();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn labels_a_symlink_to_an_unreadable_target_as_unreadable() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = unique_dir("root");
+        let private = root.join("private");
+        fs::create_dir_all(&private).unwrap();
+        let target = private.join("secret.txt");
+        fs::write(&target, "secret").unwrap();
+        let link = root.join("link.txt");
+        symlink("private/secret.txt", &link).unwrap();
+        let original_permissions = fs::metadata(&private).unwrap().permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o000);
+        fs::set_permissions(&private, locked_permissions).unwrap();
+
+        // As above, privileged identities can traverse this fixture and cannot exercise the
+        // PermissionDenied canonicalization branch.
+        if link.canonicalize().is_ok() {
+            fs::set_permissions(&private, original_permissions).unwrap();
+            fs::remove_dir_all(&root).ok();
+            return;
+        }
+
+        assert_eq!(
+            classify(&root, &link, Caps::default()),
+            Prepared::Unavailable {
+                reason: UnavailableReason::Unreadable,
+            }
+        );
+        fs::set_permissions(&private, original_permissions).unwrap();
         fs::remove_dir_all(&root).ok();
     }
 
