@@ -7,7 +7,9 @@
 //! `sanitize_control` lives here for the same reason: the Presenter (every displayed string) and
 //! the controller (the clipboard path) share one AC-27 neutralizer rather than two copies.
 
+use ratatui::buffer::CellWidth;
 use ratatui::text::Line;
+use std::collections::VecDeque;
 
 /// The 0-based char index at which each wrapped display row of `text` begins under ratatui's
 /// word wrapper (`Wrap{trim:false}`). Row 0 always starts at char 0, so the result is never
@@ -24,50 +26,57 @@ use ratatui::text::Line;
 /// `Paragraph` render, so it cannot silently drift from the widget.
 ///
 /// This is what lets a mouse position be mapped to a character under wrap: display row *r* of
-/// the line covers chars `[starts[r], starts[r+1])` (the last row runs to the line's end), so
-/// `caret = starts[r] + column`, clamped into the row's span. Chars stand in for display width
-/// (1 char = 1 column) — the documented wide-glyph caveat every consumer shares.
+/// the line covers chars `[starts[r], starts[r+1])` (the last row runs to the line's end). The
+/// starts remain char indices because selection and span patching are char-indexed, while every
+/// wrapping decision is made in the terminal cells ratatui actually draws.
 pub(crate) fn wrap_row_starts(text: &str, width: usize) -> Vec<usize> {
     if width == 0 {
         return vec![0];
     }
     let max = width;
     let mut starts = vec![0usize];
-    // The port tracks char COUNTS where ratatui buffers graphemes; text order is preserved
-    // (pending whitespace precedes the pending word, which precedes the current char), so at
-    // any moment the pending whitespace occupies chars `[pos - word - ws, pos - word)` and the
-    // pending word `[pos - word, pos)` — that is what lets a row start be computed at each break.
-    let mut committed = 0usize; // chars committed to the current (not yet emitted) row
-    let mut word = 0usize; // pending (uncommitted) word chars
-    let mut ws = 0usize; // pending (uncommitted) whitespace chars
+    let mut committed = 0usize;
+    let mut word = 0usize;
+    let mut word_start = None;
+    let mut ws = 0usize;
+    let mut whitespace = VecDeque::<(usize, usize)>::new();
     let mut prev_non_ws = false;
+
     for (pos, c) in text.chars().enumerate() {
         let is_ws = c.is_whitespace();
-        // A finished word (word→whitespace edge), or a first segment that alone overflows the
-        // empty row: commit the pending whitespace + word to the row (trim:false keeps the
-        // whitespace — this is where leading/indent spaces pack into the row).
-        if (prev_non_ws && is_ws) || (committed == 0 && word + ws + 1 > max) {
+        let mut buf = [0; 4];
+        let cell_width = c.encode_utf8(&mut buf).cell_width() as usize;
+        // Ratatui drops a grapheme wider than the available line. Keeping its selection mapping
+        // out of a row it cannot render is the closest char-level equivalent.
+        if cell_width > max {
+            continue;
+        }
+        if (prev_non_ws && is_ws) || (committed == 0 && word + ws + cell_width > max) {
             committed += ws + word;
             ws = 0;
             word = 0;
+            word_start = None;
+            whitespace.clear();
         }
-        // The row is full, or the still-growing word would overflow it: emit the row and start
-        // the next one.
-        if committed >= max || committed + ws + word >= max {
-            let remaining = max - committed.min(max);
-            // Whitespace that would have fit on the finished row is dropped; the excess carries.
-            let dropped = ws.min(remaining);
-            ws -= dropped;
+        // A wide current glyph can straddle the remaining row cells even when the already
+        // committed segment is short of `max`, so include its display width in the overflow test.
+        if committed >= max || (cell_width > 0 && committed + ws + word + cell_width > max) {
+            let mut remaining = max.saturating_sub(committed);
+            while let Some((_, w)) = whitespace.front() {
+                if *w > remaining {
+                    break;
+                }
+                remaining -= *w;
+                ws -= *w;
+                whitespace.pop_front();
+            }
             committed = 0;
-            // Where the next row begins: the first still-pending char — or past the current
-            // char when it is whitespace landing right at the break with nothing pending
-            // (ratatui skips it: "don't count first whitespace toward next word").
-            let skip_current = is_ws && ws == 0;
-            let next_start = if ws + word > 0 {
-                pos - word - ws
-            } else {
-                pos + usize::from(skip_current)
-            };
+            let skip_current = is_ws && whitespace.is_empty();
+            let next_start = whitespace
+                .front()
+                .map(|(index, _)| *index)
+                .or(word_start)
+                .unwrap_or(pos + usize::from(skip_current));
             starts.push(next_start);
             if skip_current {
                 prev_non_ws = false;
@@ -75,15 +84,14 @@ pub(crate) fn wrap_row_starts(text: &str, width: usize) -> Vec<usize> {
             }
         }
         if is_ws {
-            ws += 1;
+            ws += cell_width;
+            whitespace.push_back((pos, cell_width));
         } else {
-            word += 1;
+            word_start.get_or_insert(pos);
+            word += cell_width;
         }
         prev_non_ws = !is_ws;
     }
-    // Tail: the remaining whitespace + word form the final row (trim:false appends both). If
-    // nothing remains, the last pushed start was for a row ratatui never emits — drop it (but
-    // never row 0: an empty text is still one empty row).
     if committed + ws + word == 0 && starts.len() > 1 {
         starts.pop();
     }
@@ -109,19 +117,11 @@ pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
 /// a real render), and ratatui DROPS whitespace at row breaks — a real line can occupy FEWER
 /// rows than `ceil(chars/width)` (e.g. two 40-char words joined by one space render as exactly
 /// two rows at width 40), so flooring by the char-wrap would overcount, shifting every line
-/// below it up by a row (mouse selections then landed on the line ABOVE). The floor survives
-/// only for lines whose display width exceeds their char count (wide CJK/emoji glyphs, where the
-/// 1-char=1-col port undercounts): there it keeps the scroll clamp able to reach the bottom, at
-/// the cost of the already-documented wide-glyph mapping caveat.
+/// below it up by a row (mouse selections then landed on the line ABOVE). The cell-width port
+/// now handles wide glyphs too, so no compensating char-count floor is needed.
 pub(crate) fn line_wrapped_rows(line: &Line, width: usize) -> usize {
-    let width = width.max(1);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    let rows = wrapped_rows(&text, width);
-    let display_width = line.width();
-    if display_width > text.chars().count() {
-        return rows.max(display_width.div_ceil(width));
-    }
-    rows
+    wrapped_rows(&text, width.max(1))
 }
 
 /// [`wrap_row_starts`] for a line the Presenter renders behind a `prefix`-column overlay glyph on
@@ -153,12 +153,7 @@ pub(crate) fn line_wrapped_rows_prefixed(line: &Line, width: usize, prefix: usiz
     let width = width.max(1);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let padded: String = "|".repeat(prefix) + &text;
-    let rows = wrapped_rows(&padded, width);
-    let display_width = line.width() + prefix;
-    if display_width > padded.chars().count() {
-        return rows.max(display_width.div_ceil(width));
-    }
-    rows
+    wrapped_rows(&padded, width)
 }
 
 /// Neutralize a string for display (a label/title) or for the clipboard: drop control characters
@@ -257,7 +252,20 @@ mod tests {
             // renders in 2 rows — fewer than ceil(81/40) = 3. The case that proved the char-wrap
             // floor wrong (it shifted wrapped code selections onto the line above).
             format!("{} {}", "x".repeat(40), "y".repeat(40)),
+            // A CJK glyph fills the final two cells of row 0, so the following ASCII char starts
+            // row 1 at char index 39, not the 40th character.
+            format!("{}汉{}", "a".repeat(38), "b".repeat(40)),
         ];
+        assert_eq!(
+            wrap_row_starts(&format!("{}汉b", "a".repeat(38)), 40),
+            vec![0, 39],
+            "row starts remain char indices while wrap decisions use terminal cells"
+        );
+        assert_eq!(
+            wrap_row_starts("汉字", 3),
+            vec![0, 1],
+            "a wide glyph that cannot fit in the remaining cell starts the next row"
+        );
 
         const W: u16 = 40; // a narrow pane exercises many breaks per line
         for text in &corpus {

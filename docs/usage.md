@@ -402,5 +402,6 @@ display-only and never installs, opens, or copies anything. Control remote notic
 
 The mouse is additive and on by default: click a tree row to select it, double-click to
 open/expand, use the wheel to scroll, drag a scrollbar or the divider, and drag over content text to
-select-and-copy without any mode. The full gesture table is in the [keys reference](keys.md#mouse).
+select-and-copy without any mode. Character selection follows terminal cell width, so full-width CJK
+text selects at the same boundary you see on screen. The full gesture table is in the [keys reference](keys.md#mouse).
 `Shift`+drag is deliberately left to your terminal's own native selection.
