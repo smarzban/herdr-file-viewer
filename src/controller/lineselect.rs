@@ -722,6 +722,11 @@ mod tests {
         // Each CJK glyph occupies two terminal cells. A caret at a cell boundary after it must
         // advance only one character, rather than treating every display cell as a character.
         assert_eq!(char_index_at_col("ab汉字cd", 2), 2);
+        assert_eq!(
+            char_index_at_col("ab汉字cd", 3),
+            2,
+            "the second cell of 汉 remains before the glyph"
+        );
         assert_eq!(char_index_at_col("ab汉字cd", 4), 3);
         assert_eq!(char_index_at_col("ab汉字cd", 6), 4);
         // Past the end clamps to a caret at end-of-line.
