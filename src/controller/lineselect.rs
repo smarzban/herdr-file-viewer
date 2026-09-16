@@ -280,9 +280,10 @@ impl Controller {
             self.active_interaction.viewport_width.max(1) as usize,
             overlay,
         );
+        // Keep a stale geometry calculation from indexing past the layout rows during a resize.
         let row_within = display_row
             .saturating_sub(self.content_row_of_line(line))
-            .min(starts.len() - 1); // the wide-glyph floor can inflate the row count past the port's
+            .min(starts.len() - 1);
         let base = starts[row_within];
         let seg_end = starts
             .get(row_within + 1)
