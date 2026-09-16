@@ -58,7 +58,9 @@ pub(crate) fn wrap_row_starts(text: &str, width: usize) -> Vec<usize> {
             word_start = None;
             whitespace.clear();
         }
-        if committed >= max || (cell_width > 0 && committed + ws + word >= max) {
+        // A wide current glyph can straddle the remaining row cells even when the already
+        // committed segment is short of `max`, so include its display width in the overflow test.
+        if committed >= max || (cell_width > 0 && committed + ws + word + cell_width > max) {
             let mut remaining = max.saturating_sub(committed);
             while let Some((_, w)) = whitespace.front() {
                 if *w > remaining {
@@ -115,19 +117,11 @@ pub(crate) fn wrapped_rows(text: &str, width: usize) -> usize {
 /// a real render), and ratatui DROPS whitespace at row breaks — a real line can occupy FEWER
 /// rows than `ceil(chars/width)` (e.g. two 40-char words joined by one space render as exactly
 /// two rows at width 40), so flooring by the char-wrap would overcount, shifting every line
-/// below it up by a row (mouse selections then landed on the line ABOVE). The floor survives
-/// only for lines whose display width exceeds their char count (wide CJK/emoji glyphs, where the
-/// 1-char=1-col port undercounts): there it keeps the scroll clamp able to reach the bottom, at
-/// the cost of the already-documented wide-glyph mapping caveat.
+/// below it up by a row (mouse selections then landed on the line ABOVE). The cell-width port
+/// now handles wide glyphs too, so no compensating char-count floor is needed.
 pub(crate) fn line_wrapped_rows(line: &Line, width: usize) -> usize {
-    let width = width.max(1);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    let rows = wrapped_rows(&text, width);
-    let display_width = line.width();
-    if display_width > text.chars().count() {
-        return rows.max(display_width.div_ceil(width));
-    }
-    rows
+    wrapped_rows(&text, width.max(1))
 }
 
 /// [`wrap_row_starts`] for a line the Presenter renders behind a `prefix`-column overlay glyph on
@@ -159,12 +153,7 @@ pub(crate) fn line_wrapped_rows_prefixed(line: &Line, width: usize, prefix: usiz
     let width = width.max(1);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let padded: String = "|".repeat(prefix) + &text;
-    let rows = wrapped_rows(&padded, width);
-    let display_width = line.width() + prefix;
-    if display_width > padded.chars().count() {
-        return rows.max(display_width.div_ceil(width));
-    }
-    rows
+    wrapped_rows(&padded, width)
 }
 
 /// Neutralize a string for display (a label/title) or for the clipboard: drop control characters
@@ -271,6 +260,11 @@ mod tests {
             wrap_row_starts(&format!("{}汉b", "a".repeat(38)), 40),
             vec![0, 39],
             "row starts remain char indices while wrap decisions use terminal cells"
+        );
+        assert_eq!(
+            wrap_row_starts("汉字", 3),
+            vec![0, 1],
+            "a wide glyph that cannot fit in the remaining cell starts the next row"
         );
 
         const W: u16 = 40; // a narrow pane exercises many breaks per line

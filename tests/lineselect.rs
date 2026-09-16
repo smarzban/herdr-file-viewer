@@ -931,6 +931,27 @@ fn ambient_drag_copies_exact_mixed_width_cjk_span() {
 }
 
 #[test]
+fn wrapped_ambient_drag_copies_exact_cjk_span_across_rows() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), CjkBody);
+    await_marker(&mut ctrl, "ab汉字cd");
+    ctrl.set_content_viewport(4, 20);
+    ctrl.set_pane_geometry(content_geometry());
+    ctrl.handle(Intent::ToggleWrap);
+
+    // At four cells, row 0 is `ab汉` and row 1 starts with `字`. Drag to its right boundary.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 43, 2));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 43, 2));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("ab汉字")
+    );
+}
+
+#[test]
 fn ambient_drag_after_horizontal_scroll_copies_one_cjk_glyph() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
