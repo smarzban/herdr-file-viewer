@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::preview::PreviewSelection as LineSelectState;
+use ratatui::buffer::CellWidth;
 
 /// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
@@ -67,12 +68,20 @@ fn filter_control_keep_tabs(s: &str) -> String {
 /// position for click-drag selection. Clamps to the char count when `col` is at/past the end (a
 /// caret at end-of-line).
 ///
-/// v1 assumes one display column per char: `bat` expands tabs to spaces before we ever see the
-/// text, and code is overwhelmingly single-width, so `col` maps straight to a char index. Precise
-/// wide-glyph (CJK / emoji) column accounting is a follow-up; it would replace this body with a
-/// width-summing walk without changing the signature.
+/// Terminal coordinates are display cells, not character indices. Sum ratatui's cell widths so a
+/// CJK glyph consumes its two cells but remains one char-indexed selection unit. A pointer inside a
+/// multi-cell glyph resolves to the caret before it; its right boundary resolves after it.
 fn char_index_at_col(s: &str, col: usize) -> usize {
-    col.min(s.chars().count())
+    let mut used = 0;
+    for (index, ch) in s.chars().enumerate() {
+        let mut buf = [0; 4];
+        let width = ch.encode_utf8(&mut buf).cell_width() as usize;
+        if col < used + width {
+            return index;
+        }
+        used += width;
+    }
+    s.chars().count()
 }
 
 impl Controller {
@@ -284,7 +293,15 @@ impl Controller {
         } else {
             within
         };
-        (line, (base + col_in_row).min(seg_end))
+        let segment: String = text
+            .chars()
+            .skip(base)
+            .take(seg_end.saturating_sub(base))
+            .collect();
+        (
+            line,
+            (base + char_index_at_col(&segment, col_in_row)).min(seg_end),
+        )
     }
 
     /// Leading columns the active content overlay prepends before the text, so a mouse column maps
@@ -699,9 +716,14 @@ mod tests {
     }
 
     #[test]
-    fn char_index_at_col_maps_column_to_char_and_clamps() {
+    fn char_index_at_col_maps_terminal_cells_to_char_carets_and_clamps() {
         assert_eq!(char_index_at_col("hello", 0), 0);
         assert_eq!(char_index_at_col("hello", 3), 3);
+        // Each CJK glyph occupies two terminal cells. A caret at a cell boundary after it must
+        // advance only one character, rather than treating every display cell as a character.
+        assert_eq!(char_index_at_col("ab汉字cd", 2), 2);
+        assert_eq!(char_index_at_col("ab汉字cd", 4), 3);
+        assert_eq!(char_index_at_col("ab汉字cd", 6), 4);
         // Past the end clamps to a caret at end-of-line.
         assert_eq!(char_index_at_col("hello", 99), 5);
         assert_eq!(char_index_at_col("", 4), 0);

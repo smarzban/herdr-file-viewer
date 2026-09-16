@@ -121,6 +121,19 @@ fn has_commented_assignment(example: &str, key: &str) -> bool {
 }
 
 #[test]
+fn usage_and_changelog_document_cjk_mouse_selection_width() {
+    assert!(
+        USAGE_DOC.contains("Character selection follows terminal cell width")
+            && USAGE_DOC.contains("full-width CJK"),
+        "usage must explain that drag selection follows displayed CJK cell width"
+    );
+    assert!(
+        CHANGELOG.contains("Mouse selection now follows terminal cell width"),
+        "changelog must record the CJK mouse-selection fix"
+    );
+}
+
+#[test]
 fn config_example_documents_every_config_key() {
     // Anti-drift: the bundled `config.example.toml` template must carry a commented-out ASSIGNMENT
     // for every scalar config key and the `[keys]` table header, so adding a `Config` field (or

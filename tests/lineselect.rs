@@ -88,6 +88,33 @@ impl ContentProvider for WrapBody {
     }
 }
 
+/// A fixed mixed-width body used to prove mouse selection follows terminal cells rather than
+/// Unicode scalar counts: `汉` and `字` each occupy two cells.
+#[derive(Clone, Copy)]
+struct CjkBody;
+impl ContentProvider for CjkBody {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw("ab汉字cd"),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// A mixed-width line that remains horizontally scrollable after the CJK glyph.
+#[derive(Clone, Copy)]
+struct CjkScrolledBody;
+impl ContentProvider for CjkScrolledBody {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw(format!("{}汉{}", "a".repeat(8), "b".repeat(100))),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
 /// A Clipboard stub whose `copy` always fails, so a test can prove the copy adapter surfaces a
 /// failure notice (AC-11) without panicking when the clipboard is unavailable.
 #[derive(Default, Clone)]
@@ -878,6 +905,50 @@ fn mouse_down_places_caret_on_clicked_line() {
         ctrl.line_selection(),
         Some((3, 3)),
         "a press places the caret on the clicked source line (3), collapsed"
+    );
+}
+
+#[test]
+fn ambient_drag_copies_exact_mixed_width_cjk_span() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), CjkBody);
+    await_marker(&mut ctrl, "ab汉字cd");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+
+    // The content begins at x=41. `ab汉字c` occupies seven terminal cells, so x=48 is the
+    // boundary before `d`, even though it is only five Unicode chars from the start.
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 48, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 48, 1));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("ab汉字c"),
+        "the copied span follows the seven displayed cells, not the five char indices"
+    );
+}
+
+#[test]
+fn ambient_drag_after_horizontal_scroll_copies_one_cjk_glyph() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
+    let (mut ctrl, copied) = controller_with_clipboard(dir.path(), CjkScrolledBody);
+    await_marker(&mut ctrl, "汉");
+    ctrl.set_content_viewport(80, 20);
+    ctrl.set_pane_geometry(content_geometry());
+
+    // A horizontal wheel step is eight cells, placing `汉` at the left edge. Its right boundary
+    // is two cells later, at x=43, and must not select the following `b`.
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 41, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 43, 1));
+    ctrl.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 43, 1));
+
+    assert_eq!(
+        copied.lock().unwrap().last().map(String::as_str),
+        Some("汉")
     );
 }
 
