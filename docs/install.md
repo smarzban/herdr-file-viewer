@@ -19,9 +19,7 @@ See [external renderers](renderers.md).
 > prebuilt at all: an unsupported platform, or a version that hasn't been released yet. The install
 > command is the same either way.
 
-**Install through herdr**: herdr runs the manifest's `[[build]]` step at install time, either
-downloading a prebuilt binary or compiling from source, producing `./target/release/herdr-file-viewer`,
-which the viewer pane launches:
+**Install through herdr.** At install time, herdr runs the manifest's `[[build]]` step. The step downloads a prebuilt binary or compiles from source and produces `./target/release/herdr-file-viewer`, which the viewer pane launches:
 
 ```bash
 # install (and update, re-run any time to get the latest):
@@ -66,7 +64,7 @@ herdr plugin install smarzban/herdr-file-viewer
 
 - You **don't** need `--ref` to stay current; it only *pins* a specific version (and a pin stays
   pinned until you change it).
-- Want a heads-up the moment a release ships? On GitHub, **Watch → Custom → Releases**.
+- Want a heads-up the moment a release ships? On GitHub, select **Watch**, then **Custom**, then **Releases**.
 - Prefer no remote notices? Set [`update_check = false`](configuration.md), or set
   `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` when the config key is absent. The check otherwise runs at
   most once per 24h and never blocks the viewer when offline.

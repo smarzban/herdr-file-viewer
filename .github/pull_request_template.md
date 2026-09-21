@@ -1,6 +1,6 @@
 ## Summary
 
-<!-- What does this change do, and why? -->
+<!-- Describe what this change does and why. -->
 
 ## Changes
 
@@ -14,4 +14,4 @@
 
 ## Related
 
-<!-- e.g. Closes #123 -->
+<!-- Example: Closes #123 -->

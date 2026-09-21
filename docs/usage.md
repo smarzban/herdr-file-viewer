@@ -1,8 +1,6 @@
 # Usage guide
 
-A tour of what the viewer does, feature by feature. For the exact keys and mouse gestures see the
-[keys reference](keys.md); to open the viewer in the first place see [summoning](summoning.md); to
-customize it see [configuration](configuration.md).
+This guide explains each viewer feature. See the [keys reference](keys.md) for exact keys and mouse gestures, [summoning](summoning.md) to open the viewer, and [configuration](configuration.md) to customize it.
 
 - [The tree](#the-tree)
 - [Finding a file fast](#finding-a-file-fast)
@@ -39,13 +37,11 @@ Move the cursor with `↑`/`↓` (or `k`/`j`), expand/collapse a directory with 
 the nearest visible parent, so repeated presses climb the tree; it stops at a root child. This also
 skips folded segments when [`compact_dirs`](configuration.md) is on. Changed-only (`c`) and status
 (`d`) views keep their existing collapse behavior because their directory rows are always expanded.
-The tree scrolls to keep the selection in view, and sideways for long or deeply-nested names —
-reachable by keyboard with `H` / `L` when the tree is focused. A scrollbar appears whenever there's
+The tree scrolls to keep the selection in view and sideways for long or deeply nested names. Use `H` / `L` when the tree is focused. A scrollbar appears whenever there's
 more than fits. Narrow or widen the tree column with `<` / `>`, or drag the divider; the starting
 split, the tree's side, and a column cap are all [configurable](configuration.md).
 
-On a **deeply nested** layout the per-segment tree spends most of a narrow column on indentation, and
-the file names — the part you came for — are what gets truncated. Set
+On a **deeply nested** layout, the per-segment tree spends most of a narrow column on indentation and truncates the file names. Set
 [`compact_dirs = true`](configuration.md) to draw a chain of single-child directories as one row:
 `src/main/java/br/com` instead of six rows, each indented two columns further than the last. The row
 leads into the deepest directory of the chain, so expanding, collapsing, and status colors all act on
@@ -54,31 +50,28 @@ that one, and the chain stops the moment a directory holds a file or a second en
 ## Finding a file fast
 
 Press `f` to open a **fuzzy finder** over every file in the tree (`.gitignore`-aware). Type to
-filter, `↑`/`↓` to move, `Enter` to open, `Esc` to cancel — far faster than scrolling the tree in a
+filter, `↑`/`↓` to move, `Enter` to open, and `Esc` to cancel. This is faster than scrolling the tree in a
 large repo. Confirming from a pinned preview moves focus to the active preview where the chosen
 file opens.
 
 ## Open at a known file
 
-When something **already knows** the path (and maybe the line), you can start the viewer on that
-file instead of landing on the tree and navigating by hand. This is for agents, companion plugins,
-and scripts — day-to-day browsing is unchanged (`f`, `:`, the tree).
+When an agent, companion plugin, or script knows the path and optional line, it can start the viewer at that location. Interactive browsing through `f`, `:`, and the tree remains unchanged.
 
 The launch **open target** is a path under the tree **root** (repo-relative is the usual form;
-absolute paths under the root are also accepted), optionally with a 1-based line — the same shape
-a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open shows a
+absolute paths under the root are also accepted), optionally with a 1-based line. This is the same shape a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open shows a
 short status notice (`Opened path`, `Opened path:N`, or `Opened path:A-B`).
 
 A **range** form (`src/app.rs:10-20`) also:
 
 - jumps to the **start** line
-- paints a soft highlight on lines 10–20 for about **1 second**
+- paints a soft highlight on lines 10-20 for about **1 second**
 
 Path-only and single-line opens do not use that highlight (scroll + notice is enough).
 
 Two ways to pass it (the flag wins if both are set):
 
-| Surface | Example |
+| Input | Example |
 | --- | --- |
 | CLI flag | `herdr-file-viewer --open src/app.rs:42` |
 | Environment | `HERDR_FILE_VIEWER_OPEN=src/app.rs:42` |
@@ -89,26 +82,24 @@ Ask an agent (or a small companion plugin) to open a place in the **file viewer*
 pasting a path into chat. Once the agent knows how (see [Teach your agent](#teach-your-agent)
 below), natural requests work when it can resolve a real path:
 
-- “Open the file that’s breaking in the file viewer.” (needs an error/log in context)
-- “Show me line 210 of `src/app.rs` in the file viewer.”
-- “Open `handle_finder_click` in the file viewer.”
-- “Show me the `render` function in the file viewer.”
-- “Open the failing test at `tests/tree.rs:149`.”
-- “Jump to this range in the viewer: `src/controller/finder.rs:141-150`.”
+- "Open the file that's breaking in the file viewer." (needs an error/log in context)
+- "Show me line 210 of `src/app.rs` in the file viewer."
+- "Open `handle_finder_click` in the file viewer."
+- "Show me the `render` function in the file viewer."
+- "Open the failing test at `tests/tree.rs:149`."
+- "Jump to this range in the viewer: `src/controller/finder.rs:141-150`."
 
 The agent resolves that to a repo-relative `path` or `path:line` (or range), then launches the
 viewer with `HERDR_FILE_VIEWER_OPEN` (no fuzzy-finder key-scripting). You get a Files pane on that
 file, content loaded, viewport on the line. If the pane is too narrow to show the content column
-(tree-only layout), the viewer **zooms** the file automatically — same as confirming the fuzzy
-finder in a narrow split.
+(tree-only layout), the viewer **zooms** the file automatically, as it does when you confirm the fuzzy finder in a narrow split.
 
 ### Teach your agent
 
-Agents do **not** know this surface by default. This repository includes a
+Agents do **not** know this behavior by default. This repository includes a
 [ready-to-copy agent skill](../skills/herdr-file-viewer/SKILL.md) with the target-resolution,
 launch, and conversation rules. Use it where your agent runner supports skills, or paste the short
-block below into your project’s `AGENTS.md` (preferred: every agent reads it) or `CLAUDE.md` so
-“open in the file viewer” means something concrete:
+block below into your project's `AGENTS.md` (preferred because every agent reads it) or `CLAUDE.md` so "open in the file viewer" means something concrete:
 
 ````markdown
 ## File viewer (herdr-file-viewer)
@@ -144,8 +135,7 @@ cannot accept an open target, so use WSL for this flow or, if the binary is on `
 the binary on `PATH`: `herdr-file-viewer --open <path>[:line]`.
 ````
 
-Without that (or an equivalent skill), a vague “open it in the file viewer” is only a wish: the
-agent has no standard way to discover `--open` / `HERDR_FILE_VIEWER_OPEN`.
+Without that instruction or an equivalent skill, the agent has no standard way to discover `--open` or `HERDR_FILE_VIEWER_OPEN` from a request such as "open it in the file viewer."
 
 ### Run the binary yourself
 
@@ -193,7 +183,7 @@ remain diff-first because no file content remains to display.
   `q`/`Esc`) to restore the split. You can also **double-click the content pane title** (the
   filename on the top border) to toggle the same zoom without the key.
 - **Full-screen** with `Z` (Shift+`z`) to open the file *and* zoom the viewer's herdr pane to fill
-  the whole terminal — the file takes over the entire screen, not just the split. `Z` again (or
+  the whole terminal. The file takes over the entire screen, not just the split. `Z` again (or
   `Esc`/`q`/`z`) returns to the split.
 
 Rendering is **delegated** to `glow` (markdown), `delta` (diffs), and `bat` (syntax); when a
@@ -208,7 +198,7 @@ follow later renders. Press `p` again on the same file to unpin it; press it on 
 file to replace the reference. A directory, an empty tree, or a preview still rendering cannot be
 pinned.
 
-Every pin carries its **captured origin** — the branch, or detached state, it was taken on — in its
+Every pin carries its **captured origin**, the branch or detached state it was taken on, in its
 title, as `Pinned: [main]`. The captured path is not in the title; it would clip the origin away on
 a narrow pane, and `y`/`Y` copy it anyway. When the pin comes from a **different worktree** than the
 one you are viewing, the title names that worktree too, as `Pinned: [main @ other-checkout]`, so a
@@ -218,7 +208,7 @@ remains useful even if its old worktree is no longer selected: after such a swit
 starts naming the worktree it came from. While the pin is focused, `y` copies its **captured repo-relative path** and
 `Y` its **captured absolute path**; neither operation reads the current tree or the old file again.
 
-With the tree visible, `Tab` cycles focus **tree → active preview → pinned preview → tree**. In
+With the tree visible, `Tab` cycles focus from the tree to the active preview, then the pinned preview, and back to the tree. In
 tree-hidden zoom the cycle is active preview then pinned preview. The pinned and active previews
 have separate scroll positions and searches are independent: arrows, paging, `/`, and `n`/`N`
 operate only on the focused preview. On a narrow pane, pinning never takes a pane away: the tree
@@ -226,12 +216,11 @@ and active preview retain the no-pin layout, the hidden pin persists, and the ac
 `Pinned: <path> — widen to view` until there is room for both **40-column floor** previews. `Tab`
 then visits only the visible tree and active preview.
 
-The reference is display-only. Actions that need the live selection — including `Enter`, `:`, `e`,
-`L`, `O`, `R`, `a`, `A`, `v`, `D`, `w`, and `Z` — are **unavailable from the pinned preview** and
+The reference is display-only. Actions that need the live selection, including `Enter`, `:`, `e`, `L`, `O`, `R`, `a`, `A`, `v`, `D`, `w`, and `Z`, are **unavailable from the pinned preview** and
 show a short notice; `Tab` to the active preview or tree to use them. This keeps a frozen reference
 from silently acting on a newer tree selection.
 
-Use `{` / `}` to shrink or grow the pin in 5-point steps (20–80%) without moving the tree/content
+Use `{` / `}` to shrink or grow the pin in 5-point steps (20-80%) without moving the tree/content
 split. They move the **preview divider** between the pinned and active previews and do nothing when
 there is no pin. You can also **drag the preview divider** with the mouse; it is separate from the
 outer tree/content divider (`<` / `>`). Each preview has its own scrollbars, which you can drag or
@@ -239,21 +228,20 @@ press just as you would the active content scrollbar.
 
 ## Git awareness
 
-Git status is woven straight into the tree, not a separate mode:
+The tree includes git status:
 
-- **Status markers**: each file carries its git-status letter — `M` modified, `A` added, `D`
-  deleted, `?` untracked — and a directory containing any change carries a `●`. They're **colored**
+- **Status markers**: each file carries its git-status letter: `M` means modified, `A` added, `D`
+  deleted, and `?` untracked. A directory containing any change carries a `●`. They're **colored**
   so changes read at a glance (changed files and dirty folders red, new files green), with the glyph
   as a non-color cue so status survives a colorblind palette or a non-default terminal theme.
   They appear in the full tree from startup: working-tree status takes precedence, with changes
   against the active baseline filling in committed branch changes. Pressing `c` only filters the
   rows; it is not needed to populate markers. `b` updates these baseline markers too.
 - **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
-  baseline (`b`) — useful for reviewing a whole branch (merge-base) or just uncommitted work (`HEAD`).
+  baseline (`b`). This helps when reviewing a whole branch (merge-base) or only uncommitted work (`HEAD`).
 - **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next
   or previous changed file, wrapping at the ends with a notice. It walks whichever set the tree is
-  filtered by — the working-tree status while `d` is on, else the baseline-aware set behind `c` and
-  `b` — in the order the tree lists those files top-to-bottom, and expands a collapsed directory
+  filtered by, either the working-tree status while `d` is on or the baseline-aware set behind `c` and `b`. It follows the tree's top-to-bottom order and expands a collapsed directory
   when the next changed file lives inside one, so it works in the full tree as well as under `c`.
   It stays inside the tree you have filtered to: a changed file hidden by `.` (hidden files) or `i`
   (gitignored) is skipped rather than revealed, so the jump never switches a filter off behind your
@@ -263,11 +251,10 @@ Git status is woven straight into the tree, not a separate mode:
   opens the folders of every file with uncommitted changes at launch, and of each newly changed file
   as refreshes land. A folder you collapse stays closed until a different file inside it changes.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
-  (modified, staged, untracked, deleted — independent of baseline) and force working-tree diffs in
+  (modified, staged, untracked, and deleted, independent of baseline) and force working-tree diffs in
   the content pane. On a directory, that means a unified diff of all tracked changes under it.
   Press `d` again to leave. Mutually exclusive with `c` (turning one on turns the other off).
-- **Diff baseline**: press `b` to flip what "changed" and the normal/file-cycle diffs compare against
-  — the merge-base of your branch versus `HEAD`. While git-status mode (`d`) is on, content stays
+- **Diff baseline**: press `b` to switch what "changed" and the normal/file-cycle diffs compare against, either the merge-base of your branch or `HEAD`. While git-status mode (`d`) is on, content stays
   working-tree; `b` still updates the stored baseline for when you leave `d` or use `c`.
 - **Diff presentation**: in a changed file's Diff or FullDiff view, press `D` to cycle Delta's
   unified output, Delta side-by-side output, and plain unstyled git diff. Side-by-side is applied
@@ -276,9 +263,7 @@ Git status is woven straight into the tree, not a separate mode:
 - **Refresh**: the viewer re-reads git status automatically when the pane regains focus, so a merge,
   pull, or commit you make elsewhere shows up on its own; `r` forces a full refresh on demand.
 
-Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH` the
-viewer still opens, but the status markers, filter, baseline, and diffs are degraded — see
-[install](install.md). git 2.39 (Apple's Xcode git) is supported.
+Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH`, the viewer still opens, but the status markers, filter, baseline, and diffs are degraded. See [install](install.md). git 2.39 (Apple's Xcode git) is supported.
 
 ## Navigating within a file
 
@@ -286,8 +271,7 @@ viewer still opens, but the status markers, filter, baseline, and diffs are degr
   rendered-markdown or diff view it switches to the line-numbered content view to make the jump;
   out-of-range clamps to the last line.
 - **Search in the file**: press `/` to search the open file's content. Every match highlights as you
-  type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase — a
-  lowercase query matches any case; add a capital to go case-sensitive — and it works in every view
+  type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase makes a lowercase query match any case; add a capital to make it case-sensitive. Search works in every view
   (code, markdown, or diff). `Esc` clears it and restores your scroll.
 
 ## Annotating files and ranges
@@ -362,26 +346,24 @@ root path, or trailing newline.
 ## Copying paths and lines
 
 - **Copy a path**: `y` copies the selected file's **repo-relative** path (e.g. `src/app.rs`); `Y`
-  copies its **absolute** path — handy for pasting into a prompt, a command, or an agent.
+  copies its **absolute** path, which is useful for pasting into a prompt, command, or agent.
 - **Copy a line reference or content**: with the content pane focused (or zoomed), `L` enters
   **line-select mode**. `Enter` copies a repo-relative reference like `src/app.rs:42` or
   `src/app.rs:42-58`; `y`/`Y` copy the selected line content itself. A mouse click-drag selects text
   character-by-character.
 
-Both use the terminal's **OSC 52** clipboard escape, so the copy travels through herdr (and SSH) to
-your real clipboard with no extra tooling. Full mechanics — extending a selection, wrapped-view
-behavior, the OSC 52 caveat — are in the [keys reference](keys.md#copy-a-line-reference-or-line-content-l).
+Both use the terminal's **OSC 52** clipboard escape, so the copy travels through herdr (and SSH) to your real clipboard with no extra tooling. The [keys reference](keys.md#copy-a-line-reference-or-line-content-l) explains how to extend a selection, how wrapped views behave, and the OSC 52 caveat.
 
 ## Handing a file off
 
-The viewer is read-only; to *act* on a file it hands off to another tool:
+The viewer is read-only. It hands a file to another tool for external actions:
 
 - **Edit** (`e`): open the selected file in the editor you set as `editor` in
   [config.toml](configuration.md) (or, with none set, your `$EDITOR`). The viewer suspends, runs the
   editor, and resumes when it exits. See [opening in an editor](keys.md#opening-in-an-editor).
 - **Open with default app** (`O`): hand the file or directory to the OS default application (an
-  image opens in the system viewer, and so on). Non-blocking — the viewer keeps running. A binary
-  file the viewer can't show (an image, a PDF, an archive) displays a placeholder that points here.
+  image opens in the system viewer, and so on). The viewer keeps running. A binary file the viewer
+  can't show (an image, a PDF, an archive) displays a placeholder that points here.
 - **Reveal in file manager** (`R`): open Finder / Explorer / a Linux file manager with the entry
   highlighted where supported, so you can drag it out (e.g. into Slack).
 

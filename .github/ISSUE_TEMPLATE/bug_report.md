@@ -4,7 +4,7 @@ about: Report a problem with the viewer
 labels: bug
 ---
 
-Thanks for the report! Please fill in what you can — even a partial report helps.
+Thanks for the report. Fill in what you can; a partial report still helps.
 
 ## What happened
 
@@ -20,7 +20,7 @@ A clear description of the bug, and what you expected instead.
 
 - OS + version:
 - herdr version (`herdr --version`):
-- Plugin version (`?` overlay → About, or `herdr plugin list`):
+- Plugin version (`?` overlay, then About, or `herdr plugin list`):
 - Renderers installed (glow / delta / bat)?:
 - Terminal (and multiplexer, if any):
 

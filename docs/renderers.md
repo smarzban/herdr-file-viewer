@@ -1,7 +1,6 @@
 # External renderers (optional)
 
-Rendering is **delegated** to best-in-class external CLIs. These are *runtime, install-time*
-dependencies (not Cargo dependencies) and each is **optional**:
+The viewer delegates rendering to external command-line tools. These are optional runtime dependencies, not Cargo dependencies:
 
 | View | Renderer | Install |
 | --- | --- | --- |
@@ -9,24 +8,15 @@ dependencies (not Cargo dependencies) and each is **optional**:
 | Diffs | [`delta`](https://github.com/dandavison/delta) | `brew install git-delta` / `cargo install git-delta` |
 | Syntax-highlighted content | [`bat`](https://github.com/sharkdp/bat) | `brew install bat` / package manager |
 
-Or install all three at once with the bundled helper (best-effort; detects brew/apt/dnf/pacman
-and falls back to `cargo install` for `delta` and `bat`; `glow` is written in Go, so the helper
-prints its manual install link instead of attempting a cargo install), run from the plugin dir
-(`herdr plugin list` shows its path):
+You can install all three with the bundled helper. Run it from the plugin directory, whose path `herdr plugin list` shows. The helper detects brew, apt, dnf, or pacman. It falls back to `cargo install` for `delta` and `bat`. Because `glow` is written in Go, the helper prints its manual installation link instead of trying Cargo:
 
 ```bash
 ./scripts/install-renderers.sh
 ```
 
-**If a renderer is not installed, the viewer falls back to plain text** and shows a short
-notice in the content pane naming the missing capability (e.g. *“Markdown renderer
-unavailable (glow: …); showing plain text.”*). The viewer never crashes or shows an empty
-pane when a renderer is absent. It degrades gracefully. So the renderers are recommended for
-the best experience but not required to use the viewer.
+**If a renderer is not installed, the viewer falls back to plain text.** The content pane names the missing renderer in a short notice, such as *"Markdown renderer unavailable (glow: …); showing plain text."* A missing renderer does not crash the viewer or leave the pane empty. The renderers improve the display but are not required.
 
-Untrusted file content is always fed to a renderer on **stdin** (never as a command argument),
-and the renderer's output is re-sanitized before display, so a hostile file name or file
-content cannot inject a command or drive the terminal.
+The viewer sends untrusted file content to renderers on **stdin**, never as a command argument. It sanitizes renderer output before display. A hostile file name or file content therefore cannot inject a command or control the terminal.
 
 ### Bundled markdown palette
 

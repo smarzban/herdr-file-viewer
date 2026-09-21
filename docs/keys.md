@@ -1,8 +1,6 @@
 # Keys & mouse
 
-The complete key and mouse reference for the viewer. For a guided tour of what each feature
-*does*, see the [usage guide](usage.md); to remap any of these keys, see
-[configuration → Keybindings](configuration.md#keybindings).
+This page lists every viewer key and mouse gesture. See the [usage guide](usage.md) for feature explanations and [configuration keybindings](configuration.md#keybindings) to remap global keys.
 
 The viewer is **keyboard-first**: every function has a key and nothing requires a mouse. The mouse
 is additive and on by default.
@@ -23,8 +21,8 @@ is additive and on by default.
 | `.` | Toggle hidden (dot-prefixed) files and folders |
 | `c` | Toggle changed-files-only (baseline-aware: follows `b`) |
 | `d` | **Git-status mode** (toggle): restrict the tree to current working-tree status (`M`/`A`/`?`/`D`) and force working-tree diffs in the content pane (file or directory-scoped). Mutually exclusive with `c`; press `d` again to leave |
-| `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) — used by `c` and normal diffs; while `d` is on, content stays working-tree |
-| `D` (Shift+`d`) | Cycle diff presentation — `delta` unified → side-by-side → plain, unstyled `git diff` text → back to unified (in Diff/FullDiff views) |
+| `b` | Toggle the diff baseline (base branch ⇄ `HEAD`) for `c` and normal diffs; while `d` is on, content stays working-tree |
+| `D` (Shift+`d`) | In Diff/FullDiff views, cycle diff presentation through `delta` unified, side-by-side, and plain, unstyled `git diff` text |
 | `v` | Cycle the content view mode |
 | `e` | Open the selected file in `$EDITOR` (see [Opening in an editor](#opening-in-an-editor)) |
 | `O` (Shift+`o`) | **Open with default app**: hand the selected file or directory to the OS default application (e.g. an image opens in the system viewer). Read-only hand-off; non-blocking (the viewer keeps running) |
@@ -64,10 +62,7 @@ default (wide tables sized to fit, over-long cells shown as `…`); press `w` fo
 renders tables at full width and scrolls sideways so you can read every cell. The layout reflows
 automatically when the pane is resized.
 
-**Git state stays current.** The viewer re-reads git status when the pane **regains focus**, so
-changes you make outside it (a merge, pull, or commit in another pane) show up automatically; `r`
-forces a full refresh on demand. (Focus-refresh updates the tree's status without disturbing your
-content scroll.)
+**Git state stays current.** The viewer rereads git status when the pane **regains focus**, so a merge, pull, or commit in another pane appears automatically. Press `r` for a full refresh. A focus refresh updates tree status without changing the content scroll.
 
 Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
 not trigger a viewer action; `Shift` is permitted for keys such as `<`, `>`, `{`, and `}` (and `a`/`A`,
@@ -116,13 +111,7 @@ two products:
 A confirmation notice names what was copied. Both copies use the same **OSC 52** path as the
 tree's `y`/`Y`. `Esc` leaves the mode.
 
-`Shift`+mouse is deliberately left alone so your terminal's own native selection/copy still works:
-most terminals reserve `Shift`+drag for exactly that. Selection works in wrapped views too (the
-`w` toggle): the click maps through the same wrapping the pane draws with, so the caret lands on
-the character under the cursor. Because selection only maps onto the source, entering line-select
-from a rendered-markdown or diff view first switches that file to the line-numbered content view.
-With the **tree** focused, `L` keeps its tree horizontal-scroll behavior instead. The mode is gated
-on which pane has focus.
+The viewer leaves `Shift`+mouse to the terminal so native selection and copying still work. Selection also works in views wrapped with `w`; the viewer maps each click through the displayed wrapping. Because selection maps only to source text, entering line-select from rendered markdown or a diff switches the file to the line-numbered content view. With the **tree** focused, `L` scrolls the tree horizontally instead. The focused pane determines the action.
 
 ## Mouse
 
@@ -133,7 +122,7 @@ The viewer is keyboard-first; the mouse is additive and on by default:
 | **Click** a tree row | Select it (focus the tree) |
 | **Double-click** a folder | Expand / collapse it (same as `Enter`) |
 | **Double-click** a file | Open it in **zoom mode**: content full-screen (same as `Enter`); the editor is the `e` key |
-| **Double-click** the content title | Toggle zoom: hide or show the tree (same as `z`). The filename sits on the content pane’s top border, so this works even when the tree is already hidden |
+| **Double-click** the content title | Toggle zoom: hide or show the tree (same as `z`). The filename sits on the content pane's top border, so this works even when the tree is already hidden |
 | **Wheel** over the content pane | Scroll it vertically; over the tree, move the selection |
 | **Horizontal wheel / swipe** | Scroll the content, or the tree, sideways (terminal-dependent, see below) |
 | **Drag** a scrollbar | Scroll that pane: drag ↕ on a vertical bar, ↔ on a horizontal bar; pressing the track jumps there |
@@ -149,17 +138,13 @@ horizontal-scroll events (`ScrollLeft` / `ScrollRight`); many terminals send not
 sideways trackpad swipe. The `←` / `→` keys always scroll the content sideways, and `H` / `L`
 always scroll the tree sideways, regardless of terminal.
 
-The mouse-wheel step is configurable — see [`scroll_lines`](configuration.md).
+Configure the mouse-wheel step with [`scroll_lines`](configuration.md).
 
 ## Opening in an editor
 
-`e` opens the selected file in an external editor; the viewer suspends, runs the editor, and resumes
-when it exits. The viewer never edits a file itself. Choose the editor two ways — the config key is
-the reliable one:
+`e` opens the selected file in an external editor; the viewer suspends, runs the editor, and resumes when it exits. The viewer never edits a file itself. Choose the editor in one of two ways. The config key is more reliable:
 
-- **Recommended: set `editor` in [config.toml](configuration.md)** (e.g. `editor = "code --wait"`,
-  or `"vim"`). It takes precedence over `$EDITOR` and sidesteps the server-environment gotcha below
-  entirely — no shell-rc edits, no server restart.
+- **Recommended: set `editor` in [config.toml](configuration.md)** (e.g. `editor = "code --wait"`, or `"vim"`). It takes precedence over `$EDITOR` and avoids the server-environment problem below. It needs no shell-rc edit or server restart.
 - **Fallback: `$EDITOR`.** With no `editor` configured, `e` uses the `$EDITOR` environment variable
   (e.g. `vim`, or `"code --wait"` for editors that fork). Zero config if it's already set.
 

@@ -18,7 +18,7 @@ Other approaches you thought about, or workarounds you're using now.
 
 ## Additional context
 
-Anything else — screenshots, examples, related tools.
+Anything else, such as screenshots, examples, or related tools.
 
 > Note: the viewer is **read-only by design** (it never edits files or changes git state; hand-offs
 > to an editor / the OS are the exception). Requests that fit that posture are the easiest to land.

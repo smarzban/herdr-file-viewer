@@ -1,8 +1,6 @@
 # Security
 
-`herdr-file-viewer` is a **read-only** viewer that routinely opens **untrusted** content: the
-files and git repositories it browses may be an agent's worktree, a fresh clone, or anything a
-collaborator handed you. Its security posture is built around that.
+`herdr-file-viewer` is a **read-only** viewer that routinely opens **untrusted** content. It may browse an agent's worktree, a fresh clone, or files from a collaborator. Its security controls assume that this content is hostile.
 
 ## Threat model & mitigations
 
@@ -10,15 +8,9 @@ collaborator handed you. Its security posture is built around that.
   Every `git` call uses read-only subcommands; opening a file in an editor is a hand-off to an
   external process, not an in-app edit.
 
-- **Untrusted file content → terminal-control neutralization.** All file bytes are treated as
-  hostile. Content is fed to the external renderers on **stdin** (never as a command argument, so
-  a file name can't inject), and the result is run through an escape-sequence neutralizer before
-  display: cursor-movement, screen-control, OSC, C1, and other control sequences are stripped;
-  only SGR (color/style) is kept and mapped to ratatui styles. A malicious file therefore cannot
-  move the cursor, clear the screen, set the window title, or otherwise drive the terminal; it
-  can only paint text inside the viewer's own region.
+- **The viewer neutralizes terminal controls in untrusted file content.** External renderers receive content on **stdin**, never as a command argument, so a file name cannot inject an argument. Before display, the viewer strips cursor movement, screen controls, OSC, C1, and other control sequences. It keeps only SGR color and style information, which it maps to ratatui styles. A malicious file can paint text only inside the viewer's region. It cannot move the cursor, clear the screen, set the window title, or control the terminal.
 
-- **Remote notices → isolated, bounded display-only data.** They use fixed official HTTPS sources
+- **Remote notices use isolated, bounded display-only data.** They use fixed official HTTPS sources
   off the UI thread under one 15-second deadline. Private Git discovery excludes viewed-repo
   configuration but inherits global/system proxy and CA configuration; curl inherits ambient proxy
   settings and installed curl CA/TLS behavior. Curl starts with `.curlrc` disabled, uses a fixed
@@ -32,7 +24,7 @@ collaborator handed you. Its security posture is built around that.
   complete, atomic, safe-to-delete cache (`update-check.json`) is the sole viewer-owned write and
   never affects the viewed root or Git repository.
 
-- **Untrusted repository → hardened git invocations.** Because the opened repo may be hostile,
+- **Git invocations are hardened in untrusted repositories.** Because the opened repo may be hostile,
   queries disable configured clean, smudge, and process filters, and use `--no-ext-diff` /
   `--no-textconv` to refuse diff/textconv programs. Git 2.40+ also uses `--attr-source` to
   read worktree attributes from the empty tree. Concurrent hostile changes to Git configuration
@@ -49,13 +41,10 @@ collaborator handed you. Its security posture is built around that.
   renderers run under a wall-clock timeout, so a huge or slow input degrades gracefully rather
   than hanging or exhausting memory.
 
-- **Crash containment.** A renderer failure (including a panic on the render worker) is contained
-  and surfaced as a non-fatal notice/placeholder; the viewer never crashes on bad input.
+- **Crash containment.** The viewer catches renderer failures, including a panic on the render worker, and shows a non-fatal notice or placeholder instead of crashing.
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately rather than opening a public issue: open a
-**GitHub private security advisory** ("Security" → "Report a vulnerability") on this repository.
+Report suspected vulnerabilities through a **GitHub private security advisory**. Open this repository's Security page and select "Report a vulnerability." Do not open a public issue.
 
-You'll get an acknowledgement, and a fix or mitigation plan once the report is triaged. Thank you
-for helping keep the viewer safe.
+We will acknowledge the report and provide a fix or mitigation plan after triage.

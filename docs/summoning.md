@@ -1,8 +1,6 @@
 # Summoning the viewer
 
-How the viewer gets opened: the open actions, the idempotent launcher, split vs. tab, and the
-`--remote` caveat. For a quick "install then bind a key," see the [Quick start](../README.md#quick-start);
-once it's open, see the [usage guide](usage.md) and [keys reference](keys.md).
+This page explains the open actions, idempotent launcher, split and tab layouts, and the `--remote` caveat. For a short installation and keybinding example, see the [Quick start](../README.md#quick-start). After opening the viewer, see the [usage guide](usage.md) and [keys reference](keys.md).
 
 The viewer opens **only** in response to an explicit action. There are no event hooks and no
 automatic invocation. The manifest declares a `[[panes]]` entry (the split-pane viewer) and an
@@ -26,14 +24,11 @@ Summon it by invoking the action:
 herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
 ```
 
-It opens the viewer in a **split** pane beside your current work. The launcher
-(`scripts/open-file-viewer.sh`, used by both the action and any keybinding) is **idempotent**,
-scoped to the current tab, so invoking it repeatedly is *launch-or-focus-or-toggle*:
+The action opens the viewer in a **split** pane beside your current work. Both the action and its keybinding use `scripts/open-file-viewer.sh`. The launcher is **idempotent** within the current tab, so repeated invocations launch, focus, or close the viewer:
 
-- no viewer pane open in this tab → open a split (focused)
-- a viewer pane open but not focused → focus it
-- the viewer pane already focused → close it (herdr has no hide-without-close; reopening just
-  re-walks the tree)
+- With no viewer pane in this tab, open a focused split.
+- With an unfocused viewer pane, focus it.
+- With the viewer pane focused, close it. herdr cannot hide a pane without closing it, so reopening walks the tree again.
 
 **One-press access: bind a key.** herdr's `config.toml` binds keys to commands; point a
 `plugin_action` binding at the installed plugin's qualified action id. herdr invokes the action
@@ -61,21 +56,19 @@ half and the viewer takes the bottom:
 open_direction = "down"
 ```
 
-No reload is needed — the launcher reads it on each summon, so the next `prefix+f` opens
+No reload is needed. The launcher reads it on each summon, so the next `prefix+f` opens
 underneath. It applies to the split actions only (`open-file-viewer` and `open-file-viewer-at`): a
 tab has no direction, so the tab actions ignore it.
 
 ## Open in a tab instead of a split
 
-A second action, `open-file-viewer-tab`, opens the viewer in its **own tab**
-(`scripts/open-file-viewer-tab.sh`, `--placement tab`). Its launcher is idempotent *across the tabs
-of the current workspace*, *open-or-switch-or-toggle*:
+A second action, `open-file-viewer-tab`, opens the viewer in its **own tab** through `scripts/open-file-viewer-tab.sh` and `--placement tab`. Its launcher is idempotent across the tabs of the current workspace, so it opens, switches to, focuses, or closes the viewer:
 
-- no viewer for this repo in this workspace → open it in a new tab (focused)
-- a viewer **showing this repo** in another tab of this workspace → **switch to that tab** (never
-  a duplicate)
-- a viewer in the current tab, not focused → focus it in place
-- the viewer already focused → close it (herdr auto-closes the emptied tab)
+- With no viewer for this repo in this workspace, open it in a focused new tab.
+- With a viewer **showing this repo** in another tab of this workspace, **switch to that tab**
+  instead of opening a duplicate.
+- With an unfocused viewer in the current tab, focus it.
+- With the viewer focused, close it. herdr then closes the empty tab.
 
 The switch is **root-aware**: "this repo" is the worktree (or, outside git, the directory) of the
 pane you pressed the key in, so a viewer you opened on another directory with
@@ -159,4 +152,4 @@ plugin installed on that server.
 This is a herdr keybinding/remote limitation, not the plugin's. The action and launcher work the
 same locally and remotely; only which config supplies the binding differs.
 
-On Windows the action ids and keybinding requirements differ slightly — see [Windows](windows.md).
+On Windows, the action ids and keybinding requirements differ slightly. See [Windows](windows.md).

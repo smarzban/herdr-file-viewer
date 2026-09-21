@@ -1,11 +1,6 @@
 # Windows (preview)
 
-Native Windows (`x86_64-pc-windows-msvc`) is supported as a **preview**, mirroring herdr's own
-posture there: the crate builds, the test suite runs (advisory) on `windows-latest` CI, and
-install works the same way as Linux/macOS: `herdr plugin install` downloads a SHA-256-verified
-prebuilt binary (via `scripts/fetch-or-build.ps1`) or falls back to `cargo build --release`, no
-extra tooling required beyond the in-box Windows PowerShell 5.1. The open/toggle actions work via
-PowerShell launcher scripts.
+Native Windows (`x86_64-pc-windows-msvc`) support is a **preview**, matching herdr's Windows support. The crate builds and the test suite runs as an advisory `windows-latest` CI job. Installation follows the Linux and macOS flow. `herdr plugin install` downloads a SHA-256-verified prebuilt binary through `scripts/fetch-or-build.ps1` or falls back to `cargo build --release`. It requires no extra tooling beyond Windows PowerShell 5.1. PowerShell launcher scripts implement the open and toggle actions.
 
 - **On Windows, bind the `-windows` action ids.** herdr requires every action id to be unique, so
   the Windows launchers register as **`open-file-viewer-windows`** and
@@ -30,15 +25,8 @@ PowerShell launcher scripts.
 - **Non-ASCII paths and pane titles are supported.** The launchers force UTF-8 before parsing
   herdr's JSON under Windows PowerShell 5.1, so names outside the active legacy code page do not
   make the viewer fall back to its plugin install directory.
-- **Preview means best-effort, not a parity guarantee.** There's no Windows host in this
-  project's CI gate (the `windows-latest` job is advisory, not required), so a Windows-specific
-  regression can land between releases. Full feature parity with Linux/macOS is the goal, not a
-  promise. Please [open an issue](https://github.com/smarzban/herdr-file-viewer/issues) if you
-  hit a Windows-specific problem.
-- **WSL works today, with zero extra setup.** If you'd rather not wait on native-Windows preview
-  maturity, the existing Linux (`x86_64-unknown-linux-musl`) binary already runs unmodified
-  inside WSL. Install herdr and this plugin from within your WSL distro exactly as you would on
-  native Linux.
+- **Preview support does not guarantee parity.** The project's required CI gate has no Windows host; the `windows-latest` job is advisory. A Windows-specific regression can therefore land between releases. Full feature parity with Linux and macOS is the goal. [Open an issue](https://github.com/smarzban/herdr-file-viewer/issues) for a Windows-specific problem.
+- **WSL needs no extra setup.** The Linux (`x86_64-unknown-linux-musl`) binary runs unmodified inside WSL. Install herdr and this plugin from the WSL distribution as you would on native Linux.
 
 See also [install & updating](install.md) for the shared install flow and [summoning](summoning.md)
 for the open actions and launcher.
