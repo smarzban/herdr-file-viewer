@@ -104,3 +104,19 @@ fn windows_launchers_pass_the_plugin_config_dir() {
         );
     }
 }
+
+#[test]
+fn root_picker_launcher_opens_the_picker_as_a_popup() {
+    // The `open-file-viewer-at` action only opens the manifest's `root-picker` pane as a popup;
+    // the picker itself hands the chosen root to the new viewer by `--env`, never `--cwd` (#139).
+    let s = read_script("open-file-viewer-at.sh");
+    assert!(s.contains("--entrypoint root-picker"), "{s}");
+    assert!(s.contains("--placement popup"), "{s}");
+    assert!(s.contains("${HERDR_BIN_PATH:-herdr}"), "{s}");
+    let code: String = s
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!code.contains("--cwd"), "{code}");
+}

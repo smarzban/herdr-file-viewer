@@ -223,6 +223,19 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     outcome
 }
 
+/// Keep the process cwd on the tree root, re-syncing after a worktree switch re-roots the
+/// session. herdr reports each pane's live process cwd in `pane list`, so this is how the
+/// root-aware tab launcher (`launch::launch_decision_tab`) learns which root a running viewer
+/// shows without any extra host API. The viewer passes explicit dirs/paths to every child it
+/// spawns, so nothing depends on the previous cwd (the plugin root herdr launched us from).
+/// Best-effort: a failed `chdir` only makes the launcher open a fresh viewer instead of switching.
+fn follow_root(root: &Path, last: &mut PathBuf) {
+    if root != last.as_path() {
+        let _ = std::env::set_current_dir(root);
+        *last = root.to_path_buf();
+    }
+}
+
 /// Route annotation-modal raw keys before configurable global decoding. Returning `Some` means
 /// the modal consumed ownership even when the particular key is an inert no-op, so no printable or
 /// fixed modal key can leak to a global quit/editor/copy action.
@@ -246,7 +259,9 @@ fn route_annotation_key(
 /// tree enumeration in `view_state`) on every idle tick.
 fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io::Result<()> {
     let mut dirty = true; // paint the first frame
+    let mut cwd_root = PathBuf::new();
     loop {
+        follow_root(controller.root(), &mut cwd_root);
         if dirty {
             let mut need_redraw = false;
             terminal.draw(|frame| {

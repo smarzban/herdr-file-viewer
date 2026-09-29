@@ -91,6 +91,12 @@ key = "prefix+shift+f"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-tab"
 description = "open file viewer in tab"
+
+[[keys.command]]
+key = "prefix+g"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-at"
+description = "open file viewer at…"   # asks for a directory in a popup
 ```
 
 Run `herdr server reload-config`, then press your key. That's the whole setup: the split-pane
@@ -98,7 +104,8 @@ viewer and its open actions ship **inside** the plugin and register automaticall
 you only add the keybinding.
 
 Deeper detail lives in the docs: [install & updating](docs/install.md),
-[summoning the viewer](docs/summoning.md) (split vs. tab, the launcher, `--remote`),
+[summoning the viewer](docs/summoning.md) (split vs. tab, opening at another directory, the
+launcher, `--remote`),
 [external renderers](docs/renderers.md), and the [keys reference](docs/keys.md).
 
 ## Configuration

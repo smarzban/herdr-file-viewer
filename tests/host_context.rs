@@ -1,6 +1,6 @@
 //! Host Adapter: parse the injected launch context (AC-26).
 
-use herdr_file_viewer::host::{from_env, parse_context};
+use herdr_file_viewer::host::{ROOT_ENV, apply_root_override, from_env, parse_context};
 use std::path::PathBuf;
 
 #[test]
@@ -114,4 +114,50 @@ fn malformed_json_still_yields_none_workspace_id() {
     // AC-26: malformed JSON → minimal context with no workspace_id, no panic.
     let ctx = parse_context(Some("{ this is not json"), PathBuf::from("/fallback"));
     assert_eq!(ctx.workspace_id, None);
+}
+
+// --- Explicit root override (`HERDR_FILE_VIEWER_ROOT`, set by the `--pick-root` popup) ---
+
+fn picked_ctx() -> herdr_file_viewer::context::LaunchContext {
+    parse_context(
+        Some(r#"{"focused_pane_cwd":"/repo/sub","base_branch":"main","workspace_id":"w1"}"#),
+        PathBuf::from("/fallback"),
+    )
+}
+
+#[test]
+fn root_env_var_name_is_pinned() {
+    // The picker hands the chosen directory over under this exact name (`plugin pane open --env
+    // HERDR_FILE_VIEWER_ROOT=<dir>`); renaming it on one side only would silently root at the
+    // invoking pane again.
+    assert_eq!(ROOT_ENV, "HERDR_FILE_VIEWER_ROOT");
+}
+
+#[test]
+fn root_override_wins_over_focused_pane_cwd_and_drops_the_base_hint() {
+    let ctx = apply_root_override(picked_ctx(), Some("/elsewhere"), |_| true);
+    assert_eq!(ctx.cwd, PathBuf::from("/elsewhere"));
+    // The base-branch hint described the invoking pane's worktree, not the chosen directory.
+    assert_eq!(ctx.base_branch, None);
+    // The workspace is still the one the user is in.
+    assert_eq!(ctx.workspace_id.as_deref(), Some("w1"));
+}
+
+#[test]
+fn absent_or_blank_root_override_keeps_the_host_context() {
+    for raw in [None, Some(""), Some("   ")] {
+        let ctx = apply_root_override(picked_ctx(), raw, |_| true);
+        assert_eq!(ctx, picked_ctx(), "override {raw:?} must be ignored");
+    }
+}
+
+#[test]
+fn relative_or_missing_root_override_is_ignored() {
+    // Relative: the viewer's process cwd is the plugin root, so a relative path would resolve
+    // somewhere the user never meant.
+    let ctx = apply_root_override(picked_ctx(), Some("relative/dir"), |_| true);
+    assert_eq!(ctx, picked_ctx());
+    // Not a directory: degrade to the normal summon rather than an empty tree.
+    let ctx = apply_root_override(picked_ctx(), Some("/no/such/dir"), |_| false);
+    assert_eq!(ctx, picked_ctx());
 }

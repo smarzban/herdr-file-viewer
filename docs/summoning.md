@@ -71,10 +71,17 @@ A second action, `open-file-viewer-tab`, opens the viewer in its **own tab**
 (`scripts/open-file-viewer-tab.sh`, `--placement tab`). Its launcher is idempotent *across the tabs
 of the current workspace*, *open-or-switch-or-toggle*:
 
-- no viewer in this workspace → open it in a new tab (focused)
-- a viewer in another tab of this workspace → **switch to that tab** (never a duplicate)
+- no viewer for this repo in this workspace → open it in a new tab (focused)
+- a viewer **showing this repo** in another tab of this workspace → **switch to that tab** (never
+  a duplicate)
 - a viewer in the current tab, not focused → focus it in place
 - the viewer already focused → close it (herdr auto-closes the emptied tab)
+
+The switch is **root-aware**: "this repo" is the worktree (or, outside git, the directory) of the
+pane you pressed the key in, so a viewer you opened on another directory with
+[Open at another directory](#open-at-another-directory) is not mistaken for it. A running viewer
+keeps its process working directory on the root it shows, which is how the launcher tells them
+apart.
 
 The idempotency is scoped to the **current workspace**: a viewer already open in a *different*
 workspace is left where it is, and a fresh one opens here. The action reaches this workspace's
@@ -89,6 +96,37 @@ type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-tab"
 description = "open file viewer in tab"
 ```
+
+## Open at another directory
+
+A third action, `open-file-viewer-at`, asks **where** to open. It pops up a small herdr popup
+pre-filled with `~/`; type a directory and the viewer opens there in a **new tab**, instead of the
+directory you are in. Needs herdr 0.7.5+ (popups); Linux and macOS only for now.
+
+| In the popup | Does |
+|---|---|
+| `Enter` | open the viewer at the typed directory (`~/` alone opens your home) |
+| `Tab` | complete a directory name; press again to cycle when several match |
+| `Esc` / `Ctrl-C` | cancel: close the popup, open nothing |
+| `Ctrl-U` | clear the line (then type an absolute path such as `/opt/src`) |
+| `←` `→` `Home` `End` `Backspace` `Delete` | edit |
+
+Paths resolve from your home directory: `Workspace/app` means `~/Workspace/app`; an absolute path
+is used as typed. The tree then roots exactly as a normal summon would, at that directory's
+worktree top level inside git, else the directory itself. A path that is not a directory shows an
+error in the popup, so you can fix it or cancel.
+
+```toml
+[[keys.command]]
+key = "prefix+g"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-at"
+description = "open file viewer at…"
+```
+
+Under the hood the popup runs `herdr plugin pane open … --placement tab --env
+HERDR_FILE_VIEWER_ROOT=<dir>`: the directory reaches the viewer as an environment variable, never
+as `--cwd`. An agent or script can open a viewer on a given directory the same way.
 
 ## Limitation over `herdr --remote`
 

@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Open the viewer at another directory: the `open-file-viewer-at` action (bind it to e.g. `prefix+g`) pops up a small prompt pre-filled with `~/`. `Tab` completes directory names, `Enter` opens the viewer there in a new tab, `Esc` cancels. Agents can do the same with `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
+
+### Changed
+- The tab action (`prefix+shift+f`) now switches only to a viewer showing the repo you are in, so a viewer opened on another directory no longer captures it. To support this, a running viewer keeps its working directory on the root it shows, and so does an editor it launches. → [summoning](docs/summoning.md#open-in-a-tab-instead-of-a-split)
+- Requires herdr 0.7.5 or newer (popup support). → [install](docs/install.md)
+
 ## [1.17.0] - 2026-09-16
 
 ### Added

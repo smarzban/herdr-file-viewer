@@ -129,9 +129,10 @@ expanding it only within double quotes.
 
 The viewed root comes from the focused herdr pane's working directory (resolved to that repository's
 worktree top level), so an agent's own `cd` does not move it. To point it at a particular repository,
-split a focused pane with `--cwd "$repo"` first, launch, then close that helper — the root is captured
-at launch. Do not add `--cwd` to the launch itself: herdr resolves the pane's relative command against
-it, so it fails outside a built plugin checkout and silently runs that checkout's binary inside one.
+add `--env "HERDR_FILE_VIEWER_ROOT=$repo"` with the repository's **absolute** path (a relative or
+missing path is ignored). Do not add `--cwd` to the launch: herdr resolves the pane's relative
+command against it, so it fails outside a built plugin checkout and silently runs that checkout's
+binary inside one.
 
 The Herdr pane command applies to Linux, macOS, and WSL. On native Windows preview, the Files action
 cannot accept an open target, so use WSL for this flow or, if the binary is on `PATH`, run

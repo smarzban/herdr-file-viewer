@@ -14,7 +14,8 @@ UX), at the cost of drawing the two-column layout ourselves.
 
 The crate is a **library + a thin binary**: `src/main.rs` dispatches on `open_target::parse_args`
 (launch-decision modes print a decision for the shell scripts, `--open-direction` prints the
-resolved `open_direction` for them; otherwise `lib::run(open_flag)`).
+resolved `open_direction` for them, `--pick-root` runs the root-picker popup; otherwise
+`lib::run(open_flag)`).
 Everything testable — including argv parsing — lives in the library modules.
 
 ## Components
@@ -24,7 +25,7 @@ is unit-testable with stubs.
 
 | Module | Responsibility |
 | --- | --- |
-| `host` | The herdr boundary: parse the injected `HERDR_PLUGIN_CONTEXT_JSON` launch context, degrading to `{ cwd }` on anything malformed (never panics). |
+| `host` | The herdr boundary: parse the injected `HERDR_PLUGIN_CONTEXT_JSON` launch context, degrading to `{ cwd }` on anything malformed (never panics), then layer an explicit `HERDR_FILE_VIEWER_ROOT` (absolute, existing directory; set by the root picker or an agent) over the invoking pane's cwd. |
 | `context` | The normalized `LaunchContext` the host hands to the resolver. |
 | `root` | Resolve the tree root (git worktree top-level, else cwd) and git-presence; the re-root engine re-resolves the root and rebuilds the tree + git services in place when you switch worktrees. |
 | `git` | Read-only git queries: status, baseline selection, changed-set, per-file diff. The **only** module that shells out to `git`, and only with read-only subcommands. |
@@ -53,12 +54,13 @@ is unit-testable with stubs.
 | `input` | The keybinding registry (the single source of truth for each global action's intent name, default key(s), and description), the key-spec parser (a bindable-key whitelist, no `Ctrl`/`Alt`), the bindings resolver (layers a user's `[keys]` config over the registry into the effective key → intent map, precedence `config > default`, with an `Esc`-always-closes floor), and the pure key → intent dispatcher that decodes crossterm events against those effective bindings. |
 | `intent` | The closed set of user intents (one exhaustive enum). |
 | `controller` | Orchestrate intents → state changes; hold ephemeral session state, including the root-bound `AnnotationStore` and one frozen pinned preview; dispatch renders to the worker; map mouse events against fed-back geometry; and rebuild root-bound services on a worktree switch. A pin retains its captured origin and independent interaction state across re-root; it is removed only by unpin/replacement or session end. Its owned annotation projection root-joins file targets, follows the applied `content_path` rather than the live cursor, and exposes merged line ranges only when the applied render carries a source map. Feature submodules are `mod`, `mouse`, `help`, `finder`, `picker`, `infile`, `lineselect`, `annotation`, `pinned`, and `git_apply`. One `Modal` enum type-enforces exclusive input ownership. Only a successful root change clears annotations; failure and same-root paths preserve them. Quitting or switching worktree with a non-empty store raises the `Modal::DiscardConfirm` layer (for a quit, outside search/unzoom) rather than silently discarding it; its `y` proceeds only on a successful clipboard write, and a switch re-validates its held target before committing. |
-| `app` | The event loop (`run()`): assemble the live components, then `draw → poll input → route to the controller (or the active modal) → drain finished renders`, until the user closes the viewer. |
+| `app` | The event loop (`run()`): assemble the live components, then `draw → poll input → route to the controller (or the active modal) → drain finished renders`, until the user closes the viewer. Keeps the process cwd on the current tree root (re-synced after a worktree switch) so herdr's `pane list` reports which root each viewer shows. |
 | `update` | Fixed official HTTPS sources, bounded display-only remote notices through a fail-silent Official Repository Gateway; a 15-second refresh uses optional system `curl` documents (1 MiB each), then atomically publishes a complete, safe-to-delete advisory cache. `update_check` is the sole config setting for both notice types, with `HERDR_FILE_VIEWER_NO_UPDATE_CHECK` as an environment fallback; `404` withdraws a spotlight. |
 | `config` | Load & resolve the read-only TOML config: path resolution (`$HERDR_PLUGIN_CONFIG_DIR`, else XDG fallback), defensive parse (malformed input degrades to defaults, never panics), and precedence (config > env > default) → the `EffectiveSettings` consumed at startup by `controller`, `editor`, `render`, `opener`, and `update` (plus `open_direction`, which no TUI component reads: the launcher scripts probe it through the binary before the pane exists); it also parses the `[keys]` remapping table into `KeySpec` (string-or-array) entries the `input` bindings resolver layers over the registry. Never writes the file. |
 | `editor` | Hand a file off to `$EDITOR`, or the config's `editor` override (launch only — never reads or writes the file). |
 | `opener` | Read-only OS hand-off for the `O` / `R` keys: a pure per-OS argv builder (open-with-default-app / reveal-in-file-manager, overridable via the config's `open` / `reveal` keys) plus an `Opener` seam over the reused editor `Spawner`, spawned **non-blocking** (no terminal takeover, stdio nulled) so the TUI keeps running. |
-| `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
+| `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). The tab variant is root-aware: it switches only to a viewer whose pane cwd resolves to the focused pane's root (the viewer keeps its process cwd on its tree root, `app::follow_root`), through an injected resolver. |
+| `root_picker` | The `--pick-root` popup behind the `open-file-viewer-at` action: a `~/`-prefilled path prompt (the `prompt` editor) with directory-only `Tab` completion and cycling, `Esc`/`Ctrl-C` cancel, and `Enter` validation, then one `plugin pane open --placement tab --env HERDR_FILE_VIEWER_ROOT=<dir>` through the `herdr` seam. Pure over an injected filesystem; lists directories, never writes. |
 | `open_target` | Pure argv parse (`parse_args`), open-target parse/resolve (`path` / `path:line` from CLI `--open` or `HERDR_FILE_VIEWER_OPEN`, lexically normalized under the root), and helpers; the controller applies a target once at startup via reveal + optional pending go-to-line. |
 
 ## Data flow
