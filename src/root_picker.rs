@@ -393,13 +393,35 @@ pub fn open_args(root: &Path, placement: Placement) -> Result<Vec<String>, Strin
     Ok(args)
 }
 
-/// Ask herdr to open the viewer at `root`.
+/// The tab label a picker-opened viewer tab gets, matching the viewer pane's own `Files` title.
+pub const TAB_LABEL: &str = "Files";
+
+/// Ask herdr to open the viewer at `root`. A new tab is then renamed [`TAB_LABEL`]
+/// (`herdr tab rename <tab_id> Files`, verified on herdr 0.9.1), best-effort: the viewer is already
+/// open, so a failed or unparseable rename never turns the hand-off into an error.
 pub fn open_viewer(herdr: &dyn HerdrCli, root: &Path, placement: Placement) -> Result<(), String> {
     let args = open_args(root, placement)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    herdr
-        .run(&args)
-        .map_err(|_| "herdr could not open the file viewer".to_string())
+    let opened = herdr
+        .run_json(&args)
+        .map_err(|_| "herdr could not open the file viewer".to_string())?;
+    if placement == Placement::Tab
+        && let Some(tab) = opened_tab_id(&opened)
+    {
+        let _ = herdr.run(&["tab", "rename", &tab, TAB_LABEL]);
+    }
+    Ok(())
+}
+
+/// The tab id from `plugin pane open`'s reply (`result.plugin_pane.pane.tab_id`), if it is a
+/// flag-safe token (it goes straight into an argv).
+fn opened_tab_id(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let tab = v
+        .pointer("/result/plugin_pane/pane/tab_id")?
+        .as_str()?
+        .to_string();
+    crate::launch::is_flag_safe(&tab).then_some(tab)
 }
 
 /// Drive the picker until the user opens a directory or cancels. The loop is split from
@@ -764,7 +786,7 @@ mod tests {
             if self.fail {
                 Err(io::Error::other("boom"))
             } else {
-                Ok(String::new())
+                Ok(OPENED_REPLY.to_string())
             }
         }
     }
@@ -867,8 +889,59 @@ mod tests {
         )
         .unwrap();
         let calls = herdr.calls.borrow();
-        assert_eq!(calls.len(), 1);
+        // One open (then the tab rename, covered by its own test).
         assert_eq!(calls[0].last().unwrap(), "HERDR_FILE_VIEWER_ROOT=/home/u");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c[..3] == ["plugin", "pane", "open"])
+                .count(),
+            1
+        );
+    }
+
+    /// A trimmed `plugin pane open` reply, shaped like herdr 0.9.1's (`plugin_pane_opened`).
+    const OPENED_REPLY: &str = r#"{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"file-viewer","pane":{"label":"Files","pane_id":"w39:pX","tab_id":"w39:tH"},"plugin_id":"herdr-file-viewer"},"type":"plugin_pane_opened"}}"#;
+
+    #[test]
+    fn a_new_tab_is_renamed_files_and_a_split_is_not() {
+        let fs = FakeFs::new();
+        for (placement, renamed) in [
+            (Placement::Tab, true),
+            (Placement::Split(crate::config::OpenDirection::Right), false),
+        ] {
+            let herdr = FakeHerdr {
+                calls: RefCell::new(Vec::new()),
+                fail: false,
+            };
+            let mut keys = vec![key(KeyCode::Enter)].into_iter();
+            let mut p = RootPicker::new();
+            drive(
+                &mut p,
+                &fs,
+                &herdr,
+                placement,
+                |_| Ok(()),
+                || Ok(keys.next()),
+            )
+            .unwrap();
+            let calls = herdr.calls.borrow();
+            if renamed {
+                assert_eq!(calls.len(), 2, "{calls:?}");
+                assert_eq!(calls[1], ["tab", "rename", "w39:tH", "Files"]);
+            } else {
+                assert_eq!(calls.len(), 1, "{calls:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn opened_tab_id_rejects_missing_or_unsafe_ids() {
+        assert_eq!(opened_tab_id(OPENED_REPLY), Some("w39:tH".to_string()));
+        assert_eq!(opened_tab_id(""), None);
+        assert_eq!(opened_tab_id(r#"{"result":{}}"#), None);
+        let hostile = OPENED_REPLY.replace("w39:tH", "--evil");
+        assert_eq!(opened_tab_id(&hostile), None);
     }
 
     #[test]

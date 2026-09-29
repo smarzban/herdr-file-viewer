@@ -104,7 +104,7 @@ a directory and the viewer opens there instead of the directory you are in:
 
 - `open-file-viewer-at` opens it in a **split** beside your pane, in your
   [`open_direction`](#split-beside-or-below), like `prefix+f`.
-- `open-file-viewer-at-tab` opens it in a **new tab**.
+- `open-file-viewer-at-tab` opens it in a **new tab**, named `Files`.
 
 Both always open a fresh viewer. Needs herdr 0.7.5+ (popups); Linux and macOS only for now. The
 popup's title says which one you pressed.

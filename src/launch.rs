@@ -164,7 +164,7 @@ fn workspace_of(p: &Pane) -> Option<&str> {
 /// A pane id is safe to place in an argv iff it is a non-empty token of `[A-Za-z0-9_:.-]` that
 /// does not start with `-` (which would option-inject). `:` and `.` are allowed because herdr
 /// pane ids are `workspace:pane` tokens (e.g. `wE:pD`).
-fn is_flag_safe(id: &str) -> bool {
+pub(crate) fn is_flag_safe(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')
         && id

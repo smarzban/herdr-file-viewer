@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Open the viewer at another directory: the `open-file-viewer-at` (split) and `open-file-viewer-at-tab` (tab) actions pop up a small prompt pre-filled with `~/`. `Tab` completes directory names (ignoring case), `Enter` opens the viewer there, `Esc` cancels. Agents can do the same with `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
+- Open the viewer at another directory: the `open-file-viewer-at` (split) and `open-file-viewer-at-tab` (tab) actions pop up a small prompt pre-filled with `~/` (the tab one names its tab `Files`). `Tab` completes directory names (ignoring case), `Enter` opens the viewer there, `Esc` cancels. Agents can do the same with `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
 
 ### Changed
 - The tab action (`prefix+shift+f`) now switches only to a viewer showing the repo you are in, so a viewer opened on another directory no longer captures it. To support this, a running viewer keeps its working directory on the root it shows, and so does an editor it launches. → [summoning](docs/summoning.md#open-in-a-tab-instead-of-a-split)
