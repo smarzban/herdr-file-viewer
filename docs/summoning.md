@@ -106,7 +106,7 @@ directory you are in. Needs herdr 0.7.5+ (popups); Linux and macOS only for now.
 | In the popup | Does |
 |---|---|
 | `Enter` | open the viewer at the typed directory (`~/` alone opens your home) |
-| `Tab` | complete a directory name; press again to cycle when several match |
+| `Tab` | complete a directory name, ignoring case (`work` → `Workspace/`); press again to cycle when several match |
 | `Esc` / `Ctrl-C` | cancel: close the popup, open nothing |
 | `Ctrl-U` | clear the line (then type an absolute path such as `/opt/src`) |
 | `←` `→` `Home` `End` `Backspace` `Delete` | edit |

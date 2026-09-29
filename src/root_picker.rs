@@ -98,8 +98,10 @@ pub struct Completion {
 /// - Several → extended to their longest common prefix, with every match listed.
 /// - None → the input is left unchanged and no matches are listed.
 ///
-/// Hidden directories are offered only when the typed segment starts with `.`. Matches are
-/// sorted so the list (and `Tab` cycling through it) is stable.
+/// Matching ignores case (`work` completes `Workspace`), and the completed text takes the
+/// directory's real casing, so what is opened is the name on disk. Hidden directories are offered
+/// only when the typed segment starts with `.`. Matches are sorted case-insensitively so the list
+/// (and `Tab` cycling through it) is stable.
 pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
     let (head, prefix) = match input.rfind('/') {
         Some(i) => input.split_at(i + 1),
@@ -116,9 +118,10 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
     let mut matches: Vec<String> = fs
         .list_dirs(&dir)
         .into_iter()
-        .filter(|n| n.starts_with(prefix) && (prefix.starts_with('.') || !n.starts_with('.')))
+        .filter(|n| starts_with_ignore_case(n, prefix))
+        .filter(|n| prefix.starts_with('.') || !n.starts_with('.'))
         .collect();
-    matches.sort();
+    matches.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
     match matches.as_slice() {
         [] => unchanged(),
         [only] => Completion {
@@ -135,7 +138,21 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
     }
 }
 
-/// The longest prefix every string shares, on a char boundary.
+/// Two chars equal ignoring case (Unicode lowercase folding, char by char).
+fn same_ignoring_case(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
+/// Whether `name` starts with `prefix`, ignoring case.
+fn starts_with_ignore_case(name: &str, prefix: &str) -> bool {
+    let mut name = name.chars();
+    prefix
+        .chars()
+        .all(|p| name.next().is_some_and(|n| same_ignoring_case(n, p)))
+}
+
+/// The longest prefix every string shares ignoring case, on a char boundary, in the first
+/// string's casing.
 fn common_prefix(items: &[String]) -> &str {
     let Some(first) = items.first() else {
         return "";
@@ -145,7 +162,7 @@ fn common_prefix(items: &[String]) -> &str {
         let shared = first
             .char_indices()
             .zip(item.chars())
-            .take_while(|((_, a), b)| a == b)
+            .take_while(|((_, a), b)| same_ignoring_case(*a, *b))
             .last()
             .map_or(0, |((i, a), _)| i + a.len_utf8());
         end = end.min(shared);
@@ -637,6 +654,20 @@ mod tests {
     }
 
     #[test]
+    fn completion_ignores_case_and_keeps_the_real_casing() {
+        let fs = FakeFs::new();
+        // `wor` matches Work + Workspace; the common prefix takes the on-disk casing.
+        let c = complete("~/wor", &fs);
+        assert_eq!(c.text, "~/Work");
+        assert_eq!(c.matches, ["Work", "Workspace"]);
+        // A unique case-insensitive match completes in full.
+        assert_eq!(complete("~/Workspace/PAT", &fs).text, "~/Workspace/patch/");
+        assert_eq!(complete("~/DOC", &fs).text, "~/Documents/");
+        // Hidden directories still need a leading dot.
+        assert_eq!(complete("~/.CON", &fs).text, "~/.config/");
+    }
+
+    #[test]
     fn hidden_directories_complete_only_when_asked_for() {
         let fs = FakeFs::new();
         let all = complete("~/", &fs);
@@ -664,6 +695,9 @@ mod tests {
         assert_eq!(common_prefix(&v(&["a", "b"])), "");
         assert_eq!(common_prefix(&v(&["same", "same"])), "same");
         assert_eq!(common_prefix(&v(&["long", "lo"])), "lo");
+        // Case is ignored; the first string's casing is kept.
+        assert_eq!(common_prefix(&v(&["Docs", "docs-old"])), "Docs");
+        assert_eq!(common_prefix(&v(&["Élan", "éte"])), "É");
     }
 
     /// Records every herdr argv; optionally fails.
