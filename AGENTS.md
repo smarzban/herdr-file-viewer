@@ -252,7 +252,7 @@ while the shipped launcher never passed it (#139). Change all of them together, 
 the docs and the scripts to one rule so this divergence fails the build instead of reaching a user.
 The viewed root comes from the FOCUSED herdr pane's cwd (resolved to its worktree top level), never
 from a flag. The one explicit exception is `HERDR_FILE_VIEWER_ROOT` (passed with `--env`, never
-`--cwd`): the root picker (`--pick-root`, the `open-file-viewer-at` action) and agents use it to name
+`--cwd`): the root picker (`--pick-root`, the `open-file-viewer-at[-tab]` actions) and agents use it to name
 a root on purpose. A running viewer keeps its process cwd on its root; the tab launcher's
 root-aware switch depends on that, so do not add code that relies on the process cwd.
 

@@ -51,8 +51,8 @@ title = "Files"
 placement = "split"
 command = ["./target/release/herdr-file-viewer"]
 
-# The root picker: a small popup that asks for a directory, then opens a NEW viewer tab rooted
-# there (handing the directory over with `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>`,
+# The root picker: a small popup that asks for a directory, then opens a NEW viewer (split or
+# tab, per HERDR_FILE_VIEWER_PICK_PLACEMENT from its launcher) rooted there (handing the directory over with `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>`,
 # never `--cwd`) and exits, which closes the popup. Popup placement needs herdr >= 0.7.5.
 # Unix only for now: Windows cannot spawn a relative pane command (see header).
 [[panes]]
@@ -111,11 +111,19 @@ command = [
   '''$u=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$u; $OutputEncoding=$u; $b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
 ]
 
-# Open the viewer at a directory you type (Tab completes, Enter opens, Esc cancels), in a new
-# tab, instead of the directory you are in. Bind a key to it (e.g. `prefix+d`).
+# Open the viewer at a directory you type (Tab completes, Enter opens, Esc cancels), instead of
+# the directory you are in: in a split beside your pane, or in a new tab. Bind keys to them
+# (e.g. `prefix+d` for the split).
 [[actions]]
 id = "open-file-viewer-at"
 platforms = ["linux", "macos"]
 title = "Open file viewer at…"
+description = "Ask for a directory in a popup, then open the file viewer there in a split pane."
+command = ["bash", "scripts/open-file-viewer-at.sh", "split"]
+
+[[actions]]
+id = "open-file-viewer-at-tab"
+platforms = ["linux", "macos"]
+title = "Open file viewer at… (tab)"
 description = "Ask for a directory in a popup, then open the file viewer there in a new tab."
-command = ["bash", "scripts/open-file-viewer-at.sh"]
+command = ["bash", "scripts/open-file-viewer-at.sh", "tab"]

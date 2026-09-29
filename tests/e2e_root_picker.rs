@@ -27,11 +27,23 @@ fn fake_herdr(dir: &Path, out: &Path) -> PathBuf {
     bin
 }
 
-fn picker_session(home: &Path, herdr: &Path) -> OsSession {
+/// Spawn the picker. `config_dir` isolates the plugin config (the split direction comes from its
+/// `open_direction`); `placement` is what the launcher would pass as HERDR_FILE_VIEWER_PICK_PLACEMENT.
+fn picker_session(
+    home: &Path,
+    herdr: &Path,
+    config_dir: &Path,
+    placement: Option<&str>,
+) -> OsSession {
     let mut cmd = viewer_command(home);
     cmd.arg("--pick-root")
         .env("HOME", home)
-        .env("HERDR_BIN_PATH", herdr);
+        .env("HERDR_BIN_PATH", herdr)
+        .env("HERDR_PLUGIN_CONFIG_DIR", config_dir)
+        .env_remove("HERDR_FILE_VIEWER_PICK_PLACEMENT");
+    if let Some(p) = placement {
+        cmd.env("HERDR_FILE_VIEWER_PICK_PLACEMENT", p);
+    }
     let mut s = Session::spawn(cmd).expect("spawn the picker in a pty");
     s.set_expect_timeout(Some(Duration::from_secs(15)));
     // ratatui writes only changed cells and skips blank ones with cursor moves, so expectations
@@ -56,7 +68,7 @@ fn tab_completes_and_enter_opens_a_viewer_tab_rooted_there() {
     let out = tools.path().join("argv.txt");
     let herdr = fake_herdr(tools.path(), &out);
 
-    let mut s = picker_session(home.path(), &herdr);
+    let mut s = picker_session(home.path(), &herdr, tools.path(), Some("tab"));
     s.send("proj\t").unwrap();
     s.expect("alpha/")
         .expect("Tab completes the unique directory");
@@ -74,13 +86,40 @@ fn tab_completes_and_enter_opens_a_viewer_tab_rooted_there() {
 }
 
 #[test]
+fn default_placement_opens_a_split_in_the_configured_direction() {
+    let home = TempDir::new();
+    let tools = TempDir::new();
+    std::fs::create_dir_all(home.path().join("beta")).unwrap();
+    std::fs::write(
+        tools.path().join("config.toml"),
+        "open_direction = \"down\"\n",
+    )
+    .unwrap();
+    let out = tools.path().join("argv.txt");
+    let herdr = fake_herdr(tools.path(), &out);
+
+    // No placement env (the `split` launcher arg's default path): a split, `down` per config.
+    let mut s = picker_session(home.path(), &herdr, tools.path(), None);
+    s.send("beta\r").unwrap();
+    assert_clean_exit(&mut s);
+
+    let argv = std::fs::read_to_string(&out).expect("herdr was called");
+    let expected = format!(
+        "plugin\npane\nopen\n--plugin\nherdr-file-viewer\n--entrypoint\nfile-viewer\n\
+         --placement\nsplit\n--direction\ndown\n--focus\n--env\nHERDR_FILE_VIEWER_ROOT={}\n",
+        canon(&home.path().join("beta")).display()
+    );
+    assert_eq!(argv, expected);
+}
+
+#[test]
 fn esc_cancels_without_calling_herdr() {
     let home = TempDir::new();
     let tools = TempDir::new();
     let out = tools.path().join("argv.txt");
     let herdr = fake_herdr(tools.path(), &out);
 
-    let mut s = picker_session(home.path(), &herdr);
+    let mut s = picker_session(home.path(), &herdr, tools.path(), None);
     s.send("\x1b").unwrap();
     assert_clean_exit(&mut s);
     assert!(!out.exists(), "Esc must not open anything");
@@ -93,7 +132,7 @@ fn a_missing_directory_is_reported_and_the_popup_stays_open() {
     let out = tools.path().join("argv.txt");
     let herdr = fake_herdr(tools.path(), &out);
 
-    let mut s = picker_session(home.path(), &herdr);
+    let mut s = picker_session(home.path(), &herdr, tools.path(), None);
     s.send("nope\r").unwrap();
     s.expect("directory")
         .expect("the error is shown in the popup");

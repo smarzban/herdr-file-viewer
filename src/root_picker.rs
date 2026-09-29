@@ -2,8 +2,9 @@
 //!
 //! Runs inside a herdr popup (the manifest's `root-picker` pane, `placement = "popup"`). The user
 //! edits a path pre-filled with `~/`; `Tab` completes directory names, `Enter` hands the chosen
-//! directory to a fresh viewer tab through `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>`
-//! (never `--cwd`: the manifest pane command is relative, #139), and `Esc` / `Ctrl-C` cancel.
+//! directory to a fresh viewer — a split beside the invoking pane, or a new tab, per
+//! [`PLACEMENT_ENV`] — through `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>` (never
+//! `--cwd`: the manifest pane command is relative, #139), and `Esc` / `Ctrl-C` cancel.
 //! Exiting closes the popup.
 //!
 //! Read-only: it lists directories and asks herdr to open a pane; it never writes a file.
@@ -23,6 +24,38 @@ use std::path::{Path, PathBuf};
 
 /// What the prompt starts with: the picker resolves from the home directory.
 pub const INITIAL_INPUT: &str = "~/";
+
+/// Env var the launcher (`scripts/open-file-viewer-at.sh`) sets on the popup to say where the
+/// viewer opens: `tab` for a new tab; anything else (or unset) for a split.
+pub const PLACEMENT_ENV: &str = "HERDR_FILE_VIEWER_PICK_PLACEMENT";
+
+/// Where the picked viewer opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// A split beside the pane the popup was summoned from, in the configured `open_direction`
+    /// (the same place `prefix+f`'s split goes).
+    Split(crate::config::OpenDirection),
+    /// A new tab.
+    Tab,
+}
+
+impl Placement {
+    /// Read [`PLACEMENT_ENV`]'s value: `tab` (trimmed, any case) → [`Placement::Tab`], else a
+    /// split in `direction`. Defaulting to a split keeps a missing or garbled value harmless.
+    pub fn from_env_value(raw: Option<&str>, direction: crate::config::OpenDirection) -> Self {
+        match raw.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("tab") => Placement::Tab,
+            _ => Placement::Split(direction),
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Placement::Split(_) => " Open file viewer at (split) ",
+            Placement::Tab => " Open file viewer at (new tab) ",
+        }
+    }
+}
 
 /// The filesystem the picker reads. Injected so tests stay hermetic.
 pub trait PickerFs {
@@ -322,18 +355,21 @@ impl RootPicker {
     }
 }
 
-/// The herdr argv that opens a viewer tab rooted at `root`.
+/// The herdr argv that opens a viewer rooted at `root`, placed per `placement`.
 ///
-/// Verified against herdr 0.9.1 (`herdr plugin pane open --help`, and a live popup → tab probe):
-/// `plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement tab --focus
-/// --env HERDR_FILE_VIEWER_ROOT=<dir>`. No `--cwd`: the manifest's pane command is relative, so
-/// a foreign cwd would break or redirect the spawn (#139). `Err` when the path is not UTF-8 (the
-/// host seam takes `&str` argv).
-pub fn open_args(root: &Path) -> Result<Vec<String>, String> {
+/// Verified against herdr 0.9.1 (`herdr plugin pane open --help`, and live popup → tab and popup →
+/// split probes: from a popup, a split with no `--target-pane` lands beside the tiled pane the popup
+/// was opened over, and `--env` reaches the popup's own process):
+/// `plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement split
+/// --direction <right|down> --focus --env HERDR_FILE_VIEWER_ROOT=<dir>`, or `--placement tab` with
+/// no `--direction`. No `--cwd`: the manifest's pane command is relative, so a foreign cwd would
+/// break or redirect the spawn (#139). `Err` when the path is not UTF-8 (the host seam takes
+/// `&str` argv).
+pub fn open_args(root: &Path, placement: Placement) -> Result<Vec<String>, String> {
     let root = root
         .to_str()
         .ok_or_else(|| "path is not valid UTF-8".to_string())?;
-    Ok([
+    let mut args: Vec<String> = [
         "plugin",
         "pane",
         "open",
@@ -342,19 +378,24 @@ pub fn open_args(root: &Path) -> Result<Vec<String>, String> {
         "--entrypoint",
         "file-viewer",
         "--placement",
-        "tab",
-        "--focus",
-        "--env",
     ]
     .iter()
     .map(|s| s.to_string())
-    .chain([format!("{}={root}", crate::host::ROOT_ENV)])
-    .collect())
+    .collect();
+    match placement {
+        Placement::Split(direction) => {
+            args.extend(["split", "--direction", direction.label()].map(String::from));
+        }
+        Placement::Tab => args.push("tab".to_string()),
+    }
+    args.extend(["--focus", "--env"].map(String::from));
+    args.push(format!("{}={root}", crate::host::ROOT_ENV));
+    Ok(args)
 }
 
 /// Ask herdr to open the viewer at `root`.
-pub fn open_viewer(herdr: &dyn HerdrCli, root: &Path) -> Result<(), String> {
-    let args = open_args(root)?;
+pub fn open_viewer(herdr: &dyn HerdrCli, root: &Path, placement: Placement) -> Result<(), String> {
+    let args = open_args(root, placement)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     herdr
         .run(&args)
@@ -367,6 +408,7 @@ pub fn drive(
     picker: &mut RootPicker,
     fs: &dyn PickerFs,
     herdr: &dyn HerdrCli,
+    placement: Placement,
     mut draw: impl FnMut(&RootPicker) -> io::Result<()>,
     mut next_key: impl FnMut() -> io::Result<Option<KeyEvent>>,
 ) -> io::Result<()> {
@@ -378,7 +420,7 @@ pub fn drive(
         match picker.handle_key(key, fs) {
             Outcome::Continue => {}
             Outcome::Cancel => return Ok(()),
-            Outcome::Open(dir) => match open_viewer(herdr, &dir) {
+            Outcome::Open(dir) => match open_viewer(herdr, &dir, placement) {
                 Ok(()) => return Ok(()),
                 Err(e) => picker.set_error(e),
             },
@@ -391,11 +433,20 @@ pub fn run() -> io::Result<()> {
     let mut terminal = ratatui::try_init()?;
     let mut picker = RootPicker::new();
     let herdr = crate::herdr::LiveHerdr::from_env();
+    // The split direction is the same `open_direction` the split launcher honours; the popup gets
+    // the plugin's HERDR_PLUGIN_CONFIG_DIR, so the config resolves exactly as it does there.
+    let (config, _) = crate::config::load_config_from_env();
+    let eff = crate::config::resolve(&config, |k| std::env::var(k).ok());
+    let placement = Placement::from_env_value(
+        std::env::var(PLACEMENT_ENV).ok().as_deref(),
+        eff.open_direction,
+    );
     let outcome = drive(
         &mut picker,
         &RealFs,
         &herdr,
-        |p| terminal.draw(|f| draw(f, p)).map(|_| ()),
+        placement,
+        |p| terminal.draw(|f| draw(f, p, placement)).map(|_| ()),
         || loop {
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
@@ -409,11 +460,11 @@ pub fn run() -> io::Result<()> {
 }
 
 /// Draw the picker: a bordered box with the prompt, a status line, and the candidates.
-pub fn draw(frame: &mut Frame, picker: &RootPicker) {
+pub fn draw(frame: &mut Frame, picker: &RootPicker, placement: Placement) {
     let area = frame.area();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Open file viewer at ");
+        .title(placement.title());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -720,7 +771,7 @@ mod tests {
 
     #[test]
     fn open_args_hand_the_root_over_by_env_never_cwd() {
-        let args = open_args(Path::new("/home/u/Workspace/patch")).unwrap();
+        let args = open_args(Path::new("/home/u/Workspace/patch"), Placement::Tab).unwrap();
         assert_eq!(
             args,
             [
@@ -742,6 +793,62 @@ mod tests {
     }
 
     #[test]
+    fn open_args_split_follows_the_configured_direction() {
+        use crate::config::OpenDirection;
+        for (dir, label) in [
+            (OpenDirection::Right, "right"),
+            (OpenDirection::Down, "down"),
+        ] {
+            let args = open_args(Path::new("/r"), Placement::Split(dir)).unwrap();
+            assert_eq!(
+                args,
+                [
+                    "plugin",
+                    "pane",
+                    "open",
+                    "--plugin",
+                    "herdr-file-viewer",
+                    "--entrypoint",
+                    "file-viewer",
+                    "--placement",
+                    "split",
+                    "--direction",
+                    label,
+                    "--focus",
+                    "--env",
+                    "HERDR_FILE_VIEWER_ROOT=/r",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn placement_env_selects_tab_else_defaults_to_split() {
+        use crate::config::OpenDirection::{Down, Right};
+        assert_eq!(PLACEMENT_ENV, "HERDR_FILE_VIEWER_PICK_PLACEMENT");
+        assert_eq!(
+            Placement::from_env_value(Some("tab"), Right),
+            Placement::Tab
+        );
+        assert_eq!(
+            Placement::from_env_value(Some(" TAB "), Right),
+            Placement::Tab
+        );
+        assert_eq!(
+            Placement::from_env_value(Some("split"), Down),
+            Placement::Split(Down)
+        );
+        assert_eq!(
+            Placement::from_env_value(None, Right),
+            Placement::Split(Right)
+        );
+        assert_eq!(
+            Placement::from_env_value(Some("bogus"), Right),
+            Placement::Split(Right)
+        );
+    }
+
+    #[test]
     fn drive_opens_once_then_exits() {
         let fs = FakeFs::new();
         let herdr = FakeHerdr {
@@ -750,7 +857,15 @@ mod tests {
         };
         let mut keys = vec![key(KeyCode::Enter)].into_iter();
         let mut p = RootPicker::new();
-        drive(&mut p, &fs, &herdr, |_| Ok(()), || Ok(keys.next())).unwrap();
+        drive(
+            &mut p,
+            &fs,
+            &herdr,
+            Placement::Tab,
+            |_| Ok(()),
+            || Ok(keys.next()),
+        )
+        .unwrap();
         let calls = herdr.calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].last().unwrap(), "HERDR_FILE_VIEWER_ROOT=/home/u");
@@ -765,7 +880,15 @@ mod tests {
         };
         let mut keys = vec![key(KeyCode::Esc), key(KeyCode::Enter)].into_iter();
         let mut p = RootPicker::new();
-        drive(&mut p, &fs, &herdr, |_| Ok(()), || Ok(keys.next())).unwrap();
+        drive(
+            &mut p,
+            &fs,
+            &herdr,
+            Placement::Tab,
+            |_| Ok(()),
+            || Ok(keys.next()),
+        )
+        .unwrap();
         assert!(herdr.calls.borrow().is_empty());
     }
 
@@ -779,7 +902,15 @@ mod tests {
         // Enter fails, then EOF ends the loop.
         let mut keys = vec![key(KeyCode::Enter)].into_iter();
         let mut p = RootPicker::new();
-        drive(&mut p, &fs, &herdr, |_| Ok(()), || Ok(keys.next())).unwrap();
+        drive(
+            &mut p,
+            &fs,
+            &herdr,
+            Placement::Tab,
+            |_| Ok(()),
+            || Ok(keys.next()),
+        )
+        .unwrap();
         assert_eq!(p.error(), Some("herdr could not open the file viewer"));
     }
 }

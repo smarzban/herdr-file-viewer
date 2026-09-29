@@ -96,7 +96,7 @@ description = "open file viewer in tab"
 key = "prefix+d"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-at"
-description = "open file viewer at…"   # asks for a directory in a popup
+description = "open file viewer at…"   # asks for a directory in a popup, opens a split
 ```
 
 Run `herdr server reload-config`, then press your key. That's the whole setup: the split-pane

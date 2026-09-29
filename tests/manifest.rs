@@ -186,7 +186,7 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
 
 #[test]
 fn declares_the_root_picker_popup_and_its_action() {
-    // `prefix+d`-style "open the viewer at a chosen directory": an action whose launcher opens
+    // `prefix+d`-style "open the viewer at a chosen directory": split and tab actions whose launcher opens
     // the `root-picker` pane as a popup; the pane runs the binary's `--pick-root` mode. Unix only
     // (Windows cannot spawn a relative pane command, GH #58).
     let m = manifest();
@@ -205,13 +205,22 @@ fn declares_the_root_picker_popup_and_its_action() {
         .find(|block| block.contains(r#"id = "open-file-viewer-at""#))
         .expect("an open-file-viewer-at action");
     assert!(
-        action.contains(r#"command = ["bash", "scripts/open-file-viewer-at.sh"]"#),
+        action.contains(r#"command = ["bash", "scripts/open-file-viewer-at.sh", "split"]"#),
         "{action}"
     );
     assert!(
         action.contains(r#"platforms = ["linux", "macos"]"#),
         "{action}"
     );
+    let tab = m
+        .split("[[actions]]")
+        .find(|block| block.contains(r#"id = "open-file-viewer-at-tab""#))
+        .expect("an open-file-viewer-at-tab action");
+    assert!(
+        tab.contains(r#"command = ["bash", "scripts/open-file-viewer-at.sh", "tab"]"#),
+        "{tab}"
+    );
+    assert!(tab.contains(r#"platforms = ["linux", "macos"]"#), "{tab}");
 }
 
 #[test]

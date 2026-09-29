@@ -62,8 +62,8 @@ open_direction = "down"
 ```
 
 No reload is needed — the launcher reads it on each summon, so the next `prefix+f` opens
-underneath. It applies to the split action only: a tab has no direction, so
-`open-file-viewer-tab` ignores it.
+underneath. It applies to the split actions only (`open-file-viewer` and `open-file-viewer-at`): a
+tab has no direction, so the tab actions ignore it.
 
 ## Open in a tab instead of a split
 
@@ -99,9 +99,15 @@ description = "open file viewer in tab"
 
 ## Open at another directory
 
-A third action, `open-file-viewer-at`, asks **where** to open. It pops up a small herdr popup
-pre-filled with `~/`; type a directory and the viewer opens there in a **new tab**, instead of the
-directory you are in. Needs herdr 0.7.5+ (popups); Linux and macOS only for now.
+Two more actions ask **where** to open. Each pops up a small herdr popup pre-filled with `~/`; type
+a directory and the viewer opens there instead of the directory you are in:
+
+- `open-file-viewer-at` opens it in a **split** beside your pane, in your
+  [`open_direction`](#split-beside-or-below), like `prefix+f`.
+- `open-file-viewer-at-tab` opens it in a **new tab**.
+
+Both always open a fresh viewer. Needs herdr 0.7.5+ (popups); Linux and macOS only for now. The
+popup's title says which one you pressed.
 
 | In the popup | Does |
 |---|---|
@@ -121,12 +127,19 @@ error in the popup, so you can fix it or cancel.
 key = "prefix+d"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-at"
-description = "open file viewer at…"
+description = "open file viewer at… (split)"
+
+[[keys.command]]
+key = "prefix+alt+d"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer-at-tab"
+description = "open file viewer at… (tab)"
 ```
 
-Avoid `prefix+g`: herdr's built-in `goto` uses it by default.
+Avoid `prefix+g` and `prefix+shift+d`: herdr's built-in `goto` and `close_workspace` use them by
+default.
 
-Under the hood the popup runs `herdr plugin pane open … --placement tab --env
+Under the hood the popup runs `herdr plugin pane open … --placement split|tab --env
 HERDR_FILE_VIEWER_ROOT=<dir>`: the directory reaches the viewer as an environment variable, never
 as `--cwd`. An agent or script can open a viewer on a given directory the same way.
 
