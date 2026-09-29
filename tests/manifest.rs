@@ -186,7 +186,7 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
 
 #[test]
 fn declares_the_root_picker_popup_and_its_action() {
-    // `prefix+g`-style "open the viewer at a chosen directory": an action whose launcher opens
+    // `prefix+d`-style "open the viewer at a chosen directory": an action whose launcher opens
     // the `root-picker` pane as a popup; the pane runs the binary's `--pick-root` mode. Unix only
     // (Windows cannot spawn a relative pane command, GH #58).
     let m = manifest();

@@ -118,11 +118,13 @@ error in the popup, so you can fix it or cancel.
 
 ```toml
 [[keys.command]]
-key = "prefix+g"
+key = "prefix+d"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-at"
 description = "open file viewer at…"
 ```
+
+Avoid `prefix+g`: herdr's built-in `goto` uses it by default.
 
 Under the hood the popup runs `herdr plugin pane open … --placement tab --env
 HERDR_FILE_VIEWER_ROOT=<dir>`: the directory reaches the viewer as an environment variable, never

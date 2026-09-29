@@ -112,7 +112,7 @@ command = [
 ]
 
 # Open the viewer at a directory you type (Tab completes, Enter opens, Esc cancels), in a new
-# tab, instead of the directory you are in. Bind a key to it (e.g. `prefix+g`).
+# tab, instead of the directory you are in. Bind a key to it (e.g. `prefix+d`).
 [[actions]]
 id = "open-file-viewer-at"
 platforms = ["linux", "macos"]

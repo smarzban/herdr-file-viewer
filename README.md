@@ -93,7 +93,7 @@ command = "herdr-file-viewer.open-file-viewer-tab"
 description = "open file viewer in tab"
 
 [[keys.command]]
-key = "prefix+g"
+key = "prefix+d"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-at"
 description = "open file viewer at…"   # asks for a directory in a popup
