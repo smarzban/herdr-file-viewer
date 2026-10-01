@@ -1827,6 +1827,16 @@ fn finder_confirm_from_pinned_focus_moves_to_active_while_changed_jumps_do_not()
     assert!(ctrl.finder_open(), "finder opens from pinned focus");
     ctrl.handle_finder_key(key(KeyCode::Char('p')));
     ctrl.handle_finder_key(key(KeyCode::Enter));
+    // Fast type-and-Enter is deferred until the current query completes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ctrl.finder_open() {
+        ctrl.poll();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "finder confirm did not complete"
+        );
+        std::thread::yield_now();
+    }
     assert_eq!(
         ctrl.focus(),
         Focus::Content,
@@ -1846,6 +1856,16 @@ fn finder_confirm_from_tree_focus_leaves_focus_on_the_tree() {
     assert!(ctrl.finder_open(), "finder opens from tree focus");
     ctrl.handle_finder_key(key(KeyCode::Char('p')));
     ctrl.handle_finder_key(key(KeyCode::Enter));
+    // Fast type-and-Enter is deferred until the current query completes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ctrl.finder_open() {
+        ctrl.poll();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "finder confirm did not complete"
+        );
+        std::thread::yield_now();
+    }
     assert_eq!(
         ctrl.focus(),
         Focus::Tree,

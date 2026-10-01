@@ -37,6 +37,9 @@ use std::time::{Duration, Instant};
 /// How long the input poll blocks each tick before draining finished off-thread renders, so
 /// late content appears promptly without the loop busy-spinning.
 const TICK: Duration = Duration::from_millis(50);
+/// The poll interval while the finder is indexing or matching, so a result that outlasted the
+/// keystroke's settle budget paints soon after it lands instead of up to a full `TICK` later.
+const FINDER_BUSY_TICK: Duration = Duration::from_millis(10);
 
 /// Per-render wall-clock budget for an external renderer before the plain-text fallback.
 const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -263,7 +266,12 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
             dirty = need_redraw;
         }
 
-        if event::poll(TICK)? {
+        let tick = if controller.finder_busy() {
+            FINDER_BUSY_TICK
+        } else {
+            TICK
+        };
+        if event::poll(tick)? {
             match event::read()? {
                 // While the finder overlay is open, every key press is routed directly to
                 // `handle_finder_key` so printable keys (including `j`, `w`, `q`, …) edit the

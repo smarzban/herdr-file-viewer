@@ -279,13 +279,15 @@ pub struct FinderView {
     /// The current query text drawn on the input line.
     pub query: String,
     /// Matched root-relative paths, ranked best-first. Empty when the query is empty (AC-2).
-    pub matches: Vec<String>,
+    pub matches: crate::finder::FinderMatches,
     /// Index into `matches` of the highlighted row.
     pub cursor: usize,
     /// Raw horizontal scroll offset (columns) for the result rows. The Presenter clamps it to
     /// `max_row_width − inner_width` at draw so it can never over-scroll. The query line is
     /// NOT scrolled; this affects only the match rows.
     pub hscroll: u16,
+    /// Background work feedback; absent when current results are ready.
+    pub status: Option<String>,
 }
 
 /// Owned, typed persistent-indicator projection for the pure Presenter.
@@ -1389,7 +1391,7 @@ pub struct PaneGeometry {
     /// The finder's scroll offset into the match list — the index of the first visible result row.
     /// `0` when the finder is closed or when all rows fit. Added to a click's screen-row delta to
     /// produce the absolute match-list index.
-    pub finder_scroll: u16,
+    pub finder_scroll: usize,
     /// The maximum useful HORIZONTAL scroll for the finder result rows, in columns (widest match
     /// row minus the rows-area width; `0` when rows fit or the finder is closed). Fed back so the
     /// controller clamps the *stored* `hscroll` in state each frame — without it, over-scrolling
@@ -1537,12 +1539,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
     let (finder_rows, finder_scroll, finder_max_hscroll, finder_vbar) = match &state.finder {
         Some(finder) => {
             let fl = finder_overlay_layout(area, finder);
-            (
-                fl.rows_area,
-                fl.offset.min(u16::MAX as usize) as u16,
-                fl.max_hscroll,
-                fl.vbar,
-            )
+            (fl.rows_area, fl.offset, fl.max_hscroll, fl.vbar)
         }
         None => (None, 0, 0, None),
     };
@@ -2064,22 +2061,6 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
         Line::from(format!("{FINDER_PROMPT}{display_query}"))
     };
 
-    // Build match lines for width measurement.
-    let match_lines: Vec<Line<'static>> = finder
-        .matches
-        .iter()
-        .enumerate()
-        .map(|(i, path)| {
-            let text = sanitize_control(path);
-            let style = if i == finder.cursor {
-                Style::new().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::new()
-            };
-            Line::styled(text, style)
-        })
-        .collect();
-
     // Chrome widths (same as draw_finder_overlay). No top-right chip — the footer is the single
     // home for all key hints.
     let hint_style = Style::new().fg(Color::Reset);
@@ -2087,15 +2068,19 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
     let footer = Line::styled(FINDER_FOOTER_HINT, hint_style).centered();
 
     let query_w = query_line.width();
-    let max_row_w = match_lines.iter().map(Line::width).max().unwrap_or(0);
-    let min_top = top_left.width();
+    let max_row_w = finder.matches.max_width();
+    let min_top = top_left.width()
+        + finder
+            .status
+            .as_ref()
+            .map_or(0, |s| Line::raw(s).width() + 2);
     let min_bottom = footer.width();
     let desired_inner_w = query_w
         .max(max_row_w)
         .max(min_top)
         .max(min_bottom)
         .min(u16::MAX as usize) as u16;
-    let desired_inner_h = (1 + match_lines.len().min(u16::MAX as usize) as u16).max(1);
+    let desired_inner_h = 1u16.saturating_add(finder.matches.len().min(u16::MAX as usize) as u16);
     let want_w = desired_inner_w
         .saturating_add(2)
         .saturating_add(PICKER_PADDING * 2);
@@ -2115,7 +2100,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
     } else {
         let query_area_height = 1u16;
         let remaining = inner.height.saturating_sub(query_area_height);
-        if remaining == 0 || match_lines.is_empty() {
+        if remaining == 0 || finder.matches.is_empty() {
             (None, 0)
         } else {
             let ra = Rect {
@@ -2125,7 +2110,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
                 height: remaining,
             };
             let visible = ra.height as usize;
-            let off = scroll_offset(finder.cursor, match_lines.len(), visible);
+            let off = scroll_offset(finder.cursor, finder.matches.len(), visible);
             (Some(ra), off)
         }
     };
@@ -2147,7 +2132,7 @@ fn finder_overlay_layout(area: Rect, finder: &FinderView) -> FinderLayout {
     // Vertical scrollbar track (the gutter column right of the rows), present only when the match
     // rows overflow the visible height — the SAME rect draw renders into and geometry feeds back.
     let vbar = match rows_area {
-        Some(ra) if match_lines.len() > ra.height as usize => Some(Rect {
+        Some(ra) if finder.matches.len() > ra.height as usize => Some(Rect {
             x: ra.x + ra.width,
             y: ra.y,
             width: 1,
@@ -2196,22 +2181,6 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
         Line::from(format!("{FINDER_PROMPT}{display_query}"))
     };
 
-    // Build match rows for rendering (AC-5, AC-27).
-    let match_lines: Vec<Line<'static>> = finder
-        .matches
-        .iter()
-        .enumerate()
-        .map(|(i, path)| {
-            let text = sanitize_control(path);
-            let style = if i == finder.cursor {
-                Style::new().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::new()
-            };
-            Line::styled(text, style)
-        })
-        .collect();
-
     // Chrome: static strings, no sanitization needed. Only FINDER_TITLE on the top border —
     // the `esc cancel` chip has been removed so it does not duplicate the footer hint.
     let hint_style = Style::new().fg(Color::Reset);
@@ -2221,10 +2190,13 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
     // Clear whatever the columns drew beneath the popup so it reads as a true modal.
     frame.render_widget(Clear, layout.popup);
 
-    let block = modal_frame()
+    let mut block = modal_frame()
         .title_top(top_left)
         .title_bottom(footer)
         .border_style(modal_border_style());
+    if let Some(status) = &finder.status {
+        block = block.title_top(Line::raw(sanitize_control(status)).right_aligned());
+    }
     frame.render_widget(block, layout.popup);
 
     // Render the query line if the interior is tall enough.
@@ -2236,8 +2208,19 @@ fn draw_finder_overlay(frame: &mut Frame, area: Rect, finder: &FinderView) {
     if let Some(rows_area) = layout.rows_area {
         let visible = rows_area.height as usize;
         let offset = layout.offset;
-        let window: Vec<Line<'static>> =
-            match_lines.into_iter().skip(offset).take(visible).collect();
+        let window: Vec<Line<'static>> = finder
+            .matches
+            .window(offset, visible)
+            .enumerate()
+            .map(|(row, path)| {
+                let style = if offset + row == finder.cursor {
+                    Style::new().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::new()
+                };
+                Line::styled(sanitize_control(path), style)
+            })
+            .collect();
 
         // Clamp the displayed hscroll to `layout.max_hscroll` — the SAME value the controller
         // clamps the stored offset to (via geometry feedback), so display and state never disagree.

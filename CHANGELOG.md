@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Go-to-file no longer freezes on a very large root such as a home directory: the prompt opens at once and stays responsive while files are indexed and matched in the background, and a superseded query is cancelled. Small projects still show results as you type. File visibility and ranking are unchanged. Thanks @lemonbalms for the report (#173) → [usage](docs/usage.md#finding-a-file-fast)
+
 ## [1.17.0] - 2026-09-16
 
 ### Added

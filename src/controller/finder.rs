@@ -14,13 +14,10 @@ impl Controller {
         let f = self.modal.finder()?;
         Some(FinderView {
             query: f.query().to_string(),
-            matches: f
-                .matches()
-                .iter()
-                .map(|&i| f.candidates()[i].clone())
-                .collect(),
+            matches: f.snapshot(),
             cursor: f.cursor(),
             hscroll: f.hscroll(),
+            status: f.status(),
         })
     }
 
@@ -117,8 +114,7 @@ impl Controller {
         // Its own mapping, not the shared `track_to_offset`: with a single match the finder maps a
         // drag to index 0 and selects it, whereas `track_to_offset` no-ops at a zero range — a
         // deliberate difference for the modal list, so the rounding stays inline here.
-        let max = (total - 1) as u32;
-        let idx = ((rel * max + span / 2) / span) as usize;
+        let idx = finder_scroll_index(rel, span, total);
         finder.set_cursor(idx);
         Effects::redraw()
     }
@@ -151,7 +147,7 @@ impl Controller {
             return Effects::noop();
         }
         // Map screen row → absolute match-list index.
-        let idx = self.geom.finder_scroll as usize + (row - rows_rect.y) as usize;
+        let idx = self.geom.finder_scroll + (row - rows_rect.y) as usize;
         let Some(finder) = self.modal.finder() else {
             return Effects::noop();
         };
@@ -174,16 +170,14 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Open the go-to-file finder (AC-1). Builds the file index for the current root, then
-    /// installs a fresh `FinderState` with an empty query and the full candidate list.
+    /// Open the go-to-file finder immediately (AC-1), with a fresh background index.
     /// Returns [`Effects::redraw`] so the run loop paints the overlay on the next tick.
     ///
     /// Modal mutual-exclusion (finder inert while the picker is open) holds BY CONSTRUCTION:
     /// `handle()` routes to `handle_picker_intent()` while `self.modal.picker().is_some()`, and its
     /// catch-all `_ => Effects::noop()` swallows `OpenFinder`. No extra guard is needed here.
     pub(super) fn open_finder(&mut self) -> Effects {
-        let candidates = crate::index::build_scoped(&self.root, self.is_git_repo);
-        self.modal = Modal::Finder(FinderState::new(candidates));
+        self.modal = Modal::Finder(FinderState::start(self.root.clone(), self.is_git_repo));
         self.last_click = None; // opening the finder resets double-click state so a prior tree
         // click cannot pair with the first finder click as a double-click
         Effects::redraw()
@@ -209,10 +203,12 @@ impl Controller {
         let effects = match key.code {
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 finder.push(c);
+                finder.settle(crate::finder::SETTLE_BUDGET);
                 Effects::redraw()
             }
             KeyCode::Backspace => {
                 finder.backspace();
+                finder.settle(crate::finder::SETTLE_BUDGET);
                 Effects::redraw()
             }
             KeyCode::Up => {
@@ -262,7 +258,14 @@ impl Controller {
     /// - Zero matches (empty list) → no-op; finder stays open (AC-6).
     /// - Reveal returns `false` (target missing/removed since open) → close the finder, set a
     ///   non-fatal `action_notice`, leave the tree selection unchanged (AC-20).
-    fn confirm_finder(&mut self) -> Effects {
+    pub(super) fn confirm_finder(&mut self) -> Effects {
+        if self
+            .modal
+            .finder_mut()
+            .is_some_and(FinderState::defer_confirm)
+        {
+            return Effects::redraw();
+        }
         let Some(finder) = self.modal.finder() else {
             return Effects::noop();
         };
@@ -300,5 +303,25 @@ impl Controller {
             self.action_notice = Some(format!("Could not open {rel}"));
             Effects::redraw()
         }
+    }
+}
+
+/// A terminal coordinate is small; the result count is not. Widen before multiplying
+/// so scrollbar clicks cannot overflow for a large index in a tall terminal.
+fn finder_scroll_index(rel: u32, span: u32, total: usize) -> usize {
+    let max = (total - 1) as u128;
+    ((u128::from(rel) * max + u128::from(span) / 2) / u128::from(span)).min(max) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finder_scroll_index;
+
+    #[test]
+    fn scrollbar_mapping_keeps_large_result_indices_and_does_not_overflow() {
+        assert_eq!(finder_scroll_index(0, 65_535, 2_300_000), 0);
+        assert_eq!(finder_scroll_index(65_535, 65_535, 2_300_000), 2_299_999);
+        assert_eq!(finder_scroll_index(1000, 2000, 2_300_001), 1_150_000);
+        assert_eq!(finder_scroll_index(10, 20, 1), 0);
     }
 }

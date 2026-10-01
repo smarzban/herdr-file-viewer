@@ -2509,9 +2509,10 @@ fn finder_state_empty_query() -> ViewState {
     let mut state = sample_state();
     state.finder = Some(FinderView {
         query: String::new(),
-        matches: vec![],
+        matches: vec![].into(),
         cursor: 0,
         hscroll: 0,
+        status: None,
     });
     state
 }
@@ -2525,11 +2526,44 @@ fn finder_state_with_matches() -> ViewState {
             "src/main.rs".to_string(),
             "src/inner/main_helper.rs".to_string(),
             "README.md".to_string(),
-        ],
+        ]
+        .into(),
         cursor: 1, // the second row is highlighted
         hscroll: 0,
+        status: None,
     });
     state
+}
+
+#[test]
+fn finder_shows_background_status_without_hiding_the_query() {
+    let mut state = finder_state_empty_query();
+    let finder = state.finder.as_mut().unwrap();
+    finder.query = "main".into();
+    finder.status = Some("Indexing… 123 files".into());
+    let out = render(&state, 100, 24);
+    assert!(out.contains("Indexing… 123 files"));
+    assert!(out.contains("> main"));
+    state.finder.as_mut().unwrap().status = Some("Searching…".into());
+    assert!(render(&state, 100, 24).contains("Searching…"));
+}
+
+#[test]
+fn a_million_matches_can_be_drawn_at_the_last_row_without_height_overflow() {
+    let mut state = finder_state_empty_query();
+    let finder = state.finder.as_mut().unwrap();
+    finder.query = "file".into();
+    finder.matches = (0..1_000_000)
+        .map(|i| format!("file_{i:07}.rs"))
+        .collect::<Vec<_>>()
+        .into();
+    finder.cursor = 999_999;
+    let out = render(&state, 100, 24);
+    assert!(out.contains("file_0999999.rs"));
+    assert!(!out.contains("file_0000000.rs"));
+    let geometry =
+        herdr_file_viewer::presenter::geometry(ratatui::layout::Rect::new(0, 0, 100, 24), &state);
+    assert!(geometry.finder_scroll > 999_900);
 }
 
 #[test]
@@ -2626,9 +2660,10 @@ fn finder_state_overflow() -> ViewState {
     let matches: Vec<String> = (0..30).map(|i| format!("src/file_{i:02}.rs")).collect();
     state.finder = Some(FinderView {
         query: "file".to_string(),
-        matches,
+        matches: matches.into(),
         cursor: 25,
         hscroll: 0,
+        status: None,
     });
     state
 }
@@ -2743,9 +2778,10 @@ fn finder_overlay_nonempty_query_zero_matches_shows_prompt_not_placeholder() {
     let mut state = sample_state();
     state.finder = Some(FinderView {
         query: "zzzzz".to_string(),
-        matches: vec![],
+        matches: vec![].into(),
         cursor: 0,
         hscroll: 0,
+        status: None,
     });
     let out = render(&state, 100, 24);
 
@@ -2832,7 +2868,7 @@ fn finder_geometry_agrees_with_draw_for_mouse_click_hit_testing() {
     let rows_rect = g
         .finder_rows
         .expect("geometry().finder_rows must be Some when the finder has matches");
-    let scroll = g.finder_scroll as usize;
+    let scroll = g.finder_scroll;
 
     // The drawn row must lie inside finder_rows.
     assert!(

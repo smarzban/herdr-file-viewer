@@ -60,6 +60,17 @@ pub fn build(root: &Path) -> Vec<String> {
 /// boundary when `is_git_repo` is true (see [`walk_builder`]) instead of letting it climb past
 /// an unrelated enclosing directory/repository above `root`.
 pub fn build_scoped(root: &Path, is_git_repo: bool) -> Vec<String> {
+    build_cancellable(root, is_git_repo, || false, |_| {}).unwrap_or_default()
+}
+
+/// Same visibility rules as the synchronous index, with cooperative cancellation and a
+/// progress callback. Neither callback changes the walk's scope or truncates its results.
+pub(crate) fn build_cancellable(
+    root: &Path,
+    is_git_repo: bool,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(usize),
+) -> Option<Vec<String>> {
     let mut builder = walk_builder(root, is_git_repo);
     builder
         .hidden(false) // include dotfiles (AC-17 depends on the index NOT hiding dotfiles)
@@ -67,12 +78,23 @@ pub fn build_scoped(root: &Path, is_git_repo: bool) -> Vec<String> {
         .git_exclude(true)
         .filter_entry(|e| e.file_name() != ".git"); // prune entire .git subtree — AC-14
 
-    builder
-        .build()
-        .filter_map(Result::ok) // skip unreadable entries; traversal continues
-        .filter(|e| e.file_type().is_some_and(|t| t.is_file())) // files only — AC-15
-        .filter_map(|e| e.path().strip_prefix(root).ok().map(rel_to_slash))
-        .collect()
+    let mut paths = Vec::new();
+    for entry in builder.build() {
+        if cancelled() {
+            return None;
+        }
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_some_and(|t| t.is_file())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+        {
+            paths.push(rel_to_slash(rel));
+            if paths.len() % 128 == 0 {
+                progress(paths.len());
+            }
+        }
+    }
+    progress(paths.len());
+    Some(paths)
 }
 
 /// Render a root-relative path as a forward-slash string on every platform. The rest of the app

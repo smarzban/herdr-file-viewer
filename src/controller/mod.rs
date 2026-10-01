@@ -3274,6 +3274,11 @@ impl Controller {
         self.modal.finder().is_some()
     }
 
+    /// Whether the open finder is still indexing or matching its current query.
+    pub fn finder_busy(&self) -> bool {
+        self.modal.finder().is_some_and(FinderState::busy)
+    }
+
     /// Whether the help overlay is currently open.
     pub fn help_open(&self) -> bool {
         self.modal.help().is_some()
@@ -3583,7 +3588,14 @@ impl Controller {
     /// dispatched selection (stale results are discarded). Returns `Some` redraw effect when
     /// fresh content was applied, so the run loop repaints; `None` when nothing arrived.
     pub fn poll(&mut self) -> Option<Effects> {
-        let mut applied = false;
+        let mut applied = self.modal.finder_mut().is_some_and(FinderState::poll);
+        if self
+            .modal
+            .finder_mut()
+            .is_some_and(FinderState::take_ready_confirm)
+        {
+            applied |= self.confirm_finder().redraw;
+        }
         while let Ok(completion) = self.result_rx.try_recv() {
             let RenderCompletion { job, result } = completion;
             let seq = job.seq;
