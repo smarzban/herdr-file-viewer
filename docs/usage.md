@@ -30,6 +30,10 @@ setting off unless you need it; `.git/` itself always stays hidden. The tree's *
 **bottom border shows the current branch**, so you always know *where* and *on what branch* you're
 looking.
 
+The layout follows the pane's actual terminal dimensions, including a size adjustment while a
+herdr split is opening. It recovers without needing focus or navigation, even if the initial resize
+notification was missed; unchanged idle frames are not continuously repainted.
+
 Move the cursor with `↑`/`↓` (or `k`/`j`), expand/collapse a directory with `→`/`←` (or `l`/`h`) or
 `Enter`. In the normal tree, `←` on a file or an already-collapsed directory walks to and collapses
 the nearest visible parent, so repeated presses climb the tree; it stops at a root child. This also
