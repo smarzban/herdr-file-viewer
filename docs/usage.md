@@ -240,6 +240,9 @@ Git status is woven straight into the tree, not a separate mode:
   deleted, `?` untracked — and a directory containing any change carries a `●`. They're **colored**
   so changes read at a glance (changed files and dirty folders red, new files green), with the glyph
   as a non-color cue so status survives a colorblind palette or a non-default terminal theme.
+  They appear in the full tree from startup: working-tree status takes precedence, with changes
+  against the active baseline filling in committed branch changes. Pressing `c` only filters the
+  rows; it is not needed to populate markers. `b` updates these baseline markers too.
 - **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
   baseline (`b`) — useful for reviewing a whole branch (merge-base) or just uncommitted work (`HEAD`).
 - **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next

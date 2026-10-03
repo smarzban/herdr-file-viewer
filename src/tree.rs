@@ -177,7 +177,8 @@ pub struct TreeModel {
     /// independently of the filter (`set_status`) so the two can never overwrite each
     /// other.
     markers: BTreeMap<PathBuf, Status>,
-    /// The changed-set driving the changed-only filter (AC-6), set by `set_changed_only`.
+    /// The baseline changed-set driving the changed-only filter (AC-6) and fallback markers,
+    /// also retained while the filter is off. Status mode supplies working-tree status instead.
     changed_filter: BTreeMap<PathBuf, Status>,
 }
 
