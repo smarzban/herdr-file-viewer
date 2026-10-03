@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::preview::PreviewSelection as LineSelectState;
+use unicode_width::UnicodeWidthChar;
 
 /// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
@@ -67,12 +68,20 @@ fn filter_control_keep_tabs(s: &str) -> String {
 /// position for click-drag selection. Clamps to the char count when `col` is at/past the end (a
 /// caret at end-of-line).
 ///
-/// v1 assumes one display column per char: `bat` expands tabs to spaces before we ever see the
-/// text, and code is overwhelmingly single-width, so `col` maps straight to a char index. Precise
-/// wide-glyph (CJK / emoji) column accounting is a follow-up; it would replace this body with a
-/// width-summing walk without changing the signature.
+/// `bat` expands tabs to spaces before we ever see the text; wide glyphs (CJK / emoji) still
+/// span two display columns, so the walk sums [`UnicodeWidthChar::width`] per char and counts
+/// every char whose start column lies left of `col`.
 fn char_index_at_col(s: &str, col: usize) -> usize {
-    col.min(s.chars().count())
+    let mut acc = 0usize;
+    let mut count = 0usize;
+    for ch in s.chars() {
+        if acc >= col {
+            break;
+        }
+        acc += UnicodeWidthChar::width(ch).unwrap_or(0);
+        count += 1;
+    }
+    count
 }
 
 impl Controller {
@@ -705,6 +714,22 @@ mod tests {
         // Past the end clamps to a caret at end-of-line.
         assert_eq!(char_index_at_col("hello", 99), 5);
         assert_eq!(char_index_at_col("", 4), 0);
+    }
+
+    #[test]
+    fn char_index_at_col_counts_wide_glyphs_by_display_width() {
+        // Each CJK char spans two display columns but is one char, so a mouse column inside the
+        // CJK run maps to fewer chars than the raw column.
+        let line = "let total = 1; // 总计金额";
+        // ASCII prefix is 18 chars; 总 starts at col 18, 计 at 20, 金 at 22, 额 at 24.
+        assert_eq!(char_index_at_col(line, 0), 0);
+        assert_eq!(char_index_at_col(line, 17), 17);
+        // A click mid-计 (col 21) counts the chars starting strictly left of it.
+        assert_eq!(char_index_at_col(line, 21), 20);
+        // A click on 金's first cell still counts only the chars left of its start column.
+        assert_eq!(char_index_at_col(line, 22), 20);
+        // Past the end clamps to a caret at end-of-line (18 ASCII + 4 CJK = 22 chars).
+        assert_eq!(char_index_at_col(line, 99), 22);
     }
 
     #[test]
