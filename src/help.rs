@@ -1038,7 +1038,7 @@ mod tests {
             "baseline          = base",
             "update_check      = on",
             "confirm_discard   = on",
-            "report_open_file  = on",
+            "report_open_file  = off",
             &format!(
                 "scroll_lines      = {}",
                 crate::config::DEFAULT_SCROLL_LINES

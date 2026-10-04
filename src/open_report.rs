@@ -15,7 +15,8 @@
 //!
 //! **Read-only w.r.t. files and git.** The report writes nothing to disk and runs no git: it sets
 //! one display-only value in herdr's in-memory pane state, which herdr drops when the pane closes
-//! and never restores after a server restart. Config `report_open_file = false` turns it off.
+//! and never restores after a server restart. Off by default: config `report_open_file = true`
+//! turns it on.
 //!
 //! **Exact or absent, never truncated.** herdr trims a token value, strips control characters, and
 //! caps it at 80 characters. A path that would not survive that unchanged, or that the launch open
@@ -96,7 +97,7 @@ pub fn report_argv(pane_id: &str, report: &Report) -> Vec<String> {
 }
 
 /// The pane to report on: `HERDR_PANE_ID` when reporting is enabled and the value is non-empty.
-/// Outside herdr (no pane id), or with `report_open_file = false`, there is nothing to report to.
+/// Outside herdr (no pane id), or with `report_open_file` off, there is nothing to report to.
 pub fn report_pane(enabled: bool, pane_env: Option<String>) -> Option<String> {
     enabled
         .then_some(pane_env)

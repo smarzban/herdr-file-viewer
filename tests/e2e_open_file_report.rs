@@ -42,8 +42,10 @@ fn report_lines(log: &Path) -> Vec<String> {
 }
 
 /// A viewer opened at `nested/target.txt`, inside a fake herdr pane `test:p1`, with its config dir
-/// in `tools` (so a developer's own config cannot change the outcome).
-fn viewer(root: &Path, tools: &Path, log: &Path) -> Command {
+/// in `tools` (so a developer's own config cannot change the outcome) holding `config`.
+fn viewer(root: &Path, tools: &Path, log: &Path, config: &str) -> Command {
+    std::fs::create_dir_all(tools.join("config")).unwrap();
+    std::fs::write(tools.join("config/config.toml"), config).unwrap();
     std::fs::create_dir_all(root.join("nested")).unwrap();
     std::fs::write(root.join("nested/target.txt"), "REPORT_TARGET_MARKER\n").unwrap();
     let mut cmd = viewer_command(root);
@@ -70,7 +72,13 @@ macro_rules! quit {
 fn reports_the_open_file_and_clears_it_on_quit() {
     let (root, tools) = (TempDir::new(), TempDir::new());
     let log = tools.path().join("herdr.log");
-    let mut s = Session::spawn(viewer(root.path(), tools.path(), &log)).expect("spawn");
+    let mut s = Session::spawn(viewer(
+        root.path(),
+        tools.path(),
+        &log,
+        "report_open_file = true\n",
+    ))
+    .expect("spawn");
     s.set_expect_timeout(Some(Duration::from_secs(15)));
     s.expect("REPORT_TARGET_MARKER")
         .expect("the opened file is shown");
@@ -92,18 +100,12 @@ fn reports_the_open_file_and_clears_it_on_quit() {
 }
 
 /// The negative is observed at exit, not by sleeping: a live reporter drains its queue (set, then
-/// clear) before the process exits, so an ignored switch would leave lines in the log.
+/// clear) before the process exits, so a reporter running by default would leave lines in the log.
 #[test]
-fn report_open_file_false_sends_nothing() {
+fn reports_nothing_by_default() {
     let (root, tools) = (TempDir::new(), TempDir::new());
     let log = tools.path().join("herdr.log");
-    std::fs::create_dir_all(tools.path().join("config")).unwrap();
-    std::fs::write(
-        tools.path().join("config/config.toml"),
-        "report_open_file = false\n",
-    )
-    .unwrap();
-    let mut s = Session::spawn(viewer(root.path(), tools.path(), &log)).expect("spawn");
+    let mut s = Session::spawn(viewer(root.path(), tools.path(), &log, "")).expect("spawn");
     s.set_expect_timeout(Some(Duration::from_secs(15)));
     s.expect("REPORT_TARGET_MARKER")
         .expect("the opened file is shown");

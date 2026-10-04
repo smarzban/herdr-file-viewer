@@ -113,8 +113,8 @@
 # `file_viewer_open` metadata token, so another plugin can read it with
 # `herdr pane get` (for example to reopen a closed viewer at the same file).
 # Display-only: nothing is written to disk, and herdr drops the token when the
-# pane closes. Set false to send nothing. Default:
-#report_open_file = true
+# pane closes. Off unless set true. Default:
+#report_open_file = false
 
 # How many lines the mouse wheel scrolls per event (also how many items it moves
 # in the file-search list, and lines in the `?` help overlay). Can be set from 1

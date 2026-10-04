@@ -121,8 +121,8 @@ These shape every decision; violating one is a design error, not a style nit:
   worktree picker's queries, and the tab/split launcher scripts — plus one display-only metadata
   write, the **open-file report** (`src/open_report.rs`): `pane report-metadata <HERDR_PANE_ID>
   --source herdr-file-viewer --token file_viewer_open=<path>` / `--clear-token file_viewer_open`,
-  sent only when the shown file changes (config `report_open_file`, default on; argv pinned in its
-  tests). It writes no file and herdr drops the token with the pane. The **editor hand-off is NOT a herdr
+  sent only when the shown file changes (config `report_open_file`, opt-in, default off; argv pinned
+  in its tests). It writes no file and herdr drops the token with the pane. The **editor hand-off is NOT a herdr
   pane**: `e` runs the editor *in-process* (the viewer suspends and resumes around `$EDITOR` / the
   config `editor`), so the viewer never spawns a pane for it.
 - External renderers (glow/delta/bat) are **runtime, install-time** dependencies, not Cargo deps;

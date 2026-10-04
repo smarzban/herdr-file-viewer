@@ -383,7 +383,7 @@ pub struct EffectiveSettings {
     /// Config-or-default (no env var).
     pub preview_max_kib: u32,
     /// The effective **open-file report** switch: the config `report_open_file` when present, else
-    /// `true`. Config-or-default (no env var). Only acts inside herdr (`HERDR_PANE_ID` set).
+    /// `false`. Config-or-default (no env var). Only acts inside herdr (`HERDR_PANE_ID` set).
     pub report_open_file: bool,
 }
 
@@ -471,9 +471,9 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     // so a session that never annotates never sees it, and the one that does has work to lose.
     let confirm_discard = config.confirm_discard.unwrap_or(true);
 
-    // Config > default; no env var. Defaults ON: one display-only pane token, set only when the
-    // shown file changes and dropped by herdr when the pane closes (see `open_report`).
-    let report_open_file = config.report_open_file.unwrap_or(true);
+    // Config > default; no env var. Defaults OFF: sending herdr a pane token is an opt-in exception
+    // to the read-only viewer (constitution 1), even though it is display-only (see `open_report`).
+    let report_open_file = config.report_open_file.unwrap_or(false);
 
     let update_check = match config.update_check {
         Some(b) => b,
@@ -937,19 +937,19 @@ mod tests {
 
     #[test]
     fn report_open_file_resolves_config_over_default() {
-        let on = resolve(&Config::default(), |_| None);
-        assert!(on.report_open_file, "absent falls back to on");
-        let off = resolve(
+        let off = resolve(&Config::default(), |_| None);
+        assert!(!off.report_open_file, "absent falls back to off");
+        let on = resolve(
             &Config {
-                report_open_file: Some(false),
+                report_open_file: Some(true),
                 ..Config::default()
             },
             |_| None,
         );
-        assert!(!off.report_open_file, "an explicit false wins");
-        let (parsed, outcome) = parse_config("report_open_file = false\n");
+        assert!(on.report_open_file, "an explicit true wins");
+        let (parsed, outcome) = parse_config("report_open_file = true\n");
         assert_eq!(outcome, LoadOutcome::Loaded);
-        assert_eq!(parsed.report_open_file, Some(false));
+        assert_eq!(parsed.report_open_file, Some(true));
     }
 
     #[test]

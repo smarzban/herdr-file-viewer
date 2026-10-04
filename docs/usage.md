@@ -171,7 +171,8 @@ This is launch-only. It does not retarget a Files pane that is already running; 
 
 The other direction: a Files pane tells herdr which file it shows, so another plugin can read it
 without parsing the screen (for example, to reopen a closed viewer at the same file). Inside herdr,
-the viewer keeps one pane metadata token up to date:
+with [`report_open_file = true`](configuration.md), the viewer keeps one pane metadata token up to
+date:
 
 | | |
 | --- | --- |
@@ -183,15 +184,16 @@ the viewer keeps one pane metadata token up to date:
 The value is exactly the shape `--open` / `HERDR_FILE_VIEWER_OPEN` takes, so passing it back opens
 the same file, because the new viewer roots at the same tree. While the viewer shows a worktree
 switched to with `W`, the token is cleared (a path relative to that worktree would open the wrong
-file); it is set again once the viewer is back on the tree it launched with. It is never truncated: herdr caps token values at
-80 characters and strips control characters and surrounding whitespace, so a path longer than 80
+file); it is set again once the viewer is back on the tree it launched with. It is never truncated:
+herdr caps token values at 80 characters and strips control characters and surrounding whitespace,
+so a path longer than 80
 characters, or one herdr or `--open` would read differently (a control character, surrounding
 spaces, a trailing `:12`), clears the token instead of sending a wrong value. A non-UTF-8 path
 clears it too.
 
 The viewer reports under the source `herdr-file-viewer`. It needs herdr 0.7.4 or later (an older
-herdr ignores the report) and does nothing outside herdr. Turn it off with
-[`report_open_file = false`](configuration.md).
+herdr ignores the report) and does nothing outside herdr. It is off unless
+[`report_open_file = true`](configuration.md).
 
 ## Viewing a file
 
