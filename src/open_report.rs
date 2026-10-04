@@ -105,17 +105,31 @@ pub fn report_pane(enabled: bool, pane_env: Option<String>) -> Option<String> {
 }
 
 /// The pure decision behind [`OpenFileReporter`]: which [`Report`], if any, a newly observed
-/// displayed file calls for. Holds the last observed `(root, file)` and the value herdr holds.
-#[derive(Debug, Default)]
+/// displayed file calls for. Holds the launch root, the last observed `(root, file)`, and the
+/// value herdr holds.
+#[derive(Debug)]
 pub struct OpenFileReport {
+    home: PathBuf,
     seen: Option<(PathBuf, PathBuf)>,
     reported: Option<String>,
 }
 
 impl OpenFileReport {
+    /// A report for a viewer that launched rooted at `home`. Only a file shown under `home` is
+    /// reported: a viewer started again from this pane roots there, so a path relative to any
+    /// other root (a worktree switched to with `W`) would open the wrong file.
+    pub fn new(home: PathBuf) -> Self {
+        Self {
+            home,
+            seen: None,
+            reported: None,
+        }
+    }
+
     /// Observe the displayed file as `(tree root, absolute path)`, or `None` when no file is shown
     /// (a directory, an empty tree). Returns the report to send, or `None` when herdr already
     /// holds the right value. An unchanged observation returns `None` after one path comparison.
+    /// A file shown under a root other than the launch root clears the token.
     pub fn observe(&mut self, open: Option<(&Path, &Path)>) -> Option<Report> {
         let unchanged = match (&self.seen, open) {
             (Some((root, file)), Some((new_root, new_file))) => {
@@ -128,7 +142,9 @@ impl OpenFileReport {
             return None;
         }
         self.seen = open.map(|(root, file)| (root.to_path_buf(), file.to_path_buf()));
-        let value = open.and_then(|(root, file)| token_value(root, file));
+        let value = open
+            .filter(|(root, _)| *root == self.home)
+            .and_then(|(root, file)| token_value(root, file));
         if value == self.reported {
             return None;
         }
@@ -151,9 +167,10 @@ pub struct OpenFileReporter {
 }
 
 impl OpenFileReporter {
-    /// Start the reporter for `pane_id`, running each report through `herdr`. If the thread
-    /// cannot start, every report is dropped silently: the viewer works the same without it.
-    pub fn start(herdr: Box<dyn HerdrCli + Send>, pane_id: String) -> Self {
+    /// Start the reporter for `pane_id` in a viewer launched rooted at `home`, running each report
+    /// through `herdr`. If the thread cannot start, every report is dropped silently: the viewer
+    /// works the same without it.
+    pub fn start(herdr: Box<dyn HerdrCli + Send>, pane_id: String, home: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<Report>();
         let (done_tx, done) = mpsc::channel::<()>();
         let _ = std::thread::Builder::new()
@@ -173,18 +190,20 @@ impl OpenFileReporter {
                 let _ = done_tx.send(());
             });
         Self {
-            state: OpenFileReport::default(),
+            state: OpenFileReport::new(home),
             tx,
             done,
         }
     }
 
-    /// Start the live reporter when `enabled` and herdr gave this pane an id; `None` otherwise.
-    pub fn from_env(enabled: bool) -> Option<Self> {
+    /// Start the live reporter, for a viewer launched rooted at `home`, when `enabled` and herdr
+    /// gave this pane an id; `None` otherwise.
+    pub fn from_env(enabled: bool, home: PathBuf) -> Option<Self> {
         let pane = report_pane(enabled, std::env::var(PANE_ENV).ok())?;
         Some(Self::start(
             Box::new(crate::herdr::LiveHerdr::from_env()),
             pane,
+            home,
         ))
     }
 
@@ -321,7 +340,7 @@ mod tests {
 
     #[test]
     fn observe_reports_a_change_once() {
-        let mut state = OpenFileReport::default();
+        let mut state = OpenFileReport::new(root());
         let r = root();
         let a = r.join("a.rs");
         let b = r.join("b.rs");
@@ -338,14 +357,14 @@ mod tests {
 
     #[test]
     fn observe_sends_nothing_until_a_file_is_shown() {
-        let mut state = OpenFileReport::default();
+        let mut state = OpenFileReport::new(root());
         assert_eq!(state.observe(None), None);
         assert_eq!(state.finish(), None, "nothing set, nothing to clear");
     }
 
     #[test]
     fn observe_clears_when_no_file_or_an_unreportable_file_is_shown() {
-        let mut state = OpenFileReport::default();
+        let mut state = OpenFileReport::new(root());
         let r = root();
         let a = r.join("a.rs");
         let long = r.join("x".repeat(MAX_VALUE_CHARS + 1));
@@ -367,20 +386,32 @@ mod tests {
     }
 
     #[test]
-    fn observe_reports_the_same_relative_path_under_a_new_root_only_once() {
-        let mut state = OpenFileReport::default();
-        let (r1, r2) = (PathBuf::from("/wt1"), PathBuf::from("/wt2"));
-        state.observe(Some((&r1, &r1.join("a.rs"))));
+    fn observe_clears_under_a_switched_root_and_reports_again_back_home() {
+        let (home, other) = (PathBuf::from("/wt1"), PathBuf::from("/wt2"));
+        let mut state = OpenFileReport::new(home.clone());
         assert_eq!(
-            state.observe(Some((&r2, &r2.join("a.rs")))),
+            state.observe(Some((&home, &home.join("a.rs")))),
+            Some(Report::Set("a.rs".into()))
+        );
+        assert_eq!(
+            state.observe(Some((&other, &other.join("a.rs")))),
+            Some(Report::Clear),
+            "`a.rs` under /wt2 is not the `a.rs` a viewer restarted at /wt1 would open"
+        );
+        assert_eq!(
+            state.observe(Some((&other, &other.join("b.rs")))),
             None,
-            "herdr already holds `a.rs`"
+            "already clear: no second clear"
+        );
+        assert_eq!(
+            state.observe(Some((&home, &home.join("a.rs")))),
+            Some(Report::Set("a.rs".into()))
         );
     }
 
     #[test]
     fn finish_clears_a_set_token() {
-        let mut state = OpenFileReport::default();
+        let mut state = OpenFileReport::new(root());
         let r = root();
         state.observe(Some((&r, &r.join("a.rs"))));
         assert_eq!(state.finish(), Some(Report::Clear));

@@ -218,7 +218,10 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     }));
     // The open-file report (config `report_open_file`): tell herdr which file this pane shows, as
     // the `file_viewer_open` pane token. `None` outside herdr (no `HERDR_PANE_ID`) or when off.
-    let mut open_report = crate::open_report::OpenFileReporter::from_env(eff.report_open_file);
+    let mut open_report = crate::open_report::OpenFileReporter::from_env(
+        eff.report_open_file,
+        controller.root().to_path_buf(),
+    );
     let outcome = event_loop(&mut terminal, &mut controller, open_report.as_mut());
     // Leave no token behind on a pane that outlives the viewer (a shell running it by hand); a
     // closing herdr pane drops its tokens anyway. Bounded, so a stuck herdr never holds up quit.

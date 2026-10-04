@@ -178,11 +178,12 @@ the viewer keeps one pane metadata token up to date:
 | Read it | `herdr pane get <pane_id>` → `.result.pane.tokens.file_viewer_open` |
 | Value | the active file's path (the tree selection, not a [pin](#pinned-previews)), relative to the viewer's tree root, with no `:line` (`src/app.rs`; native separators on Windows) |
 | Set | when the shown file changes (after its content loads) |
-| Absent | before a file is shown, while a directory is selected, after the viewer quits, and once the pane closes |
+| Absent | before a file is shown, while a directory is selected, while a worktree switched to with `W` is shown, after the viewer quits, and once the pane closes |
 
 The value is exactly the shape `--open` / `HERDR_FILE_VIEWER_OPEN` takes, so passing it back opens
-the same file — as long as the new viewer roots at the same tree (the focused pane's worktree; a
-worktree switched to with `W` is not recorded). It is never truncated: herdr caps token values at
+the same file, because the new viewer roots at the same tree. While the viewer shows a worktree
+switched to with `W`, the token is cleared (a path relative to that worktree would open the wrong
+file); it is set again once the viewer is back on the tree it launched with. It is never truncated: herdr caps token values at
 80 characters and strips control characters and surrounding whitespace, so a path longer than 80
 characters, or one herdr or `--open` would read differently (a control character, surrounding
 spaces, a trailing `:12`), clears the token instead of sending a wrong value. A non-UTF-8 path

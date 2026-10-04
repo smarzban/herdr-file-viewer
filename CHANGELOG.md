@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Other herdr plugins can now read which file a Files pane shows, without parsing the screen: the viewer sets the pane's `file_viewer_open` metadata token to the shown file's root-relative path (`herdr pane get` → `tokens.file_viewer_open`), the same shape `--open` / `HERDR_FILE_VIEWER_OPEN` takes back. Cleared when no file is shown, on quit, and when the pane closes; a path herdr would truncate or alter (over 80 characters, control characters) clears it rather than sending a wrong value. Writes nothing to disk; `report_open_file = false` turns it off. → [usage](docs/usage.md#read-which-file-a-pane-shows) · [configuration](docs/configuration.md)
+- Other herdr plugins can now read which file a Files pane shows, without parsing the screen: the viewer sets the pane's `file_viewer_open` metadata token to the shown file's root-relative path (`herdr pane get` → `tokens.file_viewer_open`), the same shape `--open` / `HERDR_FILE_VIEWER_OPEN` takes back. Cleared when no file is shown, while a worktree switched to with `W` is shown, on quit, and when the pane closes; a path herdr would truncate or alter (over 80 characters, control characters) clears it rather than sending a wrong value. Writes nothing to disk; `report_open_file = false` turns it off. → [usage](docs/usage.md#read-which-file-a-pane-shows) · [configuration](docs/configuration.md)
 
 ## [1.17.0] - 2026-09-16
 

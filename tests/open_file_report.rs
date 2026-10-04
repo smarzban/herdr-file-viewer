@@ -147,7 +147,8 @@ fn reporter_sets_the_shown_file_then_clears_it_on_finish() {
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     let mut ctrl = controller(root);
     let herdr = RecordingHerdr::default();
-    let mut reporter = OpenFileReporter::start(Box::new(herdr.clone()), "w1:p2".into());
+    let mut reporter =
+        OpenFileReporter::start(Box::new(herdr.clone()), "w1:p2".into(), root.to_path_buf());
 
     let a = select(&mut ctrl, "a.txt");
     settle_on(&mut ctrl, &a);
@@ -165,7 +166,11 @@ fn reporter_sets_the_shown_file_then_clears_it_on_finish() {
 #[test]
 fn reporter_sends_nothing_when_no_file_was_ever_shown() {
     let herdr = RecordingHerdr::default();
-    let mut reporter = OpenFileReporter::start(Box::new(herdr.clone()), "w1:p2".into());
+    let mut reporter = OpenFileReporter::start(
+        Box::new(herdr.clone()),
+        "w1:p2".into(),
+        PathBuf::from("/repo"),
+    );
     reporter.observe(None);
     reporter.finish(WAIT);
     assert!(herdr.calls().is_empty());
@@ -179,7 +184,11 @@ fn reporter_skips_values_that_queue_behind_a_slow_herdr_call() {
         gate: Some(Arc::new(Mutex::new(Some((entered_tx, release_rx))))),
         ..RecordingHerdr::default()
     };
-    let mut reporter = OpenFileReporter::start(Box::new(herdr.clone()), "w1:p2".into());
+    let mut reporter = OpenFileReporter::start(
+        Box::new(herdr.clone()),
+        "w1:p2".into(),
+        PathBuf::from("/repo"),
+    );
     let root = PathBuf::from("/repo");
 
     reporter.observe(Some((&root, &root.join("a.rs"))));
