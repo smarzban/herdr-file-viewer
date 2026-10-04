@@ -298,6 +298,9 @@ struct Cycle {
     /// The candidate list being cycled; `index` is the one currently in the input.
     matches: Vec<String>,
     index: Option<usize>,
+    /// The highlight was last moved with an arrow key: the next `Tab` completes inside the
+    /// highlighted match instead of stepping to the next one.
+    arrowed: bool,
 }
 
 /// The popup's state: the edited path, the candidates being shown, and any error.
@@ -363,11 +366,15 @@ impl RootPicker {
         // list they do nothing (a single-line prompt has nowhere to move).
         match key.code {
             KeyCode::Down => {
-                self.step(1);
+                self.step(1, true);
                 return Outcome::Continue;
             }
-            KeyCode::Up | KeyCode::BackTab => {
-                self.step(-1);
+            KeyCode::Up => {
+                self.step(-1, true);
+                return Outcome::Continue;
+            }
+            KeyCode::BackTab => {
+                self.step(-1, false);
                 return Outcome::Continue;
             }
             _ => {}
@@ -401,7 +408,7 @@ impl RootPicker {
     /// Move the highlight through the match list by `delta` (wrapping) and put that match in the
     /// input. From no highlight, forward lands on the first match and backward on the last.
     /// Returns `false` when there is no list to move through.
-    fn step(&mut self, delta: isize) -> bool {
+    fn step(&mut self, delta: isize, arrowed: bool) -> bool {
         let Some(cycle) = &mut self.cycle else {
             return false;
         };
@@ -415,6 +422,7 @@ impl RootPicker {
             Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
         };
         cycle.index = Some(next);
+        cycle.arrowed = arrowed;
         let text = format!("{}{}", cycle.head, cycle.matches[next]);
         self.error = None;
         self.set_input(text);
@@ -423,8 +431,11 @@ impl RootPicker {
 
     fn tab(&mut self, fs: &dyn PickerFs) {
         self.error = None;
-        // A repeated Tab over several matches steps to the next one.
-        if self.step(1) {
+        // After choosing with an arrow key, Tab completes inside the choice (descending into a
+        // directory); otherwise a repeated Tab over several matches steps to the next one.
+        if self.cycle.as_ref().is_some_and(|c| c.arrowed) {
+            self.cycle = None;
+        } else if self.step(1, false) {
             return;
         }
         // Complete the whole input (the cursor lands at the end, like a shell completing the
@@ -435,6 +446,7 @@ impl RootPicker {
             head: done.head.clone(),
             matches: done.matches.clone(),
             index: None,
+            arrowed: false,
         });
         self.set_input(done.text);
     }
@@ -1023,6 +1035,26 @@ mod tests {
         assert_eq!(p.input(), "/many/d0");
         p.handle_key(key(KeyCode::Down), &fs);
         assert_eq!(p.input(), "/many/d00/");
+    }
+
+    #[test]
+    fn tab_after_an_arrow_choice_completes_inside_it() {
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "Workspace/");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        // Arrow up to patch/, then Tab descends into it (its files) instead of cycling.
+        p.handle_key(key(KeyCode::Up), &fs);
+        assert_eq!(p.input(), "~/Workspace/patch/");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        assert_eq!(p.input(), "~/Workspace/patch/");
+        assert_eq!(
+            p.matches().0,
+            ["notes-old.md", "notes.md", "starter-config.toml"]
+        );
+        // Plain repeated Tab (no arrow) still cycles, as in a shell.
+        p.handle_key(key(KeyCode::Tab), &fs);
+        assert_eq!(p.input(), "~/Workspace/patch/notes-old.md");
     }
 
     #[test]

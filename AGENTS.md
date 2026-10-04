@@ -254,7 +254,9 @@ The viewed root comes from the FOCUSED herdr pane's cwd (resolved to its worktre
 from a flag. The one explicit exception is `HERDR_FILE_VIEWER_ROOT` (passed with `--env`, never
 `--cwd`): the root picker (`--pick-root`, the `open-file-viewer-at[-tab]` actions) and agents use it to name
 a root on purpose. A running viewer keeps its process cwd on its root; the tab launcher's
-root-aware switch depends on that, so do not add code that relies on the process cwd.
+root-aware switch depends on that, so do not add code that relies on the process cwd, and start
+any new external tool through `proc::in_launch_dir` (or an explicit dir) so it never runs inside
+the viewed repository.
 
 **A new config key.** `src/config.rs` owns it: add the field to `Config`, resolve it in `resolve`
 into `EffectiveSettings`, and apply it at wiring time. **Docs (same PR):** document it in

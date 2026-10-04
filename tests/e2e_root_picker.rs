@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{TempDir, canon, viewer_command};
+use common::{TempDir, canon, process_cwd, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
 use expectrl::{Eof, Expect, Session};
@@ -211,6 +211,49 @@ fn a_picked_file_in_a_repo_subdirectory_opens_under_the_worktree_root() {
 }
 
 #[test]
+fn renderers_run_from_the_launch_dir_not_the_followed_root() {
+    // The viewer's cwd follows the (possibly untrusted) root, but external tools must not:
+    // a renderer configured as `ls` lists the directory it runs in, so the launch dir's marker
+    // in the content pane proves it ran there, not in the root.
+    let launched_from = TempDir::new();
+    let root = TempDir::new();
+    let config = TempDir::new();
+    std::fs::write(launched_from.path().join("LAUNCH_SIDE"), "").unwrap();
+    std::fs::write(root.path().join("view.txt"), "x\n").unwrap();
+    std::fs::write(config.path().join("config.toml"), "syntax = \"ls\"\n").unwrap();
+
+    let mut cmd = viewer_command(launched_from.path());
+    cmd.env("HERDR_FILE_VIEWER_ROOT", canon(root.path()))
+        .env("HERDR_FILE_VIEWER_OPEN", "view.txt")
+        .env("HERDR_PLUGIN_CONFIG_DIR", config.path());
+    let mut s = Session::spawn(cmd).expect("spawn the viewer");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+    s.expect("LAUNCH_SIDE")
+        .expect("the renderer ran in the launch directory");
+    s.send("q").unwrap();
+    s.expect(Eof).expect("viewer exits");
+}
+
+#[test]
+fn a_file_named_like_a_line_reference_opens_literally() {
+    // `notes:12` is a real filename here; it must not be read as `notes` at line 12.
+    let launched_from = TempDir::new();
+    let root = TempDir::new();
+    std::fs::write(root.path().join("notes:12"), "LITERAL_NAME_MARKER\n").unwrap();
+    let root = canon(root.path());
+
+    let mut cmd = viewer_command(launched_from.path());
+    cmd.env("HERDR_FILE_VIEWER_ROOT", &root)
+        .env("HERDR_FILE_VIEWER_OPEN", root.join("notes:12"));
+    let mut s = Session::spawn(cmd).expect("spawn the viewer");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+    s.expect("LITERAL_NAME_MARKER")
+        .expect("the file named notes:12 is open");
+    s.send("q").unwrap();
+    s.expect(Eof).expect("viewer exits");
+}
+
+#[test]
 fn viewer_roots_at_the_handed_over_directory_not_its_cwd() {
     // The viewer herdr launches for the picker starts in the plugin dir with the invoking pane's
     // context; HERDR_FILE_VIEWER_ROOT must win so the tree shows the chosen directory.
@@ -231,21 +274,4 @@ fn viewer_roots_at_the_handed_over_directory_not_its_cwd() {
     assert_eq!(process_cwd(pid), canon(chosen.path()));
     s.send("q").unwrap();
     s.expect(Eof).expect("viewer exits");
-}
-
-/// A running process's cwd: `/proc` on Linux, `lsof` (always present on macOS) elsewhere.
-fn process_cwd(pid: u32) -> PathBuf {
-    if let Ok(p) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
-        return p;
-    }
-    let out = std::process::Command::new("lsof")
-        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
-        .output()
-        .expect("run lsof");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text
-        .lines()
-        .find_map(|l| l.strip_prefix('n'))
-        .unwrap_or_else(|| panic!("no cwd in lsof output: {text}"));
-    PathBuf::from(line)
 }

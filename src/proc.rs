@@ -5,8 +5,37 @@
 //! renderer (`render.rs`) and the update check (`update/mod.rs`) so the
 //! timeout-kill semantics are defined once.
 
-use std::process::Child;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// The directory the viewer was launched from — herdr starts the pane in the plugin root —
+/// recorded before the process cwd starts following the tree root (`app::follow_root`).
+static LAUNCH_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the current directory as the launch directory. Call once, before the first `chdir`.
+/// Later calls are ignored, so the first (pre-chdir) directory sticks.
+pub fn remember_launch_dir() {
+    if let Ok(dir) = std::env::current_dir() {
+        let _ = LAUNCH_DIR.set(dir);
+    }
+}
+
+/// Run `cmd` from the launch directory rather than the viewer's live cwd.
+///
+/// The viewer's cwd follows the tree root, which may be an untrusted repository. External tools
+/// (renderers, the editor, the OS opener, herdr) must not inherit it: a relative configured
+/// program (`./tools/render`) would resolve inside that repository, and a tool that reads
+/// cwd-local config (delta reads the enclosing repo's `.git/config`) would let the repository
+/// steer it. Running them from the launch directory keeps the behaviour from before the cwd
+/// followed the root. A no-op until [`remember_launch_dir`] runs (tests, other entry points).
+pub fn in_launch_dir(cmd: &mut Command) -> &mut Command {
+    if let Some(dir) = LAUNCH_DIR.get() {
+        cmd.current_dir(dir);
+    }
+    cmd
+}
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 

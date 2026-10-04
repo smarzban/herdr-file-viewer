@@ -50,7 +50,9 @@ pub fn apply_root_override(
     root: Option<&str>,
     is_dir: impl Fn(&Path) -> bool,
 ) -> LaunchContext {
-    let Some(root) = root.map(str::trim).filter(|s| !s.is_empty()) else {
+    // Blank means "not set", but a real value is used verbatim: a directory name may end in a
+    // space, and trimming it would root at a different (or missing) directory.
+    let Some(root) = root.filter(|s| !s.trim().is_empty()) else {
         return ctx;
     };
     let root = PathBuf::from(root);

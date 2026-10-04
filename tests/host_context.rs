@@ -1,7 +1,7 @@
 //! Host Adapter: parse the injected launch context (AC-26).
 
 use herdr_file_viewer::host::{ROOT_ENV, apply_root_override, from_env, parse_context};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn populated_context_json_is_parsed() {
@@ -157,6 +157,9 @@ fn relative_or_missing_root_override_is_ignored() {
     // somewhere the user never meant.
     let ctx = apply_root_override(picked_ctx(), Some("relative/dir"), |_| true);
     assert_eq!(ctx, picked_ctx());
+    // A trailing space is part of the directory name, not padding.
+    let ctx = apply_root_override(picked_ctx(), Some("/dir "), |p| p == Path::new("/dir "));
+    assert_eq!(ctx.cwd, PathBuf::from("/dir "));
     // Not a directory: degrade to the normal summon rather than an empty tree.
     let ctx = apply_root_override(picked_ctx(), Some("/no/such/dir"), |_| false);
     assert_eq!(ctx, picked_ctx());

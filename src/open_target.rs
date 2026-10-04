@@ -139,6 +139,26 @@ where
     }
 }
 
+/// [`parse_open_target`], except that a raw value naming an existing file is taken literally.
+///
+/// A file can be called `notes:12`; read through the line grammar it would open `notes` at line
+/// 12 (or fail). `is_file` says whether a raw value names an existing file (the caller resolves it
+/// under the tree root), so the root picker can hand over any canonical filename unescaped.
+pub fn parse_open_target_preferring_file(
+    raw: &str,
+    is_file: impl Fn(&str) -> bool,
+) -> Option<OpenTarget> {
+    let raw = raw.trim();
+    if !raw.is_empty() && is_file(raw) {
+        return Some(OpenTarget {
+            path: raw.to_string(),
+            line: None,
+            end_line: None,
+        });
+    }
+    parse_open_target(raw)
+}
+
 /// Parse a raw open-target string into path + optional line/range.
 ///
 /// - Empty / whitespace-only → `None` (caller treats as "no open target").
@@ -253,6 +273,25 @@ pub const OPEN_ENV: &str = "HERDR_FILE_VIEWER_OPEN";
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn an_existing_file_named_like_a_line_reference_is_taken_literally() {
+        let target = parse_open_target_preferring_file("/r/notes:12", |p| p == "/r/notes:12");
+        assert_eq!(
+            target,
+            Some(OpenTarget {
+                path: "/r/notes:12".into(),
+                line: None,
+                end_line: None,
+            })
+        );
+        // Not a file: the line grammar applies as before.
+        assert_eq!(
+            parse_open_target_preferring_file("src/a.rs:12", |_| false),
+            parse_open_target("src/a.rs:12")
+        );
+        assert_eq!(parse_open_target_preferring_file("  ", |_| true), None);
+    }
 
     #[test]
     fn parse_empty_is_none() {
