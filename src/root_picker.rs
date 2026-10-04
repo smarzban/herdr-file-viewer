@@ -306,6 +306,20 @@ impl RootPicker {
             self.tab(fs);
             return Outcome::Continue;
         }
+        // With a match list on show, Up/Down (and Shift-Tab) move through it; the input follows
+        // the highlighted match, so Enter opens it and Tab keeps completing inside it. With no
+        // list they do nothing (a single-line prompt has nowhere to move).
+        match key.code {
+            KeyCode::Down => {
+                self.step(1);
+                return Outcome::Continue;
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.step(-1);
+                return Outcome::Continue;
+            }
+            _ => {}
+        }
         // Any other key ends a Tab cycle and clears a stale error.
         self.cycle = None;
         self.error = None;
@@ -332,16 +346,33 @@ impl RootPicker {
         self.input = PromptInput::with_text(text);
     }
 
+    /// Move the highlight through the match list by `delta` (wrapping) and put that match in the
+    /// input. From no highlight, forward lands on the first match and backward on the last.
+    /// Returns `false` when there is no list to move through.
+    fn step(&mut self, delta: isize) -> bool {
+        let Some(cycle) = &mut self.cycle else {
+            return false;
+        };
+        let n = cycle.matches.len();
+        if n < 2 {
+            return false;
+        }
+        let next = match cycle.index {
+            None if delta >= 0 => 0,
+            None => n - 1,
+            Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
+        };
+        cycle.index = Some(next);
+        let text = format!("{}{}", cycle.head, cycle.matches[next]);
+        self.error = None;
+        self.set_input(text);
+        true
+    }
+
     fn tab(&mut self, fs: &dyn PickerFs) {
         self.error = None;
         // A repeated Tab over several matches steps to the next one.
-        if let Some(cycle) = &mut self.cycle
-            && cycle.matches.len() > 1
-        {
-            let next = cycle.index.map_or(0, |i| (i + 1) % cycle.matches.len());
-            cycle.index = Some(next);
-            let text = format!("{}{}", cycle.head, cycle.matches[next]);
-            self.set_input(text);
+        if self.step(1) {
             return;
         }
         // Complete the whole input (the cursor lands at the end, like a shell completing the
@@ -563,12 +594,15 @@ pub fn draw(frame: &mut Frame, picker: &RootPicker, placement: Placement) {
             Style::default().fg(ratatui::style::Color::Red),
         ),
         None => Line::styled(
-            "Tab complete · Enter open · Esc cancel",
+            "Tab complete · ↑↓ choose · Enter open · Esc cancel",
             Style::default().add_modifier(Modifier::DIM),
         ),
     });
     let (matches, current) = picker.matches();
-    for (i, m) in matches.iter().enumerate() {
+    // Scroll the list so the highlighted match stays visible (row 0 is the status line).
+    let list_rows = (inner.height as usize).saturating_sub(2).max(1);
+    let offset = current.map_or(0, |c| (c + 1).saturating_sub(list_rows));
+    for (i, m) in matches.iter().enumerate().skip(offset) {
         let style = if Some(i) == current {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
@@ -617,6 +651,12 @@ mod tests {
             dirs.insert(PathBuf::from("/home/u/Workspace/patch"), vec![]);
             dirs.insert(PathBuf::from("/"), vec!["home", "opt"]);
             dirs.insert(PathBuf::from("/opt"), vec!["tools"]);
+            dirs.insert(
+                PathBuf::from("/many"),
+                vec![
+                    "d00", "d01", "d02", "d03", "d04", "d05", "d06", "d07", "d08", "d09",
+                ],
+            );
             let mut files = BTreeMap::new();
             files.insert(
                 PathBuf::from("/home/u/Workspace/patch"),
@@ -803,6 +843,75 @@ mod tests {
         // Typing ends the cycle.
         typed(&mut p, &fs, "x");
         assert_eq!(p.matches().0.len(), 0);
+    }
+
+    #[test]
+    fn arrows_move_through_the_match_list_and_enter_opens_the_highlight() {
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "Workspace/");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        // Three matches, none highlighted yet.
+        assert_eq!(p.matches().0.len(), 3);
+        assert_eq!(p.matches().1, None);
+        // Up from no highlight wraps to the last; Down from there wraps to the first.
+        p.handle_key(key(KeyCode::Up), &fs);
+        assert_eq!(p.matches().1, Some(2));
+        assert_eq!(p.input(), "~/Workspace/patch/");
+        p.handle_key(key(KeyCode::Down), &fs);
+        assert_eq!(p.matches().1, Some(0));
+        p.handle_key(key(KeyCode::Down), &fs);
+        assert_eq!(p.input(), "~/Workspace/herdr-tsk/");
+        // Shift-Tab goes back.
+        p.handle_key(key(KeyCode::BackTab), &fs);
+        assert_eq!(p.input(), "~/Workspace/herdr-file-viewer/");
+        // Enter opens what is highlighted (herdr-file-viewer has no fake dir entry, so pick patch).
+        p.handle_key(key(KeyCode::Up), &fs);
+        assert_eq!(
+            p.handle_key(key(KeyCode::Enter), &fs),
+            Outcome::Open(Target {
+                root: PathBuf::from("/home/u/Workspace/patch"),
+                file: None
+            })
+        );
+    }
+
+    #[test]
+    fn the_list_scrolls_to_keep_the_highlight_visible() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        p.handle_key(ctrl('u'), &fs);
+        typed(&mut p, &fs, "/many/");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        // Highlight the last of ten matches.
+        p.handle_key(key(KeyCode::Up), &fs);
+        // 8 rows: border, prompt, status, 4 list rows, border.
+        let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        t.draw(|f| draw(f, &p, Placement::Tab)).unwrap();
+        let screen: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            screen.contains("d09/"),
+            "highlight scrolled into view: {screen}"
+        );
+        assert!(!screen.contains("d00/"), "the top scrolled away: {screen}");
+    }
+
+    #[test]
+    fn arrows_without_a_list_do_nothing() {
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "Work");
+        p.handle_key(key(KeyCode::Down), &fs);
+        p.handle_key(key(KeyCode::Up), &fs);
+        assert_eq!(p.input(), "~/Work");
     }
 
     #[test]

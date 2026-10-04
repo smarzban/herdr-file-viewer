@@ -113,6 +113,7 @@ popup's title says which one you pressed.
 |---|---|
 | `Enter` | open the viewer at the typed directory (`~/` alone opens your home); for a file, open its directory with that file shown |
 | `Tab` | complete a directory or file name, ignoring case (`work` → `Workspace/`); directories end in `/`; press again to cycle when several match |
+| `↑` / `↓` (or `Shift-Tab`) | move through the list of matches; the highlighted one fills the line, so `Enter` opens it and `Tab` completes inside it |
 | `Esc` / `Ctrl-C` | cancel: close the popup, open nothing |
 | `Ctrl-U` | clear the line (then type an absolute path such as `/opt/src`) |
 | `←` `→` `Home` `End` `Backspace` `Delete` | edit |
