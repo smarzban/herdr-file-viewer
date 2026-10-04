@@ -1,8 +1,8 @@
 //! Root Picker — the `--pick-root` popup: ask for a directory, then open the viewer there.
 //!
 //! Runs inside a herdr popup (the manifest's `root-picker` pane, `placement = "popup"`). The user
-//! edits a path pre-filled with `~/`; `Tab` completes directory names, `Enter` hands the chosen
-//! directory to a fresh viewer — a split beside the invoking pane, or a new tab, per
+//! edits a path pre-filled with `~/`; `Tab` completes directory and file names, `Enter` hands the
+//! chosen directory (or a file: its directory, with the file opened) to a fresh viewer — a split beside the invoking pane, or a new tab, per
 //! [`PLACEMENT_ENV`] — through `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>` (never
 //! `--cwd`: the manifest pane command is relative, #139), and `Esc` / `Ctrl-C` cancel.
 //! Exiting closes the popup.
@@ -61,10 +61,11 @@ impl Placement {
 pub trait PickerFs {
     /// The user's home directory (`$HOME`), if known.
     fn home(&self) -> Option<PathBuf>;
-    /// Names of the directories directly inside `dir` (following symlinks). Unreadable → empty.
-    fn list_dirs(&self, dir: &Path) -> Vec<String>;
-    /// The canonical form of `path` when it is an existing directory, else `None`.
-    fn canonical_dir(&self, path: &Path) -> Option<PathBuf>;
+    /// The entries directly inside `dir` (following symlinks): directories with a trailing `/`,
+    /// regular files without. Anything else, and an unreadable `dir`, yields nothing.
+    fn list_entries(&self, dir: &Path) -> Vec<String>;
+    /// The canonical form of an existing directory (`true`) or regular file (`false`) at `path`.
+    fn resolve(&self, path: &Path) -> Option<(PathBuf, bool)>;
 }
 
 /// The real filesystem.
@@ -77,20 +78,32 @@ impl PickerFs for RealFs {
             .map(PathBuf::from)
     }
 
-    fn list_dirs(&self, dir: &Path) -> Vec<String> {
+    fn list_entries(&self, dir: &Path) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
         entries
             .filter_map(Result::ok)
-            // `Path::is_dir` follows symlinks, so a symlinked directory completes too.
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                // `Path::is_dir` / `is_file` follow symlinks, so symlinked entries complete too.
+                let path = e.path();
+                if path.is_dir() {
+                    Some(format!("{name}/"))
+                } else {
+                    path.is_file().then_some(name)
+                }
+            })
             .collect()
     }
 
-    fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
-        path.is_dir().then(|| path.canonicalize().ok()).flatten()
+    fn resolve(&self, path: &Path) -> Option<(PathBuf, bool)> {
+        let canonical = path.canonicalize().ok()?;
+        if canonical.is_dir() {
+            Some((canonical, true))
+        } else {
+            canonical.is_file().then_some((canonical, false))
+        }
     }
 }
 
@@ -125,14 +138,15 @@ pub struct Completion {
     pub matches: Vec<String>,
 }
 
-/// Complete the last path segment of `input` against the directories in its parent.
+/// Complete the last path segment of `input` against the entries in its parent. Candidates are
+/// [`PickerFs::list_entries`] names, so a directory carries its trailing `/` and a file does not.
 ///
-/// - One match → the full name plus a trailing `/`, ready for the next segment.
+/// - One match → the full name (a directory's trailing `/` included, ready for the next segment).
 /// - Several → extended to their longest common prefix, with every match listed.
 /// - None → the input is left unchanged and no matches are listed.
 ///
 /// Matching ignores case (`work` completes `Workspace`), and the completed text takes the
-/// directory's real casing, so what is opened is the name on disk. Hidden directories are offered
+/// entry's real casing, so what is opened is the name on disk. Hidden entries are offered
 /// only when the typed segment starts with `.`. Matches are sorted case-insensitively so the list
 /// (and `Tab` cycling through it) is stable.
 pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
@@ -149,7 +163,7 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
         return unchanged();
     };
     let mut matches: Vec<String> = fs
-        .list_dirs(&dir)
+        .list_entries(&dir)
         .into_iter()
         .filter(|n| starts_with_ignore_case(n, prefix))
         .filter(|n| prefix.starts_with('.') || !n.starts_with('.'))
@@ -158,7 +172,7 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
     match matches.as_slice() {
         [] => unchanged(),
         [only] => Completion {
-            text: format!("{head}{only}/"),
+            text: format!("{head}{only}"),
             matches,
         },
         _ => {
@@ -210,8 +224,18 @@ pub enum Outcome {
     Continue,
     /// Close the popup without opening anything.
     Cancel,
-    /// Open a viewer rooted at this canonical directory.
-    Open(PathBuf),
+    /// Open a viewer on this target.
+    Open(Target),
+}
+
+/// What `Enter` resolved to: the directory the viewer roots at (then the usual worktree
+/// resolution), and the file to open in it when a file was picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// Canonical directory: the picked directory, or a picked file's parent.
+    pub root: PathBuf,
+    /// Canonical path of the picked file, when one was picked.
+    pub file: Option<PathBuf>,
 }
 
 /// `Tab` cycling state: repeated presses with several matches step through them.
@@ -316,7 +340,7 @@ impl RootPicker {
         {
             let next = cycle.index.map_or(0, |i| (i + 1) % cycle.matches.len());
             cycle.index = Some(next);
-            let text = format!("{}{}/", cycle.head, cycle.matches[next]);
+            let text = format!("{}{}", cycle.head, cycle.matches[next]);
             self.set_input(text);
             return;
         }
@@ -345,30 +369,45 @@ impl RootPicker {
                 return Outcome::Continue;
             }
         };
-        match fs.canonical_dir(&path) {
-            Some(dir) => Outcome::Open(dir),
+        match fs.resolve(&path) {
+            Some((dir, true)) => Outcome::Open(Target {
+                root: dir,
+                file: None,
+            }),
+            Some((file, false)) => match file.parent() {
+                Some(dir) => Outcome::Open(Target {
+                    root: dir.to_path_buf(),
+                    file: Some(file),
+                }),
+                None => Outcome::Continue,
+            },
             None => {
-                self.error = Some(format!("not a directory: {}", self.input.query().trim()));
+                self.error = Some(format!("not found: {}", self.input.query().trim()));
                 Outcome::Continue
             }
         }
     }
 }
 
-/// The herdr argv that opens a viewer rooted at `root`, placed per `placement`.
+/// The herdr argv that opens a viewer on `target`, placed per `placement`.
 ///
 /// Verified against herdr 0.9.1 (`herdr plugin pane open --help`, and live popup → tab and popup →
 /// split probes: from a popup, a split with no `--target-pane` lands beside the tiled pane the popup
 /// was opened over, and `--env` reaches the popup's own process):
 /// `plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement split
 /// --direction <right|down> --focus --env HERDR_FILE_VIEWER_ROOT=<dir>`, or `--placement tab` with
-/// no `--direction`. No `--cwd`: the manifest's pane command is relative, so a foreign cwd would
+/// no `--direction`; a picked file adds `--env HERDR_FILE_VIEWER_OPEN=<file>` (absolute, under the
+/// root, which the launch open target accepts). No `--cwd`: the manifest's pane command is relative, so a foreign cwd would
 /// break or redirect the spawn (#139). `Err` when the path is not UTF-8 (the host seam takes
 /// `&str` argv).
-pub fn open_args(root: &Path, placement: Placement) -> Result<Vec<String>, String> {
-    let root = root
-        .to_str()
-        .ok_or_else(|| "path is not valid UTF-8".to_string())?;
+pub fn open_args(target: &Target, placement: Placement) -> Result<Vec<String>, String> {
+    let utf8 = |p: &Path| {
+        p.to_str()
+            .map(str::to_string)
+            .ok_or_else(|| "path is not valid UTF-8".to_string())
+    };
+    let root = utf8(&target.root)?;
+    let file = target.file.as_deref().map(utf8).transpose()?;
     let mut args: Vec<String> = [
         "plugin",
         "pane",
@@ -390,17 +429,25 @@ pub fn open_args(root: &Path, placement: Placement) -> Result<Vec<String>, Strin
     }
     args.extend(["--focus", "--env"].map(String::from));
     args.push(format!("{}={root}", crate::host::ROOT_ENV));
+    if let Some(file) = file {
+        args.push("--env".to_string());
+        args.push(format!("{}={file}", crate::open_target::OPEN_ENV));
+    }
     Ok(args)
 }
 
 /// The tab label a picker-opened viewer tab gets, matching the viewer pane's own `Files` title.
 pub const TAB_LABEL: &str = "Files";
 
-/// Ask herdr to open the viewer at `root`. A new tab is then renamed [`TAB_LABEL`]
+/// Ask herdr to open the viewer on `target`. A new tab is then renamed [`TAB_LABEL`]
 /// (`herdr tab rename <tab_id> Files`, verified on herdr 0.9.1), best-effort: the viewer is already
 /// open, so a failed or unparseable rename never turns the hand-off into an error.
-pub fn open_viewer(herdr: &dyn HerdrCli, root: &Path, placement: Placement) -> Result<(), String> {
-    let args = open_args(root, placement)?;
+pub fn open_viewer(
+    herdr: &dyn HerdrCli,
+    target: &Target,
+    placement: Placement,
+) -> Result<(), String> {
+    let args = open_args(target, placement)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let opened = herdr
         .run_json(&args)
@@ -442,7 +489,7 @@ pub fn drive(
         match picker.handle_key(key, fs) {
             Outcome::Continue => {}
             Outcome::Cancel => return Ok(()),
-            Outcome::Open(dir) => match open_viewer(herdr, &dir, placement) {
+            Outcome::Open(target) => match open_viewer(herdr, &target, placement) {
                 Ok(()) => return Ok(()),
                 Err(e) => picker.set_error(e),
             },
@@ -527,7 +574,7 @@ pub fn draw(frame: &mut Frame, picker: &RootPicker, placement: Placement) {
         } else {
             Style::default()
         };
-        rows.push(Line::styled(format!("  {m}/"), style));
+        rows.push(Line::styled(format!("  {m}"), style));
     }
     if inner.height > 1 {
         let rest = Rect {
@@ -545,10 +592,12 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    /// An in-memory tree: each key is a directory, its value the directories inside it.
+    /// An in-memory tree: `dirs` maps a directory to the directories inside it, `files` to the
+    /// regular files inside it.
     struct FakeFs {
         home: Option<PathBuf>,
         dirs: BTreeMap<PathBuf, Vec<&'static str>>,
+        files: BTreeMap<PathBuf, Vec<&'static str>>,
     }
 
     impl FakeFs {
@@ -568,9 +617,16 @@ mod tests {
             dirs.insert(PathBuf::from("/home/u/Workspace/patch"), vec![]);
             dirs.insert(PathBuf::from("/"), vec!["home", "opt"]);
             dirs.insert(PathBuf::from("/opt"), vec!["tools"]);
+            let mut files = BTreeMap::new();
+            files.insert(
+                PathBuf::from("/home/u/Workspace/patch"),
+                vec!["starter-config.toml", "notes.md", "notes-old.md"],
+            );
+            files.insert(PathBuf::from("/home/u"), vec![".zshrc"]);
             Self {
                 home: Some(PathBuf::from("/home/u")),
                 dirs,
+                files,
             }
         }
     }
@@ -579,13 +635,22 @@ mod tests {
         fn home(&self) -> Option<PathBuf> {
             self.home.clone()
         }
-        fn list_dirs(&self, dir: &Path) -> Vec<String> {
-            self.dirs
+        fn list_entries(&self, dir: &Path) -> Vec<String> {
+            let dirs = self
+                .dirs
                 .get(dir)
-                .map(|v| v.iter().map(|s| s.to_string()).collect())
-                .unwrap_or_default()
+                .into_iter()
+                .flatten()
+                .map(|d| format!("{d}/"));
+            let files = self
+                .files
+                .get(dir)
+                .into_iter()
+                .flatten()
+                .map(|f| f.to_string());
+            dirs.chain(files).collect()
         }
-        fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
+        fn resolve(&self, path: &Path) -> Option<(PathBuf, bool)> {
             // Strip a trailing slash the way canonicalize would.
             let p = PathBuf::from(path.to_string_lossy().trim_end_matches('/'));
             let p = if p.as_os_str().is_empty() {
@@ -593,7 +658,12 @@ mod tests {
             } else {
                 p
             };
-            self.dirs.contains_key(&p).then_some(p)
+            if self.dirs.contains_key(&p) {
+                return Some((p, true));
+            }
+            let name = p.file_name()?.to_str()?;
+            let in_parent = self.files.get(p.parent()?)?.contains(&name);
+            in_parent.then_some((p, false))
         }
     }
 
@@ -637,7 +707,10 @@ mod tests {
         let mut p = RootPicker::new();
         assert_eq!(
             p.handle_key(key(KeyCode::Enter), &fs),
-            Outcome::Open(PathBuf::from("/home/u"))
+            Outcome::Open(Target {
+                root: PathBuf::from("/home/u"),
+                file: None
+            })
         );
     }
 
@@ -648,13 +721,16 @@ mod tests {
         typed(&mut p, &fs, "Workspace/patch");
         assert_eq!(
             p.handle_key(key(KeyCode::Enter), &fs),
-            Outcome::Open(PathBuf::from("/home/u/Workspace/patch"))
+            Outcome::Open(Target {
+                root: PathBuf::from("/home/u/Workspace/patch"),
+                file: None
+            })
         );
 
         let mut p = RootPicker::new();
         typed(&mut p, &fs, "nope");
         assert_eq!(p.handle_key(key(KeyCode::Enter), &fs), Outcome::Continue);
-        assert_eq!(p.error(), Some("not a directory: ~/nope"));
+        assert_eq!(p.error(), Some("not found: ~/nope"));
         // Editing clears the error.
         p.handle_key(key(KeyCode::Backspace), &fs);
         assert_eq!(p.error(), None);
@@ -682,7 +758,10 @@ mod tests {
         typed(&mut p, &fs, "/opt");
         assert_eq!(
             p.handle_key(key(KeyCode::Enter), &fs),
-            Outcome::Open(PathBuf::from("/opt"))
+            Outcome::Open(Target {
+                root: PathBuf::from("/opt"),
+                file: None
+            })
         );
     }
 
@@ -711,7 +790,7 @@ mod tests {
         assert_eq!(
             p.matches(),
             (
-                &["herdr-file-viewer".to_string(), "herdr-tsk".to_string()][..],
+                &["herdr-file-viewer/".to_string(), "herdr-tsk/".to_string()][..],
                 None
             )
         );
@@ -732,7 +811,7 @@ mod tests {
         // `wor` matches Work + Workspace; the common prefix takes the on-disk casing.
         let c = complete("~/wor", &fs);
         assert_eq!(c.text, "~/Work");
-        assert_eq!(c.matches, ["Work", "Workspace"]);
+        assert_eq!(c.matches, ["Work/", "Workspace/"]);
         // A unique case-insensitive match completes in full.
         assert_eq!(complete("~/Workspace/PAT", &fs).text, "~/Workspace/patch/");
         assert_eq!(complete("~/DOC", &fs).text, "~/Documents/");
@@ -741,10 +820,57 @@ mod tests {
     }
 
     #[test]
+    fn files_complete_without_a_trailing_slash() {
+        let fs = FakeFs::new();
+        assert_eq!(
+            complete("~/Workspace/patch/sta", &fs).text,
+            "~/Workspace/patch/starter-config.toml"
+        );
+        // Files and directories mix in one listing; directories keep their `/`.
+        let c = complete("~/Workspace/patch/notes", &fs);
+        assert_eq!(c.text, "~/Workspace/patch/notes");
+        assert_eq!(c.matches, ["notes-old.md", "notes.md"]);
+        assert_eq!(complete("~/.z", &fs).text, "~/.zshrc");
+    }
+
+    #[test]
+    fn enter_on_a_file_roots_at_its_directory_and_opens_it() {
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "Workspace/patch/starter-config.toml");
+        assert_eq!(
+            p.handle_key(key(KeyCode::Enter), &fs),
+            Outcome::Open(Target {
+                root: PathBuf::from("/home/u/Workspace/patch"),
+                file: Some(PathBuf::from("/home/u/Workspace/patch/starter-config.toml")),
+            })
+        );
+    }
+
+    #[test]
+    fn open_args_add_the_open_target_for_a_picked_file() {
+        let target = Target {
+            root: PathBuf::from("/tmp/x"),
+            file: Some(PathBuf::from("/tmp/x/starter-config.toml")),
+        };
+        let args = open_args(&target, Placement::Tab).unwrap();
+        assert_eq!(
+            &args[args.len() - 4..],
+            [
+                "--env",
+                "HERDR_FILE_VIEWER_ROOT=/tmp/x",
+                "--env",
+                "HERDR_FILE_VIEWER_OPEN=/tmp/x/starter-config.toml",
+            ]
+        );
+    }
+
+    #[test]
     fn hidden_directories_complete_only_when_asked_for() {
         let fs = FakeFs::new();
         let all = complete("~/", &fs);
-        assert!(!all.matches.contains(&".config".to_string()), "{all:?}");
+        assert!(!all.matches.contains(&".config/".to_string()), "{all:?}");
+        assert!(!all.matches.contains(&".zshrc".to_string()), "{all:?}");
         assert_eq!(complete("~/.c", &fs).text, "~/.config/");
     }
 
@@ -793,7 +919,11 @@ mod tests {
 
     #[test]
     fn open_args_hand_the_root_over_by_env_never_cwd() {
-        let args = open_args(Path::new("/home/u/Workspace/patch"), Placement::Tab).unwrap();
+        let target = Target {
+            root: PathBuf::from("/home/u/Workspace/patch"),
+            file: None,
+        };
+        let args = open_args(&target, Placement::Tab).unwrap();
         assert_eq!(
             args,
             [
@@ -821,7 +951,11 @@ mod tests {
             (OpenDirection::Right, "right"),
             (OpenDirection::Down, "down"),
         ] {
-            let args = open_args(Path::new("/r"), Placement::Split(dir)).unwrap();
+            let target = Target {
+                root: PathBuf::from("/r"),
+                file: None,
+            };
+            let args = open_args(&target, Placement::Split(dir)).unwrap();
             assert_eq!(
                 args,
                 [

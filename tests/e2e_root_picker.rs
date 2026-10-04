@@ -134,12 +134,80 @@ fn a_missing_directory_is_reported_and_the_popup_stays_open() {
 
     let mut s = picker_session(home.path(), &herdr, tools.path(), None);
     s.send("nope\r").unwrap();
-    s.expect("directory")
-        .expect("the error is shown in the popup");
+    s.expect("found").expect("the error is shown in the popup");
     // Ctrl-C (not just Esc) cancels too.
     s.send("\x03").unwrap();
     assert_clean_exit(&mut s);
     assert!(!out.exists(), "nothing opens for a missing directory");
+}
+
+#[test]
+fn picking_a_file_roots_at_its_directory_and_opens_it() {
+    let home = TempDir::new();
+    let tools = TempDir::new();
+    std::fs::create_dir_all(home.path().join("cfg")).unwrap();
+    std::fs::write(home.path().join("cfg/starter-config.toml"), "x = 1\n").unwrap();
+    let out = tools.path().join("argv.txt");
+    let herdr = fake_herdr(tools.path(), &out);
+
+    let mut s = picker_session(home.path(), &herdr, tools.path(), Some("tab"));
+    // Tab completes the file name (no trailing slash), Enter opens it.
+    s.send("cfg/sta\t").unwrap();
+    s.expect("config.toml").expect("Tab completes the file");
+    s.send("\r").unwrap();
+    assert_clean_exit(&mut s);
+
+    let argv = std::fs::read_to_string(&out).expect("herdr was called");
+    let dir = canon(&home.path().join("cfg"));
+    assert!(
+        argv.ends_with(&format!(
+            "--env\nHERDR_FILE_VIEWER_ROOT={}\n--env\nHERDR_FILE_VIEWER_OPEN={}\n",
+            dir.display(),
+            dir.join("starter-config.toml").display()
+        )),
+        "{argv}"
+    );
+}
+
+#[test]
+fn viewer_opens_an_absolute_file_handed_over_with_its_root() {
+    // The picker passes the file as an absolute, canonical HERDR_FILE_VIEWER_OPEN under the root.
+    let launched_from = TempDir::new();
+    let chosen = TempDir::new();
+    std::fs::write(chosen.path().join("pick.txt"), "PICKED_FILE_MARKER\n").unwrap();
+    let root = canon(chosen.path());
+
+    let mut cmd = viewer_command(launched_from.path());
+    cmd.env("HERDR_FILE_VIEWER_ROOT", &root)
+        .env("HERDR_FILE_VIEWER_OPEN", root.join("pick.txt"));
+    let mut s = Session::spawn(cmd).expect("spawn the viewer");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+    s.expect("PICKED_FILE_MARKER")
+        .expect("the handed-over file is open in the content pane");
+    s.send("q").unwrap();
+    s.expect(Eof).expect("viewer exits");
+}
+
+#[test]
+fn a_picked_file_in_a_repo_subdirectory_opens_under_the_worktree_root() {
+    // The root widens to the worktree top level; the canonical file path must still sit under it
+    // (macOS temp dirs are behind the /var -> /private/var symlink, so this checks canonical forms).
+    let launched_from = TempDir::new();
+    let repo = TempDir::new();
+    common::init_repo_with_commit(repo.path());
+    std::fs::create_dir_all(repo.path().join("sub")).unwrap();
+    std::fs::write(repo.path().join("sub/deep.txt"), "DEEP_FILE_MARKER\n").unwrap();
+    let sub = canon(&repo.path().join("sub"));
+
+    let mut cmd = viewer_command(launched_from.path());
+    cmd.env("HERDR_FILE_VIEWER_ROOT", &sub)
+        .env("HERDR_FILE_VIEWER_OPEN", sub.join("deep.txt"));
+    let mut s = Session::spawn(cmd).expect("spawn the viewer");
+    s.set_expect_timeout(Some(Duration::from_secs(15)));
+    s.expect("DEEP_FILE_MARKER")
+        .expect("the file opens even though the root widened to the repo");
+    s.send("q").unwrap();
+    s.expect(Eof).expect("viewer exits");
 }
 
 #[test]

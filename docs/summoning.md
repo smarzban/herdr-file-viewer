@@ -100,7 +100,7 @@ description = "open file viewer in tab"
 ## Open at another directory
 
 Two more actions ask **where** to open. Each pops up a small herdr popup pre-filled with `~/`; type
-a directory and the viewer opens there instead of the directory you are in:
+a directory (or a file) and the viewer opens there instead of the directory you are in:
 
 - `open-file-viewer-at` opens it in a **split** beside your pane, in your
   [`open_direction`](#split-beside-or-below), like `prefix+f`.
@@ -111,16 +111,17 @@ popup's title says which one you pressed.
 
 | In the popup | Does |
 |---|---|
-| `Enter` | open the viewer at the typed directory (`~/` alone opens your home) |
-| `Tab` | complete a directory name, ignoring case (`work` → `Workspace/`); press again to cycle when several match |
+| `Enter` | open the viewer at the typed directory (`~/` alone opens your home); for a file, open its directory with that file shown |
+| `Tab` | complete a directory or file name, ignoring case (`work` → `Workspace/`); directories end in `/`; press again to cycle when several match |
 | `Esc` / `Ctrl-C` | cancel: close the popup, open nothing |
 | `Ctrl-U` | clear the line (then type an absolute path such as `/opt/src`) |
 | `←` `→` `Home` `End` `Backspace` `Delete` | edit |
 
 Paths resolve from your home directory: `Workspace/app` means `~/Workspace/app`; an absolute path
 is used as typed. The tree then roots exactly as a normal summon would, at that directory's
-worktree top level inside git, else the directory itself. A path that is not a directory shows an
-error in the popup, so you can fix it or cancel.
+worktree top level inside git, else the directory itself. Picking a file roots the viewer at the
+file's directory the same way and opens the file in the content pane. A path that does not exist
+shows an error in the popup, so you can fix it or cancel.
 
 ```toml
 [[keys.command]]
@@ -140,7 +141,7 @@ Avoid `prefix+g` and `prefix+shift+d`: herdr's built-in `goto` and `close_worksp
 default.
 
 Under the hood the popup runs `herdr plugin pane open … --placement split|tab --env
-HERDR_FILE_VIEWER_ROOT=<dir>`: the directory reaches the viewer as an environment variable, never
+HERDR_FILE_VIEWER_ROOT=<dir>` (plus `--env HERDR_FILE_VIEWER_OPEN=<file>` for a file): the directory reaches the viewer as an environment variable, never
 as `--cwd`. An agent or script can open a viewer on a given directory the same way.
 
 ## Limitation over `herdr --remote`
