@@ -6,7 +6,7 @@ customize it see [configuration](configuration.md).
 
 - [The tree](#the-tree)
 - [Finding a file fast](#finding-a-file-fast)
-- [Open at a known file](#open-at-a-known-file) (incl. [Teach your agent](#teach-your-agent))
+- [Open at a known file](#open-at-a-known-file) (incl. [Teach your agent](#teach-your-agent) and [Read which file a pane shows](#read-which-file-a-pane-shows))
 - [Viewing a file](#viewing-a-file)
 - [Pinned previews](#pinned-previews)
 - [Git awareness](#git-awareness)
@@ -166,6 +166,31 @@ opens, shows a short notice (e.g. `Could not open …`), and leaves the tree sel
 
 This is launch-only. It does not retarget a Files pane that is already running; open a fresh pane
 (or close and reopen) when you need a new target.
+
+### Read which file a pane shows
+
+The other direction: a Files pane tells herdr which file it shows, so another plugin can read it
+without parsing the screen (for example, to reopen a closed viewer at the same file). Inside herdr,
+the viewer keeps one pane metadata token up to date:
+
+| | |
+| --- | --- |
+| Read it | `herdr pane get <pane_id>` → `.result.pane.tokens.file_viewer_open` |
+| Value | the active file's path (the tree selection, not a [pin](#pinned-previews)), relative to the viewer's tree root, with no `:line` (`src/app.rs`; native separators on Windows) |
+| Set | when the shown file changes (after its content loads) |
+| Absent | before a file is shown, while a directory is selected, after the viewer quits, and once the pane closes |
+
+The value is exactly the shape `--open` / `HERDR_FILE_VIEWER_OPEN` takes, so passing it back opens
+the same file — as long as the new viewer roots at the same tree (the focused pane's worktree; a
+worktree switched to with `W` is not recorded). It is never truncated: herdr caps token values at
+80 characters and strips control characters and surrounding whitespace, so a path longer than 80
+characters, or one herdr or `--open` would read differently (a control character, surrounding
+spaces, a trailing `:12`), clears the token instead of sending a wrong value. A non-UTF-8 path
+clears it too.
+
+The viewer reports under the source `herdr-file-viewer`. It needs herdr 0.7.4 or later (an older
+herdr ignores the report) and does nothing outside herdr. Turn it off with
+[`report_open_file = false`](configuration.md).
 
 ## Viewing a file
 

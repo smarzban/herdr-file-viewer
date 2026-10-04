@@ -216,7 +216,15 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
         let _ = execute!(io::stdout(), DisableFocusChange);
         prev_hook(info);
     }));
-    let outcome = event_loop(&mut terminal, &mut controller);
+    // The open-file report (config `report_open_file`): tell herdr which file this pane shows, as
+    // the `file_viewer_open` pane token. `None` outside herdr (no `HERDR_PANE_ID`) or when off.
+    let mut open_report = crate::open_report::OpenFileReporter::from_env(eff.report_open_file);
+    let outcome = event_loop(&mut terminal, &mut controller, open_report.as_mut());
+    // Leave no token behind on a pane that outlives the viewer (a shell running it by hand); a
+    // closing herdr pane drops its tokens anyway. Bounded, so a stuck herdr never holds up quit.
+    if let Some(reporter) = open_report {
+        reporter.finish(crate::open_report::FINISH_WAIT);
+    }
     let _ = execute!(io::stdout(), DisableMouseCapture);
     let _ = execute!(io::stdout(), DisableFocusChange);
     ratatui::try_restore()?;
@@ -244,9 +252,21 @@ fn route_annotation_key(
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat
 /// until the Close intent. Drawing only when `dirty` avoids re-walking the filesystem (the
 /// tree enumeration in `view_state`) on every idle tick.
-fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io::Result<()> {
+fn event_loop(
+    terminal: &mut DefaultTerminal,
+    controller: &mut Controller,
+    mut open_report: Option<&mut crate::open_report::OpenFileReporter>,
+) -> io::Result<()> {
     let mut dirty = true; // paint the first frame
     loop {
+        // One path comparison per tick; herdr hears only about a change of the shown file.
+        if let Some(reporter) = open_report.as_deref_mut() {
+            reporter.observe(
+                controller
+                    .displayed_origin()
+                    .map(|origin| (origin.root(), origin.absolute_path())),
+            );
+        }
         if dirty {
             let mut need_redraw = false;
             terminal.draw(|frame| {

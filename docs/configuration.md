@@ -48,7 +48,8 @@ config key and above the built-in default — `editor` (`$EDITOR`) and `update_c
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
 other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
 `compact_dirs`, `changed_file_view`, `baseline`, `confirm_discard`, `scroll_lines`, `tree_width`,
-`tree_position`, `tree_max_cols`, `open_direction`, `preview_max_lines`, `preview_max_kib`) has no
+`tree_position`, `tree_max_cols`, `open_direction`, `preview_max_lines`, `preview_max_kib`,
+`report_open_file`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -80,6 +81,8 @@ open_direction = "right"    # which way the summon key splits your pane: "right"
 
 preview_max_lines = 10000   # show at most this many lines before a truncated preview (100–100000)
 preview_max_kib = 1024      # ...or this size before truncating, in KiB (1024 = 1 MB; 64–65536)
+
+report_open_file = true     # false stops telling herdr which file this pane shows (the file_viewer_open token)
 ```
 
 `update_check` governs release details and project spotlights. `false` disables all remote requests
@@ -162,6 +165,13 @@ action's own key continues and discards (`q` to quit, `Enter` to switch), and `E
 to `false` to skip the confirm and discard immediately. It only appears when annotations are
 actually held, so leaving it on costs nothing in a session that never uses them. See
 [annotating files and ranges](usage.md#annotating-files-and-ranges).
+
+`report_open_file` lets another herdr plugin read which file a Files pane shows. Inside herdr, the
+viewer sets that pane's `file_viewer_open` metadata token to the shown file's path whenever the
+shown file changes, and clears it when no file is shown or the viewer quits. Nothing is written to
+disk, the token appears in herdr's sidebar only if your sidebar layout names `$file_viewer_open`,
+and herdr drops it when the pane closes. Set it to `false` to send nothing. See
+[read which file a pane shows](usage.md#read-which-file-a-pane-shows).
 
 ## Command values
 

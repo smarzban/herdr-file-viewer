@@ -10662,6 +10662,7 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         open_direction: herdr_file_viewer::config::OpenDirection::Right,
         preview_max_lines: 5000,
         preview_max_kib: 1024,
+        report_open_file: true,
     };
     let wired = SettingsWired {
         editor: None,

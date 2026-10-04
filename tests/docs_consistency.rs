@@ -147,6 +147,7 @@ fn config_example_documents_every_config_key() {
         "open_direction",
         "preview_max_lines",
         "preview_max_kib",
+        "report_open_file",
     ] {
         assert!(
             has_commented_assignment(CONFIG_EXAMPLE, key),
@@ -328,6 +329,7 @@ fn configuration_doc_documents_config_file() {
         "compact_dirs",
         "update_check",
         "confirm_discard",
+        "report_open_file",
     ] {
         assert!(
             CONFIG_DOC.contains(key),

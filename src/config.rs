@@ -213,6 +213,11 @@ pub struct Config {
     /// and it bounds the disk read (AC-N1). `None` falls back to [`DEFAULT_PREVIEW_MAX_KIB`]; the
     /// resolver clamps a present value into `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB`. 1024 = 1 MiB.
     pub preview_max_kib: Option<u32>,
+    /// Whether the viewer reports the file it shows to herdr as the `file_viewer_open` pane
+    /// metadata token, so another plugin can read it with `herdr pane get`. `None` falls back to
+    /// `true`: the token is display-only, invisible unless a sidebar row names `$file_viewer_open`,
+    /// and herdr drops it when the pane closes. Set `false` to send nothing.
+    pub report_open_file: Option<bool>,
     /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
@@ -377,6 +382,9 @@ pub struct EffectiveSettings {
     /// `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB` when present, else [`DEFAULT_PREVIEW_MAX_KIB`].
     /// Config-or-default (no env var).
     pub preview_max_kib: u32,
+    /// The effective **open-file report** switch: the config `report_open_file` when present, else
+    /// `true`. Config-or-default (no env var). Only acts inside herdr (`HERDR_PANE_ID` set).
+    pub report_open_file: bool,
 }
 
 impl EffectiveSettings {
@@ -462,6 +470,10 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     // Config > default; no env var. Defaults ON: the confirm only fires when annotations are held,
     // so a session that never annotates never sees it, and the one that does has work to lose.
     let confirm_discard = config.confirm_discard.unwrap_or(true);
+
+    // Config > default; no env var. Defaults ON: one display-only pane token, set only when the
+    // shown file changes and dropped by herdr when the pane closes (see `open_report`).
+    let report_open_file = config.report_open_file.unwrap_or(true);
 
     let update_check = match config.update_check {
         Some(b) => b,
@@ -560,6 +572,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         tree_max_cols,
         preview_max_lines,
         preview_max_kib,
+        report_open_file,
     }
 }
 
@@ -920,6 +933,23 @@ mod tests {
             resolve(&config, |_| None).changed_file_view,
             crate::view_policy::ChangedFileView::Diff
         );
+    }
+
+    #[test]
+    fn report_open_file_resolves_config_over_default() {
+        let on = resolve(&Config::default(), |_| None);
+        assert!(on.report_open_file, "absent falls back to on");
+        let off = resolve(
+            &Config {
+                report_open_file: Some(false),
+                ..Config::default()
+            },
+            |_| None,
+        );
+        assert!(!off.report_open_file, "an explicit false wins");
+        let (parsed, outcome) = parse_config("report_open_file = false\n");
+        assert_eq!(outcome, LoadOutcome::Loaded);
+        assert_eq!(parsed.report_open_file, Some(false));
     }
 
     #[test]

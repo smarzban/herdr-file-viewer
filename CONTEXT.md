@@ -69,6 +69,11 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   `path:line` / `path:start-end`). Applied via **reveal in tree** and, when a line is
   present, **go to line**. Distinct from the interactive **file finder** and from sticky
   **config file** settings: one-shot launch input only.
+- **open-file report**: inside herdr, the viewer keeps its pane's `file_viewer_open`
+  metadata token set to the shown file's root-relative path (an **open target** shape with
+  no line), so another plugin can read it with `herdr pane get`. Cleared when no file is
+  shown, on quit, and by herdr when the pane closes; never truncated (a path herdr would
+  alter clears it instead). Config `report_open_file`.
 - **search scope**: which files the **file finder** indexes: gitignore-respecting by
   default (skips ignored files and `.git/`), a single knob a future setting can widen to
   include ignored / hidden files.

@@ -281,6 +281,7 @@ pub fn settings_text(
     };
     let update_check = if eff.update_check { "on" } else { "off" };
     let confirm_discard = if eff.confirm_discard { "on" } else { "off" };
+    let report_open_file = if eff.report_open_file { "on" } else { "off" };
 
     // Keys are padded to the widest name (`preview_max_lines`, 17) so the `=` column lines up.
     format!(
@@ -302,7 +303,8 @@ pub fn settings_text(
          tree_max_cols     = {tree_max_cols}\n\
          open_direction    = {open_direction}\n\
          preview_max_lines = {preview_max_lines}\n\
-         preview_max_kib   = {preview_max_kib}",
+         preview_max_kib   = {preview_max_kib}\n\
+         report_open_file  = {report_open_file}",
         open = open,
         reveal = reveal,
         hide_dotfiles = eff.hide_dotfiles,
@@ -319,6 +321,7 @@ pub fn settings_text(
         open_direction = eff.open_direction.label(),
         preview_max_lines = eff.preview_max_lines,
         preview_max_kib = eff.preview_max_kib,
+        report_open_file = report_open_file,
     )
 }
 
@@ -836,6 +839,7 @@ mod tests {
             open_direction: crate::config::OpenDirection::Down,
             preview_max_lines: 8000,
             preview_max_kib: 2048,
+            report_open_file: false,
         }
     }
 
@@ -1034,6 +1038,7 @@ mod tests {
             "baseline          = base",
             "update_check      = on",
             "confirm_discard   = on",
+            "report_open_file  = on",
             &format!(
                 "scroll_lines      = {}",
                 crate::config::DEFAULT_SCROLL_LINES

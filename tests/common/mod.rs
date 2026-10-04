@@ -180,6 +180,10 @@ pub fn viewer_command(dir: &Path) -> Command {
     // Tests must never reach the network: disable the once-a-day update check in every spawned
     // viewer (it would otherwise run `git ls-remote` against the real repo).
     cmd.env("HERDR_FILE_VIEWER_NO_UPDATE_CHECK", "1");
+    // Tests must never report to a live herdr: a suite run from inside a herdr pane inherits that
+    // pane's id, and the viewer would set its `file_viewer_open` token on it. A test that covers
+    // the open-file report sets its own id and a fake `HERDR_BIN_PATH`.
+    cmd.env_remove(herdr_file_viewer::open_report::PANE_ENV);
     cmd
 }
 

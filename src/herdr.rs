@@ -5,7 +5,8 @@
 //! nothing is ever really spawned (hermetic).
 //!
 //! **Read-only w.r.t. files and git:** this seam runs herdr *queries* ([`HerdrCli::run_json`])
-//! plus, via [`HerdrCli::run`], the occasional host **layout** command (e.g. `pane zoom`). Neither
+//! plus, via [`HerdrCli::run`], the occasional host **layout** command (e.g. `pane zoom`) and the
+//! display-only `pane report-metadata` token of [`crate::open_report`]. None of them
 //! touches file or git state — the constitution's read-only invariant is about the filesystem and
 //! the repo, and driving herdr's own layout through its documented CLI is "good plugin citizen".
 //! The args are passed by callers; nothing in this module constructs a file/git mutation.

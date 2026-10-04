@@ -28,7 +28,7 @@ is unit-testable with stubs.
 | `context` | The normalized `LaunchContext` the host hands to the resolver. |
 | `root` | Resolve the tree root (git worktree top-level, else cwd) and git-presence; the re-root engine re-resolves the root and rebuilds the tree + git services in place when you switch worktrees. |
 | `git` | Read-only git queries: status, baseline selection, changed-set, per-file diff. The **only** module that shells out to `git`, and only with read-only subcommands. |
-| `herdr` | The herdr CLI seam (`$HERDR_BIN_PATH`): read-only queries (list git worktrees / which workspaces have an active agent) plus a best-effort host **layout** command (`pane zoom --current --on`/`--off`, the `Z` full-screen toggle). Neither touches file or git state; an absent or failing herdr degrades gracefully (git-only picker; in-pane zoom only). |
+| `herdr` | The herdr CLI seam (`$HERDR_BIN_PATH`): read-only queries (list git worktrees / which workspaces have an active agent) plus a best-effort host **layout** command (`pane zoom --current --on`/`--off`, the `Z` full-screen toggle) and, through `open_report`, the display-only `pane report-metadata` token. None touches file or git state; an absent or failing herdr degrades gracefully (git-only picker; in-pane zoom only). |
 | `worktree` | Enumerate the repo's git worktrees (`git worktree list --porcelain`) and overlay herdr's agent-active workspace + per-row agent status, feeding the switch-worktree picker. |
 | `tree` | The rooted, `.gitignore`-aware file tree: filters (gitignored, changed-only, hidden/dotfiles), cursor, expansion, status markers, and the `]` / `[` changed-file jump. Optionally folds a chain of single-child directories into one row (`compact_dirs`). A folded row has to look inside a **collapsed** directory, which the tree never opens otherwise, so foldability is answered by a two-entry probe rather than a listing and the answer is memoized — re-probed wherever the controller re-reads git. Listings stay uncached, so a compacted frame reads exactly the directories an uncompacted one does. |
 | `view_policy` | A pure decision: which view mode a file gets (deleted → diff; other changed files → configured diff or normal-file preference; markdown → rendered; else → syntax content) and the cycle order. |
@@ -60,6 +60,7 @@ is unit-testable with stubs.
 | `opener` | Read-only OS hand-off for the `O` / `R` keys: a pure per-OS argv builder (open-with-default-app / reveal-in-file-manager, overridable via the config's `open` / `reveal` keys) plus an `Opener` seam over the reused editor `Spawner`, spawned **non-blocking** (no terminal takeover, stdio nulled) so the TUI keeps running. |
 | `launch` | The "launch-or-focus-or-toggle" decision behind the shell launch scripts (pure, hermetically testable). |
 | `open_target` | Pure argv parse (`parse_args`), open-target parse/resolve (`path` / `path:line` from CLI `--open` or `HERDR_FILE_VIEWER_OPEN`, lexically normalized under the root), and helpers; the controller applies a target once at startup via reveal + optional pending go-to-line. |
+| `open_report` | The **open-file report**: inside herdr (`HERDR_PANE_ID` set, config `report_open_file` on), the event loop hands it the controller's shown file every tick; on a change it sets or clears the pane's `file_viewer_open` metadata token (`herdr pane report-metadata`) from one background thread that collapses a backlog, and clears it on quit. Sends a value only when herdr's 80-character normalization and the open-target parser would both leave it unchanged. Writes no file. |
 
 ## Data flow
 
@@ -72,7 +73,8 @@ herdr → env (HERDR_PLUGIN_CONTEXT_JSON, optional HERDR_FILE_VIEWER_OPEN)
           │
    optional open target (CLI --open > HERDR_FILE_VIEWER_OPEN) → reveal + render [+ pending go-to-line]
           │
-   event loop (app::run):  draw → poll input → handle(intent) → drain finished renders → repeat
+   event loop (app::run):  report shown file (on change) → draw → poll input → handle(intent)
+                           → drain finished renders → repeat
 ```
 
 **Rendering is off the input thread.** Selecting a file *dispatches* a render job to a worker

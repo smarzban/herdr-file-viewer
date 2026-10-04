@@ -1405,6 +1405,12 @@ impl Controller {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    /// The origin of the file the content pane shows: the settled document, or the previous one
+    /// while a newer render is loading. `None` for a directory or an empty tree. The run loop reads
+    /// it every tick for the open-file report, so it only borrows.
+    pub fn displayed_origin(&self) -> Option<&PreviewOrigin> {
+        self.active_display.displayed_origin()
+    }
     pub fn content(&self) -> &Text<'static> {
         self.active_display.content()
     }

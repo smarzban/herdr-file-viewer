@@ -118,7 +118,11 @@ These shape every decision; violating one is a design error, not a style nit:
   **No `[[events]]`** (AC-N4).
 - **Runtime host ops** via the herdr CLI (`$HERDR_BIN_PATH`, the `HerdrCli::run` / `run_json` seam in
   `src/herdr.rs`): read-only layout/query commands only — e.g. `pane zoom` (the `Z` full-screen), the
-  worktree picker's queries, and the tab/split launcher scripts. The **editor hand-off is NOT a herdr
+  worktree picker's queries, and the tab/split launcher scripts — plus one display-only metadata
+  write, the **open-file report** (`src/open_report.rs`): `pane report-metadata <HERDR_PANE_ID>
+  --source herdr-file-viewer --token file_viewer_open=<path>` / `--clear-token file_viewer_open`,
+  sent only when the shown file changes (config `report_open_file`, default on; argv pinned in its
+  tests). It writes no file and herdr drops the token with the pane. The **editor hand-off is NOT a herdr
   pane**: `e` runs the editor *in-process* (the viewer suspends and resumes around `$EDITOR` / the
   config `editor`), so the viewer never spawns a pane for it.
 - External renderers (glow/delta/bat) are **runtime, install-time** dependencies, not Cargo deps;
