@@ -115,11 +115,14 @@ popup's title says which one you pressed.
 | `Tab` | complete a directory or file name, ignoring case (`work` → `Workspace/`); directories end in `/`; press again to cycle when several match |
 | `↑` / `↓` (or `Shift-Tab`) | move through the list of matches; the highlighted one fills the line, so `Enter` opens it and `Tab` completes inside it |
 | `Esc` / `Ctrl-C` | cancel: close the popup, open nothing |
-| `Ctrl-U` | clear the line (then type an absolute path such as `/opt/src`) |
+| `Ctrl-U` | clear the line |
 | `←` `→` `Home` `End` `Backspace` `Delete` | edit |
 
-Paths resolve from your home directory: `Workspace/app` means `~/Workspace/app`; an absolute path
-is used as typed. The tree then roots exactly as a normal summon would, at that directory's
+Paths resolve from your home directory first: `Workspace/app` means `~/Workspace/app`. If that does
+not exist, the same path is tried from `/`, so `private/tmp/x` (or `~/private/tmp/x`) finds
+`/private/tmp/x` without a leading slash; `Tab` rewrites the line to the absolute path it found. An
+absolute path is used as typed, and one typed or pasted straight after the `~/` prefill
+(`~//private/tmp`) counts as absolute too. The tree then roots exactly as a normal summon would, at that directory's
 worktree top level inside git, else the directory itself. Picking a file roots the viewer at the
 file's directory the same way and opens the file in the content pane. A path that does not exist
 shows an error in the popup, so you can fix it or cancel.

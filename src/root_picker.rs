@@ -107,10 +107,40 @@ impl PickerFs for RealFs {
     }
 }
 
-/// Expand the typed text into a path. `~`, `~/…`, and relative input resolve under `home`;
-/// an absolute path is taken as typed. `~user` forms are not supported (`Err`).
-pub fn expand(input: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+/// The typed text with a pasted absolute path honoured: everything up to the last `//` is
+/// dropped, so `~//private/tmp` (an absolute path typed or pasted after the `~/` prefill) means
+/// `/private/tmp`, as in Emacs's minibuffer. Surrounding whitespace is trimmed.
+pub fn normalize(input: &str) -> &str {
     let input = input.trim();
+    match input.rfind("//") {
+        Some(i) => &input[i + 1..],
+        None => input,
+    }
+}
+
+/// The same path read from `/` instead of `~`: `~/private/tmp`, `private/tmp` → `/private/tmp`.
+/// `None` when the input is already absolute, or names home itself (`~`, `~/`, empty).
+pub fn from_root(input: &str) -> Option<String> {
+    let input = normalize(input);
+    if input.starts_with('/') {
+        return None;
+    }
+    let rest = input
+        .strip_prefix("~/")
+        .or_else(|| (input == "~").then_some(""))
+        .unwrap_or(input);
+    // `~user` forms are not paths under home; leave them to `expand`'s error.
+    if rest.is_empty() || (input.starts_with('~') && !input.starts_with("~/") && input != "~") {
+        return None;
+    }
+    Some(format!("/{rest}"))
+}
+
+/// Expand the typed text into a path. `~`, `~/…`, and relative input resolve under `home`;
+/// an absolute path (or one pasted after the prefill, see [`normalize`]) is taken as typed.
+/// `~user` forms are not supported (`Err`).
+pub fn expand(input: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    let input = normalize(input);
     if input.starts_with('/') {
         return Ok(PathBuf::from(input));
     }
@@ -136,6 +166,9 @@ pub fn expand(input: &str, home: Option<&Path>) -> Result<PathBuf, String> {
 pub struct Completion {
     pub text: String,
     pub matches: Vec<String>,
+    /// The part of `text` before the completed segment (up to and including its last `/`), which
+    /// `Tab` cycling and the arrow keys append each match to.
+    pub head: String,
 }
 
 /// Complete the last path segment of `input` against the entries in its parent. Candidates are
@@ -149,7 +182,23 @@ pub struct Completion {
 /// entry's real casing, so what is opened is the name on disk. Hidden entries are offered
 /// only when the typed segment starts with `.`. Matches are sorted case-insensitively so the list
 /// (and `Tab` cycling through it) is stable.
+///
+/// When nothing matches under home, the same path is tried from `/` ([`from_root`]): `~/priv` +
+/// `Tab` becomes `/private/`, so a system path does not need a leading `/`.
 pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
+    let done = complete_in(normalize(input), fs);
+    if done.matches.is_empty()
+        && let Some(rooted) = from_root(input)
+    {
+        let alt = complete_in(&rooted, fs);
+        if !alt.matches.is_empty() {
+            return alt;
+        }
+    }
+    done
+}
+
+fn complete_in(input: &str, fs: &dyn PickerFs) -> Completion {
     let (head, prefix) = match input.rfind('/') {
         Some(i) => input.split_at(i + 1),
         None => ("", input),
@@ -157,6 +206,7 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
     let unchanged = || Completion {
         text: input.to_string(),
         matches: Vec::new(),
+        head: head.to_string(),
     };
     let home = fs.home();
     let Ok(dir) = expand(head, home.as_deref()) else {
@@ -174,12 +224,14 @@ pub fn complete(input: &str, fs: &dyn PickerFs) -> Completion {
         [only] => Completion {
             text: format!("{head}{only}"),
             matches,
+            head: head.to_string(),
         },
         _ => {
             let lcp = common_prefix(&matches);
             Completion {
                 text: format!("{head}{lcp}"),
                 matches,
+                head: head.to_string(),
             }
         }
     }
@@ -379,12 +431,8 @@ impl RootPicker {
         // last word).
         let typed = self.input.query().to_string();
         let done = complete(&typed, fs);
-        let head = match typed.rfind('/') {
-            Some(i) => typed[..=i].to_string(),
-            None => String::new(),
-        };
         self.cycle = (done.matches.len() > 1).then(|| Cycle {
-            head,
+            head: done.head.clone(),
             matches: done.matches.clone(),
             index: None,
         });
@@ -400,7 +448,11 @@ impl RootPicker {
                 return Outcome::Continue;
             }
         };
-        match fs.resolve(&path) {
+        // Home first; if that does not exist, the same path from `/` (no leading `/` needed).
+        let found = fs.resolve(&path).or_else(|| {
+            from_root(self.input.query()).and_then(|rooted| fs.resolve(Path::new(&rooted)))
+        });
+        match found {
             Some((dir, true)) => Outcome::Open(Target {
                 root: dir,
                 file: None,
@@ -902,6 +954,75 @@ mod tests {
             "highlight scrolled into view: {screen}"
         );
         assert!(!screen.contains("d00/"), "the top scrolled away: {screen}");
+    }
+
+    #[test]
+    fn a_pasted_absolute_path_after_the_prefill_is_absolute() {
+        assert_eq!(normalize("~//private/tmp"), "/private/tmp");
+        assert_eq!(normalize("~/a//b/c"), "/b/c");
+        assert_eq!(normalize("  /opt "), "/opt");
+        assert_eq!(normalize("~/Work"), "~/Work");
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "/opt");
+        assert_eq!(p.input(), "~//opt");
+        assert_eq!(
+            p.handle_key(key(KeyCode::Enter), &fs),
+            Outcome::Open(Target {
+                root: PathBuf::from("/opt"),
+                file: None
+            })
+        );
+    }
+
+    #[test]
+    fn from_root_reads_a_home_relative_path_from_slash() {
+        assert_eq!(from_root("~/private/tmp").as_deref(), Some("/private/tmp"));
+        assert_eq!(from_root("private/tmp").as_deref(), Some("/private/tmp"));
+        assert_eq!(from_root("~//opt"), None, "already absolute");
+        assert_eq!(from_root("/opt"), None);
+        assert_eq!(from_root("~/"), None, "home itself");
+        assert_eq!(from_root("~"), None);
+        assert_eq!(from_root(""), None);
+        assert_eq!(from_root("~bob/x"), None);
+    }
+
+    #[test]
+    fn a_path_missing_under_home_falls_back_to_slash() {
+        let fs = FakeFs::new();
+        // ~/opt does not exist, /opt does: Enter opens /opt without a leading slash.
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "opt");
+        assert_eq!(
+            p.handle_key(key(KeyCode::Enter), &fs),
+            Outcome::Open(Target {
+                root: PathBuf::from("/opt"),
+                file: None
+            })
+        );
+        // Tab does the same and rewrites the line to the absolute path it found.
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "op");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        assert_eq!(p.input(), "/opt/");
+        // Home still wins when it matches: ~/Wo completes under home, not /.
+        assert_eq!(complete("~/Wo", &fs).text, "~/Work");
+        // Nowhere: unchanged, and Enter reports it.
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "nope");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        assert_eq!(p.input(), "~/nope");
+    }
+
+    #[test]
+    fn cycling_after_a_slash_fallback_stays_under_slash() {
+        let fs = FakeFs::new();
+        let mut p = RootPicker::new();
+        typed(&mut p, &fs, "many/d0");
+        p.handle_key(key(KeyCode::Tab), &fs);
+        assert_eq!(p.input(), "/many/d0");
+        p.handle_key(key(KeyCode::Down), &fs);
+        assert_eq!(p.input(), "/many/d00/");
     }
 
     #[test]
