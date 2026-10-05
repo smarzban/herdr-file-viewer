@@ -117,8 +117,9 @@ by dragging the divider, and an explicit resize lifts the cap.
 summon action splits the pane you invoke it from: `"right"` (the default — viewer beside your work)
 or `"down"` (viewer underneath, terminal keeping the top half). `"bottom"` is accepted as a synonym
 for `"down"`; values are trimmed and case-insensitive, and anything unrecognized falls back to
-`"right"`. Two scoping notes: the **tab** action (`open-file-viewer-tab`) ignores it, because a tab
-has no direction; and the launcher reads it at summon time, so it applies to the **next** viewer you
+`"right"`. It also sets where the split from `open-file-viewer-at` goes. Two scoping notes: the
+**tab** actions (`open-file-viewer-tab`, `open-file-viewer-at-tab`) ignore it, because a tab has no
+direction; and the launcher reads it at summon time, so it applies to the **next** viewer you
 open, not to one already on screen. See [Summoning the viewer](summoning.md) for the actions
 themselves.
 

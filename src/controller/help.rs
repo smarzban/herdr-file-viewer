@@ -34,13 +34,6 @@ impl Controller {
     /// Handle a mouse event while the help overlay is open. The help overlay owns all mouse while
     /// open and never leaks events to the tree/content beneath (AC-21) — mirroring
     /// [`handle_finder_mouse`](Self::handle_finder_mouse).
-    ///
-    /// - `ScrollDown`/`ScrollUp` → `scroll_by(±self.wheel_step)` on the active section (AC-8 via mouse).
-    ///   No clamp here: [`set_pane_geometry`](Self::set_pane_geometry) re-clamps the stored scroll to
-    ///   the live measured body height after the next draw (the same split the keyboard path uses).
-    /// - `Down(Left)` whose `(col,row)` lands on a section-tab rect → `select(that index)` (AC-10).
-    /// - `Shift`+mouse → inert (terminal selection, same as the main gate).
-    /// - everything else → consumed no-op (`Effects::noop()`).
     pub(super) fn handle_help_mouse(&mut self, ev: MouseEvent) -> Effects {
         use ratatui::layout::Position;
         // Shift+mouse: terminal selection — inert, same as the main mouse gate.
@@ -50,8 +43,8 @@ impl Controller {
         match ev.kind {
             MouseEventKind::ScrollDown => self.help_scroll(self.wheel_step),
             MouseEventKind::ScrollUp => self.help_scroll(-self.wheel_step),
-            // A left press on a section tab switches sections (AC-10). Hit-test against the tab rects
-            // the Presenter fed back (`geom.help_tabs`), so the click maps to the tab actually drawn.
+            // Hit-test against the tab rects the Presenter fed back (`geom.help_tabs`), so the
+            // click maps to the tab actually drawn.
             MouseEventKind::Down(MouseButton::Left) => {
                 let pos = Position {
                     x: ev.column,
@@ -72,7 +65,6 @@ impl Controller {
                 // A press off every tab is a consumed no-op (modal — the overlay stays open).
                 Effects::noop()
             }
-            // Other events (drag, release, right/middle button, Moved): inert, but consumed.
             _ => Effects::noop(),
         }
     }
@@ -199,17 +191,6 @@ impl Controller {
     }
 
     /// Route a key event while the help overlay is open (AC-2, AC-3, AC-7, AC-8, AC-9, AC-20).
-    ///
-    /// - `?` / `Esc` / `q` → close the overlay (`Effects::redraw()`).
-    /// - `Tab` / `Right` → `next()` (advance section, wrapping, AC-7).
-    /// - `Shift+Tab` (`BackTab`) / `Left` → `prev()` (retreat section, wrapping, AC-7).
-    /// - `'1'..='9'` → `select(n-1)` (jump to section by digit, AC-7).
-    /// - `j` / `Down` → `scroll_by(+1)` (AC-8).
-    /// - `k` / `Up` → `scroll_by(-1)` (saturates at 0, AC-9 top bound; bottom clamp is enforced against live geometry).
-    /// - Any other key → consumed as a no-op (`Effects::noop()`) — nothing leaks to the tree
-    ///   or viewer (AC-20).
-    ///
-    /// When the overlay is not open, all keys are a defensive no-op.
     pub fn handle_help_key(&mut self, key: KeyEvent) -> Effects {
         // Normalize a Windows AltGr chord (Ctrl+Alt(+Shift)+Char) via the SAME seam `input::decode`
         // uses, so AltGr+`?` closes an already-open overlay on Windows exactly as it opens one;
@@ -229,31 +210,27 @@ impl Controller {
             return Effects::noop();
         };
         match key.code {
-            // Close keys: '?' / Esc / 'q' dismiss the overlay (AC-2, AC-3).
             KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
                 self.modal = Modal::None;
                 Effects::redraw()
             }
-            // Section navigation: Tab / Right → next (AC-7).
             KeyCode::Tab | KeyCode::Right => {
                 help.next();
                 Effects::redraw()
             }
-            // Section navigation: Shift+Tab (BackTab) / Left → prev (AC-7).
             KeyCode::BackTab | KeyCode::Left => {
                 help.prev();
                 Effects::redraw()
             }
-            // Digit keys '1'..='9': direct section select (AC-7).
             KeyCode::Char(c @ '1'..='9') => {
-                let idx = (c as usize) - ('1' as usize); // '1' → 0, '2' → 1, …
+                let idx = (c as usize) - ('1' as usize);
                 help.select(idx);
                 Effects::redraw()
             }
-            // Scroll down: j / Down → scroll_by(+1) (AC-8), then clamp EAGERLY against the
-            // last-known geometry so the drawn offset never over-scrolls past the last wrapped row
-            // on the shown frame (mirrors scroll_content's max_content_scroll). The post-draw clamp
-            // in set_pane_geometry stays as the backstop for resize/width changes. (R3 item 5/AC-9.)
+            // Clamp EAGERLY against the last-known geometry so the drawn offset never
+            // over-scrolls past the last wrapped row on the shown frame (mirrors
+            // scroll_content's max_content_scroll). The post-draw clamp in set_pane_geometry
+            // stays as the backstop for resize/width changes. (R3 item 5/AC-9.)
             KeyCode::Char('j') | KeyCode::Down => {
                 help.scroll_by(1);
                 // Clamp eagerly only once a frame has measured the body (help_body_rows > 0);
@@ -265,12 +242,10 @@ impl Controller {
                 }
                 Effects::redraw()
             }
-            // Scroll up: k / Up → scroll_by(-1) (saturates at 0, AC-9 top bound).
             KeyCode::Char('k') | KeyCode::Up => {
                 help.scroll_by(-1);
                 Effects::redraw()
             }
-            // Any other key: consumed as a no-op — does not reach the tree/viewer (AC-20).
             _ => Effects::noop(),
         }
     }

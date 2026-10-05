@@ -30,11 +30,7 @@ impl Controller {
         })
     }
 
-    /// Route an intent while the worktree picker is open (modal). NavUp/NavDown move the
-    /// highlight, Expand/Collapse (Right/Left) scroll the overlay rows horizontally so long
-    /// worktree paths can be read sideways, Activate confirms (re-root to the selected worktree,
-    /// AC-7; re-selecting the current worktree is a no-op via re_root, AC-11), Close cancels (no
-    /// state change, AC-6). All other intents are inert.
+    /// Route an intent while the worktree picker is open (modal).
     pub(super) fn handle_picker_intent(&mut self, intent: Intent) -> Effects {
         match intent {
             Intent::NavUp => {
@@ -56,7 +52,6 @@ impl Controller {
                 Effects::noop()
             }
             Intent::Expand => {
-                // Right (→/l): scroll the overlay rows right so a long path can be read sideways.
                 // Monotonic here — the Presenter clamps to the live inner width at draw, so an
                 // over-scroll past the widest row is harmless and not surfaced to the controller.
                 if let Some(p) = self.modal.picker_mut() {
@@ -69,7 +64,6 @@ impl Controller {
                 Effects::noop()
             }
             Intent::Collapse => {
-                // Left (←/h): scroll the overlay rows left, clamped at the left edge (0).
                 if let Some(p) = self.modal.picker_mut()
                     && p.hscroll > 0
                 {
@@ -97,11 +91,9 @@ impl Controller {
                 Effects::redraw()
             }
             Intent::Close => {
-                // Cancel: close the picker; nothing else changes (AC-6).
                 self.modal = Modal::None;
                 Effects::redraw()
             }
-            // Modal: any other intent is inert while picking.
             _ => Effects::noop(),
         }
     }

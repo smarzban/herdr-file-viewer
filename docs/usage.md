@@ -129,9 +129,10 @@ expanding it only within double quotes.
 
 The viewed root comes from the focused herdr pane's working directory (resolved to that repository's
 worktree top level), so an agent's own `cd` does not move it. To point it at a particular repository,
-split a focused pane with `--cwd "$repo"` first, launch, then close that helper — the root is captured
-at launch. Do not add `--cwd` to the launch itself: herdr resolves the pane's relative command against
-it, so it fails outside a built plugin checkout and silently runs that checkout's binary inside one.
+add `--env "HERDR_FILE_VIEWER_ROOT=$repo"` with the repository's **absolute** path (a relative or
+missing path is ignored). Do not add `--cwd` to the launch: herdr resolves the pane's relative
+command against it, so it fails outside a built plugin checkout and silently runs that checkout's
+binary inside one.
 
 The Herdr pane command applies to Linux, macOS, and WSL. On native Windows preview, the Files action
 cannot accept an open target, so use WSL for this flow or, if the binary is on `PATH`, run
@@ -405,5 +406,6 @@ display-only and never installs, opens, or copies anything. Control remote notic
 
 The mouse is additive and on by default: click a tree row to select it, double-click to
 open/expand, use the wheel to scroll, drag a scrollbar or the divider, and drag over content text to
-select-and-copy without any mode. The full gesture table is in the [keys reference](keys.md#mouse).
+select-and-copy without any mode. Character selection follows terminal cell width, so full-width CJK
+text selects at the same boundary you see on screen. The full gesture table is in the [keys reference](keys.md#mouse).
 `Shift`+drag is deliberately left to your terminal's own native selection.

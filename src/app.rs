@@ -47,6 +47,8 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`crate::open_target::OPEN_ENV`] (`HERDR_FILE_VIEWER_OPEN`) as flag > env; an absent/empty
 /// pair leaves startup selection unchanged.
 pub fn run(open_flag: Option<String>) -> io::Result<()> {
+    // Before anything can move the cwd (`follow_root`): external tools keep running from here.
+    crate::proc::remember_launch_dir();
     let ctx = host::from_env();
     let resolved = root::resolve(&ctx);
 
@@ -143,8 +145,12 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // after layout/config wiring so reveal + render see the same filters as a live session.
     // Soft-fails with an action notice; never aborts startup.
     let open_env = std::env::var(crate::open_target::OPEN_ENV).ok();
+    let root = controller.root().to_path_buf();
+    let names_a_file =
+        |raw: &str| crate::open_target::resolve_under_root(&root, raw).is_some_and(|p| p.is_file());
     if let Some(raw) = crate::open_target::pick_raw_open(open_flag.as_deref(), open_env.as_deref())
-        && let Some(target) = crate::open_target::parse_open_target(&raw)
+        && let Some(target) =
+            crate::open_target::parse_open_target_preferring_file(&raw, names_a_file)
     {
         controller.apply_open_target(&target);
     }
@@ -223,6 +229,20 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     outcome
 }
 
+/// Keep the process cwd on the tree root, re-syncing after a worktree switch re-roots the
+/// session. herdr reports each pane's live process cwd in `pane list`, so this is how the
+/// root-aware tab launcher (`launch::launch_decision_tab`) learns which root a running viewer
+/// shows without any extra host API. Children must not inherit this cwd (it may be an untrusted
+/// repository): git runs with explicit `-C <repo>`, and every other external tool goes through
+/// [`crate::proc::in_launch_dir`], which pins it to the directory herdr launched us from.
+/// Best-effort: a failed `chdir` only makes the launcher open a fresh viewer instead of switching.
+fn follow_root(root: &Path, last: &mut PathBuf) {
+    if root != last.as_path() {
+        let _ = std::env::set_current_dir(root);
+        *last = root.to_path_buf();
+    }
+}
+
 /// Route annotation-modal raw keys before configurable global decoding. Returning `Some` means
 /// the modal consumed ownership even when the particular key is an inert no-op, so no printable or
 /// fixed modal key can leak to a global quit/editor/copy action.
@@ -246,7 +266,9 @@ fn route_annotation_key(
 /// tree enumeration in `view_state`) on every idle tick.
 fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io::Result<()> {
     let mut dirty = true; // paint the first frame
+    let mut cwd_root = PathBuf::new();
     loop {
+        follow_root(controller.root(), &mut cwd_root);
         if dirty {
             let mut need_redraw = false;
             terminal.draw(|frame| {
@@ -744,7 +766,7 @@ impl Spawner for ProcessSpawner {
         // A failed `Command::status` (e.g. the binary is not on PATH) is a launch failure —
         // the editor never ran. Map it through `NotLaunched` so the controller words the
         // notice as "could not open editor" rather than as an editor exit.
-        let status = Command::new(prog)
+        let status = crate::proc::in_launch_dir(&mut Command::new(prog))
             .args(args)
             .status()
             .map_err(SpawnError::NotLaunched)?;
@@ -779,7 +801,7 @@ impl Spawner for OpenerSpawner {
             .split_first()
             .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
         // `spawn` (not `status`): launch and return immediately, never blocking the event loop.
-        let mut child = Command::new(prog)
+        let mut child = crate::proc::in_launch_dir(&mut Command::new(prog))
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

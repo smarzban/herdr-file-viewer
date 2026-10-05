@@ -52,7 +52,9 @@ pub struct RealRunner;
 
 impl CommandRunner for RealRunner {
     fn run(&self, program: &OsStr, args: &[&str]) -> io::Result<Output> {
-        Command::new(program).args(args).output()
+        crate::proc::in_launch_dir(&mut Command::new(program))
+            .args(args)
+            .output()
     }
 }
 

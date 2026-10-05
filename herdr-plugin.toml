@@ -24,9 +24,9 @@
 
 id = "herdr-file-viewer"
 name = "herdr-file-viewer"
-version = "1.17.0"
+version = "1.18.0"
 description = "A git-aware, read-only file viewer: a keyboard-driven TUI in a herdr split pane."
-min_herdr_version = "0.7.0"
+min_herdr_version = "0.7.5"
 platforms = ["linux", "macos", "windows"]
 
 # Build step herdr runs at install time. Fast path: the platform's fetch-or-build script
@@ -50,6 +50,19 @@ id = "file-viewer"
 title = "Files"
 placement = "split"
 command = ["./target/release/herdr-file-viewer"]
+
+# The root picker: a small popup that asks for a directory, then opens a NEW viewer (split or
+# tab, per HERDR_FILE_VIEWER_PICK_PLACEMENT from its launcher) rooted there (handing the directory over with `plugin pane open --env HERDR_FILE_VIEWER_ROOT=<dir>`,
+# never `--cwd`) and exits, which closes the popup. Popup placement needs herdr >= 0.7.5.
+# Unix only for now: Windows cannot spawn a relative pane command (see header).
+[[panes]]
+id = "root-picker"
+title = "Open file viewer at"
+platforms = ["linux", "macos"]
+placement = "popup"
+width = "60%"
+height = 16
+command = ["./target/release/herdr-file-viewer", "--pick-root"]
 
 # (No Windows [[panes]] entry: herdr can't spawn the relative command on Windows, so the Windows
 # launchers spawn the viewer by absolute path via `pane split`/`tab create` + `pane run` — see header.)
@@ -97,3 +110,20 @@ command = [
   "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
   '''$u=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$u; $OutputEncoding=$u; $b=$env:HERDR_BIN_PATH; if(-not $b){$b='herdr'}; $p=((& $b plugin list --json|ConvertFrom-Json).result.plugins|?{$_.plugin_id -eq 'herdr-file-viewer'}).plugin_root; if($p -and $p.StartsWith('\\?\')){$p=$p.Substring(4)}; & (Join-Path (Join-Path $p 'scripts') 'open-file-viewer-tab.ps1')''',
 ]
+
+# Open the viewer at a directory you type (Tab completes, Enter opens, Esc cancels), instead of
+# the directory you are in: in a split beside your pane, or in a new tab. Bind keys to them
+# (e.g. `prefix+d` for the split, `prefix+alt+d` for the tab).
+[[actions]]
+id = "open-file-viewer-at"
+platforms = ["linux", "macos"]
+title = "Open file viewer at…"
+description = "Ask for a directory in a popup, then open the file viewer there in a split pane."
+command = ["bash", "scripts/open-file-viewer-at.sh", "split"]
+
+[[actions]]
+id = "open-file-viewer-at-tab"
+platforms = ["linux", "macos"]
+title = "Open file viewer at… (tab)"
+description = "Ask for a directory in a popup, then open the file viewer there in a new tab."
+command = ["bash", "scripts/open-file-viewer-at.sh", "tab"]

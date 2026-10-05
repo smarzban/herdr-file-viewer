@@ -115,15 +115,8 @@ impl Controller {
     /// Open the search prompt (AC-8). Search works in every view mode (RenderedMarkdown, Diff,
     /// FullDiff, SyntaxContent) but requires a file to be selected — a directory selection or
     /// nothing selected shows a notice instead (mirrors go-to-line's file-gate, owner UX).
-    /// Like other modal openers, it is a no-op while the picker or finder is already open.
     /// Snapshots the current content scroll into the prompt state (for Esc-restore).
     pub(super) fn open_search(&mut self) -> Effects {
-        // Modal mutual-exclusion: the picker and finder guards in handle() already prevent this
-        // from being reached while those modals are open, but be explicit for clarity and for
-        // future direct callers.
-        if self.modal.picker().is_some() || self.modal.finder().is_some() {
-            return Effects::noop();
-        }
         let target = if self.focus == Focus::Pinned {
             if self.pinned_snapshot.is_none() {
                 self.action_notice = Some("Search: no pinned preview".into());

@@ -529,7 +529,8 @@ fn capability(mode: ViewMode) -> &'static str {
 fn renderer_command(command: &[String]) -> Result<Command, String> {
     let (prog, args) = command.split_first().ok_or("empty renderer command")?;
     let mut cmd = Command::new(prog);
-    cmd.args(args)
+    crate::proc::in_launch_dir(&mut cmd)
+        .args(args)
         .env("CLICOLOR_FORCE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

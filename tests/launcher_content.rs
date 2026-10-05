@@ -104,3 +104,72 @@ fn windows_launchers_pass_the_plugin_config_dir() {
         );
     }
 }
+
+#[test]
+fn root_picker_launcher_opens_the_picker_as_a_popup() {
+    // The `open-file-viewer-at[-tab]` actions only open the manifest's `root-picker` pane as a popup;
+    // the picker itself hands the chosen root to the new viewer by `--env`, never `--cwd` (#139).
+    let s = read_script("open-file-viewer-at.sh");
+    assert!(s.contains("--entrypoint root-picker"), "{s}");
+    assert!(s.contains("--placement popup"), "{s}");
+    assert!(s.contains("${HERDR_BIN_PATH:-herdr}"), "{s}");
+    // The placement reaches the picker through the popup's env (verified live on herdr 0.9.1).
+    assert!(
+        s.contains(r#"--env "HERDR_FILE_VIEWER_PICK_PLACEMENT=$placement""#),
+        "{s}"
+    );
+    let code: String = s
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!code.contains("--cwd"), "{code}");
+}
+
+/// Run `scripts/open-file-viewer-at.sh` with `arg` against a fake herdr that records its argv,
+/// returning that argv (one element per line).
+#[cfg(unix)]
+fn run_root_picker_launcher(arg: Option<&str>) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!(
+        "hfv-at-launcher-{}-{}",
+        std::process::id(),
+        arg.unwrap_or("none")
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("argv.txt");
+    let fake = dir.join("fake-herdr");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", out.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/open-file-viewer-at.sh");
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&script).env("HERDR_BIN_PATH", &fake);
+    if let Some(a) = arg {
+        cmd.arg(a);
+    }
+    assert!(cmd.status().unwrap().success());
+    let argv = std::fs::read_to_string(&out).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    argv
+}
+
+#[cfg(unix)]
+#[test]
+fn root_picker_launcher_maps_its_argument_to_the_popup_placement() {
+    // Executed, not grepped: the action's `split`/`tab` argument must reach the picker as
+    // HERDR_FILE_VIEWER_PICK_PLACEMENT, or the tab action would silently open a split.
+    let popup = |placement: &str| {
+        format!(
+            "plugin\npane\nopen\n--plugin\nherdr-file-viewer\n--entrypoint\nroot-picker\n\
+             --placement\npopup\n--env\nHERDR_FILE_VIEWER_PICK_PLACEMENT={placement}\n"
+        )
+    };
+    assert_eq!(run_root_picker_launcher(Some("tab")), popup("tab"));
+    assert_eq!(run_root_picker_launcher(Some("split")), popup("split"));
+    assert_eq!(run_root_picker_launcher(None), popup("split"));
+    assert_eq!(run_root_picker_launcher(Some("bogus")), popup("split"));
+}
