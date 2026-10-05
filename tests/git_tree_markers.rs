@@ -191,6 +191,28 @@ fn baseline_and_status_mode_changes_keep_full_tree_markers_current_without_c() {
 }
 
 #[test]
+fn leaving_status_mode_by_reveal_restores_baseline_markers() {
+    let (root, facts) = fixture();
+    let mut controller = controller(root.path(), facts);
+    controller.handle(Intent::ToggleStatusMode);
+    assert!(controller.status_mode());
+
+    // `clean.rs` is not in working-tree status, so revealing it relaxes `d` without the key.
+    let target = herdr_file_viewer::open_target::parse_open_target("clean.rs").unwrap();
+    controller.apply_open_target(&target);
+    assert!(!controller.status_mode());
+    assert!(!controller.changed_only());
+
+    let markers = markers(&controller);
+    assert_eq!(markers[Path::new("modified.rs")].0, Some(Status::Modified));
+    assert_eq!(markers[Path::new("added.rs")].0, Some(Status::Added));
+    assert!(
+        markers[Path::new("src")].1,
+        "baseline dirty-directory dot is restored"
+    );
+}
+
+#[test]
 fn refresh_removes_stale_baseline_markers_from_an_unfiltered_tree() {
     let (root, facts) = fixture();
     let mut controller = controller(root.path(), Arc::clone(&facts));
@@ -242,6 +264,9 @@ fn real_viewer_paints_clean_feature_branch_markers_before_any_filter_key() {
     let root = TempDir::new();
     let support = TempDir::new();
     common::init_repo_with_commit(root.path());
+    // Pin the base branch: `git init` inherits the host's `init.defaultBranch`, and base
+    // resolution only recognises main/master, so a `trunk` default would hide every marker.
+    common::git(root.path(), &["checkout", "-qB", "main"]);
     std::fs::create_dir(root.path().join("src")).unwrap();
     std::fs::write(root.path().join("modified.rs"), "before\n").unwrap();
     std::fs::write(root.path().join("src/nested.rs"), "before\n").unwrap();
