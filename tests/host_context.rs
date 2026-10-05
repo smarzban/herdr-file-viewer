@@ -133,10 +133,21 @@ fn root_env_var_name_is_pinned() {
     assert_eq!(ROOT_ENV, "HERDR_FILE_VIEWER_ROOT");
 }
 
+/// An absolute path on this platform: `/x` on unix, `C:/x` on Windows (where a rootless `/x`
+/// has no drive and is not absolute, so the override would rightly ignore it).
+fn abs(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_string()
+    }
+}
+
 #[test]
 fn root_override_wins_over_focused_pane_cwd_and_drops_the_base_hint() {
-    let ctx = apply_root_override(picked_ctx(), Some("/elsewhere"), |_| true);
-    assert_eq!(ctx.cwd, PathBuf::from("/elsewhere"));
+    let elsewhere = abs("/elsewhere");
+    let ctx = apply_root_override(picked_ctx(), Some(&elsewhere), |_| true);
+    assert_eq!(ctx.cwd, PathBuf::from(&elsewhere));
     // The base-branch hint described the invoking pane's worktree, not the chosen directory.
     assert_eq!(ctx.base_branch, None);
     // The workspace is still the one the user is in.
@@ -158,9 +169,10 @@ fn relative_or_missing_root_override_is_ignored() {
     let ctx = apply_root_override(picked_ctx(), Some("relative/dir"), |_| true);
     assert_eq!(ctx, picked_ctx());
     // A trailing space is part of the directory name, not padding.
-    let ctx = apply_root_override(picked_ctx(), Some("/dir "), |p| p == Path::new("/dir "));
-    assert_eq!(ctx.cwd, PathBuf::from("/dir "));
+    let spaced = abs("/dir ");
+    let ctx = apply_root_override(picked_ctx(), Some(&spaced), |p| p == Path::new(&spaced));
+    assert_eq!(ctx.cwd, PathBuf::from(&spaced));
     // Not a directory: degrade to the normal summon rather than an empty tree.
-    let ctx = apply_root_override(picked_ctx(), Some("/no/such/dir"), |_| false);
+    let ctx = apply_root_override(picked_ctx(), Some(&abs("/no/such/dir")), |_| false);
     assert_eq!(ctx, picked_ctx());
 }
