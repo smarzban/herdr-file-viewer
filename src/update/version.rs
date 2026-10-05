@@ -38,22 +38,6 @@ impl std::fmt::Display for Version {
     }
 }
 
-/// Parse one `git ls-remote --tags` output line into a stable [`Version`].
-///
-/// Each line is `<sha>\trefs/tags/<ref>`. We take the ref, drop the `refs/tags/` prefix, and
-/// parse it as a version — which rejects the `^{}` peel lines (annotated-tag dereferences),
-/// pre-release tags, and any non-`vX.Y.Z` ref. `None` for all of those.
-pub fn parse_tag_ref(line: &str) -> Option<Version> {
-    let (_sha, refname) = line.split_once('\t')?;
-    let tag = refname.strip_prefix("refs/tags/")?;
-    Version::parse(tag)
-}
-
-/// The highest stable version among all tag lines, or `None` if there are none.
-pub fn latest_stable(ls_remote_stdout: &str) -> Option<Version> {
-    ls_remote_stdout.lines().filter_map(parse_tag_ref).max()
-}
-
 /// The version compiled into this binary (Cargo's package version).
 pub fn current() -> Version {
     // The package version is always a valid triple (CI/clippy would reject otherwise), so this
@@ -127,36 +111,6 @@ mod tests {
             .to_string(),
             "1.2.3"
         );
-    }
-
-    const SAMPLE: &str = "\
-9bbba64\trefs/tags/v1.0.0
-ce1ddf8\trefs/tags/v1.0.0^{}
-aaa1111\trefs/tags/v1.1.0
-bbb2222\trefs/tags/v1.1.0^{}
-ccc3333\trefs/tags/v2.0.0-rc1
-ddd4444\trefs/tags/not-a-version
-";
-
-    #[test]
-    fn parse_tag_ref_reads_clean_tags_only() {
-        assert_eq!(
-            parse_tag_ref("9bbba64\trefs/tags/v1.0.0"),
-            Version::parse("1.0.0")
-        );
-        // peel lines, pre-releases, and junk refs are ignored
-        assert_eq!(parse_tag_ref("ce1ddf8\trefs/tags/v1.0.0^{}"), None);
-        assert_eq!(parse_tag_ref("ccc3333\trefs/tags/v2.0.0-rc1"), None);
-        assert_eq!(parse_tag_ref("ddd4444\trefs/tags/not-a-version"), None);
-        assert_eq!(parse_tag_ref(""), None);
-    }
-
-    #[test]
-    fn latest_stable_picks_the_highest_skipping_prereleases() {
-        // v2.0.0-rc1 is a pre-release → ignored; the highest stable is v1.1.0.
-        assert_eq!(latest_stable(SAMPLE), Version::parse("1.1.0"));
-        assert_eq!(latest_stable(""), None);
-        assert_eq!(latest_stable("garbage with no tags"), None);
     }
 
     #[test]

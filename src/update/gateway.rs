@@ -213,12 +213,6 @@ impl Gateway for DocumentGateway {
     }
 }
 
-impl Default for DocumentGateway {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Construct the fixed curl transfer without a shell. The official curl manual documents that
 /// `--disable` must be first to ignore curlrc, `--proto =https` permits HTTPS only, and
 /// `--write-out` writes the selected response variable to stdout.
