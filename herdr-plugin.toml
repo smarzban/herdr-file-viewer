@@ -113,7 +113,7 @@ command = [
 
 # Open the viewer at a directory you type (Tab completes, Enter opens, Esc cancels), instead of
 # the directory you are in: in a split beside your pane, or in a new tab. Bind keys to them
-# (e.g. `prefix+d` for the split).
+# (e.g. `prefix+d` for the split, `prefix+alt+d` for the tab).
 [[actions]]
 id = "open-file-viewer-at"
 platforms = ["linux", "macos"]

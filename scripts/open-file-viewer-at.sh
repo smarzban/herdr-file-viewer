@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Launcher for "open the file viewer at a chosen directory" — used by the `open-file-viewer-at`
-# (split) and `open-file-viewer-at-tab` (tab) actions and their herdr keybindings (e.g. `prefix+d`).
+# (split) and `open-file-viewer-at-tab` (tab) actions and their herdr keybindings (e.g. `prefix+d`
+# and `prefix+alt+d`).
 # It only opens the manifest's `root-picker` pane as a herdr popup, telling it where the viewer
 # goes (`$1`: `split`, the default, or `tab`). The picker (`herdr-file-viewer --pick-root`) asks
 # for the directory and opens the viewer there, handing the directory over as
