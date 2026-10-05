@@ -4,6 +4,7 @@
 //! they reach an argv (option-injection guard).
 
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 struct PaneList {
@@ -21,6 +22,9 @@ struct Pane {
     #[serde(default)]
     focused: bool,
     tab_id: Option<String>,
+    /// The pane process's live working directory. A viewer keeps its cwd on its tree root
+    /// (`app::follow_root`), so for a `"Files"` pane this names the root it is showing.
+    cwd: Option<String>,
 }
 
 /// Decide the launcher action from a herdr `pane list` JSON, returning one line: `OPEN`,
@@ -67,16 +71,28 @@ pub fn launch_decision(pane_list_json: &str) -> String {
 /// workspace* is **switched to** (`herdr tab focus <tab_id>`) rather than duplicated — the
 /// idempotency that makes a single keystroke reach the one viewer in this workspace.
 ///
+/// **Root-aware.** `resolve_root` maps a pane cwd to its tree root (worktree top level, else the
+/// directory itself), canonicalized so both sides compare equal. Only a viewer showing the
+/// **focused pane's root** is switched to, so a viewer opened elsewhere by the root picker
+/// (`--pick-root`) is not mistaken for this repo's viewer. When the focused pane's root cannot be
+/// resolved (no `cwd` reported, or a path that no longer exists) the decision stays root-agnostic,
+/// as it was before roots were tracked.
+///
 /// - Unparseable JSON, or no focused pane (current tab unknown) → `OPEN`.
 /// - A `"Files"` pane in the **focused** tab: `CLOSE` it when it *is* the focused pane (toggle
-///   off — herdr auto-closes the emptied tab), otherwise `FOCUS` it in place.
-/// - Else a `"Files"` pane in **another tab of the focused pane's workspace**: `SWITCHTAB` to it.
+///   off — herdr auto-closes the emptied tab), otherwise `FOCUS` it in place. This is the toggle,
+///   so it is deliberately not root-scoped: a viewer tab holds only that viewer.
+/// - Else a `"Files"` pane **showing the focused root** in **another tab of the focused pane's
+///   workspace**: `SWITCHTAB` to it. A viewer there showing some other root does not count.
 /// - Else `OPEN`. In particular a viewer that lives only in a **different workspace** is left
 ///   alone and a fresh viewer is opened here — switching to it would yank the user across
 ///   workspaces (the launcher is meant to reach *this* workspace's viewer, not teleport away).
 /// - A pane/tab id that is not flag-safe is never emitted (→ `OPEN`), so a host-supplied id can
 ///   never option-inject when the launcher passes it to `herdr pane`/`herdr tab`.
-pub fn launch_decision_tab(pane_list_json: &str) -> String {
+pub fn launch_decision_tab(
+    pane_list_json: &str,
+    resolve_root: impl Fn(&Path) -> Option<PathBuf>,
+) -> String {
     let Ok(list) = serde_json::from_str::<PaneList>(pane_list_json) else {
         return "OPEN".to_string();
     };
@@ -85,6 +101,12 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
         return "OPEN".to_string();
     };
     let is_viewer = |p: &&Pane| p.label.as_deref() == Some("Files");
+    let root_of = |p: &Pane| {
+        p.cwd
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .and_then(|c| resolve_root(Path::new(c)))
+    };
 
     // Prefer a viewer in the focused tab (toggle/focus in place) over one elsewhere.
     if let Some(here) = panes
@@ -106,10 +128,15 @@ pub fn launch_decision_tab(pane_list_json: &str) -> String {
     // to it would pull the user out of their current workspace, so we OPEN a fresh viewer here
     // instead. If the focused pane's workspace is unknown, we can't scope safely → OPEN.
     let focused_ws = workspace_of(focused);
+    let focused_root = root_of(focused);
+    let shows_focused_root = |p: &Pane| match &focused_root {
+        Some(want) => root_of(p).as_ref() == Some(want),
+        None => true,
+    };
     if focused_ws.is_some()
         && let Some(elsewhere) = panes
             .iter()
-            .find(|p| is_viewer(p) && workspace_of(p) == focused_ws)
+            .find(|p| is_viewer(p) && workspace_of(p) == focused_ws && shows_focused_root(p))
         && let Some(tab) = elsewhere.tab_id.as_deref().filter(|t| is_flag_safe(t))
     {
         return format!("SWITCHTAB {tab}");
@@ -137,7 +164,7 @@ fn workspace_of(p: &Pane) -> Option<&str> {
 /// A pane id is safe to place in an argv iff it is a non-empty token of `[A-Za-z0-9_:.-]` that
 /// does not start with `-` (which would option-inject). `:` and `.` are allowed because herdr
 /// pane ids are `workspace:pane` tokens (e.g. `wE:pD`).
-fn is_flag_safe(id: &str) -> bool {
+pub(crate) fn is_flag_safe(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')
         && id
@@ -165,6 +192,26 @@ mod tests {
     }
     fn list(panes: &[String]) -> String {
         format!(r#"{{"result":{{"panes":[{}]}}}}"#, panes.join(","))
+    }
+    // Like `pane`, plus the pane's live `cwd` (a viewer's cwd is its tree root).
+    fn pane_cwd(id: &str, label: &str, focused: bool, tab: &str, cwd: &str) -> String {
+        let ws = tab.split(':').next().unwrap_or("");
+        format!(
+            r#"{{"pane_id":"{id}","label":"{label}","focused":{focused},"tab_id":"{tab}","workspace_id":"{ws}","cwd":"{cwd}"}}"#
+        )
+    }
+    // A resolver that knows no roots: the root-agnostic decision (fixtures without `cwd`).
+    fn no_roots(_: &Path) -> Option<PathBuf> {
+        None
+    }
+    // A canned resolver standing in for `root::resolve` + canonicalize: anything under `/repo`
+    // resolves to `/repo`, under `/other` to `/other`; `/gone` no longer exists.
+    fn roots(p: &Path) -> Option<PathBuf> {
+        ["/repo", "/other"]
+            .iter()
+            .find(|r| p.starts_with(r))
+            .map(PathBuf::from)
+            .or_else(|| (!p.starts_with("/gone")).then(|| p.to_path_buf()))
     }
 
     #[test]
@@ -237,7 +284,7 @@ mod tests {
     #[test]
     fn tab_no_files_anywhere_opens() {
         let j = list(&[pane("wE:p1", "", true, "wE:t1")]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -248,7 +295,7 @@ mod tests {
             pane("wE:p1", "", false, "wE:t1"),
             pane("wE:pD", "Files", true, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "CLOSE wE:pD");
+        assert_eq!(launch_decision_tab(&j, no_roots), "CLOSE wE:pD");
     }
 
     #[test]
@@ -259,7 +306,58 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wE:t4");
+        assert_eq!(launch_decision_tab(&j, no_roots), "SWITCHTAB wE:t4");
+    }
+
+    #[test]
+    fn tab_switches_only_to_a_viewer_showing_the_focused_root() {
+        // A shell in a subdirectory of /repo: the /other viewer (opened by the root picker) is
+        // skipped, the /repo viewer is switched to even though it is listed second.
+        let j = list(&[
+            pane_cwd("wE:p1", "", true, "wE:t1", "/repo/src/deep"),
+            pane_cwd("wE:pA", "Files", false, "wE:t2", "/other"),
+            pane_cwd("wE:pB", "Files", false, "wE:t3", "/repo"),
+        ]);
+        assert_eq!(launch_decision_tab(&j, roots), "SWITCHTAB wE:t3");
+    }
+
+    #[test]
+    fn tab_opens_when_the_only_other_viewer_shows_a_different_root() {
+        // The picker-opened viewer at /other must not swallow this repo's summon.
+        let j = list(&[
+            pane_cwd("wE:p1", "", true, "wE:t1", "/repo"),
+            pane_cwd("wE:pA", "Files", false, "wE:t2", "/other"),
+        ]);
+        assert_eq!(launch_decision_tab(&j, roots), "OPEN");
+    }
+
+    #[test]
+    fn tab_viewer_without_a_known_root_is_not_switched_to_when_the_focused_root_is_known() {
+        // A viewer whose cwd is missing (or no longer exists) cannot prove it shows this root.
+        let j = list(&[
+            pane_cwd("wE:p1", "", true, "wE:t1", "/repo"),
+            pane("wE:pA", "Files", false, "wE:t2"),
+            pane_cwd("wE:pB", "Files", false, "wE:t3", "/gone/x"),
+        ]);
+        assert_eq!(launch_decision_tab(&j, roots), "OPEN");
+    }
+
+    #[test]
+    fn tab_unresolvable_focused_root_stays_root_agnostic() {
+        // No usable focused cwd: behave exactly as before roots were tracked.
+        let j = list(&[
+            pane_cwd("wE:p1", "", true, "wE:t1", "/gone/x"),
+            pane_cwd("wE:pA", "Files", false, "wE:t2", "/other"),
+        ]);
+        assert_eq!(launch_decision_tab(&j, roots), "SWITCHTAB wE:t2");
+    }
+
+    #[test]
+    fn tab_same_tab_toggle_is_not_root_scoped() {
+        // The focused-tab FOCUS/CLOSE is the toggle: pressing it ON a picker-opened viewer
+        // (root /other) while the resolver maps it elsewhere still closes it.
+        let j = list(&[pane_cwd("wE:pA", "Files", true, "wE:t2", "/other")]);
+        assert_eq!(launch_decision_tab(&j, roots), "CLOSE wE:pA");
     }
 
     #[test]
@@ -271,7 +369,7 @@ mod tests {
             pane("wQ:p2K", "", true, "wQ:tH"),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -283,7 +381,7 @@ mod tests {
             pane("wQ:pV", "Files", false, "wQ:tE"),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "SWITCHTAB wQ:tE");
+        assert_eq!(launch_decision_tab(&j, no_roots), "SWITCHTAB wQ:tE");
     }
 
     #[test]
@@ -296,7 +394,7 @@ mod tests {
             pane("wQ:p2K", "", true, "wQ:tH"),
             pane_ws("w19:pT", "Files", false, "w19:tB", "wQ"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -307,7 +405,7 @@ mod tests {
             pane_ws("p2K", "", true, "tH", ""),
             pane("w19:pT", "Files", false, "w19:tB"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -317,13 +415,13 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "wE:t1"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "FOCUS wE:pD");
+        assert_eq!(launch_decision_tab(&j, no_roots), "FOCUS wE:pD");
     }
 
     #[test]
     fn tab_no_focused_pane_opens() {
         let j = list(&[pane("wE:pD", "Files", false, "wE:t4")]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -333,7 +431,7 @@ mod tests {
             pane("wE:p1", "", true, "wE:t1"),
             pane("wE:pD", "Files", false, "-rf"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
@@ -342,12 +440,12 @@ mod tests {
             pane("wE:p1", "", false, "wE:t4"),
             pane("-rf", "Files", true, "wE:t4"),
         ]);
-        assert_eq!(launch_decision_tab(&j), "OPEN");
+        assert_eq!(launch_decision_tab(&j, no_roots), "OPEN");
     }
 
     #[test]
     fn tab_garbage_json_opens() {
-        assert_eq!(launch_decision_tab("not json"), "OPEN");
-        assert_eq!(launch_decision_tab(""), "OPEN");
+        assert_eq!(launch_decision_tab("not json", no_roots), "OPEN");
+        assert_eq!(launch_decision_tab("", no_roots), "OPEN");
     }
 }

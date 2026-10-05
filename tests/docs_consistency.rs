@@ -25,6 +25,8 @@ const AGENT_SKILL: &str = include_str!("../skills/herdr-file-viewer/SKILL.md");
 const OPEN_PANE_SCRIPT: &str = include_str!("../scripts/open-file-viewer.sh");
 const OPEN_PANE_PS1: &str = include_str!("../scripts/open-file-viewer.ps1");
 const OPEN_TAB_SCRIPT: &str = include_str!("../scripts/open-file-viewer-tab.sh");
+const OPEN_AT_SCRIPT: &str = include_str!("../scripts/open-file-viewer-at.sh");
+const SUMMONING_DOC: &str = include_str!("../docs/summoning.md");
 
 /// The `--cwd` drift guard (#139).
 ///
@@ -63,13 +65,15 @@ fn no_documented_launch_passes_cwd_to_plugin_pane_open() {
         ("docs/usage.md", USAGE_DOC),
         ("scripts/open-file-viewer.sh", OPEN_PANE_SCRIPT),
         ("scripts/open-file-viewer-tab.sh", OPEN_TAB_SCRIPT),
+        ("scripts/open-file-viewer-at.sh", OPEN_AT_SCRIPT),
+        ("docs/summoning.md", SUMMONING_DOC),
     ] {
         for block in launch_blocks(doc) {
             assert!(
                 !block.contains("--cwd"),
                 "#139: {name} pairs `plugin pane open` with `--cwd`, which cannot spawn the \
-                 relative pane command. Set the root by launching from a focused pane whose cwd is \
-                 the target repository instead. Offending block: {block}"
+                 relative pane command. Name the root with `--env HERDR_FILE_VIEWER_ROOT=<abs dir>` \
+                 instead. Offending block: {block}"
             );
         }
     }
@@ -118,6 +122,19 @@ fn has_commented_assignment(example: &str, key: &str) -> bool {
             .map(|after| after.trim_start().starts_with('='))
             .unwrap_or(false)
     })
+}
+
+#[test]
+fn usage_and_changelog_document_cjk_mouse_selection_width() {
+    assert!(
+        USAGE_DOC.contains("Character selection follows terminal cell width")
+            && USAGE_DOC.contains("full-width CJK"),
+        "usage must explain that drag selection follows displayed CJK cell width"
+    );
+    assert!(
+        CHANGELOG.contains("Mouse selection now follows terminal cell width"),
+        "changelog must record the CJK mouse-selection fix"
+    );
 }
 
 #[test]

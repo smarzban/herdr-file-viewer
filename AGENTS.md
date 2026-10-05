@@ -111,7 +111,8 @@ These shape every decision; violating one is a design error, not a style nit:
   silently break it.
 - **Manifest** `herdr-plugin.toml`: declare the viewer as a `[[panes]]` entry with
   `placement = "split"` and `command = ["./target/release/herdr-file-viewer"]`, plus an
-  `[[actions]]` to summon it; `min_herdr_version = "0.7.0"`, `platforms = ["linux","macos","windows"]`
+  `[[actions]]` to summon it; `min_herdr_version = "0.7.5"` (the first herdr with popup plugin panes,
+  used by the `root-picker` pane), `platforms = ["linux","macos","windows"]`
   (Windows is preview, with per-item launcher entries), and **platform-gated `[[build]]` steps**
   (`["/bin/sh","scripts/fetch-or-build.sh"]` on unix, `powershell … scripts/fetch-or-build.ps1` on
   Windows) that download the verified prebuilt binary and fall back to `cargo build --release`.
@@ -250,7 +251,12 @@ while the shipped launcher never passed it (#139). Change all of them together, 
 `no_documented_launch_passes_cwd_to_plugin_pane_open` (`tests/docs_consistency.rs`) honest — it holds
 the docs and the scripts to one rule so this divergence fails the build instead of reaching a user.
 The viewed root comes from the FOCUSED herdr pane's cwd (resolved to its worktree top level), never
-from a flag.
+from a flag. The one explicit exception is `HERDR_FILE_VIEWER_ROOT` (passed with `--env`, never
+`--cwd`): the root picker (`--pick-root`, the `open-file-viewer-at[-tab]` actions) and agents use it to name
+a root on purpose. A running viewer keeps its process cwd on its root; the tab launcher's
+root-aware switch depends on that, so do not add code that relies on the process cwd, and start
+any new external tool through `proc::in_launch_dir` (or an explicit dir) so it never runs inside
+the viewed repository.
 
 **A new config key.** `src/config.rs` owns it: add the field to `Config`, resolve it in `resolve`
 into `EffectiveSettings`, and apply it at wiring time. **Docs (same PR):** document it in

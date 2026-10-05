@@ -36,8 +36,7 @@ impl Controller {
 
     /// Create, replace, remove, or reject the one in-memory pinned snapshot.
     ///
-    /// This is intentionally a controller seam rather than an input action: T-13 owns key
-    /// wiring. It never starts a render because a pin is a clone of the already-applied document.
+    /// It never starts a render because a pin is a clone of the already-applied document.
     pub fn pin_active_preview(&mut self) -> Effects {
         let Some(document) = self.active_document().cloned() else {
             self.action_notice = Some(
