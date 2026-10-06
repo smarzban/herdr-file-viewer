@@ -1,6 +1,9 @@
 # Summoning the viewer
 
-This page explains the open actions, idempotent launcher, split and tab layouts, and the `--remote` caveat. For a short installation and keybinding example, see the [Quick start](../README.md#quick-start). After opening the viewer, see the [usage guide](usage.md) and [keys reference](keys.md).
+This page explains the open actions, idempotent launcher, split and tab layouts, and the `--remote`
+caveat. For a short installation and keybinding example, see the [Quick
+start](../README.md#quick-start). After opening the viewer, see the [usage guide](usage.md) and
+[keys reference](keys.md).
 
 The viewer opens **only** in response to an explicit action. There are no event hooks and no
 automatic invocation. The manifest declares a `[[panes]]` entry (the split-pane viewer) and an
@@ -24,11 +27,14 @@ Summon it by invoking the action:
 herdr plugin action invoke open-file-viewer --plugin herdr-file-viewer
 ```
 
-The action opens the viewer in a **split** pane beside your current work. Both the action and its keybinding use `scripts/open-file-viewer.sh`. The launcher is **idempotent** within the current tab, so repeated invocations launch, focus, or close the viewer:
+The action opens the viewer in a **split** pane beside your current work. Both the action and its
+keybinding use `scripts/open-file-viewer.sh`. The launcher is **idempotent** within the current tab,
+so repeated invocations launch, focus, or close the viewer:
 
 - With no viewer pane in this tab, open a focused split.
 - With an unfocused viewer pane, focus it.
-- With the viewer pane focused, close it. herdr cannot hide a pane without closing it, so reopening walks the tree again.
+- With the viewer pane focused, close it. herdr cannot hide a pane without closing it, so reopening
+  walks the tree again.
 
 **One-press access: bind a key.** herdr's `config.toml` binds keys to commands; point a
 `plugin_action` binding at the installed plugin's qualified action id. herdr invokes the action
@@ -62,7 +68,9 @@ tab has no direction, so the tab actions ignore it.
 
 ## Open in a tab instead of a split
 
-A second action, `open-file-viewer-tab`, opens the viewer in its **own tab** through `scripts/open-file-viewer-tab.sh` and `--placement tab`. Its launcher is idempotent across the tabs of the current workspace, so it opens, switches to, focuses, or closes the viewer:
+A second action, `open-file-viewer-tab`, opens the viewer in its **own tab** through
+`scripts/open-file-viewer-tab.sh` and `--placement tab`. Its launcher is idempotent across the tabs
+of the current workspace, so it opens, switches to, focuses, or closes the viewer:
 
 - With no viewer for this repo in this workspace, open it in a focused new tab.
 - With a viewer **showing this repo** in another tab of this workspace, **switch to that tab**

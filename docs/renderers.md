@@ -1,6 +1,7 @@
 # External renderers (optional)
 
-The viewer delegates rendering to external command-line tools. These are optional runtime dependencies, not Cargo dependencies:
+The viewer delegates rendering to external command-line tools. These are optional runtime
+dependencies, not Cargo dependencies:
 
 | View | Renderer | Install |
 | --- | --- | --- |
@@ -8,15 +9,23 @@ The viewer delegates rendering to external command-line tools. These are optiona
 | Diffs | [`delta`](https://github.com/dandavison/delta) | `brew install git-delta` / `cargo install git-delta` |
 | Syntax-highlighted content | [`bat`](https://github.com/sharkdp/bat) | `brew install bat` / package manager |
 
-You can install all three with the bundled helper. Run it from the plugin directory, whose path `herdr plugin list` shows. The helper detects brew, apt, dnf, or pacman. It falls back to `cargo install` for `delta` and `bat`. Because `glow` is written in Go, the helper prints its manual installation link instead of trying Cargo:
+You can install all three with the bundled helper. Run it from the plugin directory, whose path
+`herdr plugin list` shows. The helper detects brew, apt, dnf, or pacman. It falls back to `cargo
+install` for `delta` and `bat`. Because `glow` is written in Go, the helper prints its manual
+installation link instead of trying Cargo:
 
 ```bash
 ./scripts/install-renderers.sh
 ```
 
-**If a renderer is not installed, the viewer falls back to plain text.** The content pane names the missing renderer in a short notice, such as *"Markdown renderer unavailable (glow: …); showing plain text."* A missing renderer does not crash the viewer or leave the pane empty. The renderers improve the display but are not required.
+**If a renderer is not installed, the viewer falls back to plain text.** The content pane names the
+missing renderer in a short notice, such as *"Markdown renderer unavailable (glow: …); showing plain
+text."* A missing renderer does not crash the viewer or leave the pane empty. The renderers improve
+the display but are not required.
 
-The viewer sends untrusted file content to renderers on **stdin**, never as a command argument. It sanitizes renderer output before display. A hostile file name or file content therefore cannot inject a command or control the terminal.
+The viewer sends untrusted file content to renderers on **stdin**, never as a command argument. It
+sanitizes renderer output before display. A hostile file name or file content therefore cannot
+inject a command or control the terminal.
 
 ### Bundled markdown palette
 

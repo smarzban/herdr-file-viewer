@@ -1,6 +1,7 @@
 # Keys & mouse
 
-This page lists every viewer key and mouse gesture. See the [usage guide](usage.md) for feature explanations and [configuration keybindings](configuration.md#keybindings) to remap global keys.
+This page lists every viewer key and mouse gesture. See the [usage guide](usage.md) for feature
+explanations and [configuration keybindings](configuration.md#keybindings) to remap global keys.
 
 The viewer is **keyboard-first**: every function has a key and nothing requires a mouse. The mouse
 is additive and on by default.
@@ -62,7 +63,9 @@ default (wide tables sized to fit, over-long cells shown as `…`); press `w` fo
 renders tables at full width and scrolls sideways so you can read every cell. The layout reflows
 automatically when the pane is resized.
 
-**Git state stays current.** The viewer rereads git status when the pane **regains focus**, so a merge, pull, or commit in another pane appears automatically. Press `r` for a full refresh. A focus refresh updates tree status without changing the content scroll.
+**Git state stays current.** The viewer rereads git status when the pane **regains focus**, so a
+merge, pull, or commit in another pane appears automatically. Press `r` for a full refresh. A focus
+refresh updates tree status without changing the content scroll.
 
 Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
 not trigger a viewer action; `Shift` is permitted for keys such as `<`, `>`, `{`, and `}` (and `a`/`A`,
@@ -111,7 +114,11 @@ two products:
 A confirmation notice names what was copied. Both copies use the same **OSC 52** path as the
 tree's `y`/`Y`. `Esc` leaves the mode.
 
-The viewer leaves `Shift`+mouse to the terminal so native selection and copying still work. Selection also works in views wrapped with `w`; the viewer maps each click through the displayed wrapping. Because selection maps only to source text, entering line-select from rendered markdown or a diff switches the file to the line-numbered content view. With the **tree** focused, `L` scrolls the tree horizontally instead. The focused pane determines the action.
+The viewer leaves `Shift`+mouse to the terminal so native selection and copying still work.
+Selection also works in views wrapped with `w`; the viewer maps each click through the displayed
+wrapping. Because selection maps only to source text, entering line-select from rendered markdown or
+a diff switches the file to the line-numbered content view. With the **tree** focused, `L` scrolls
+the tree horizontally instead. The focused pane determines the action.
 
 ## Mouse
 
@@ -142,9 +149,13 @@ Configure the mouse-wheel step with [`scroll_lines`](configuration.md).
 
 ## Opening in an editor
 
-`e` opens the selected file in an external editor; the viewer suspends, runs the editor, and resumes when it exits. The viewer never edits a file itself. Choose the editor in one of two ways. The config key is more reliable:
+`e` opens the selected file in an external editor; the viewer suspends, runs the editor, and resumes
+when it exits. The viewer never edits a file itself. Choose the editor in one of two ways. The
+config key is more reliable:
 
-- **Recommended: set `editor` in [config.toml](configuration.md)** (e.g. `editor = "code --wait"`, or `"vim"`). It takes precedence over `$EDITOR` and avoids the server-environment problem below. It needs no shell-rc edit or server restart.
+- **Recommended: set `editor` in [config.toml](configuration.md)** (e.g. `editor = "code --wait"`,
+  or `"vim"`). It takes precedence over `$EDITOR` and avoids the server-environment problem below.
+  It needs no shell-rc edit or server restart.
 - **Fallback: `$EDITOR`.** With no `editor` configured, `e` uses the `$EDITOR` environment variable
   (e.g. `vim`, or `"code --wait"` for editors that fork). Zero config if it's already set.
 

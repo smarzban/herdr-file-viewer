@@ -1,6 +1,8 @@
 # Usage guide
 
-This guide explains each viewer feature. See the [keys reference](keys.md) for exact keys and mouse gestures, [summoning](summoning.md) to open the viewer, and [configuration](configuration.md) to customize it.
+This guide explains each viewer feature. See the [keys reference](keys.md) for exact keys and mouse
+gestures, [summoning](summoning.md) to open the viewer, and [configuration](configuration.md) to
+customize it.
 
 - [The tree](#the-tree)
 - [Finding a file fast](#finding-a-file-fast)
@@ -37,30 +39,34 @@ Move the cursor with `↑`/`↓` (or `k`/`j`), expand/collapse a directory with 
 the nearest visible parent, so repeated presses climb the tree; it stops at a root child. This also
 skips folded segments when [`compact_dirs`](configuration.md) is on. Changed-only (`c`) and status
 (`d`) views keep their existing collapse behavior because their directory rows are always expanded.
-The tree scrolls to keep the selection in view and sideways for long or deeply nested names. Use `H` / `L` when the tree is focused. A scrollbar appears whenever there's
-more than fits. Narrow or widen the tree column with `<` / `>`, or drag the divider; the starting
-split, the tree's side, and a column cap are all [configurable](configuration.md).
+The tree scrolls to keep the selection in view and sideways for long or deeply nested names. Use `H`
+/ `L` when the tree is focused. A scrollbar appears whenever there's more than fits. Narrow or widen
+the tree column with `<` / `>`, or drag the divider; the starting split, the tree's side, and a
+column cap are all [configurable](configuration.md).
 
-On a **deeply nested** layout, the per-segment tree spends most of a narrow column on indentation and truncates the file names. Set
-[`compact_dirs = true`](configuration.md) to draw a chain of single-child directories as one row:
-`src/main/java/br/com` instead of six rows, each indented two columns further than the last. The row
-leads into the deepest directory of the chain, so expanding, collapsing, and status colors all act on
-that one, and the chain stops the moment a directory holds a file or a second entry.
+On a **deeply nested** layout, the per-segment tree spends most of a narrow column on indentation
+and truncates the file names. Set [`compact_dirs = true`](configuration.md) to draw a chain of
+single-child directories as one row: `src/main/java/br/com` instead of six rows, each indented two
+columns further than the last. The row leads into the deepest directory of the chain, so expanding,
+collapsing, and status colors all act on that one, and the chain stops the moment a directory holds
+a file or a second entry.
 
 ## Finding a file fast
 
 Press `f` to open a **fuzzy finder** over every file in the tree (`.gitignore`-aware). Type to
-filter, `↑`/`↓` to move, `Enter` to open, and `Esc` to cancel. This is faster than scrolling the tree in a
-large repo. Confirming from a pinned preview moves focus to the active preview where the chosen
-file opens.
+filter, `↑`/`↓` to move, `Enter` to open, and `Esc` to cancel. This is faster than scrolling the
+tree in a large repo. Confirming from a pinned preview moves focus to the active preview where the
+chosen file opens.
 
 ## Open at a known file
 
-When an agent, companion plugin, or script knows the path and optional line, it can start the viewer at that location. Interactive browsing through `f`, `:`, and the tree remains unchanged.
+When an agent, companion plugin, or script knows the path and optional line, it can start the viewer
+at that location. Interactive browsing through `f`, `:`, and the tree remains unchanged.
 
 The launch **open target** is a path under the tree **root** (repo-relative is the usual form;
-absolute paths under the root are also accepted), optionally with a 1-based line. This is the same shape a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open shows a
-short status notice (`Opened path`, `Opened path:N`, or `Opened path:A-B`).
+absolute paths under the root are also accepted), optionally with a 1-based line. This is the same
+shape a **line reference** copies with `L` (`src/app.rs` or `src/app.rs:42`). Every successful open
+shows a short status notice (`Opened path`, `Opened path:N`, or `Opened path:A-B`).
 
 A **range** form (`src/app.rs:10-20`) also:
 
@@ -92,14 +98,16 @@ below), natural requests work when it can resolve a real path:
 The agent resolves that to a repo-relative `path` or `path:line` (or range), then launches the
 viewer with `HERDR_FILE_VIEWER_OPEN` (no fuzzy-finder key-scripting). You get a Files pane on that
 file, content loaded, viewport on the line. If the pane is too narrow to show the content column
-(tree-only layout), the viewer **zooms** the file automatically, as it does when you confirm the fuzzy finder in a narrow split.
+(tree-only layout), the viewer **zooms** the file automatically, as it does when you confirm the
+fuzzy finder in a narrow split.
 
 ### Teach your agent
 
-Agents do **not** know this behavior by default. This repository includes a
-[ready-to-copy agent skill](../skills/herdr-file-viewer/SKILL.md) with the target-resolution,
-launch, and conversation rules. Use it where your agent runner supports skills, or paste the short
-block below into your project's `AGENTS.md` (preferred because every agent reads it) or `CLAUDE.md` so "open in the file viewer" means something concrete:
+Agents do **not** know this behavior by default. This repository includes a [ready-to-copy agent
+skill](../skills/herdr-file-viewer/SKILL.md) with the target-resolution, launch, and conversation
+rules. Use it where your agent runner supports skills, or paste the short block below into your
+project's `AGENTS.md` (preferred because every agent reads it) or `CLAUDE.md` so "open in the file
+viewer" means something concrete:
 
 ````markdown
 ## File viewer (herdr-file-viewer)
@@ -135,7 +143,8 @@ cannot accept an open target, so use WSL for this flow or, if the binary is on `
 the binary on `PATH`: `herdr-file-viewer --open <path>[:line]`.
 ````
 
-Without that instruction or an equivalent skill, the agent has no standard way to discover `--open` or `HERDR_FILE_VIEWER_OPEN` from a request such as "open it in the file viewer."
+Without that instruction or an equivalent skill, the agent has no standard way to discover `--open`
+or `HERDR_FILE_VIEWER_OPEN` from a request such as "open it in the file viewer."
 
 ### Run the binary yourself
 
@@ -208,7 +217,7 @@ remains useful even if its old worktree is no longer selected: after such a swit
 starts naming the worktree it came from. While the pin is focused, `y` copies its **captured repo-relative path** and
 `Y` its **captured absolute path**; neither operation reads the current tree or the old file again.
 
-With the tree visible, `Tab` cycles focus from the tree to the active preview, then the pinned preview, and back to the tree. In
+With the tree visible, `Tab` cycles focus **tree → active preview → pinned preview → tree**. In
 tree-hidden zoom the cycle is active preview then pinned preview. The pinned and active previews
 have separate scroll positions and searches are independent: arrows, paging, `/`, and `n`/`N`
 operate only on the focused preview. On a narrow pane, pinning never takes a pane away: the tree
@@ -216,7 +225,8 @@ and active preview retain the no-pin layout, the hidden pin persists, and the ac
 `Pinned: <path> — widen to view` until there is room for both **40-column floor** previews. `Tab`
 then visits only the visible tree and active preview.
 
-The reference is display-only. Actions that need the live selection, including `Enter`, `:`, `e`, `L`, `O`, `R`, `a`, `A`, `v`, `D`, `w`, and `Z`, are **unavailable from the pinned preview** and
+The reference is display-only. Actions that need the live selection, including `Enter`, `:`, `e`,
+`L`, `O`, `R`, `a`, `A`, `v`, `D`, `w`, and `Z`, are **unavailable from the pinned preview** and
 show a short notice; `Tab` to the active preview or tree to use them. This keeps a frozen reference
 from silently acting on a newer tree selection.
 
@@ -238,24 +248,28 @@ The tree includes git status:
   against the active baseline filling in committed branch changes. Pressing `c` only filters the
   rows; it is not needed to populate markers. `b` updates these baseline markers too.
 - **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
-  baseline (`b`). This helps when reviewing a whole branch (merge-base) or only uncommitted work (`HEAD`).
+  baseline (`b`). This helps when reviewing a whole branch (merge-base) or only uncommitted work
+  (`HEAD`).
 - **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next
   or previous changed file, wrapping at the ends with a notice. It walks whichever set the tree is
-  filtered by, either the working-tree status while `d` is on or the baseline-aware set behind `c` and `b`. It follows the tree's top-to-bottom order and expands a collapsed directory
-  when the next changed file lives inside one, so it works in the full tree as well as under `c`.
-  It stays inside the tree you have filtered to: a changed file hidden by `.` (hidden files) or `i`
-  (gitignored) is skipped rather than revealed, so the jump never switches a filter off behind your
-  back. This is `n`/`N` for the tree: reviewing a branch is a walk over the changed files, and in a
-  deeply nested repo that walk is otherwise a long run of `j` presses past directory rows.
+  filtered by, either the working-tree status while `d` is on or the baseline-aware set behind `c`
+  and `b`. It follows the tree's top-to-bottom order and expands a collapsed directory when the next
+  changed file lives inside one, so it works in the full tree as well as under `c`. It stays inside
+  the tree you have filtered to: a changed file hidden by `.` (hidden files) or `i` (gitignored) is
+  skipped rather than revealed, so the jump never switches a filter off behind your back. This is
+  `n`/`N` for the tree: reviewing a branch is a walk over the changed files, and in a deeply nested
+  repo that walk is otherwise a long run of `j` presses past directory rows.
 - **Open folders to new changes**: set [`expand_changed = true`](configuration.md) and the tree
   opens the folders of every file with uncommitted changes at launch, and of each newly changed file
   as refreshes land. A folder you collapse stays closed until a different file inside it changes.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
-  (modified, staged, untracked, and deleted, independent of baseline) and force working-tree diffs in
-  the content pane. On a directory, that means a unified diff of all tracked changes under it.
+  (modified, staged, untracked, and deleted, independent of baseline) and force working-tree diffs
+  in the content pane. On a directory, that means a unified diff of all tracked changes under it.
   Press `d` again to leave. Mutually exclusive with `c` (turning one on turns the other off).
-- **Diff baseline**: press `b` to switch what "changed" and the normal/file-cycle diffs compare against, either the merge-base of your branch or `HEAD`. While git-status mode (`d`) is on, content stays
-  working-tree; `b` still updates the stored baseline for when you leave `d` or use `c`.
+- **Diff baseline**: press `b` to switch what "changed" and the normal/file-cycle diffs compare
+  against, either the merge-base of your branch or `HEAD`. While git-status mode (`d`) is on,
+  content stays working-tree; `b` still updates the stored baseline for when you leave `d` or use
+  `c`.
 - **Diff presentation**: in a changed file's Diff or FullDiff view, press `D` to cycle Delta's
   unified output, Delta side-by-side output, and plain unstyled git diff. Side-by-side is applied
   only when the configured diff renderer is Delta; custom renderers remain unchanged. The setting
@@ -263,7 +277,9 @@ The tree includes git status:
 - **Refresh**: the viewer re-reads git status automatically when the pane regains focus, so a merge,
   pull, or commit you make elsewhere shows up on its own; `r` forces a full refresh on demand.
 
-Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH`, the viewer still opens, but the status markers, filter, baseline, and diffs are degraded. See [install](install.md). git 2.39 (Apple's Xcode git) is supported.
+Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH`, the
+viewer still opens, but the status markers, filter, baseline, and diffs are degraded. See
+[install](install.md). git 2.39 (Apple's Xcode git) is supported.
 
 ## Navigating within a file
 
@@ -271,8 +287,9 @@ Git is read through the system `git` CLI (read-only subcommands only). Without g
   rendered-markdown or diff view it switches to the line-numbered content view to make the jump;
   out-of-range clamps to the last line.
 - **Search in the file**: press `/` to search the open file's content. Every match highlights as you
-  type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase makes a lowercase query match any case; add a capital to make it case-sensitive. Search works in every view
-  (code, markdown, or diff). `Esc` clears it and restores your scroll.
+  type, `Enter` commits, and `n` / `N` cycle through matches (wrapping at the ends). Smartcase makes
+  a lowercase query match any case; add a capital to make it case-sensitive. Search works in every
+  view (code, markdown, or diff). `Esc` clears it and restores your scroll.
 
 ## Annotating files and ranges
 
@@ -352,7 +369,10 @@ root path, or trailing newline.
   `src/app.rs:42-58`; `y`/`Y` copy the selected line content itself. A mouse click-drag selects text
   character-by-character.
 
-Both use the terminal's **OSC 52** clipboard escape, so the copy travels through herdr (and SSH) to your real clipboard with no extra tooling. The [keys reference](keys.md#copy-a-line-reference-or-line-content-l) explains how to extend a selection, how wrapped views behave, and the OSC 52 caveat.
+Both use the terminal's **OSC 52** clipboard escape, so the copy travels through herdr (and SSH) to
+your real clipboard with no extra tooling. The [keys
+reference](keys.md#copy-a-line-reference-or-line-content-l) explains how to extend a selection, how
+wrapped views behave, and the OSC 52 caveat.
 
 ## Handing a file off
 

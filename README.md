@@ -49,7 +49,8 @@ back into the chat. It never touches your files.
 
 ## Highlights
 
-The [full key and mouse reference](docs/keys.md) lists every binding. The [usage guide](docs/usage.md) explains each feature. These are the main keys:
+The [full key and mouse reference](docs/keys.md) lists every binding. The [usage
+guide](docs/usage.md) explains each feature. These are the main keys:
 
 | Key | Does |
 | --- | --- |
@@ -104,7 +105,8 @@ command = "herdr-file-viewer.open-file-viewer-at-tab"
 description = "open file viewer at… (tab)"     # same popup, opens a new tab
 ```
 
-Run `herdr server reload-config`, then press your key. The plugin includes the split-pane viewer and its open actions, which register during installation. You only need to add the keybinding.
+Run `herdr server reload-config`, then press your key. The plugin includes the split-pane viewer and
+its open actions, which register during installation. You only need to add the keybinding.
 
 The docs cover [installing and updating](docs/install.md),
 [summoning the viewer](docs/summoning.md) (split vs. tab, opening at another directory, the
@@ -113,9 +115,15 @@ launcher, `--remote`), [external renderers](docs/renderers.md), and the
 
 ## Configuration
 
-An optional, **read-only** TOML config file lets you override the editor, renderer and opener commands, startup toggles, tree layout, and keybindings. A fully commented [`config.example.toml`](config.example.toml) ships in the plugin folder. Copy it as `config.toml` into the directory printed by `herdr plugin config-dir herdr-file-viewer`, then uncomment the settings you want.
+An optional, **read-only** TOML config file lets you override the editor, renderer and opener
+commands, startup toggles, tree layout, and keybindings. A fully commented
+[`config.example.toml`](config.example.toml) ships in the plugin folder. Copy it as `config.toml`
+into the directory printed by `herdr plugin config-dir herdr-file-viewer`, then uncomment the
+settings you want.
 
-The full reference covers the file location, precedence, every key, and `[keys]` remapping. Read it in **[docs/configuration.md](docs/configuration.md)**. See your effective settings any time in the `?` help overlay's **Settings** section.
+The full reference covers the file location, precedence, every key, and `[keys]` remapping. Read it
+in **[docs/configuration.md](docs/configuration.md)**. See your effective settings any time in the
+`?` help overlay's **Settings** section.
 
 ## Windows
 
@@ -127,19 +135,21 @@ Native Windows is supported as a **preview** (install works the same way; the op
 
 Full docs live in **[docs/](docs/README.md)**:
 
-- **[Install & updating](docs/install.md)**, prebuilt vs. source, pinning a version, local-dev linking, and remote notices.
-- **[Summoning the viewer](docs/summoning.md)**, the open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat.
-- **[Usage guide](docs/usage.md)**, a feature-by-feature tour of the whole viewer.
-- **[Keys & mouse](docs/keys.md)**, the complete key table, mouse gestures, and editor hand-off.
-- **[Configuration](docs/configuration.md)**, the full `config.toml` reference and `[keys]` remapping.
-- **[External renderers](docs/renderers.md)**, the optional `glow` / `delta` / `bat` integrations and the plain-text fallback.
-- **[Windows (preview)](docs/windows.md)**, native-Windows specifics and WSL.
-- **[Architecture](ARCHITECTURE.md)**, one in-process TUI owning both columns, the component map, and the core decisions.
-- **[Security](SECURITY.md)**, the threat model for opening untrusted content, and how to report a vulnerability.
+- **[Install & updating](docs/install.md)**: prebuilt vs. source, pinning a version, local-dev linking, and remote notices.
+- **[Summoning the viewer](docs/summoning.md)**: the open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat.
+- **[Usage guide](docs/usage.md)**: a feature-by-feature tour of the whole viewer.
+- **[Keys & mouse](docs/keys.md)**: the complete key table, mouse gestures, and editor hand-off.
+- **[Configuration](docs/configuration.md)**: the full `config.toml` reference and `[keys]` remapping.
+- **[External renderers](docs/renderers.md)**: the optional `glow` / `delta` / `bat` integrations and the plain-text fallback.
+- **[Windows (preview)](docs/windows.md)**: native-Windows specifics and WSL.
+- **[Architecture](ARCHITECTURE.md)**: one in-process TUI owning both columns, the component map, and the core decisions.
+- **[Security](SECURITY.md)**: the threat model for opening untrusted content, and how to report a vulnerability.
 
 ## Contributing
 
-Bug reports and feature requests are welcome. [Open an issue](https://github.com/smarzban/herdr-file-viewer/issues), or see [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and submit a change.
+Bug reports and feature requests are welcome. [Open an
+issue](https://github.com/smarzban/herdr-file-viewer/issues), or see
+[CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and submit a change.
 
 ## License
 

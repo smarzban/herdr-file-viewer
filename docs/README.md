@@ -1,10 +1,12 @@
 # Documentation
 
-These are the full docs for **herdr-file-viewer**, a git-aware, read-only file viewer that runs as a herdr TUI pane. Start with the [README](../README.md) for an overview and quick start.
+These are the full docs for **herdr-file-viewer**, a git-aware, read-only file viewer that runs as a
+herdr TUI pane. Start with the [README](../README.md) for an overview and quick start.
 
 ## Where to start
 
-- **Just installed it?** Read [Summoning the viewer](summoning.md) to bind a key and open it, then read the [Usage guide](usage.md).
+- **Just installed it?** Read [Summoning the viewer](summoning.md) to bind a key and open it, then
+  read the [Usage guide](usage.md).
 - **Want to know a key?** See [Keys and mouse](keys.md).
 - **Customizing it?** See [Configuration](configuration.md).
 - **On Windows?** See [Windows (preview)](windows.md).
@@ -24,6 +26,9 @@ These are the full docs for **herdr-file-viewer**, a git-aware, read-only file v
 
 ## Beyond the essentials
 
-- [Architecture](../ARCHITECTURE.md) explains the single-process TUI, component map, off-thread rendering, and core decisions.
-- [Security](../SECURITY.md) describes the threat model, controls for untrusted content, and vulnerability reporting.
-- [Changelog](../CHANGELOG.md) contains the release history, which is also available in the `?` overlay under What's New.
+- [Architecture](../ARCHITECTURE.md) explains the single-process TUI, component map, off-thread
+  rendering, and core decisions.
+- [Security](../SECURITY.md) describes the threat model, controls for untrusted content, and
+  vulnerability reporting.
+- [Changelog](../CHANGELOG.md) contains the release history, which is also available in the `?`
+  overlay under What's New.
