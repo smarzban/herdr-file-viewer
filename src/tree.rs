@@ -108,6 +108,11 @@ fn file_row(rows: &[Node], path: &Path) -> Option<usize> {
         .position(|n| n.path == path && n.kind == NodeKind::File)
 }
 
+/// The selection anchor for row `idx` of `rows`: its path and kind, `None` past the end.
+fn anchor_of(rows: &[Node], idx: usize) -> Option<(PathBuf, NodeKind)> {
+    rows.get(idx).map(|n| (n.path.clone(), n.kind))
+}
+
 /// A directory's **foldability**: its sole visible child directory, when that single subdirectory
 /// is the only entry it has. `None` when it holds a file, a second entry, or nothing — each of
 /// which ends a chain. This, not the directory's contents, is all compaction needs to know.
@@ -143,7 +148,16 @@ fn children_of<'a>(set: &'a BTreeSet<PathBuf>, parent: &Path) -> Vec<&'a PathBuf
 pub struct TreeModel {
     root: PathBuf,
     expanded: HashSet<PathBuf>,
-    cursor: usize,
+    /// The selected row's index in the last listing it was read against. Only a fallback: the
+    /// selection is `anchor`, and this is the row the cursor lands on when `anchor` disappears
+    /// (deleted, renamed, filtered out). A `Cell` because reads re-derive it.
+    cursor: Cell<usize>,
+    /// The selected path and its row kind. The row is re-derived from it on every listing, so a
+    /// file appearing above the selection no longer moves the highlight to a different file. The
+    /// kind is part of it because changed-only mode can list one path twice, as a directory and as
+    /// the deleted file it replaced (see [`file_row`]). `None` until the first read, and whenever
+    /// the tree is empty.
+    anchor: RefCell<Option<(PathBuf, NodeKind)>>,
     show_ignored: bool,
     hide_hidden: bool,
     /// Whether `root` is itself a git repository — bounds the ancestor `.gitignore` search at
@@ -177,7 +191,8 @@ pub struct TreeModel {
     /// independently of the filter (`set_status`) so the two can never overwrite each
     /// other.
     markers: BTreeMap<PathBuf, Status>,
-    /// The changed-set driving the changed-only filter (AC-6), set by `set_changed_only`.
+    /// The baseline changed-set driving the changed-only filter (AC-6) and fallback markers,
+    /// also retained while the filter is off. Status mode supplies working-tree status instead.
     changed_filter: BTreeMap<PathBuf, Status>,
 }
 
@@ -186,7 +201,8 @@ impl TreeModel {
         Self {
             root: root.into(),
             expanded: HashSet::new(),
-            cursor: 0,
+            cursor: Cell::new(0),
+            anchor: RefCell::new(None),
             show_ignored: false,
             hide_hidden: false,
             is_git_repo: false,
@@ -272,8 +288,31 @@ impl TreeModel {
         self.markers = status.clone();
     }
 
+    /// The selected row index. Walks the tree (and re-derives the selection from it), so a caller
+    /// that already holds a listing uses [`cursor_in`](Self::cursor_in) instead.
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.cursor_in(&self.visible_nodes())
+    }
+
+    /// The selected row in `rows`, a listing just taken from [`visible_nodes`](Self::visible_nodes):
+    /// the anchored row (same path and kind) while it is still listed, else the last row index
+    /// clamped to the listing, which then becomes the selection. Takes the listing so a caller that already
+    /// walked the tree (the per-frame `view_state`) does not walk it twice.
+    pub fn cursor_in(&self, rows: &[Node]) -> usize {
+        let anchored =
+            self.anchor.borrow().as_ref().and_then(|(path, kind)| {
+                rows.iter().position(|n| &n.path == path && n.kind == *kind)
+            });
+        let idx = anchored.unwrap_or_else(|| self.cursor.get().min(rows.len().saturating_sub(1)));
+        self.cursor.set(idx);
+        *self.anchor.borrow_mut() = anchor_of(rows, idx);
+        idx
+    }
+
+    /// Select row `idx` of `rows` (a fresh listing): the one way a cursor move is stored.
+    fn place(&mut self, rows: &[Node], idx: usize) {
+        self.cursor.set(idx);
+        *self.anchor.get_mut() = anchor_of(rows, idx);
     }
 
     /// Whether the changed-only filter is currently active on the tree. Exposed so the
@@ -577,36 +616,37 @@ impl TreeModel {
     /// Set the cursor to an absolute visible-row index, clamped to the visible range (used by
     /// a mouse click that selects the row it landed on).
     pub fn set_cursor(&mut self, idx: usize) {
-        let len = self.visible_nodes().len();
-        self.cursor = if len == 0 { 0 } else { idx.min(len - 1) };
+        let rows = self.visible_nodes();
+        let idx = idx.min(rows.len().saturating_sub(1));
+        self.place(&rows, idx);
     }
 
     /// Move the cursor by `delta` rows, clamped to the visible range.
     pub fn move_cursor(&mut self, delta: isize) {
-        let len = self.visible_nodes().len();
-        if len == 0 {
-            self.cursor = 0;
+        let rows = self.visible_nodes();
+        if rows.is_empty() {
+            self.place(&rows, 0);
             return;
         }
-        let max = (len - 1) as isize;
-        self.cursor = (self.cursor as isize + delta).clamp(0, max) as usize;
+        let max = (rows.len() - 1) as isize;
+        let current = self.cursor_in(&rows) as isize;
+        self.place(&rows, (current + delta).clamp(0, max) as usize);
     }
 
     /// The currently-selected node, if any.
     pub fn selected(&self) -> Option<Node> {
-        self.visible_nodes().into_iter().nth(self.cursor)
+        let rows = self.visible_nodes();
+        let idx = self.cursor_in(&rows);
+        rows.into_iter().nth(idx)
     }
 
     /// Move the cursor to `path`'s visible row, without changing expansion or filters.
     pub(crate) fn select(&mut self, path: &Path) -> bool {
-        let Some(cursor) = self
-            .visible_nodes()
-            .iter()
-            .position(|node| node.path == path)
-        else {
+        let rows = self.visible_nodes();
+        let Some(idx) = rows.iter().position(|node| node.path == path) else {
             return false;
         };
-        self.cursor = cursor;
+        self.place(&rows, idx);
         true
     }
 
@@ -638,6 +678,13 @@ impl TreeModel {
             dir = d.parent();
         }
         newly
+    }
+
+    /// Expand every collapsed ancestor of `path` so it gets a row, and nothing else: no display
+    /// filter changes and the selection stays on its anchored path. How a newly changed file opens
+    /// its folders.
+    pub fn expand_to(&mut self, path: &Path) {
+        self.expand_ancestors(path);
     }
 
     /// Reveal `path` in the tree: expand every collapsed ancestor, relax display filters
@@ -682,9 +729,10 @@ impl TreeModel {
             self.invalidate_compaction();
         }
         // Move the cursor to the target's visible row.
-        match self.visible_nodes().iter().position(|n| n.path == path) {
+        let rows = self.visible_nodes();
+        match rows.iter().position(|n| n.path == path) {
             Some(idx) => {
-                self.cursor = idx;
+                self.place(&rows, idx);
                 true
             }
             None => false,
@@ -735,7 +783,7 @@ impl TreeModel {
         // run of full walks on the input thread. Every branch below either returns or rolls its
         // mutation back, so this snapshot stays accurate for the entire loop.
         let rows = self.visible_nodes();
-        let current = rows.get(self.cursor).and_then(|n| {
+        let current = rows.get(self.cursor_in(&rows)).and_then(|n| {
             n.path
                 .strip_prefix(&self.root)
                 .map(|rel| (rel.to_path_buf(), n.kind))
@@ -779,7 +827,7 @@ impl TreeModel {
             let abs = self.root.join(candidates[idx]);
             // Already on screen: no mutation, and no second walk.
             if let Some(pos) = file_row(&rows, &abs) {
-                self.cursor = pos;
+                self.place(&rows, pos);
                 return Some(wrapped);
             }
             // No file on disk (a deletion, or a path now taken by a directory) can gain a row
@@ -801,7 +849,7 @@ impl TreeModel {
             }
             let expanded_rows = self.visible_nodes();
             if let Some(pos) = file_row(&expanded_rows, &abs) {
-                self.cursor = pos;
+                self.place(&expanded_rows, pos);
                 return Some(wrapped);
             }
             // Still hidden — by `hide_hidden`, `show_ignored`, or `changed_only`. The jump does
@@ -814,10 +862,10 @@ impl TreeModel {
         None
     }
 
-    /// Keep the cursor within the (possibly shrunken) visible list after a structural or
-    /// filter change, so indexing by `cursor` can never run past the end.
+    /// Re-derive the selection after a structural or filter change: it stays on its path when that
+    /// is still listed, else falls back to the row it was on, clamped.
     fn clamp_cursor(&mut self) {
-        let len = self.visible_nodes().len();
-        self.cursor = self.cursor.min(len.saturating_sub(1));
+        let rows = self.visible_nodes();
+        self.cursor_in(&rows);
     }
 }

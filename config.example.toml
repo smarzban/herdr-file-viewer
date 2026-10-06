@@ -82,6 +82,12 @@
 # toggles it. Default:
 #compact_dirs = false
 
+# Open the folders above each file with uncommitted changes, so new work shows
+# without hunting for it: at launch, and whenever a refresh finds a newly
+# changed file. A folder you collapse stays closed until a different file
+# inside it changes. Default:
+#expand_changed = false
+
 # Choose the automatic initial view for Git-changed files. "diff" preserves the
 # default diff-first behavior. "content" applies the normal file-type policy
 # instead: Markdown opens rendered, while source/text opens in syntax content.

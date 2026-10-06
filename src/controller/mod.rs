@@ -761,6 +761,8 @@ pub struct Controller {
     /// default `false`). A session preference carried across a re-root (like `show_ignored` /
     /// `hide_hidden`), so the new root's fresh tree is rebuilt with the same shape.
     compact_dirs: bool,
+    /// Whether a newly changed file opens the folders above it (config `expand_changed`).
+    expand_changed: bool,
     changed_only: bool,
     /// Which command a Diff/FullDiff render delegates to (`D`, cycling Delta →
     /// DeltaSideBySide → Raw). Carried
@@ -1052,6 +1054,7 @@ impl Controller {
             // Defaults ON, matching the resolver: a Controller built without config still guards.
             confirm_discard: true,
             compact_dirs: false,
+            expand_changed: false,
             tree_hscroll: 0,
             changed_only: false,
             diff_render_mode: DiffRenderMode::default(),
@@ -1645,6 +1648,17 @@ impl Controller {
         self.tree.set_compact_dirs(on);
     }
 
+    /// Apply the config-driven `expand_changed` switch. Called once by `app::run` right after
+    /// construction, so turning it on opens the folders of every file the launch status already
+    /// lists; from then on each status that lands opens the folders of its newly changed files.
+    pub fn apply_expand_changed(&mut self, on: bool) {
+        self.expand_changed = on;
+        if on {
+            let status = self.git_status.clone();
+            self.expand_new_changes(&status, &BTreeMap::new());
+        }
+    }
+
     /// Apply a launch **open target** once at startup: resolve `path` under the tree **root**,
     /// **reveal in tree**, dispatch a render, and (when a line is set) queue a **go to line** via
     /// [`pending_goto`](Self::pending_goto) after forcing the source-mapped view when needed.
@@ -1883,7 +1897,7 @@ impl Controller {
         // `tree.selected()` (which re-runs the gitignore-aware filesystem walk) a second time
         // for the wrap decision — `visible_nodes()` is the hot, per-frame path.
         let nodes = self.tree.visible_nodes();
-        let selected = self.tree.cursor();
+        let selected = self.tree.cursor_in(&nodes);
         // Active wrapping responds immediately to the live `w` preference while a width-sensitive
         // reflow is pending; the settled document captures the same value when that render lands.
         let wrap = self.wrap_for(nodes.get(selected));
@@ -2323,11 +2337,16 @@ impl Controller {
     ///
     /// Status mode and baseline-aware changed-only share the tree's single `changed_only` flag, so
     /// a relaxed filter must clear both mirrors; while status mode is on it owns the flag, which
-    /// leaves `changed_only` false.
+    /// leaves `changed_only` false. A relaxed status mode also hands the tree back the baseline
+    /// changed-set, which `d` had swapped for working-tree status, so full-tree markers stay
+    /// baseline-aware (the same restore as leaving `d` by key).
     pub(super) fn resync_filter_mirrors(&mut self) {
         if self.tree.changed_only() {
             self.changed_only = !self.status_mode;
         } else {
+            if self.status_mode {
+                self.tree.set_changed_only(false, &self.changed);
+            }
             self.changed_only = false;
             self.status_mode = false;
         }

@@ -1,4 +1,4 @@
-//! Apply git state to the tree — set the working-tree status markers + changed-set, keep the
+//! Apply git state to the tree — set working-tree markers + the baseline fallback, keep the
 //! changed-only filter in sync, and the focus-gained refresh. Part of the Session Controller
 //! (split out of `controller/mod.rs`, M6). The re-root orchestration that drives these stays in
 //! mod.rs.
@@ -23,12 +23,13 @@ impl Controller {
         Effects::redraw()
     }
 
-    /// Store a new baseline-dependent changed-set. Re-applies the tree filter only when
-    /// baseline-aware `c` is on — status mode (`d`) filters from [`Self::git_status`] instead.
+    /// Store the baseline-dependent changed-set in the tree even while `c` is off: full-tree
+    /// markers and dirty-directory dots also use it as a fallback to working-tree status.
+    /// Status mode (`d`) keeps its separate working-tree filter from [`Self::git_status`].
     pub(super) fn set_changed(&mut self, changed: BTreeMap<PathBuf, Status>) {
         self.changed = changed;
-        if self.changed_only && !self.status_mode {
-            self.tree.set_changed_only(true, &self.changed);
+        if !self.status_mode {
+            self.tree.set_changed_only(self.changed_only, &self.changed);
         }
     }
 
@@ -41,6 +42,10 @@ impl Controller {
         status: &BTreeMap<PathBuf, Status>,
         changed: BTreeMap<PathBuf, Status>,
     ) {
+        let seen = std::mem::take(&mut self.git_status);
+        if self.expand_changed {
+            self.expand_new_changes(status, &seen);
+        }
         self.git_status = status.clone();
         self.tree.set_status(status);
         self.set_changed(changed);
@@ -48,6 +53,22 @@ impl Controller {
         // edits (focus-gain / `r`) update the filtered tree without leaving the mode.
         if self.status_mode {
             self.tree.set_changed_only(true, &self.git_status);
+        }
+    }
+
+    /// Open the folders of each file in `status` that is not in `seen`, so new work shows without
+    /// hunting for it. Only NEW paths: a folder the user collapsed stays closed while its changes
+    /// are ones they have already seen. A deleted file has no row to open to. The tree anchors its
+    /// cursor to the selected path, so a folder opening above it leaves the selection in place.
+    pub(super) fn expand_new_changes(
+        &mut self,
+        status: &BTreeMap<PathBuf, Status>,
+        seen: &BTreeMap<PathBuf, Status>,
+    ) {
+        for (rel, st) in status {
+            if *st != Status::Deleted && !seen.contains_key(rel) {
+                self.tree.expand_to(&self.root.join(rel));
+            }
         }
     }
 

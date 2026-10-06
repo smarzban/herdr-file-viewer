@@ -289,7 +289,12 @@ pub fn render(
 
     // Content modes: binary and unavailable paths show placeholders, never raw bytes (AC-12).
     let (content, base_notice) = match prepared {
-        Prepared::Binary => return (Text::raw("[binary file: preview not shown]"), None),
+        Prepared::Binary => {
+            return (
+                Text::raw("[binary file: press O to open in the default app]"),
+                None,
+            );
+        }
         Prepared::Unavailable { reason } => return (Text::raw(reason.label()), None),
         Prepared::Full { text } => (text.as_str(), None),
         Prepared::Truncated { text, notice } => (text.as_str(), Some(notice.clone())),
@@ -529,7 +534,8 @@ fn capability(mode: ViewMode) -> &'static str {
 fn renderer_command(command: &[String]) -> Result<Command, String> {
     let (prog, args) = command.split_first().ok_or("empty renderer command")?;
     let mut cmd = Command::new(prog);
-    cmd.args(args)
+    crate::proc::in_launch_dir(&mut cmd)
+        .args(args)
         .env("CLICOLOR_FORCE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1203,7 +1209,7 @@ mod tests {
         );
         assert_eq!(
             binary.lines[0].spans[0].content,
-            "[binary file: preview not shown]"
+            "[binary file: press O to open in the default app]"
         );
         assert_eq!(notice, None);
     }

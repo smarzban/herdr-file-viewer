@@ -47,8 +47,8 @@ A config key always wins. Only two keys also have an environment-variable fallba
 config key and above the built-in default — `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`) — giving those two a `config > env > default` chain. Every
 other key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
-`compact_dirs`, `changed_file_view`, `baseline`, `confirm_discard`, `scroll_lines`, `tree_width`,
-`tree_position`, `tree_max_cols`, `open_direction`, `preview_max_lines`, `preview_max_kib`) has no
+`compact_dirs`, `expand_changed`, `changed_file_view`, `baseline`, `confirm_discard`, `scroll_lines`,
+`tree_width`, `tree_position`, `tree_max_cols`, `open_direction`, `preview_max_lines`, `preview_max_kib`) has no
 applicable environment variable; for those it's `config > default` only.
 
 ## Keys
@@ -68,6 +68,7 @@ reveal = "nautilus"
 hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key still toggles)
 show_ignored = false        # true to show gitignored files at startup (the `i` key still toggles)
 compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
+expand_changed = false      # true to open the folders of files with uncommitted changes
 changed_file_view = "diff"  # changed files start in "diff", or use normal "content" by file type
 baseline = "base"           # force startup diff baseline: "base" or "head" (omit for context-smart default)
 update_check = true         # false disables all remote requests and their display
@@ -117,8 +118,9 @@ by dragging the divider, and an explicit resize lifts the cap.
 summon action splits the pane you invoke it from: `"right"` (the default — viewer beside your work)
 or `"down"` (viewer underneath, terminal keeping the top half). `"bottom"` is accepted as a synonym
 for `"down"`; values are trimmed and case-insensitive, and anything unrecognized falls back to
-`"right"`. Two scoping notes: the **tab** action (`open-file-viewer-tab`) ignores it, because a tab
-has no direction; and the launcher reads it at summon time, so it applies to the **next** viewer you
+`"right"`. It also sets where the split from `open-file-viewer-at` goes. Two scoping notes: the
+**tab** actions (`open-file-viewer-tab`, `open-file-viewer-at-tab`) ignore it, because a tab has no
+direction; and the launcher reads it at summon time, so it applies to the **next** viewer you
 open, not to one already on screen. See [Summoning the viewer](summoning.md) for the actions
 themselves.
 
@@ -154,6 +156,13 @@ every frame. Listings themselves are still read live — a new file appears as i
 always did — but the *span* of a folded row can lag. If a file created outside the viewer is what
 ends a chain, the row keeps its old span until the viewer re-checks, which it does on launch, `r`,
 returning from the editor, switching baseline, and regaining focus.
+
+`expand_changed` opens the folders above every file with **uncommitted changes** (the working-tree
+status that `d` shows, not the `b` baseline), so new work is on screen without expanding anything by
+hand. It acts at launch, after a worktree switch, and whenever a refresh (`r`, regaining focus)
+finds a file that was not changed before. It only opens folders: it never moves the cursor, changes
+a filter, or collapses anything. A folder you collapse stays closed until a *different* file inside
+it changes. Off by default.
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either

@@ -277,3 +277,21 @@ pub fn workspace_fingerprint(root: &Path) -> WorkspaceFingerprint {
         worktrees: git(root, &["worktree", "list", "--porcelain"]),
     }
 }
+
+/// A running process's cwd: `/proc` on Linux, `lsof` (always present on macOS) elsewhere.
+#[cfg(unix)]
+pub fn process_cwd(pid: u32) -> PathBuf {
+    if let Ok(p) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+        return p;
+    }
+    let out = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .output()
+        .expect("run lsof");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix('n'))
+        .unwrap_or_else(|| panic!("no cwd in lsof output: {text}"));
+    PathBuf::from(line)
+}

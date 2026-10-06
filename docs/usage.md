@@ -30,6 +30,10 @@ setting off unless you need it; `.git/` itself always stays hidden. The tree's *
 **bottom border shows the current branch**, so you always know *where* and *on what branch* you're
 looking.
 
+The layout follows the pane's actual terminal dimensions, including a size adjustment while a
+herdr split is opening. It recovers without needing focus or navigation, even if the initial resize
+notification was missed; unchanged idle frames are not continuously repainted.
+
 Move the cursor with `↑`/`↓` (or `k`/`j`), expand/collapse a directory with `→`/`←` (or `l`/`h`) or
 `Enter`. In the normal tree, `←` on a file or an already-collapsed directory walks to and collapses
 the nearest visible parent, so repeated presses climb the tree; it stops at a root child. This also
@@ -141,9 +145,10 @@ expanding it only within double quotes.
 
 The viewed root comes from the focused herdr pane's working directory (resolved to that repository's
 worktree top level), so an agent's own `cd` does not move it. To point it at a particular repository,
-split a focused pane with `--cwd "$repo"` first, launch, then close that helper — the root is captured
-at launch. Do not add `--cwd` to the launch itself: herdr resolves the pane's relative command against
-it, so it fails outside a built plugin checkout and silently runs that checkout's binary inside one.
+add `--env "HERDR_FILE_VIEWER_ROOT=$repo"` with the repository's **absolute** path (a relative or
+missing path is ignored). Do not add `--cwd` to the launch: herdr resolves the pane's relative
+command against it, so it fails outside a built plugin checkout and silently runs that checkout's
+binary inside one.
 
 The Herdr pane command applies to Linux, macOS, and WSL. On native Windows preview, the Files action
 cannot accept an open target, so use WSL for this flow or, if the binary is on `PATH`, run
@@ -252,6 +257,9 @@ Git status is woven straight into the tree, not a separate mode:
   deleted, `?` untracked — and a directory containing any change carries a `●`. They're **colored**
   so changes read at a glance (changed files and dirty folders red, new files green), with the glyph
   as a non-color cue so status survives a colorblind palette or a non-default terminal theme.
+  They appear in the full tree from startup: working-tree status takes precedence, with changes
+  against the active baseline filling in committed branch changes. Pressing `c` only filters the
+  rows; it is not needed to populate markers. `b` updates these baseline markers too.
 - **Changed-files-only filter**: press `c` to restrict the tree to files changed against the active
   baseline (`b`) — useful for reviewing a whole branch (merge-base) or just uncommitted work (`HEAD`).
 - **Step through the changed files**: press `]` / `[` to jump the tree cursor straight to the next
@@ -263,6 +271,9 @@ Git status is woven straight into the tree, not a separate mode:
   (gitignored) is skipped rather than revealed, so the jump never switches a filter off behind your
   back. This is `n`/`N` for the tree: reviewing a branch is a walk over the changed files, and in a
   deeply nested repo that walk is otherwise a long run of `j` presses past directory rows.
+- **Open folders to new changes**: set [`expand_changed = true`](configuration.md) and the tree
+  opens the folders of every file with uncommitted changes at launch, and of each newly changed file
+  as refreshes land. A folder you collapse stays closed until a different file inside it changes.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
   (modified, staged, untracked, deleted — independent of baseline) and force working-tree diffs in
   the content pane. On a directory, that means a unified diff of all tracked changes under it.
@@ -381,7 +392,8 @@ The viewer is read-only; to *act* on a file it hands off to another tool:
   [config.toml](configuration.md) (or, with none set, your `$EDITOR`). The viewer suspends, runs the
   editor, and resumes when it exits. See [opening in an editor](keys.md#opening-in-an-editor).
 - **Open with default app** (`O`): hand the file or directory to the OS default application (an
-  image opens in the system viewer, and so on). Non-blocking — the viewer keeps running.
+  image opens in the system viewer, and so on). Non-blocking — the viewer keeps running. A binary
+  file the viewer can't show (an image, a PDF, an archive) displays a placeholder that points here.
 - **Reveal in file manager** (`R`): open Finder / Explorer / a Linux file manager with the entry
   highlighted where supported, so you can drag it out (e.g. into Slack).
 
@@ -414,5 +426,6 @@ display-only and never installs, opens, or copies anything. Control remote notic
 
 The mouse is additive and on by default: click a tree row to select it, double-click to
 open/expand, use the wheel to scroll, drag a scrollbar or the divider, and drag over content text to
-select-and-copy without any mode. The full gesture table is in the [keys reference](keys.md#mouse).
+select-and-copy without any mode. Character selection follows terminal cell width, so full-width CJK
+text selects at the same boundary you see on screen. The full gesture table is in the [keys reference](keys.md#mouse).
 `Shift`+drag is deliberately left to your terminal's own native selection.

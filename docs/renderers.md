@@ -33,6 +33,8 @@ content cannot inject a command or drive the terminal.
 The viewer ships a small bundled markdown style palette (`assets/markdown-style.json`) that
 `glow` is pointed at when it is present, so rendered markdown uses a consistent set of named
 ANSI colors (headings, code blocks, links, etc.) rather than glow's built-in `dark` style.
-When the palette file is absent, glow falls back to its built-in `dark` style. Markdown still
-renders, just with glow's default colors. The palette is a trusted glow argument (located only
-inside the plugin's own dirs), never derived from untrusted input.
+Prose remains terminal-relative. Within the palette's fixed-color code blocks, comments and
+generic subheadings meet the WCAG 4.5:1 contrast minimum against the code background. When the
+palette file is absent, glow falls back to its built-in `dark` style. Markdown still renders, just
+with glow's default colors. The palette is a trusted glow argument (located only inside the
+plugin's own dirs), never derived from untrusted input.

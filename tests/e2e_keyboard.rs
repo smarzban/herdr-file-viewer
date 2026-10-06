@@ -20,7 +20,7 @@
 
 mod common;
 
-use common::{TempDir, git, init_repo_with_commit, viewer_command};
+use common::{TempDir, canon, git, init_repo_with_commit, process_cwd, viewer_command};
 use expectrl::process::unix::WaitStatus;
 use expectrl::{Eof, Expect, Session};
 use std::time::Duration;
@@ -263,6 +263,9 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     // Launch lists main's tree (its committed seed file) — the viewer is up on the main root.
     s.expect("seed.txt")
         .expect("tree should list main's files on launch");
+    // The viewer keeps its process cwd on its root (the root-aware tab launcher reads it).
+    let pid = s.get_process().pid().as_raw() as u32;
+    assert_eq!(process_cwd(pid), canon(main), "cwd follows the launch root");
 
     // --- Cancel sub-case first (AC-6): open the picker, confirm the overlay renders (its
     // `Switch worktree` title — a stable blank-cell anchor, proving AC-1/AC-5), then Esc to
@@ -293,6 +296,12 @@ fn worktree_picker_switches_root_by_keyboard_and_exits_cleanly() {
     s.send("\r").expect("activate the feature file (zoom)");
     s.expect("FEATMARK")
         .expect("after the switch the feature worktree's file content is shown");
+    // ...and re-syncs it after the switch, so a launcher sees the viewer's new root.
+    assert_eq!(
+        process_cwd(pid),
+        canon(&feature_path),
+        "cwd follows the re-rooted worktree"
+    );
 
     // The close key returns control and exits cleanly (AC-20) — no picker key crashed the loop.
     // From the zoomed file the first `q` un-zooms (close_or_unzoom), the second quits. We use

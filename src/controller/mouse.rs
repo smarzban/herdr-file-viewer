@@ -492,7 +492,8 @@ impl Controller {
         let Some(track) = self.geom.tree_vbar else {
             return Effects::noop();
         };
-        let len = self.tree.visible_nodes().len();
+        let rows = self.tree.visible_nodes();
+        let len = rows.len();
         // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None` here,
         // exactly the old `span == 0 || len <= 1` no-op.
         let Some(idx) =
@@ -505,7 +506,7 @@ impl Controller {
         // A drag fires many events on the same row; only re-select (and re-render the content, an
         // expensive job) when the target actually changes, so a held scrub doesn't re-render the
         // same file every tick.
-        if idx == self.tree.cursor() {
+        if idx == self.tree.cursor_in(&rows) {
             return Effects::redraw();
         }
         self.tree.set_cursor(idx);

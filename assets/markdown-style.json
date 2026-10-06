@@ -99,7 +99,7 @@
     "chroma": {
       "text": { "color": "#C4C4C4" },
       "error": { "color": "#F1F1F1", "background_color": "#F05B5B" },
-      "comment": { "color": "#676767" },
+      "comment": { "color": "#A0A0A0" },
       "comment_preproc": { "color": "#FF875F" },
       "keyword": { "color": "#00AAFF" },
       "keyword_reserved": { "color": "#FF5FD2" },
@@ -126,7 +126,7 @@
       "generic_emph": { "italic": true },
       "generic_inserted": { "color": "#00D787" },
       "generic_strong": { "bold": true },
-      "generic_subheading": { "color": "#777777" },
+      "generic_subheading": { "color": "#A0A0A0" },
       "background": { "background_color": "#373737" }
     }
   },

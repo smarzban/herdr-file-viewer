@@ -7,8 +7,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Open the viewer at another directory: the `open-file-viewer-at` (split) and `open-file-viewer-at-tab` (tab) actions pop up a small prompt pre-filled with `~/` (the tab one names its tab `Files`). `Tab` completes directory and file names (ignoring case) and `↑`/`↓` pick from the matches, `Enter` opens the viewer there (a file opens in its directory, already shown), `Esc` cancels. Paths start from `~`, falling back to `/` when not found there, so system paths need no leading slash. Agents can do the same with `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
+- `expand_changed`: open the tree's folders to files with uncommitted changes, at launch and whenever a refresh finds a newly changed file. A folder you collapse stays closed until a different file inside it changes. Off by default. Thanks @sftinc (#188) → [configuration](docs/configuration.md) · [usage](docs/usage.md#git-awareness)
+
 ### Fixed
-- Go-to-file no longer freezes on a very large root such as a home directory: the prompt opens at once and stays responsive while files are indexed and matched in the background, and a superseded query is cancelled. Small projects still show results as you type. File visibility and ranking are unchanged. Thanks @lemonbalms for the report (#173) → [usage](docs/usage.md#finding-a-file-fast)
+- Go-to-file no longer freezes on a very large root such as a home directory: the prompt opens at once and stays responsive while files are indexed and matched in the background, and a superseded query is cancelled. Small projects still show results as you type. File visibility and ranking are unchanged. Thanks @sanjaibalajee (#177) and @lemonbalms for the report (#173) → [usage](docs/usage.md#finding-a-file-fast)
+- The selected file stays selected when a file appears or disappears above it. A focus refresh or `r` used to move the highlight to a different file. Thanks @sftinc (#181)
+- Recover the initial pane layout without a keypress when a split resize notification is missed during startup. Root headers and the `? help` footer no longer remain clipped or wrapped until focus/navigation; unchanged idle frames still do not redraw. Thanks @rsaulo (#185) → [usage](docs/usage.md#the-tree)
+- Show committed branch changes (`M`/`A` and dirty-directory dots/colors) in the full tree from startup, without needing to toggle `c`. Baseline switches and refreshes also update the markers when the filter is off; `d` stays working-tree-only. → [usage](docs/usage.md#git-awareness)
+- Mouse selection now follows terminal cell width across full-width CJK text, including wrapped and horizontally-scrolled content. Thanks @nonhana (#143) → [usage](docs/usage.md#using-the-mouse)
+- Markdown code-block comments and generic subheadings now meet the WCAG 4.5:1 contrast minimum against the fixed code background. → [renderers](docs/renderers.md#bundled-markdown-palette)
+
+### Changed
+- The binary-file placeholder now reads `[binary file: press O to open in the default app]`, pointing at the existing `O` hand-off instead of a dead end. Thanks @sftinc (#190) → [usage](docs/usage.md#handing-a-file-off)
+- The tab action (`prefix+shift+f`) now switches only to a viewer showing the repo you are in, so a viewer opened on another directory no longer captures it. To support this, a running viewer keeps its working directory on the root it shows (renderers, the editor and other tools it starts still run from the plugin directory). → [summoning](docs/summoning.md#open-in-a-tab-instead-of-a-split)
+- Requires herdr 0.7.5 or newer (popup support). → [install](docs/install.md)
 
 ## [1.17.0] - 2026-09-16
 

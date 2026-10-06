@@ -476,6 +476,64 @@ fn truncation_notice_is_preserved_through_rendering() {
     );
 }
 
+#[test]
+fn bundled_markdown_code_comments_and_subheadings_meet_wcag_aa_contrast() {
+    let style_path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/markdown-style.json");
+    let style: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(style_path).expect("bundled Markdown style is readable"),
+    )
+    .expect("bundled Markdown style is valid JSON");
+    let chroma = &style["code_block"]["chroma"];
+    let background = chroma["background"]["background_color"]
+        .as_str()
+        .expect("code background has a hex color");
+    let comment = chroma["comment"]["color"]
+        .as_str()
+        .expect("code comment has a hex color");
+    let generic_subheading = chroma["generic_subheading"]["color"]
+        .as_str()
+        .expect("code generic subheading has a hex color");
+    let comment_ratio = wcag_contrast_ratio(comment, background);
+    let generic_subheading_ratio = wcag_contrast_ratio(generic_subheading, background);
+
+    assert!(
+        comment_ratio >= 4.5 && generic_subheading_ratio >= 4.5,
+        "code comments ({comment}, {comment_ratio:.2}:1) and generic subheadings \
+         ({generic_subheading}, {generic_subheading_ratio:.2}:1) must each meet 4.5:1 against \
+         the code background ({background})"
+    );
+}
+
+fn wcag_contrast_ratio(foreground: &str, background: &str) -> f64 {
+    let foreground_luminance = relative_luminance(parse_hex_color(foreground));
+    let background_luminance = relative_luminance(parse_hex_color(background));
+    (foreground_luminance.max(background_luminance) + 0.05)
+        / (foreground_luminance.min(background_luminance) + 0.05)
+}
+
+fn parse_hex_color(hex: &str) -> [u8; 3] {
+    let hex = hex.strip_prefix('#').expect("color is a #RRGGBB hex value");
+    assert_eq!(hex.len(), 6, "color is a #RRGGBB hex value");
+    [
+        u8::from_str_radix(&hex[0..2], 16).expect("red channel is hexadecimal"),
+        u8::from_str_radix(&hex[2..4], 16).expect("green channel is hexadecimal"),
+        u8::from_str_radix(&hex[4..6], 16).expect("blue channel is hexadecimal"),
+    ]
+}
+
+fn relative_luminance([red, green, blue]: [u8; 3]) -> f64 {
+    fn linearized(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    0.2126 * linearized(red) + 0.7152 * linearized(green) + 0.0722 * linearized(blue)
+}
+
 /// Whether a real `glow` is installed — the wrap-width behavioral test below needs the actual
 /// renderer (its table layout / line padding is glow's own behavior, not something we mock), so it
 /// skips cleanly when glow is absent (e.g. a CI image without the runtime renderers).

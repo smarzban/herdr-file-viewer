@@ -24,7 +24,8 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::DefaultTerminal;
+use ratatui::backend::Backend;
+use ratatui::{DefaultTerminal, Terminal};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -50,6 +51,8 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`crate::open_target::OPEN_ENV`] (`HERDR_FILE_VIEWER_OPEN`) as flag > env; an absent/empty
 /// pair leaves startup selection unchanged.
 pub fn run(open_flag: Option<String>) -> io::Result<()> {
+    // Before anything can move the cwd (`follow_root`): external tools keep running from here.
+    crate::proc::remember_launch_dir();
     let ctx = host::from_env();
     let resolved = root::resolve(&ctx);
 
@@ -130,6 +133,9 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // Apply the config-driven tree shape (`compact_dirs`): fold a chain of single-child
     // directories into one row. A startup setting — there is no runtime toggle for it.
     controller.apply_compact_dirs(eff.compact_dirs);
+    // Apply the config-driven `expand_changed`: open the folders holding uncommitted changes now,
+    // and those of each newly changed file as refreshes land.
+    controller.apply_expand_changed(eff.expand_changed);
     // Apply the config-driven quit guard (`confirm_discard`): whether quitting with
     // session annotations held confirms first or discards them immediately.
     controller.apply_confirm_discard(eff.confirm_discard);
@@ -146,8 +152,12 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // after layout/config wiring so reveal + render see the same filters as a live session.
     // Soft-fails with an action notice; never aborts startup.
     let open_env = std::env::var(crate::open_target::OPEN_ENV).ok();
+    let root = controller.root().to_path_buf();
+    let names_a_file =
+        |raw: &str| crate::open_target::resolve_under_root(&root, raw).is_some_and(|p| p.is_file());
     if let Some(raw) = crate::open_target::pick_raw_open(open_flag.as_deref(), open_env.as_deref())
-        && let Some(target) = crate::open_target::parse_open_target(&raw)
+        && let Some(target) =
+            crate::open_target::parse_open_target_preferring_file(&raw, names_a_file)
     {
         controller.apply_open_target(&target);
     }
@@ -226,6 +236,20 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     outcome
 }
 
+/// Keep the process cwd on the tree root, re-syncing after a worktree switch re-roots the
+/// session. herdr reports each pane's live process cwd in `pane list`, so this is how the
+/// root-aware tab launcher (`launch::launch_decision_tab`) learns which root a running viewer
+/// shows without any extra host API. Children must not inherit this cwd (it may be an untrusted
+/// repository): git runs with explicit `-C <repo>`, and every other external tool goes through
+/// [`crate::proc::in_launch_dir`], which pins it to the directory herdr launched us from.
+/// Best-effort: a failed `chdir` only makes the launcher open a fresh viewer instead of switching.
+fn follow_root(root: &Path, last: &mut PathBuf) {
+    if root != last.as_path() {
+        let _ = std::env::set_current_dir(root);
+        *last = root.to_path_buf();
+    }
+}
+
 /// Route annotation-modal raw keys before configurable global decoding. Returning `Some` means
 /// the modal consumed ownership even when the particular key is an inert no-op, so no printable or
 /// fixed modal key can leak to a global quit/editor/copy action.
@@ -244,27 +268,45 @@ fn route_annotation_key(
     }
 }
 
+/// Reconcile terminal dimensions even while idle, painting only when state or size changed.
+/// The generic backend keeps missed-resize recovery hermetically testable.
+fn draw_if_needed<B: Backend>(
+    terminal: &mut Terminal<B>,
+    controller: &mut Controller,
+    dirty: &mut bool,
+) -> Result<(), B::Error> {
+    // A split may resize after our first size query but before crossterm's first poll installs
+    // its SIGWINCH listener. No input then makes the frame dirty, so draw's autoresize would
+    // never run. Query only the backend size each tick (no tree walk or unconditional repaint).
+    *dirty |= terminal.size()? != terminal.get_frame().area().as_size();
+    if *dirty {
+        let mut need_redraw = false;
+        terminal.draw(|frame| {
+            controller.set_width(frame.area().width);
+            let view: ViewState = controller.view_state();
+            let viewports = presenter::draw(frame, &view);
+            // Feed the drawn content viewport back so content scrolling can be clamped to
+            // it on the next intent, and the hit-test geometry so a mouse event maps to the
+            // live layout. `true` means a deferred launch-open zoom just armed (narrow
+            // tree-only pane) and we must paint again so the file is actually visible.
+            need_redraw = controller.set_preview_viewports(viewports);
+            controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
+        })?;
+        *dirty = need_redraw;
+    }
+    Ok(())
+}
+
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat
 /// until the Close intent. Drawing only when `dirty` avoids re-walking the filesystem (the
-/// tree enumeration in `view_state`) on every idle tick.
+/// tree enumeration in `view_state`) on every idle tick. Backend size reconciliation also catches
+/// a startup resize whose notification arrived before input polling was initialized.
 fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io::Result<()> {
     let mut dirty = true; // paint the first frame
+    let mut cwd_root = PathBuf::new();
     loop {
-        if dirty {
-            let mut need_redraw = false;
-            terminal.draw(|frame| {
-                controller.set_width(frame.area().width);
-                let view: ViewState = controller.view_state();
-                let viewports = presenter::draw(frame, &view);
-                // Feed the drawn content viewport back so content scrolling can be clamped to
-                // it on the next intent, and the hit-test geometry so a mouse event maps to the
-                // live layout. `true` means a deferred launch-open zoom just armed (narrow
-                // tree-only pane) and we must paint again so the file is actually visible.
-                need_redraw = controller.set_preview_viewports(viewports);
-                controller.set_pane_geometry(presenter::geometry(frame.area(), &view));
-            })?;
-            dirty = need_redraw;
-        }
+        follow_root(controller.root(), &mut cwd_root);
+        draw_if_needed(terminal, controller, &mut dirty)?;
 
         let tick = if controller.finder_busy() {
             FINDER_BUSY_TICK
@@ -752,7 +794,7 @@ impl Spawner for ProcessSpawner {
         // A failed `Command::status` (e.g. the binary is not on PATH) is a launch failure —
         // the editor never ran. Map it through `NotLaunched` so the controller words the
         // notice as "could not open editor" rather than as an editor exit.
-        let status = Command::new(prog)
+        let status = crate::proc::in_launch_dir(&mut Command::new(prog))
             .args(args)
             .status()
             .map_err(SpawnError::NotLaunched)?;
@@ -787,7 +829,7 @@ impl Spawner for OpenerSpawner {
             .split_first()
             .ok_or_else(|| SpawnError::NotLaunched(io::Error::other("empty opener command")))?;
         // `spawn` (not `status`): launch and return immediately, never blocking the event loop.
-        let mut child = Command::new(prog)
+        let mut child = crate::proc::in_launch_dir(&mut Command::new(prog))
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -942,6 +984,76 @@ fn default_renderers() -> Renderers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missed_resize_notification_repaints_idle_layout_without_any_input() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        for (initial, resized) in [
+            ((133, 73), (131, 71)), // split's outer size -> actual inner size (host borders)
+            ((200, 24), (82, 20)),  // narrower/shorter
+            ((82, 20), (200, 24)),  // wider/taller
+            ((80, 24), (80, 36)),   // height-only change
+        ] {
+            let (mut controller, root) = route_controller("missed-startup-resize");
+            let mut terminal = Terminal::new(TestBackend::new(initial.0, initial.1)).unwrap();
+            let mut dirty = true;
+            draw_if_needed(&mut terminal, &mut controller, &mut dirty).unwrap();
+            assert!(!dirty, "the initial frame has no deferred zoom");
+
+            // Force the startup race clock-free: the backend changes AFTER the first draw, but
+            // no Event::Resize, focus event, worker result, or key marks the app dirty.
+            terminal.backend_mut().resize(resized.0, resized.1);
+            draw_if_needed(&mut terminal, &mut controller, &mut dirty).unwrap();
+            assert_eq!(
+                terminal.get_frame().area(),
+                Rect::new(0, 0, resized.0, resized.1),
+                "an idle tick must reconcile the actual terminal dimensions"
+            );
+            assert!(!dirty);
+
+            // Compare the COMPLETE rendered screen, including root header and bottom-right
+            // '? help', against a fresh frame at the final geometry, not just a dirty flag.
+            let view = controller.view_state();
+            let mut expected = Terminal::new(TestBackend::new(resized.0, resized.1)).unwrap();
+            expected
+                .draw(|frame| {
+                    presenter::draw(frame, &view);
+                })
+                .unwrap();
+            assert_eq!(terminal.backend().buffer(), expected.backend().buffer());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn unchanged_terminal_size_does_not_redraw_an_idle_frame() {
+        use ratatui::backend::TestBackend;
+
+        let (mut controller, root) = route_controller("idle-size-check");
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut dirty = true;
+        draw_if_needed(&mut terminal, &mut controller, &mut dirty).unwrap();
+        assert!(!dirty);
+        let frame_count = terminal.get_frame().count();
+        let render_seq = controller.render_seq();
+
+        for _ in 0..5 {
+            draw_if_needed(&mut terminal, &mut controller, &mut dirty).unwrap();
+        }
+        assert_eq!(
+            terminal.get_frame().count(),
+            frame_count,
+            "stable idle ticks must not draw or rebuild view_state"
+        );
+        assert_eq!(
+            controller.render_seq(),
+            render_seq,
+            "size polling must not dispatch renders"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn initial_baseline_uses_configured_value_or_preserves_the_context_default() {

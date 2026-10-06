@@ -321,3 +321,87 @@ fn reveal_returns_false_for_missing_or_above_root_path() {
         "cursor must be unchanged after above-root reveal"
     );
 }
+
+fn selected_name(model: &TreeModel) -> String {
+    model
+        .selected()
+        .expect("a selection")
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn a_file_created_above_the_selection_keeps_it_selected() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join("b.txt"), "b").unwrap();
+    fs::write(dir.path().join("c.txt"), "c").unwrap();
+    let mut model = TreeModel::new(dir.path());
+    model.move_cursor(1);
+    assert_eq!(selected_name(&model), "c.txt");
+
+    fs::write(dir.path().join("a.txt"), "a").unwrap(); // sorts above both
+    assert_eq!(
+        selected_name(&model),
+        "c.txt",
+        "the selection follows the file, not the row"
+    );
+    assert_eq!(model.cursor(), 2, "the row is re-derived from the path");
+}
+
+#[test]
+fn a_deleted_selection_falls_back_to_the_row_it_was_on() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        fs::write(dir.path().join(f), f).unwrap();
+    }
+    let mut model = TreeModel::new(dir.path());
+    model.move_cursor(1);
+    assert_eq!(selected_name(&model), "b.txt");
+
+    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    assert_eq!(selected_name(&model), "c.txt", "row 1 is now c.txt");
+}
+
+#[test]
+fn a_deleted_last_row_clamps_and_the_neighbor_becomes_the_selection() {
+    let dir = TempDir::new();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        fs::write(dir.path().join(f), f).unwrap();
+    }
+    let mut model = TreeModel::new(dir.path());
+    model.move_cursor(2);
+    fs::remove_file(dir.path().join("c.txt")).unwrap();
+    assert_eq!(selected_name(&model), "b.txt", "clamped to the last row");
+
+    // The neighbour is now the selection by path, so a file appearing above keeps it.
+    fs::write(dir.path().join("aa.txt"), "aa").unwrap();
+    assert_eq!(selected_name(&model), "b.txt");
+}
+
+#[test]
+fn an_emptied_tree_has_no_selection_and_recovers() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join("a.txt"), "a").unwrap();
+    let model = TreeModel::new(dir.path());
+    assert_eq!(selected_name(&model), "a.txt");
+    fs::remove_file(dir.path().join("a.txt")).unwrap();
+    assert!(model.selected().is_none());
+    fs::write(dir.path().join("z.txt"), "z").unwrap();
+    assert_eq!(selected_name(&model), "z.txt");
+}
+
+#[test]
+fn a_filter_toggle_keeps_the_selected_path() {
+    let dir = TempDir::new();
+    fs::write(dir.path().join(".gitignore"), "a.log\n").unwrap();
+    fs::write(dir.path().join("a.log"), "x").unwrap();
+    fs::write(dir.path().join("b.txt"), "b").unwrap();
+    let mut model = TreeModel::new(dir.path());
+    assert!(model.reveal(&dir.path().join("b.txt")));
+
+    model.set_show_ignored(true); // a.log appears above b.txt
+    assert_eq!(selected_name(&model), "b.txt");
+}

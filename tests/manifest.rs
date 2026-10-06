@@ -97,8 +97,9 @@ fn declares_split_and_tab_open_actions() {
 #[test]
 fn pins_minimum_herdr_version() {
     assert!(
-        manifest().contains(r#"min_herdr_version = "0.7.0""#),
-        "manifest must pin min_herdr_version = \"0.7.0\""
+        // 0.7.5 is the first herdr with `placement = "popup"` plugin panes (the root picker).
+        manifest().contains(r#"min_herdr_version = "0.7.5""#),
+        "manifest must pin min_herdr_version = \"0.7.5\""
     );
 }
 
@@ -181,6 +182,45 @@ fn open_file_viewer_tab_action_is_platform_gated_unix_and_windows() {
         m.contains("plugin list --json") && m.contains("'open-file-viewer-tab.ps1'"),
         "open-file-viewer-tab's Windows variant must locate the .ps1 via herdr's plugin root: {m}"
     );
+}
+
+#[test]
+fn declares_the_root_picker_popup_and_its_action() {
+    // `prefix+d`-style "open the viewer at a chosen directory": split and tab actions whose launcher opens
+    // the `root-picker` pane as a popup; the pane runs the binary's `--pick-root` mode. Unix only
+    // (Windows cannot spawn a relative pane command, GH #58).
+    let m = manifest();
+    let pane = m
+        .split("[[panes]]")
+        .find(|block| block.contains(r#"id = "root-picker""#))
+        .expect("a root-picker [[panes]] entry");
+    assert!(pane.contains(r#"placement = "popup""#), "{pane}");
+    assert!(
+        pane.contains(r#"command = ["./target/release/herdr-file-viewer", "--pick-root"]"#),
+        "{pane}"
+    );
+    assert!(pane.contains(r#"platforms = ["linux", "macos"]"#), "{pane}");
+    let action = m
+        .split("[[actions]]")
+        .find(|block| block.contains(r#"id = "open-file-viewer-at""#))
+        .expect("an open-file-viewer-at action");
+    assert!(
+        action.contains(r#"command = ["bash", "scripts/open-file-viewer-at.sh", "split"]"#),
+        "{action}"
+    );
+    assert!(
+        action.contains(r#"platforms = ["linux", "macos"]"#),
+        "{action}"
+    );
+    let tab = m
+        .split("[[actions]]")
+        .find(|block| block.contains(r#"id = "open-file-viewer-at-tab""#))
+        .expect("an open-file-viewer-at-tab action");
+    assert!(
+        tab.contains(r#"command = ["bash", "scripts/open-file-viewer-at.sh", "tab"]"#),
+        "{tab}"
+    );
+    assert!(tab.contains(r#"platforms = ["linux", "macos"]"#), "{tab}");
 }
 
 #[test]

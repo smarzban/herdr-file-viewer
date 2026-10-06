@@ -293,6 +293,38 @@ fn jump_lands_on_the_file_row_when_a_directory_replaced_a_file() {
 }
 
 #[test]
+fn the_selected_file_row_survives_a_shift_when_a_directory_shares_its_path() {
+    // `x` renders twice (directory first, then the deleted file). With the file row selected, a
+    // changed path appearing above shifts every row, so the remembered index no longer holds `x`:
+    // the selection must find the FILE row again, not the directory sharing its path.
+    let set = changed(&["x", "x/y.rs"]);
+    let dir = TempDir::new();
+    let mut model = TreeModel::new(dir.path());
+    model.set_status(&set);
+    model.set_changed_only(true, &set);
+    model.set_cursor(2); // the deleted `x` file row
+    assert_eq!(model.selected().unwrap().kind, NodeKind::File);
+
+    let grown = changed(&["a.rs", "x", "x/y.rs"]);
+    model.set_status(&grown);
+    model.set_changed_only(true, &grown);
+    let landed = model.selected().unwrap();
+    assert_eq!(
+        (selected(&model), landed.kind, model.cursor()),
+        (Some("x".to_string()), NodeKind::File, 3),
+        "a row appearing above must not move the selection onto the `x` directory row"
+    );
+
+    model.set_status(&set);
+    model.set_changed_only(true, &set);
+    assert_eq!(
+        (model.selected().unwrap().kind, model.cursor()),
+        (NodeKind::File, 2),
+        "and a row disappearing above keeps it on the file row too"
+    );
+}
+
+#[test]
 fn jump_is_inert_with_an_empty_changed_set() {
     let dir = TempDir::new();
     fs::write(dir.path().join("a.rs"), "x").unwrap();

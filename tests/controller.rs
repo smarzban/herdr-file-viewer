@@ -571,6 +571,118 @@ fn status_mode_refilters_from_working_tree_status_on_refresh() {
     );
 }
 
+/// A controller over `root` whose working-tree status is `first` at launch and `rest` on every
+/// refresh after it, with `expand_changed` on.
+fn evolving_status_controller(
+    root: &Path,
+    first: BTreeMap<PathBuf, Status>,
+    rest: BTreeMap<PathBuf, Status>,
+) -> Controller {
+    let git: Arc<dyn GitService> = Arc::new(EvolvingStatusGit {
+        first,
+        rest,
+        calls: Arc::new(Mutex::new(0)),
+    });
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: Box::new(StubContent),
+        }),
+        editor: Box::new(StubEditor::default()),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(root.to_path_buf(), true),
+        Baseline::Head,
+        components,
+    );
+    ctrl.apply_expand_changed(true);
+    ctrl
+}
+
+#[test]
+fn launch_expands_the_folders_holding_uncommitted_changes() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+    std::fs::create_dir_all(dir.path().join("clean")).unwrap();
+    std::fs::write(dir.path().join("src/deep/a.rs"), "x\n").unwrap();
+    std::fs::write(dir.path().join("clean/b.rs"), "x\n").unwrap();
+    let status = BTreeMap::from([(PathBuf::from("src/deep/a.rs"), Status::Modified)]);
+
+    let ctrl = evolving_status_controller(dir.path(), status.clone(), status);
+
+    let names = visible_names(&ctrl);
+    assert!(
+        names.iter().any(|n| n == "a.rs"),
+        "the changed file is revealed: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "b.rs"),
+        "a clean folder stays collapsed: {names:?}"
+    );
+}
+
+#[test]
+fn refresh_expands_the_folder_of_a_newly_changed_file_without_moving_the_cursor() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("lib")).unwrap();
+    std::fs::write(dir.path().join("lib/y.rs"), "x\n").unwrap();
+    std::fs::write(dir.path().join("top.rs"), "x\n").unwrap();
+    let mut ctrl = evolving_status_controller(
+        dir.path(),
+        BTreeMap::new(),
+        BTreeMap::from([(PathBuf::from("lib/y.rs"), Status::Modified)]),
+    );
+    assert_eq!(visible_names(&ctrl), ["lib", "top.rs"]);
+    // Below the folder that opens, so a row inserted above it would shift an index-held cursor.
+    ctrl.handle(Intent::NavDown);
+    let selected = ctrl.tree().selected().map(|n| n.path);
+    assert_eq!(selected, Some(dir.path().join("top.rs")));
+
+    ctrl.handle(Intent::Refresh);
+
+    let names = visible_names(&ctrl);
+    assert!(
+        names.iter().any(|n| n == "y.rs"),
+        "the newly changed file is revealed: {names:?}"
+    );
+    assert_eq!(ctrl.tree().selected().map(|n| n.path), selected);
+}
+
+#[test]
+fn refresh_leaves_a_hand_collapsed_folder_closed_when_its_changes_are_not_new() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "x\n").unwrap();
+    let status = BTreeMap::from([(PathBuf::from("src/x.rs"), Status::Modified)]);
+    let mut ctrl = evolving_status_controller(dir.path(), status.clone(), status);
+    assert_eq!(visible_names(&ctrl), ["src", "x.rs"]);
+
+    ctrl.handle(Intent::Collapse); // the cursor starts on `src`
+    assert_eq!(visible_names(&ctrl), ["src"]);
+    ctrl.handle(Intent::Refresh);
+
+    assert_eq!(visible_names(&ctrl), ["src"], "the user's collapse holds");
+}
+
+#[test]
+fn expand_changed_off_leaves_changed_folders_collapsed() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "x\n").unwrap();
+    let mut ctrl = evolving_status_controller(
+        dir.path(),
+        BTreeMap::new(),
+        BTreeMap::from([(PathBuf::from("src/x.rs"), Status::Modified)]),
+    );
+    ctrl.apply_expand_changed(false);
+
+    ctrl.handle(Intent::Refresh);
+
+    assert_eq!(visible_names(&ctrl), ["src"]);
+}
+
 #[test]
 fn status_mode_and_changed_only_are_mutually_exclusive() {
     let dir = TempDir::new();
@@ -3627,6 +3739,33 @@ fn focus_gained_re_queries_git_but_preserves_content_scroll() {
         ctrl.view_state().active.scroll,
         2,
         "focus-gain does NOT reset the content scroll"
+    );
+}
+
+#[test]
+fn focus_gained_keeps_the_selected_file_when_one_appears_above_it() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+    std::fs::write(dir.path().join("c.txt"), "c").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        "c.txt"
+    );
+    let seq = ctrl.render_seq();
+
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        "c.txt",
+        "a file appearing above the cursor must not move the selection"
+    );
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "the selection did not change, so nothing re-renders"
     );
 }
 
@@ -10698,6 +10837,7 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         hide_dotfiles: false,
         show_ignored: false,
         compact_dirs: false,
+        expand_changed: false,
         changed_file_view: herdr_file_viewer::view_policy::ChangedFileView::Diff,
         baseline: None,
         update_check: true,
