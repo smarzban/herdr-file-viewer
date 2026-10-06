@@ -74,7 +74,7 @@ struct Completion {
 }
 
 #[derive(Default)]
-struct Shared {
+pub(crate) struct Shared {
     cancelled: AtomicBool,
     revision: AtomicU64,
     indexed: AtomicBool,
@@ -97,8 +97,44 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.shared.cancelled.store(true, Ordering::Relaxed);
         let _ = self.wake.try_send(());
-        // Never join on the UI thread. The worker retains the index while live, so
-        // normal cancellation frees its millions of strings on the worker thread.
+        // Never join on the UI thread. The worker retains the index while live and drains
+        // the mailbox on exit (see [`ReleaseOnExit`]), so its millions of strings are freed on
+        // the worker thread even when the UI never polled the last completion.
+    }
+}
+
+/// Takes any unpolled completion out of the mailbox as the worker exits. Without it, a
+/// completion published just before cancellation keeps the candidate list alive inside
+/// `Shared`; if the worker exited first, the UI would drop the last `Shared` reference and
+/// free the whole index synchronously when the finder closes.
+struct ReleaseOnExit<'a>(&'a Shared);
+
+impl Drop for ReleaseOnExit<'_> {
+    fn drop(&mut self) {
+        // Runs on unwind too, so tolerate a poisoned lock rather than panicking twice.
+        let pending = self
+            .0
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(pending); // freed after the lock is released, so a concurrent poll never waits on it
+    }
+}
+
+/// The production index job: the real walk, wired to this opening's cancellation flag and
+/// progress counter. A separate function so tests can run it against a `Shared` they own.
+fn index_walk(
+    root: PathBuf,
+    is_git_repo: bool,
+) -> impl FnOnce(&Shared) -> Option<Vec<String>> + Send + 'static {
+    move |shared| {
+        crate::index::build_cancellable(
+            &root,
+            is_git_repo,
+            || shared.cancelled.load(Ordering::Relaxed),
+            |n| shared.count.store(n, Ordering::Relaxed),
+        )
     }
 }
 
@@ -140,6 +176,10 @@ pub struct FinderState {
     /// clamps to `max_row_width − inner_width` at draw so it can never over-scroll. Reset to 0
     /// in `recompute()` (a new query starts unscrolled). Does NOT affect the query line.
     hscroll: u16,
+    /// Test-only: runs inside `settle` while it holds the mailbox lock, just before it waits, so
+    /// a test can release the worker knowing its publication must land during the wait.
+    #[cfg(test)]
+    before_settle_wait: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl FinderState {
@@ -161,23 +201,20 @@ impl FinderState {
             progress_painted: None,
             cursor: 0,
             hscroll: 0,
+            #[cfg(test)]
+            before_settle_wait: None,
         }
     }
 
     /// Open immediately; each opening owns a fresh index and worker. Closing or re-rooting
     /// drops this state, cancelling the old worker and disconnecting its result slot.
     pub fn start(root: PathBuf, is_git_repo: bool) -> Self {
-        Self::start_with(move |shared| {
-            crate::index::build_cancellable(
-                &root,
-                is_git_repo,
-                || shared.cancelled.load(Ordering::Relaxed),
-                |n| shared.count.store(n, Ordering::Relaxed),
-            )
-        })
+        Self::start_with(index_walk(root, is_git_repo))
     }
 
-    fn start_with(index: impl FnOnce(&Shared) -> Option<Vec<String>> + Send + 'static) -> Self {
+    pub(crate) fn start_with(
+        index: impl FnOnce(&Shared) -> Option<Vec<String>> + Send + 'static,
+    ) -> Self {
         let mut state = Self::new(Vec::new());
         let shared = Arc::new(Shared::default());
         let worker_shared = Arc::clone(&shared);
@@ -186,6 +223,7 @@ impl FinderState {
             .name("file-finder".into())
             .spawn(move || {
                 let shared = worker_shared;
+                let _release = ReleaseOnExit(&shared);
                 let Some(paths) = index(&shared) else { return };
                 let paths = Arc::new(paths);
                 // Every consumer clamps a row width to u16::MAX, so saturating here loses
@@ -305,6 +343,10 @@ impl FinderState {
         {
             let seq = self.seq;
             let slot = worker.shared.completion.lock().unwrap();
+            #[cfg(test)]
+            if let Some(hook) = &mut self.before_settle_wait {
+                hook();
+            }
             let _slot = worker
                 .shared
                 .ready
@@ -696,11 +738,8 @@ mod tests {
         );
         assert!(!state.busy());
         assert_eq!(state.status(), None);
-        // Limit: the worker usually publishes after settle starts waiting (it must wake, lock
-        // the query, and match first), which needs the condvar notify; without the notify that
-        // interleaving waits the whole STALL and fails here. If the worker happens to publish
-        // first, the wait predicate returns at once and the notify goes unexercised. The order
-        // cannot be forced from outside without a hook in the worker.
+        // Either interleaving may happen here; the forced one, where the result can only land
+        // while settle waits, is `settle_is_woken_by_a_result_published_during_its_wait`.
         assert!(
             started.elapsed() < STALL_BOUND,
             "settle waited for its budget"
@@ -843,5 +882,114 @@ mod tests {
         assert!(!state.busy());
         assert!(!state.defer_confirm(), "no Enter is held for a dead worker");
         assert_eq!(state.query(), "a");
+    }
+
+    /// A fresh directory under the system temp dir, unique to this test.
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-finder-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn an_unpolled_completion_is_released_by_the_exiting_worker_not_the_closing_ui() {
+        let state = FinderState::start_with(|_| Some(vec!["alpha.rs".into()]));
+        let shared = Arc::clone(&state.worker.as_ref().unwrap().shared);
+        // The initial empty-query completion sits in the mailbox; nothing polls it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while shared.completion.lock().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the worker never published");
+            std::thread::yield_now();
+        }
+        drop(state);
+        // Left in the mailbox, the candidate list would be freed by whoever drops `Shared`
+        // last, which can be the UI thread closing the finder.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while shared.completion.lock().unwrap().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the exiting worker left its completion for the UI to free"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn settle_is_woken_by_a_result_published_during_its_wait() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut state = FinderState::start_with(move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Some(vec!["alpha.rs".into(), "beta.rs".into()])
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let shared = Arc::clone(&state.worker.as_ref().unwrap().shared);
+        state.push('b');
+        // Hold the query lock so the indexed worker cannot read `b`, let alone publish its
+        // match, until the settle hook below lets it go.
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (unlock_tx, unlock_rx) = mpsc::channel::<()>();
+        let holder_shared = Arc::clone(&shared);
+        let holder = std::thread::spawn(move || {
+            let _query = holder_shared.query.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = unlock_rx.recv();
+        });
+        locked_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !shared.indexed.load(Ordering::Relaxed) {
+            assert!(
+                Instant::now() < deadline,
+                "the worker never finished indexing"
+            );
+            std::thread::yield_now();
+        }
+        // The hook runs while settle holds the mailbox lock, so the worker can only publish
+        // once settle has released it by waiting: the result must arrive via the notify.
+        state.before_settle_wait = Some(Box::new(move || {
+            let _ = unlock_tx.send(());
+        }));
+        let started = Instant::now();
+        assert!(state.settle(STALL));
+        assert!(
+            started.elapsed() < STALL_BOUND,
+            "settle missed the wake-up and waited out its budget"
+        );
+        assert_eq!(
+            state.snapshot().window(0, 10).collect::<Vec<_>>(),
+            ["beta.rs"]
+        );
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn the_real_index_job_reports_progress_and_honours_this_openings_cancel_flag() {
+        let root = temp_root("walk");
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(root.join(name), "x").unwrap();
+        }
+        let live = Shared::default();
+        let paths = index_walk(root.clone(), false)(&live).expect("an uncancelled walk completes");
+        assert_eq!(paths.len(), 3);
+        assert_eq!(
+            live.count.load(Ordering::Relaxed),
+            3,
+            "progress reaches the counter"
+        );
+
+        let closed = Shared::default();
+        closed.cancelled.store(true, Ordering::Relaxed);
+        assert!(
+            index_walk(root.clone(), false)(&closed).is_none(),
+            "a closed finder's walk stops instead of indexing the whole root"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

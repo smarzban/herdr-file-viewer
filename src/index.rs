@@ -113,3 +113,60 @@ fn rel_to_slash(rel: &Path) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn root_with_files(tag: &str, n: usize) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-index-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..n {
+            std::fs::write(root.join(format!("f{i:03}.rs")), "x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn cancellable_walk_reports_progress_every_128_files_and_at_the_end() {
+        let root = root_with_files("progress", 300);
+        let seen = RefCell::new(Vec::new());
+        let paths = build_cancellable(&root, false, || false, |n| seen.borrow_mut().push(n));
+        assert_eq!(paths.map(|p| p.len()), Some(300));
+        assert_eq!(*seen.borrow(), [128, 256, 300]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancellable_walk_stops_partway_when_cancelled() {
+        let root = root_with_files("cancel", 300);
+        let checks = Cell::new(0);
+        let last_progress = Cell::new(0);
+        let paths = build_cancellable(
+            &root,
+            false,
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() > 200
+            },
+            |n| last_progress.set(n),
+        );
+        assert!(
+            paths.is_none(),
+            "cancellation is not reported as a complete index"
+        );
+        assert_eq!(
+            checks.get(),
+            201,
+            "the walk stops at the first check that sees it"
+        );
+        assert!(last_progress.get() < 300, "the walk did not run to the end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

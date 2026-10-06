@@ -5696,6 +5696,43 @@ fn a_root_switch_closes_the_pending_finder_and_the_next_open_uses_the_new_root()
     assert!(!ctrl.finder_candidates().iter().any(|p| p == "old.rs"));
 }
 
+/// The worker caches each ranking's widest row; the finder's horizontal scroll range must see it
+/// through the real asynchronous publication, and narrowing away the long path must drop it.
+#[test]
+fn finder_horizontal_scroll_range_follows_the_published_row_width() {
+    let dir = TempDir::new();
+    let deep = dir
+        .path()
+        .join("a_very_long_directory_name_for_scrolling")
+        .join("another_long_segment_here");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("zz_target.rs"), "z").unwrap();
+    std::fs::write(dir.path().join("beta.rs"), "b").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    open_finder_ready(&mut ctrl);
+    let area = Rect::new(0, 0, 40, 20);
+
+    finder_key_ready(&mut ctrl, key(KeyCode::Char('z')));
+    assert_eq!(
+        match_paths(&ctrl).len(),
+        1,
+        "only the long path matches 'z'"
+    );
+    assert!(
+        herdr_file_viewer::presenter::geometry(area, &ctrl.view_state()).finder_max_hscroll > 0,
+        "a row wider than the popup must be scrollable"
+    );
+
+    finder_key_ready(&mut ctrl, key(KeyCode::Backspace));
+    finder_key_ready(&mut ctrl, key(KeyCode::Char('b')));
+    assert_eq!(match_paths(&ctrl), ["beta.rs"]);
+    assert_eq!(
+        herdr_file_viewer::presenter::geometry(area, &ctrl.view_state()).finder_max_hscroll,
+        0,
+        "the narrowed ranking's width replaces the previous one"
+    );
+}
+
 // close_help() must clear ONLY the help overlay — never some other modal that happens to be open.
 // Regression guard for the Modal-enum refactor: the old per-field `self.help = None` was inert
 // unless help was open, so `close_help()` while the finder is open must leave the finder open.
