@@ -3930,6 +3930,160 @@ fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
     );
 }
 
+/// A Content Renderer that renders the file's bytes as they are on disk, so a test can edit the
+/// file and see whether the preview reloaded.
+struct FileContent;
+impl ContentProvider for FileContent {
+    fn render(&self, path: &Path, _m: ViewMode, _d: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw(std::fs::read_to_string(path).unwrap_or_default()),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// A Content Renderer that names the view mode it was asked for on every one of 50 lines, so a
+/// test can tell a Diff render from a content render while keeping a scrollable body.
+struct ModeContent;
+impl ContentProvider for ModeContent {
+    fn render(&self, _path: &Path, mode: ViewMode, _d: Option<&str>) -> RenderResult {
+        let body = (0..50)
+            .map(|i| format!("{mode:?} {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        RenderResult {
+            content: Text::raw(body),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+fn controller_with_content(
+    root: &Path,
+    is_git_repo: bool,
+    git: Arc<dyn GitService>,
+    content: fn() -> Box<dyn ContentProvider>,
+) -> Controller {
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: content(),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    )
+}
+
+fn numbered(prefix: &str, n: usize) -> String {
+    (0..n).map(|i| format!("{prefix}{i}\n")).collect()
+}
+
+#[test]
+fn focus_gained_reloads_an_edited_preview_and_keeps_its_scroll() {
+    // #180: a file edited in another pane used to keep its stale preview after the viewer
+    // regained focus, until the user pressed `r`. Focus is the refresh point now, and the reload
+    // goes through the reflow path: the user did not navigate, so the scroll stays put.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 50)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus); // focus the content pane
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "scrolled down two lines"
+    );
+
+    // A different length, so the stamp moves even within one coarse mtime tick.
+    std::fs::write(&file, numbered("new", 60)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "the edited file re-renders");
+    await_marker(&mut ctrl, "new0");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "the reload keeps the scroll (reflow, not a fresh render)"
+    );
+}
+
+#[test]
+fn focus_gained_dispatches_nothing_when_the_previewed_file_and_its_status_are_unchanged() {
+    // The common case: focus comes back and the open file is exactly as it was. Git state is
+    // re-read (and an unrelated file changes on disk), but the preview must not re-render.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), numbered("a", 5)).unwrap();
+    let a = PathBuf::from("a.txt");
+    let git = StubGit {
+        status: BTreeMap::from([(a.clone(), Status::Modified)]),
+        changed: BTreeMap::from([(a, Status::Modified)]),
+        ..Default::default()
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    // A Diff body only renders once the launch's off-thread status has landed, so the refresh
+    // below compares against the settled status, not the empty one the first render used.
+    await_marker(&mut ctrl, "Diff 0");
+    std::fs::write(dir.path().join("b.txt"), "unrelated").unwrap();
+
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "nothing changed, so nothing re-renders"
+    );
+}
+
+#[test]
+fn focus_gained_refreshes_a_diff_whose_file_was_committed_keeping_scroll() {
+    // The file's contents did not change, but its git status did (a commit in another pane): the
+    // Diff preview is stale. Focus-gain re-renders it in the mode the new status implies.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let a = PathBuf::from("a.rs");
+    let git = EvolvingGit {
+        status: BTreeMap::new(),
+        first: BTreeMap::from([(a, Status::Modified)]), // changed at launch → Diff
+        rest: BTreeMap::new(),                          // committed since
+        calls: Arc::new(Mutex::new(0)),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().active.scroll, 2);
+
+    ctrl.handle_focus_gained();
+    await_marker(&mut ctrl, "SyntaxContent 0");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "the status-driven refresh keeps the scroll"
+    );
+}
+
 /// Build a controller over `root` whose clipboard records what it was asked to copy, so the
 /// path-copy keys (`y` / `Y`) can be asserted without a real clipboard.
 fn controller_with_clipboard(root: &Path, is_git_repo: bool) -> (Controller, Recorder<String>) {

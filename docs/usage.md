@@ -304,8 +304,12 @@ The tree includes git status:
   unified output, Delta side-by-side output, and plain unstyled git diff. Side-by-side is applied
   only when the configured diff renderer is Delta; custom renderers remain unchanged. The setting
   is presentation-only and does not change the selected baseline or git data.
-- **Refresh**: the viewer re-reads git status automatically when the pane regains focus, so a merge,
-  pull, or commit you make elsewhere shows up on its own; `r` forces a full refresh on demand.
+- **Refresh**: the viewer re-reads the tree and git status automatically when the pane regains
+  focus, so a merge, pull, or commit you make elsewhere shows up on its own. The open preview
+  reloads too when its file was edited or its git status changed (a commit makes a diff stale),
+  keeping your scroll position and search; an unchanged file is not re-rendered. There is no
+  background watcher: focus is the refresh point. `r` forces a full refresh on demand, which also
+  returns the preview to the top.
 
 Git is read through the system `git` CLI (read-only subcommands only). Without git on `PATH`, the
 viewer still opens, but the status markers, filter, baseline, and diffs are degraded. See

@@ -7,20 +7,55 @@ use super::*;
 
 impl Controller {
     /// The pane regained focus (the run loop forwards herdr's focus events): re-read the world so
-    /// external changes show in the tree. Still queries no git without a repo (AC-26), but it is no
-    /// longer a bare no-op there: `refresh_git_state` also drops the tree's cached fold shapes, and
-    /// a directory outside a repo gains and loses files just the same. Returning early here left a
-    /// compacted non-git tree stale until the user hit `r`. In **changed-only** mode the refresh
-    /// re-filters the visible list, which can move the cursor to a different file; if the
-    /// selection actually changed, re-render so the content pane matches the highlighted row —
-    /// otherwise the content (and its scroll) is left untouched, the common case.
+    /// external changes show. Still queries no git without a repo (AC-26), but it is no longer a
+    /// bare no-op there: `refresh_git_state` also drops the tree's cached fold shapes, and a
+    /// directory outside a repo gains and loses files just the same. Returning early here left a
+    /// compacted non-git tree stale until the user hit `r`.
+    ///
+    /// The content pane follows the same "focus is the refresh point" rule (#180):
+    /// - In **changed-only** mode the refresh re-filters the visible list, which can move the
+    ///   cursor to a different file; if the selection changed, it gets a full render.
+    /// - If the selection is unchanged but the file behind the preview changed on disk, or its git
+    ///   status did (a commit makes a diff stale), it re-renders through the scroll-preserving
+    ///   reflow path — the user did not navigate, so their scroll and any search survive.
+    /// - Otherwise nothing is dispatched, the common case.
     pub fn handle_focus_gained(&mut self) -> Effects {
         let before = self.tree.selected().map(|n| n.path);
+        let status_before = before.as_deref().map(|p| self.change_status(p));
         self.refresh_git_state();
-        if self.tree.selected().map(|n| n.path) != before {
+        let Some(node) = self.tree.selected() else {
+            if before.is_some() {
+                self.dispatch_render();
+            }
+            return Effects::redraw();
+        };
+        if Some(&node.path) != before.as_ref() {
             self.dispatch_render();
+        } else if node.kind == NodeKind::File && self.preview_is_stale(&node.path, status_before) {
+            let mode = self.effective_mode(&node.path);
+            self.dispatch_reflow(node.path, mode);
         }
         Effects::redraw()
+    }
+
+    /// Whether the settled preview of `path` no longer matches the world: the file's stamp moved
+    /// since its render was dispatched, or its git status changed across the refresh. A render
+    /// still in flight that carries a queued go-to-line or line-select entry is left alone —
+    /// superseding it would drop that entry, which is keyed to its seq — and its stamp stays
+    /// recorded, so the next focus-gain catches up. Any other in-flight render (a resize reflow)
+    /// is simply superseded, like a resize superseding another.
+    fn preview_is_stale(&self, path: &Path, status_before: Option<Option<Status>>) -> bool {
+        let latest = self.latest_seq;
+        if self.pending_goto.is_some_and(|(seq, _)| seq == latest)
+            || self.pending_line_select == Some(latest)
+        {
+            return false;
+        }
+        let Some((stamped, stamp)) = &self.preview_stamp else {
+            return false;
+        };
+        stamped == path
+            && (*stamp != FileStamp::of(path) || status_before != Some(self.change_status(path)))
     }
 
     /// Store the baseline-dependent changed-set in the tree even while `c` is off: full-tree
@@ -110,5 +145,24 @@ impl Controller {
     /// called after every synchronous git-state recompute.
     pub(super) fn drop_pending_status(&mut self) {
         self.status_rx = None;
+    }
+}
+
+/// A cheap change tell for a file on disk: its length and modification time (no content hash).
+/// Length is the reliable half — a same-length rewrite inside a coarse-mtime filesystem's tick can
+/// go unseen — while mtime catches the rest. `None` when the file cannot be read (e.g. deleted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    pub(super) fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
     }
 }

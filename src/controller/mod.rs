@@ -62,6 +62,7 @@ use crate::view_policy::{
 };
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use git_apply::FileStamp;
 use pinned::PinnedSnapshot;
 use ratatui::layout::Position;
 use ratatui::text::{Line, Text};
@@ -927,6 +928,14 @@ pub struct Controller {
     ///
     /// [`rerender_markdown_for_width`]: Controller::rerender_markdown_for_width
     reflow_seq: Option<u64>,
+    /// The file behind the latest dispatched preview and its [`FileStamp`] at dispatch time,
+    /// recorded by [`dispatch_render`] / [`dispatch_reflow`]. Focus-gain compares it with the file
+    /// on disk so an edit made in another pane reloads the open preview (#180). `None` when the
+    /// last dispatch was not of a file (a directory, an empty tree).
+    ///
+    /// [`dispatch_render`]: Controller::dispatch_render
+    /// [`dispatch_reflow`]: Controller::dispatch_reflow
+    preview_stamp: Option<(PathBuf, Option<FileStamp>)>,
     /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
     /// event can be mapped to a tree row / the content pane / the divider.
     geom: PaneGeometry,
@@ -1145,6 +1154,7 @@ impl Controller {
             project_search_seq: 0,
             project_search_latest,
             reflow_seq: None,
+            preview_stamp: None,
             geom: PaneGeometry::default(),
             last_click: None,
             drag: None,
@@ -3604,6 +3614,7 @@ impl Controller {
         self.latest_seq += 1;
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
+        self.preview_stamp = Some((path.clone(), FileStamp::of(&path)));
         let rel = self.rel(&path);
         // Status mode always diffs the working tree, so a reflow must use the SAME forced
         // `Baseline::Head` `dispatch_render` does — otherwise a resize/wrap re-render on a
@@ -3669,6 +3680,7 @@ impl Controller {
         // Launch open-range flash is also content-bound: a new file/view must not keep the old
         // range painted. (apply_open_target re-arms it after its own dispatch.)
         self.open_range_flash = None;
+        self.preview_stamp = None;
 
         let Some(node) = self.tree.selected() else {
             // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
@@ -3692,6 +3704,9 @@ impl Controller {
         } else {
             (self.effective_mode(&node.path), false, self.baseline)
         };
+        if node.kind == NodeKind::File {
+            self.preview_stamp = Some((node.path.clone(), FileStamp::of(&node.path)));
+        }
         let rel = self.rel(&node.path);
         // a slow render used to leave the PREVIOUS file's body visible under the NEW
         // selection's title (the title is derived from the tree cursor, which moves immediately,
