@@ -1757,3 +1757,76 @@ fn focus_gained_defers_the_reload_while_a_go_to_line_render_is_in_flight() {
     started_rx.recv().expect("the reload render starts");
     release_tx.send(()).expect("release the reload");
 }
+
+/// The sibling of the go-to-line case: `L` pressed from a transformed view (rendered markdown)
+/// switches to source view and queues the line-select entry against THAT render's seq. A
+/// focus-gain while it is held in flight must not supersede it, or `L` silently never opens
+/// (verified to fail with the `pending_line_select` guard in `preview_refresh` removed).
+#[test]
+fn focus_gained_defers_the_reload_while_a_line_select_render_is_in_flight() {
+    let dir = TempDir::new();
+    let file = dir.path().join("doc.md");
+    std::fs::write(&file, "x\n").unwrap();
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(NoGit),
+            content: Box::new(GatedLines {
+                started_tx: started_tx.clone(),
+                release_rx: Arc::clone(&release_rx),
+            }),
+        }),
+        editor: Box::new(NoEditor),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    let land = |ctrl: &mut Controller, release_tx: &mpsc::Sender<()>| {
+        release_tx.send(()).expect("release");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !flatten(ctrl.content()).contains("L0") {
+            ctrl.poll();
+            assert!(Instant::now() < deadline, "render never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    started_rx.recv().expect("the launch render starts");
+    land(&mut ctrl, &release_tx);
+
+    ctrl.enter_line_select_at_top();
+    assert!(
+        !ctrl.line_select_active(),
+        "precondition: entry is queued, not open"
+    );
+    started_rx
+        .recv()
+        .expect("the line-select render is running, held by the gate");
+
+    std::fs::write(&file, "edited elsewhere\n").unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "the in-flight line-select render is not superseded"
+    );
+
+    land(&mut ctrl, &release_tx);
+    assert!(ctrl.line_select_active(), "the queued `L` opened");
+
+    // Closing the selection lets the deferred reload through on the next focus.
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the deferred reload happens next focus"
+    );
+    started_rx.recv().expect("the reload render starts");
+    release_tx.send(()).expect("release the reload");
+}

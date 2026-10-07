@@ -51,8 +51,9 @@ impl Controller {
     /// Deferred (`None`, the stamp kept so the next focus-gain catches up) while the reload could
     /// clobber something the user is in the middle of: a render still in flight that carries a
     /// queued go-to-line or line-select entry (superseding it would drop that entry, which is
-    /// keyed to its seq), or an open `L` line selection (its marker indexes the current body, so
-    /// a reload under it would make `y` copy different lines than were selected). Any other
+    /// keyed to its seq), or an open `L` line selection — also once `a` has turned it into the
+    /// annotation editor — whose marker indexes the current body, so a reload under it would make
+    /// `y` copy (or the note annotate) different lines than were selected. Any other
     /// in-flight render (a resize reflow) is simply superseded, like a resize superseding another.
     fn preview_refresh(
         &self,
@@ -63,6 +64,9 @@ impl Controller {
         if self.pending_goto.is_some_and(|(seq, _)| seq == latest)
             || self.pending_line_select == Some(latest)
             || self.modal.line_select().is_some()
+            || self
+                .annotation_editor()
+                .is_some_and(AnnotationEditorState::holds_line_selection)
         {
             return None;
         }

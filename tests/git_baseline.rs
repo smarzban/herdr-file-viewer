@@ -552,14 +552,24 @@ fn baseline_queries_do_not_mutate_the_repo() {
 }
 
 /// `head_state` reads the branch and HEAD's commit in one `rev-parse` (the focus-gain diff check
-/// and the tree's branch title share it); both are `None` outside a repo, the branch alone on a
-/// detached HEAD.
+/// and the tree's branch title share it): both `None` on an unborn HEAD, both set on a branch, and
+/// the commit alone (no branch) on a detached HEAD.
 #[test]
 fn head_state_reports_branch_and_head_commit() {
     let dir = TempDir::new();
     let repo = dir.path();
-    assert_eq!(herdr_file_viewer::git::head_state(repo), (None, None));
-    common::init_repo_with_commit(repo);
+    // Its own repo from the start, so a git repo around the temp dir cannot answer instead.
+    git(repo, &["init", "-q"]);
+    assert_eq!(
+        herdr_file_viewer::git::head_state(repo),
+        (None, None),
+        "unborn HEAD"
+    );
+    git(repo, &["config", "user.email", "test@example.com"]);
+    git(repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "-m", "init"]);
     git(repo, &["checkout", "-q", "-b", "feature"]);
     let oid = git(repo, &["rev-parse", "HEAD"]);
     assert_eq!(

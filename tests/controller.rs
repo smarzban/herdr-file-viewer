@@ -4085,6 +4085,103 @@ fn focus_gained_re_renders_from_the_top_when_a_commit_turns_the_diff_into_conten
     );
 }
 
+/// A Git stub whose working-tree status for `a.rs` flips from untracked to added when the test
+/// sets `added` — a `git add` made in another pane.
+struct StagingGit {
+    added: Arc<std::sync::atomic::AtomicBool>,
+}
+impl GitService for StagingGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        let st = if self.added.load(std::sync::atomic::Ordering::SeqCst) {
+            Status::Added
+        } else {
+            Status::Untracked
+        };
+        BTreeMap::from([(PathBuf::from("a.rs"), st)])
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        self.status()
+    }
+    fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+#[test]
+fn focus_gained_reloads_in_place_when_only_the_status_changes_within_the_same_view() {
+    // Status mode (`d`) shows every changed file as a Diff, so `git add` of an untracked file
+    // (`?` → `A`) changes what the diff shows without changing the view or the file on disk.
+    // Only the status comparison can see it; the reload keeps the scroll (same mode → reflow).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let added = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let git = StagingGit {
+        added: Arc::clone(&added),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    ctrl.handle(Intent::ToggleStatusMode);
+    await_marker(&mut ctrl, "Diff 0");
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().active.scroll, 2);
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "precondition: nothing changed yet");
+
+    added.store(true, std::sync::atomic::Ordering::SeqCst);
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "the status flip reloads the diff");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "still a Diff, so the reload keeps the scroll"
+    );
+}
+
+#[test]
+fn focus_gained_defers_the_reload_while_an_annotation_editor_holds_a_line_selection() {
+    // `a` inside `L` swaps the selection for the annotation editor, which keeps the selection to
+    // restore on Esc and annotates its line range on save. Both index the current body, so the
+    // reload waits for the selection to close, exactly as under `L` itself.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 20)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_line_select_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(
+        ctrl.annotation_editor().is_some(),
+        "precondition: the editor holds the selection"
+    );
+
+    std::fs::write(&file, numbered("new", 30)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "no reload under the annotation editor"
+    );
+
+    ctrl.handle_annotation_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(ctrl.line_select_active(), "Esc restores the selection");
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the deferred reload happens once it closes"
+    );
+    await_marker(&mut ctrl, "new0");
+}
+
 #[test]
 fn focus_gained_reloads_a_diff_when_head_moves_under_an_unchanged_file() {
     // A partial commit (or an amend, a reset) moves HEAD while the open file and its status stay
