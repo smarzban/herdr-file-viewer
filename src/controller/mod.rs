@@ -1787,10 +1787,15 @@ impl Controller {
     /// right after construction, before the launch open target. Reuses the `c` toggle, so it is
     /// inert outside a git repo (the full tree shows) and re-renders for the filtered selection.
     /// The flag then lives on like a pressed `c`: later refreshes, `b`, and re-roots carry it, and
-    /// `c` turns it off. `false` changes nothing.
+    /// `c` turns it off. `false` changes nothing. A clean checkout filters to an empty tree, which
+    /// a config key (unlike a pressed `c`) leaves unexplained, so that case raises a notice saying
+    /// why and how to get the full tree back.
     pub fn apply_changed_only(&mut self, on: bool) {
         if on && !self.changed_only {
             let _ = self.toggle_changed_only();
+            if self.changed_only && self.tree.visible_nodes().is_empty() {
+                self.action_notice = Some("Changed only: no changed files (c shows all)".into());
+            }
         }
     }
 

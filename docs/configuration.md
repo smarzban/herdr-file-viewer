@@ -169,8 +169,10 @@ it changes. Off by default.
 pressed: only the files changed against the active baseline (`b`), and the folders holding them. It
 only seeds the starting state. From there `c` turns it off and on, `d` replaces it as usual, and a
 refresh or `b` re-filters against the new changed set. A worktree switch (`W`) keeps whatever `c`
-state you are in rather than re-reading the key. Outside a git repository the key is ignored and the
-full tree shows. Off by default.
+state you are in rather than re-reading the key. A launch `--open` target on an unchanged file turns
+the filter off so that file can show, as revealing it with `c` on always does. On a checkout with no
+changes the tree starts empty, with a notice that `c` shows everything. Outside a git repository the
+key is ignored and the full tree shows. Off by default.
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either

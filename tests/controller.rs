@@ -764,6 +764,79 @@ fn changed_only_config_off_leaves_the_full_tree() {
 }
 
 #[test]
+fn changed_only_config_on_a_clean_checkout_explains_the_empty_tree() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), true, StubGit::default(), false);
+
+    ctrl.apply_changed_only(true);
+
+    assert!(ctrl.changed_only());
+    assert!(visible_names(&ctrl).is_empty());
+    assert_eq!(
+        ctrl.action_notice(),
+        Some("Changed only: no changed files (c shows all)"),
+        "a key-driven empty tree says why"
+    );
+}
+
+#[test]
+fn changed_only_config_with_changes_raises_no_notice() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+
+    ctrl.apply_changed_only(true);
+
+    assert_eq!(ctrl.action_notice(), None);
+}
+
+#[test]
+fn changed_only_config_keeps_the_filter_for_a_launch_target_on_a_changed_file() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.apply_changed_only(true);
+
+    let target = herdr_file_viewer::open_target::parse_open_target("src/z.rs").unwrap();
+    ctrl.apply_open_target(&target);
+
+    assert!(ctrl.changed_only(), "a changed target needs no relaxing");
+    assert!(ctrl.tree().changed_only());
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("src/z.rs"))
+    );
+    assert!(!visible_names(&ctrl).iter().any(|n| n == "a.rs"));
+}
+
+#[test]
+fn changed_only_config_relaxes_for_a_launch_target_on_an_unchanged_file() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.apply_changed_only(true);
+
+    let target = herdr_file_viewer::open_target::parse_open_target("a.rs").unwrap();
+    ctrl.apply_open_target(&target);
+
+    assert!(
+        !ctrl.changed_only(),
+        "the controller mirror follows the relaxed tree"
+    );
+    assert!(!ctrl.tree().changed_only());
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("a.rs"))
+    );
+
+    // `c` is in sync with what is on screen: one press filters again, not a no-op flip.
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert!(ctrl.changed_only());
+    assert!(!visible_names(&ctrl).iter().any(|n| n == "a.rs"));
+}
+
+#[test]
 fn changed_only_config_is_ignored_outside_a_git_repo() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
