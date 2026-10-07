@@ -88,6 +88,12 @@
 # inside it changes. Default:
 #expand_changed = false
 
+# Start on the changed-only tree, as if `c` had already been pressed: only the
+# files changed against the active baseline (and the folders holding them).
+# `c` still turns it off. Ignored outside a git repository, where the full tree
+# shows. Default:
+#changed_only = false
+
 # Choose the automatic initial view for Git-changed files. "diff" preserves the
 # default diff-first behavior. "content" applies the normal file-type policy
 # instead: Markdown opens rendered, while source/text opens in syntax content.

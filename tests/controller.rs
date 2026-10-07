@@ -683,6 +683,100 @@ fn expand_changed_off_leaves_changed_folders_collapsed() {
     assert_eq!(visible_names(&ctrl), ["src"]);
 }
 
+/// A git root with one clean file at the top and one changed file below it, for `changed_only`.
+fn changed_only_fixture(dir: &TempDir) -> StubGit {
+    std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/z.rs"), "z\n").unwrap();
+    let changed = BTreeMap::from([(PathBuf::from("src/z.rs"), Status::Modified)]);
+    StubGit {
+        status: changed.clone(),
+        changed,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn changed_only_config_starts_on_the_changed_only_tree() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    assert!(visible_names(&ctrl).iter().any(|n| n == "a.rs"));
+    let seq = ctrl.render_seq();
+
+    ctrl.apply_changed_only(true);
+
+    assert!(ctrl.changed_only(), "starts as if `c` were pressed");
+    assert!(!ctrl.status_mode());
+    let names = visible_names(&ctrl);
+    assert!(
+        names.iter().any(|n| n == "z.rs") && !names.iter().any(|n| n == "a.rs"),
+        "the first frame shows only the changed file: {names:?}"
+    );
+    assert_ne!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("a.rs")),
+        "the cursor leaves the filtered-out file"
+    );
+    assert!(
+        ctrl.render_seq() > seq,
+        "the content pane re-renders for the filtered selection"
+    );
+
+    // A refresh keeps the filter, like a pressed `c`.
+    ctrl.handle(Intent::Refresh);
+    assert!(ctrl.changed_only());
+    assert!(!visible_names(&ctrl).iter().any(|n| n == "a.rs"));
+
+    // A second apply must not flip it back off.
+    ctrl.apply_changed_only(true);
+    assert!(ctrl.changed_only());
+}
+
+#[test]
+fn changed_only_config_is_toggled_back_by_c() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.apply_changed_only(true);
+
+    ctrl.handle(Intent::ToggleChangedOnly);
+
+    assert!(!ctrl.changed_only());
+    assert!(
+        visible_names(&ctrl).iter().any(|n| n == "a.rs"),
+        "`c` restores the full tree"
+    );
+}
+
+#[test]
+fn changed_only_config_off_leaves_the_full_tree() {
+    let dir = TempDir::new();
+    let git = changed_only_fixture(&dir);
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    let seq = ctrl.render_seq();
+
+    ctrl.apply_changed_only(false);
+
+    assert!(!ctrl.changed_only());
+    assert!(visible_names(&ctrl).iter().any(|n| n == "a.rs"));
+    assert_eq!(ctrl.render_seq(), seq, "nothing to re-render");
+}
+
+#[test]
+fn changed_only_config_is_ignored_outside_a_git_repo() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "a\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    let seq = ctrl.render_seq();
+
+    ctrl.apply_changed_only(true);
+
+    assert!(!ctrl.changed_only(), "no git: the key is ignored");
+    assert_eq!(visible_names(&ctrl), ["a.rs"], "the full tree shows");
+    assert_eq!(ctrl.render_seq(), seq, "nothing to re-render");
+}
+
 #[test]
 fn status_mode_and_changed_only_are_mutually_exclusive() {
     let dir = TempDir::new();
@@ -10880,6 +10974,7 @@ fn open_help_orders_optional_sections_after_whats_new_and_keeps_independent_scro
         show_ignored: false,
         compact_dirs: false,
         expand_changed: false,
+        changed_only: false,
         changed_file_view: herdr_file_viewer::view_policy::ChangedFileView::Diff,
         baseline: None,
         update_check: true,

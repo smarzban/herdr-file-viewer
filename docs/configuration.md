@@ -45,9 +45,9 @@ A config key always wins. Only two keys have an environment-variable fallback be
 and built-in default: `editor` (`$EDITOR`) and `update_check`
 (`$HERDR_FILE_VIEWER_NO_UPDATE_CHECK`). These two use a `config > env > default` chain. Every other
 key (`markdown`, `diff`, `syntax`, `open`, `reveal`, `hide_dotfiles`, `show_ignored`,
-`compact_dirs`, `expand_changed`, `changed_file_view`, `baseline`, `confirm_discard`,
-`scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`, `open_direction`,
-`preview_max_lines`, `preview_max_kib`) has no applicable environment variable; for those it's
+`compact_dirs`, `expand_changed`, `changed_only`, `changed_file_view`, `baseline`,
+`confirm_discard`, `scroll_lines`, `tree_width`, `tree_position`, `tree_max_cols`,
+`open_direction`, `preview_max_lines`, `preview_max_kib`) has no applicable environment variable; for those it's
 `config > default` only.
 
 ## Keys
@@ -68,6 +68,7 @@ hide_dotfiles = false       # true to hide dotfiles at startup (the `.` key stil
 show_ignored = false        # true to show gitignored files at startup (the `i` key still toggles)
 compact_dirs = false        # true to draw a chain of single-child dirs as ONE row (src/main/java)
 expand_changed = false      # true to open the folders of files with uncommitted changes
+changed_only = false        # true to start on the changed-only tree (the `c` key still toggles)
 changed_file_view = "diff"  # changed files start in "diff", or use normal "content" by file type
 baseline = "base"           # force startup diff baseline: "base" or "head" (omit for context-smart default)
 update_check = true         # false disables all remote requests and their display
@@ -163,6 +164,13 @@ hand. It acts at launch, after a worktree switch, and whenever a refresh (`r`, r
 finds a file that was not changed before. It only opens folders: it never moves the cursor, changes
 a filter, or collapses anything. A folder you collapse stays closed until a *different* file inside
 it changes. Off by default.
+
+`changed_only` starts the viewer on the **changed-only tree**, exactly as if `c` had already been
+pressed: only the files changed against the active baseline (`b`), and the folders holding them. It
+only seeds the starting state. From there `c` turns it off and on, `d` replaces it as usual, and a
+refresh or `b` re-filters against the new changed set. A worktree switch (`W`) keeps whatever `c`
+state you are in rather than re-reading the key. Outside a git repository the key is ignored and the
+full tree shows. Off by default.
 
 `confirm_discard` guards the one piece of state the viewer can lose. Annotations (`a` / `A`) are
 session-only, so both quitting (`q`) and switching worktree (`W`) discard them. By default either
