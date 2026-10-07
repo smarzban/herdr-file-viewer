@@ -4054,9 +4054,10 @@ fn focus_gained_dispatches_nothing_when_the_previewed_file_and_its_status_are_un
 }
 
 #[test]
-fn focus_gained_refreshes_a_diff_whose_file_was_committed_keeping_scroll() {
+fn focus_gained_re_renders_from_the_top_when_a_commit_turns_the_diff_into_content() {
     // The file's contents did not change, but its git status did (a commit in another pane): the
-    // Diff preview is stale. Focus-gain re-renders it in the mode the new status implies.
+    // Diff preview is stale, and the file now shows as content. Diff rows do not line up with
+    // source rows, so the new view starts from the top rather than keeping the diff's offset.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.rs"), "x").unwrap();
     let a = PathBuf::from("a.rs");
@@ -4079,9 +4080,97 @@ fn focus_gained_refreshes_a_diff_whose_file_was_committed_keeping_scroll() {
     await_marker(&mut ctrl, "SyntaxContent 0");
     assert_eq!(
         ctrl.view_state().active.scroll,
-        2,
-        "the status-driven refresh keeps the scroll"
+        0,
+        "a view-mode change is a fresh render from the top"
     );
+}
+
+#[test]
+fn focus_gained_reloads_a_diff_when_head_moves_under_an_unchanged_file() {
+    // A partial commit (or an amend, a reset) moves HEAD while the open file and its status stay
+    // put: still `M`, same bytes on disk, yet its diff against HEAD changed. The status here is a
+    // fixed stub; HEAD is a real repo's, moved by committing an unrelated file.
+    let dir = TempDir::new();
+    init_repo_with_commit(dir.path());
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let a = PathBuf::from("a.rs");
+    let stub = StubGit {
+        status: BTreeMap::from([(a.clone(), Status::Modified)]),
+        changed: BTreeMap::from([(a, Status::Modified)]),
+        ..Default::default()
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(stub), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0");
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        "a.rs"
+    );
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "precondition: nothing moved yet");
+
+    std::fs::write(dir.path().join("seed.txt"), "moved\n").unwrap();
+    git(dir.path(), &["commit", "-q", "-am", "unrelated"]);
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "HEAD moved, so the diff reloads");
+    await_marker(&mut ctrl, "Diff 0");
+}
+
+#[test]
+fn focus_gained_defers_the_reload_while_a_line_selection_is_open() {
+    // An open `L` marker indexes the current body; reloading under it would make `y` copy other
+    // lines than were selected. The reload waits until the selection closes.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 20)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.enter_line_select_at_top();
+    assert!(ctrl.line_select_active());
+
+    std::fs::write(&file, numbered("new", 30)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "no reload under an open selection");
+    assert!(ctrl.line_select_active(), "the selection is not cancelled");
+
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the deferred reload happens next focus"
+    );
+    await_marker(&mut ctrl, "new0");
+}
+
+#[test]
+fn focus_gained_reload_keeps_a_committed_search() {
+    // A reload is not a navigation: the committed search survives, recomputed on the new body.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\nneedle one\nbeta\n").unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "needle one");
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    ctrl.handle_prompt_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(ctrl.search().map(|s| s.matches.len()), Some(1));
+
+    std::fs::write(&file, "alpha\nneedle one\nbeta\nneedle two\n").unwrap();
+    ctrl.handle_focus_gained();
+    await_marker(&mut ctrl, "needle two");
+    let search = ctrl
+        .search()
+        .expect("the committed search survives the reload");
+    assert_eq!(search.query, "needle");
+    assert_eq!(search.matches.len(), 2, "recomputed against the new body");
 }
 
 /// Build a controller over `root` whose clipboard records what it was asked to copy, so the

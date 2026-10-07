@@ -550,3 +550,22 @@ fn baseline_queries_do_not_mutate_the_repo() {
         "AC-N2"
     );
 }
+
+/// `head_state` reads the branch and HEAD's commit in one `rev-parse` (the focus-gain diff check
+/// and the tree's branch title share it); both are `None` outside a repo, the branch alone on a
+/// detached HEAD.
+#[test]
+fn head_state_reports_branch_and_head_commit() {
+    let dir = TempDir::new();
+    let repo = dir.path();
+    assert_eq!(herdr_file_viewer::git::head_state(repo), (None, None));
+    common::init_repo_with_commit(repo);
+    git(repo, &["checkout", "-q", "-b", "feature"]);
+    let oid = git(repo, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        herdr_file_viewer::git::head_state(repo),
+        (Some("feature".to_string()), Some(oid.clone()))
+    );
+    git(repo, &["checkout", "-q", "--detach"]);
+    assert_eq!(herdr_file_viewer::git::head_state(repo), (None, Some(oid)));
+}
