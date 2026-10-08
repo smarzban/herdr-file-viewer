@@ -8,26 +8,27 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `x` closes every open folder in the tree at once, at every depth, and moves the cursor to the top-level folder that held the selection. Tree focus only. Remappable as `close_all`. Thanks @sftinc (#198) → [keys](docs/keys.md)
-- Project-content search: press `s` for bounded, asynchronous literal smartcase search across the current `i` scope; results show `path:line` plus an excerpt as they are found, typing more or `Esc` stops the search in progress, and `Enter` opens source view at the matching line. Thanks @neverendingstory (#174) → [usage](docs/usage.md#searching-file-contents) · [keys](docs/keys.md)
-- Open the viewer at another directory: the `open-file-viewer-at` (split) and `open-file-viewer-at-tab` (tab) actions pop up a small prompt pre-filled with `~/` (the tab one names its tab `Files`). `Tab` completes directory and file names (ignoring case) and `↑`/`↓` pick from the matches, `Enter` opens the viewer there (a file opens in its directory, already shown), `Esc` cancels. Paths start from `~`, falling back to `/` when not found there, so system paths need no leading slash. Agents can do the same with `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
-- `expand_changed`: open the tree's folders to files with uncommitted changes, at launch and whenever a refresh finds a newly changed file. A folder you collapse stays closed until a different file inside it changes. Off by default. Thanks @sftinc (#188) → [configuration](docs/configuration.md) · [usage](docs/usage.md#git-awareness)
-- `changed_only`: start on the changed-only tree, as if `c` had already been pressed. `c` still toggles back to the full tree; outside a git repository the key is ignored. Off by default. Thanks @TheHolyWaffle for the request (#195) → [configuration](docs/configuration.md) · [usage](docs/usage.md#git-awareness)
+- `s` searches file contents across the project and opens the match at its line. Thanks @neverendingstory (#174) → [usage](docs/usage.md#searching-file-contents) · [keys](docs/keys.md)
+- `x` closes every open folder in the tree at once (tree focus only; remappable as `close_all`). Thanks @sftinc (#198) → [keys](docs/keys.md)
+- `open-file-viewer-at` and `open-file-viewer-at-tab` open the viewer at a directory you pick from a prompt; agents can pass `--env HERDR_FILE_VIEWER_ROOT=<dir>`. → [summoning](docs/summoning.md#open-at-another-directory)
+- `expand_changed` opens the tree's folders to files with uncommitted changes. Off by default. Thanks @sftinc (#188) → [configuration](docs/configuration.md) · [usage](docs/usage.md#git-awareness)
+- `changed_only` starts the viewer on the changed-only tree, as if `c` had been pressed. Off by default. Thanks @TheHolyWaffle for the request (#195) → [configuration](docs/configuration.md) · [usage](docs/usage.md#git-awareness)
 
 ### Fixed
-- Go-to-file no longer freezes on a very large root such as a home directory: the prompt opens at once and stays responsive while files are indexed and matched in the background, and a superseded query is cancelled. Small projects still show results as you type. File visibility and ranking are unchanged. Thanks @sanjaibalajee (#177) and @lemonbalms for the report (#173) → [usage](docs/usage.md#finding-a-file-fast)
-- The open file reloads when the viewer regains focus after it was edited, its git status changed, or (for a diff) HEAD moved in another pane, keeping your scroll and search. It used to stay stale until `r`. An unchanged file is not re-rendered, and there is still no background watcher. (#180) → [usage](docs/usage.md#git-awareness)
-- The selected file stays selected when a file appears or disappears above it. A focus refresh or `r` used to move the highlight to a different file. Thanks @sftinc (#181)
-- Recover the initial pane layout without a keypress when a split resize notification is missed during startup. Root headers and the `? help` footer no longer remain clipped or wrapped until focus/navigation; unchanged idle frames still do not redraw. Thanks @rsaulo (#185) → [usage](docs/usage.md#the-tree)
-- Show committed branch changes (`M`/`A` and dirty-directory dots/colors) in the full tree from startup, without needing to toggle `c`. Baseline switches and refreshes also update the markers when the filter is off; `d` stays working-tree-only. → [usage](docs/usage.md#git-awareness)
-- Mouse selection now follows terminal cell width across full-width CJK text, including wrapped and horizontally-scrolled content. Thanks @nonhana (#143) → [usage](docs/usage.md#using-the-mouse)
-- Markdown code-block comments and generic subheadings now meet the WCAG 4.5:1 contrast minimum against the fixed code background. → [renderers](docs/renderers.md#bundled-markdown-palette)
-- Dismissing a project Spotlight with `u` now remembers it across launches instead of showing the same promotion every time. Changed spotlight titles/bodies can appear again; release notices remain session-only and What's New keeps all details. → [usage](docs/usage.md#staying-up-to-date)
+- Go-to-file (`f`) no longer freezes on very large roots such as `$HOME`. Thanks @sanjaibalajee (#177) and @lemonbalms for the report (#173) → [usage](docs/usage.md#finding-a-file-fast)
+- The open file reloads when you focus the viewer after it was edited, committed or staged elsewhere, keeping your scroll and search. Thanks @sftinc for the request (#180) → [usage](docs/usage.md#git-awareness)
+- The selected file stays selected when files appear or disappear above it. Thanks @sftinc (#181)
+- The tree shows committed branch changes (`M`/`A` markers and folder dots) from startup, without toggling `c`. Thanks @rsaulo (#186, #187) → [usage](docs/usage.md#git-awareness)
+- The first frame no longer stays clipped when a startup resize is missed. Thanks @rsaulo (#184, #185) → [usage](docs/usage.md#the-tree)
+- Mouse selection now follows terminal cell width across full-width CJK text, including wrapped and scrolled lines. Thanks @nonhana for the report (#143) → [usage](docs/usage.md#using-the-mouse)
+- Markdown code comments and subheadings are easier to read (WCAG AA contrast). Thanks @neverendingstory (#176) → [renderers](docs/renderers.md#bundled-markdown-palette)
+- A dismissed project spotlight (`u`) stays dismissed across launches until its text changes. Thanks @rsaulo (#182, #183) → [usage](docs/usage.md#staying-up-to-date)
 
 ### Changed
-- The binary-file placeholder now reads `[binary file: press O to open in the default app]`, pointing at the existing `O` hand-off instead of a dead end. Thanks @sftinc (#190) → [usage](docs/usage.md#handing-a-file-off)
-- The tab action (`prefix+shift+f`) now switches only to a viewer showing the repo you are in, so a viewer opened on another directory no longer captures it. To support this, a running viewer keeps its working directory on the root it shows (renderers, the editor and other tools it starts still run from the plugin directory). → [summoning](docs/summoning.md#open-in-a-tab-instead-of-a-split)
-- Requires herdr 0.7.5 or newer (popup support). → [install](docs/install.md)
+- The binary-file placeholder now points at `O` to open the file in the default app. Thanks @sftinc (#190) → [usage](docs/usage.md#handing-a-file-off)
+- The tab action (`prefix+shift+f`) only switches to a viewer showing your current repo; a running viewer keeps its working directory on the root it shows. → [summoning](docs/summoning.md#open-in-a-tab-instead-of-a-split)
+- The docs read more plainly throughout. Thanks @will-isles (#175)
+- Requires herdr 0.7.5 or newer. → [install](docs/install.md)
 
 ## [1.17.0] - 2026-09-16
 
