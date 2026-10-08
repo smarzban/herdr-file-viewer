@@ -98,6 +98,17 @@ impl AnnotationEditorState {
     pub fn is_edit(&self) -> bool {
         matches!(self.mode, AnnotationEditorMode::Edit { .. })
     }
+
+    /// Whether this editor was opened from an `L` line selection it restores on cancel: its
+    /// target range (and that snapshot) still index the body the selection was made on.
+    pub(super) fn holds_line_selection(&self) -> bool {
+        matches!(
+            self.mode,
+            AnnotationEditorMode::Add {
+                restore_line_select: Some(_)
+            }
+        )
+    }
 }
 
 fn clamp_cursor(cursor: usize, len: usize) -> usize {

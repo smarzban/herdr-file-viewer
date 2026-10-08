@@ -4097,6 +4097,377 @@ fn focus_gained_keeps_tree_and_content_in_sync_after_a_changed_only_refilter() {
     );
 }
 
+/// A Content Renderer that renders the file's bytes as they are on disk, so a test can edit the
+/// file and see whether the preview reloaded.
+struct FileContent;
+impl ContentProvider for FileContent {
+    fn render(&self, path: &Path, _m: ViewMode, _d: Option<&str>) -> RenderResult {
+        RenderResult {
+            content: Text::raw(std::fs::read_to_string(path).unwrap_or_default()),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+/// A Content Renderer that names the view mode it was asked for on every one of 50 lines, so a
+/// test can tell a Diff render from a content render while keeping a scrollable body.
+struct ModeContent;
+impl ContentProvider for ModeContent {
+    fn render(&self, _path: &Path, mode: ViewMode, _d: Option<&str>) -> RenderResult {
+        let body = (0..50)
+            .map(|i| format!("{mode:?} {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        RenderResult {
+            content: Text::raw(body),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
+fn controller_with_content(
+    root: &Path,
+    is_git_repo: bool,
+    git: Arc<dyn GitService>,
+    content: fn() -> Box<dyn ContentProvider>,
+) -> Controller {
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::clone(&git),
+            content: content(),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    Controller::new(
+        common::resolved(root.to_path_buf(), is_git_repo),
+        Baseline::Head,
+        components,
+    )
+}
+
+fn numbered(prefix: &str, n: usize) -> String {
+    (0..n).map(|i| format!("{prefix}{i}\n")).collect()
+}
+
+#[test]
+fn focus_gained_reloads_an_edited_preview_and_keeps_its_scroll() {
+    // #180: a file edited in another pane used to keep its stale preview after the viewer
+    // regained focus, until the user pressed `r`. Focus is the refresh point now, and the reload
+    // goes through the reflow path: the user did not navigate, so the scroll stays put.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 50)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus); // focus the content pane
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "scrolled down two lines"
+    );
+
+    // A different length, so the stamp moves even within one coarse mtime tick.
+    std::fs::write(&file, numbered("new", 60)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "the edited file re-renders");
+    await_marker(&mut ctrl, "new0");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "the reload keeps the scroll (reflow, not a fresh render)"
+    );
+}
+
+#[test]
+fn focus_gained_dispatches_nothing_when_the_previewed_file_and_its_status_are_unchanged() {
+    // The common case: focus comes back and the open file is exactly as it was. Git state is
+    // re-read (and an unrelated file changes on disk), but the preview must not re-render.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), numbered("a", 5)).unwrap();
+    let a = PathBuf::from("a.txt");
+    let git = StubGit {
+        status: BTreeMap::from([(a.clone(), Status::Modified)]),
+        changed: BTreeMap::from([(a, Status::Modified)]),
+        ..Default::default()
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    // A Diff body only renders once the launch's off-thread status has landed, so the refresh
+    // below compares against the settled status, not the empty one the first render used.
+    await_marker(&mut ctrl, "Diff 0");
+    std::fs::write(dir.path().join("b.txt"), "unrelated").unwrap();
+
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "nothing changed, so nothing re-renders"
+    );
+}
+
+#[test]
+fn focus_gained_re_renders_from_the_top_when_a_commit_turns_the_diff_into_content() {
+    // The file's contents did not change, but its git status did (a commit in another pane): the
+    // Diff preview is stale, and the file now shows as content. Diff rows do not line up with
+    // source rows, so the new view starts from the top rather than keeping the diff's offset.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let a = PathBuf::from("a.rs");
+    let git = EvolvingGit {
+        status: BTreeMap::new(),
+        first: BTreeMap::from([(a, Status::Modified)]), // changed at launch → Diff
+        rest: BTreeMap::new(),                          // committed since
+        calls: Arc::new(Mutex::new(0)),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0");
+    ctrl.set_content_viewport(40, 10);
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().active.scroll, 2);
+
+    ctrl.handle_focus_gained();
+    await_marker(&mut ctrl, "SyntaxContent 0");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        0,
+        "a view-mode change is a fresh render from the top"
+    );
+}
+
+/// A Git stub whose working-tree status for `a.rs` flips from untracked to added when the test
+/// sets `added` — a `git add` made in another pane.
+struct StagingGit {
+    added: Arc<std::sync::atomic::AtomicBool>,
+}
+impl GitService for StagingGit {
+    fn status(&self) -> BTreeMap<PathBuf, Status> {
+        let st = if self.added.load(std::sync::atomic::Ordering::SeqCst) {
+            Status::Added
+        } else {
+            Status::Untracked
+        };
+        BTreeMap::from([(PathBuf::from("a.rs"), st)])
+    }
+    fn changed_set(&self, _baseline: Baseline) -> BTreeMap<PathBuf, Status> {
+        self.status()
+    }
+    fn diff(&self, _p: &Path, _b: Baseline, _full: bool) -> String {
+        String::new()
+    }
+    fn diff_directory(&self, _rel_dir: &Path, _baseline: Baseline) -> String {
+        String::new()
+    }
+}
+
+#[test]
+fn focus_gained_reloads_in_place_when_only_the_status_changes_within_the_same_view() {
+    // Status mode (`d`) shows every changed file as a Diff, so `git add` of an untracked file
+    // (`?` → `A`) changes what the diff shows without changing the view or the file on disk.
+    // Only the status comparison can see it; the reload keeps the scroll (same mode → reflow).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let added = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let git = StagingGit {
+        added: Arc::clone(&added),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    ctrl.handle(Intent::ToggleStatusMode);
+    await_marker(&mut ctrl, "Diff 0");
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(ctrl.view_state().active.scroll, 2);
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "precondition: nothing changed yet");
+
+    added.store(true, std::sync::atomic::Ordering::SeqCst);
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "the status flip reloads the diff");
+    assert_eq!(
+        ctrl.view_state().active.scroll,
+        2,
+        "still a Diff, so the reload keeps the scroll"
+    );
+}
+
+#[test]
+fn a_status_change_seen_by_a_deferred_focus_gain_still_reloads_on_the_next_one() {
+    // Review F-2: status used to be compared only across ONE refresh, so a `git add` noticed by a
+    // focus-gain that deferred (here under `L`) was forgotten by the next focus-gain, which saw no
+    // change. The status is now stamped at dispatch, like the file and HEAD.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let added = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let git = StagingGit {
+        added: Arc::clone(&added),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0"); // untracked, settled
+    ctrl.enter_line_select_at_top(); // switches to source view and opens `L` when it lands
+    await_marker(&mut ctrl, "SyntaxContent 0");
+    assert!(ctrl.line_select_active(), "precondition: `L` is open");
+
+    added.store(true, std::sync::atomic::Ordering::SeqCst); // staged elsewhere; no edit
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "deferred under `L`");
+
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the staged status still reloads once `L` closes"
+    );
+}
+
+#[test]
+fn focus_gained_defers_the_reload_while_an_annotation_editor_holds_a_line_selection() {
+    // `a` inside `L` swaps the selection for the annotation editor, which keeps the selection to
+    // restore on Esc and annotates its line range on save. Both index the current body, so the
+    // reload waits for the selection to close, exactly as under `L` itself.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 20)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.enter_line_select_at_top();
+    ctrl.handle_line_select_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(
+        ctrl.annotation_editor().is_some(),
+        "precondition: the editor holds the selection"
+    );
+
+    std::fs::write(&file, numbered("new", 30)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "no reload under the annotation editor"
+    );
+
+    ctrl.handle_annotation_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(ctrl.line_select_active(), "Esc restores the selection");
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the deferred reload happens once it closes"
+    );
+    await_marker(&mut ctrl, "new0");
+}
+
+#[test]
+fn focus_gained_reloads_a_diff_when_head_moves_under_an_unchanged_file() {
+    // A partial commit (or an amend, a reset) moves HEAD while the open file and its status stay
+    // put: still `M`, same bytes on disk, yet its diff against HEAD changed. The status here is a
+    // fixed stub; HEAD is a real repo's, moved by committing an unrelated file.
+    let dir = TempDir::new();
+    init_repo_with_commit(dir.path());
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let a = PathBuf::from("a.rs");
+    let stub = StubGit {
+        status: BTreeMap::from([(a.clone(), Status::Modified)]),
+        changed: BTreeMap::from([(a, Status::Modified)]),
+        ..Default::default()
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(stub), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0");
+    assert_eq!(
+        ctrl.tree().selected().unwrap().path.file_name().unwrap(),
+        "a.rs"
+    );
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "precondition: nothing moved yet");
+
+    std::fs::write(dir.path().join("seed.txt"), "moved\n").unwrap();
+    git(dir.path(), &["commit", "-q", "-am", "unrelated"]);
+    ctrl.handle_focus_gained();
+    assert!(ctrl.render_seq() > seq, "HEAD moved, so the diff reloads");
+    await_marker(&mut ctrl, "Diff 0");
+}
+
+#[test]
+fn focus_gained_defers_the_reload_while_a_line_selection_is_open() {
+    // An open `L` marker indexes the current body; reloading under it would make `y` copy other
+    // lines than were selected. The reload waits until the selection closes.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, numbered("old", 20)).unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "old0");
+    ctrl.enter_line_select_at_top();
+    assert!(ctrl.line_select_active());
+
+    std::fs::write(&file, numbered("new", 30)).unwrap();
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "no reload under an open selection");
+    assert!(ctrl.line_select_active(), "the selection is not cancelled");
+
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the deferred reload happens next focus"
+    );
+    await_marker(&mut ctrl, "new0");
+}
+
+#[test]
+fn focus_gained_reload_keeps_a_committed_search() {
+    // A reload is not a navigation: the committed search survives, recomputed on the new body.
+    let dir = TempDir::new();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\nneedle one\nbeta\n").unwrap();
+    let mut ctrl = controller_with_content(dir.path(), false, Arc::new(StubGit::default()), || {
+        Box::new(FileContent)
+    });
+    await_marker(&mut ctrl, "needle one");
+    ctrl.handle(Intent::OpenSearch);
+    for c in "needle".chars() {
+        ctrl.handle_prompt_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    ctrl.handle_prompt_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(ctrl.search().map(|s| s.matches.len()), Some(1));
+
+    std::fs::write(&file, "alpha\nneedle one\nbeta\nneedle two\n").unwrap();
+    ctrl.handle_focus_gained();
+    await_marker(&mut ctrl, "needle two");
+    let search = ctrl
+        .search()
+        .expect("the committed search survives the reload");
+    assert_eq!(search.query, "needle");
+    assert_eq!(search.matches.len(), 2, "recomputed against the new body");
+}
+
 /// Build a controller over `root` whose clipboard records what it was asked to copy, so the
 /// path-copy keys (`y` / `Y`) can be asserted without a real clipboard.
 fn controller_with_clipboard(root: &Path, is_git_repo: bool) -> (Controller, Recorder<String>) {

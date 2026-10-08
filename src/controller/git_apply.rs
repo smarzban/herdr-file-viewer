@@ -7,20 +7,97 @@ use super::*;
 
 impl Controller {
     /// The pane regained focus (the run loop forwards herdr's focus events): re-read the world so
-    /// external changes show in the tree. Still queries no git without a repo (AC-26), but it is no
-    /// longer a bare no-op there: `refresh_git_state` also drops the tree's cached fold shapes, and
-    /// a directory outside a repo gains and loses files just the same. Returning early here left a
-    /// compacted non-git tree stale until the user hit `r`. In **changed-only** mode the refresh
-    /// re-filters the visible list, which can move the cursor to a different file; if the
-    /// selection actually changed, re-render so the content pane matches the highlighted row —
-    /// otherwise the content (and its scroll) is left untouched, the common case.
+    /// external changes show. Still queries no git without a repo (AC-26), but it is no longer a
+    /// bare no-op there: `refresh_git_state` also drops the tree's cached fold shapes, and a
+    /// directory outside a repo gains and loses files just the same. Returning early here left a
+    /// compacted non-git tree stale until the user hit `r`.
+    ///
+    /// The content pane follows the same "focus is the refresh point" rule (#180):
+    /// - In **changed-only** mode the refresh re-filters the visible list, which can move the
+    ///   cursor to a different file; if the selection changed, it gets a full render.
+    /// - If the selection is unchanged but the open file's preview is stale (see
+    ///   [`preview_refresh`](Self::preview_refresh)), it re-renders: through the scroll-preserving
+    ///   reflow path when the view mode is the same (the user did not navigate, so their scroll
+    ///   and any search survive), or as a fresh render from the top when the mode changed (a diff
+    ///   that became a plain file after a commit has no row that lines up with the old offset).
+    /// - Otherwise nothing is dispatched, the common case.
     pub fn handle_focus_gained(&mut self) -> Effects {
         let before = self.tree.selected().map(|n| n.path);
         self.refresh_git_state();
-        if self.tree.selected().map(|n| n.path) != before {
+        let Some(node) = self.tree.selected() else {
+            if before.is_some() {
+                self.dispatch_render();
+            }
+            return Effects::redraw();
+        };
+        if Some(&node.path) != before.as_ref() {
             self.dispatch_render();
+        } else if node.kind == NodeKind::File {
+            match self.preview_refresh(&node.path) {
+                Some(PreviewRefresh::Render) => self.dispatch_render(),
+                Some(PreviewRefresh::Reflow(mode)) => self.dispatch_reflow(node.path, mode),
+                None => {}
+            }
         }
         Effects::redraw()
+    }
+
+    /// How the settled preview of `path` must re-render, if at all: it is stale when the file's
+    /// stamp moved since its render was dispatched, its git status differs from the one it was
+    /// rendered with, or — for a diff — HEAD moved (a partial commit, an amend, a reset) while both stayed put.
+    /// A view-mode change re-renders from the top; anything else reflows in place.
+    ///
+    /// Deferred (`None`, the stamp kept so the next focus-gain catches up) while the reload could
+    /// clobber something the user is in the middle of: a render still in flight that carries a
+    /// queued go-to-line or line-select entry (superseding it would drop that entry, which is
+    /// keyed to its seq), or an open `L` line selection — also once `a` has turned it into the
+    /// annotation editor — whose marker indexes the current body, so a reload under it would make
+    /// `y` copy (or the note annotate) different lines than were selected. Any other
+    /// in-flight render (a resize reflow) is simply superseded, like a resize superseding another.
+    ///
+    /// Everything is compared against the dispatch-time [`PreviewStamp`], never against the state
+    /// just before this refresh: a change seen by a deferred focus-gain, or applied by `r` or an
+    /// editor return after the render was dispatched, must still reload the next time.
+    fn preview_refresh(&self, path: &Path) -> Option<PreviewRefresh> {
+        let latest = self.latest_seq;
+        if self.pending_goto.is_some_and(|(seq, _)| seq == latest)
+            || self.pending_line_select == Some(latest)
+            || self.modal.line_select().is_some()
+            || self
+                .annotation_editor()
+                .is_some_and(AnnotationEditorState::holds_line_selection)
+        {
+            return None;
+        }
+        let stamp = self.preview_stamp.as_ref().filter(|s| s.path == path)?;
+        let mode = self.effective_mode(path);
+        if mode != stamp.mode {
+            return Some(PreviewRefresh::Render);
+        }
+        let stale = stamp.file != FileStamp::of(path)
+            || stamp.status != self.change_status(path)
+            || stamp.head != self.head_token(mode);
+        stale.then_some(PreviewRefresh::Reflow(mode))
+    }
+
+    /// What a `mode` preview depends on beyond the file and its status: HEAD's commit for a diff
+    /// (it is taken against HEAD or HEAD's merge-base), nothing for a content view.
+    fn head_token(&self, mode: ViewMode) -> Option<String> {
+        matches!(mode, ViewMode::Diff | ViewMode::FullDiff)
+            .then(|| self.head_oid.clone())
+            .flatten()
+    }
+
+    /// Record what the preview of `path` at `mode` was dispatched against, for
+    /// [`preview_refresh`](Self::preview_refresh). Called from each content dispatch.
+    pub(super) fn stamp_preview(&mut self, path: &Path, mode: ViewMode) {
+        self.preview_stamp = Some(PreviewStamp {
+            path: path.to_path_buf(),
+            file: FileStamp::of(path),
+            status: self.change_status(path),
+            mode,
+            head: self.head_token(mode),
+        });
     }
 
     /// Store the baseline-dependent changed-set in the tree even while `c` is off: full-tree
@@ -97,7 +174,8 @@ impl Controller {
         // `git checkout` must update the tree's bottom-border branch, not just status/changed-set.
         // Without this the label went stale. `git rev-parse` from the tree root resolves the repo
         // even when the root is a subdir; `None` on a detached HEAD (border omits the branch).
-        self.current_branch = crate::git::current_branch(&self.root);
+        // One `git rev-parse` reads HEAD's commit alongside it, for the focus-gain diff check.
+        (self.current_branch, self.head_oid) = crate::git::head_state(&self.root);
         // Drop any pending re-root async status fetch: this sync
         // refresh has just produced the authoritative status/changed-set, so an older in-flight
         // async result must not later clobber it in `poll`. Invariant: every synchronous
@@ -110,5 +188,42 @@ impl Controller {
     /// called after every synchronous git-state recompute.
     pub(super) fn drop_pending_status(&mut self) {
         self.status_rx = None;
+    }
+}
+
+/// How a stale preview re-renders on focus-gain.
+pub(super) enum PreviewRefresh {
+    /// The view mode changed: a fresh render from the top.
+    Render,
+    /// Same mode: reload in place at this mode, keeping scroll and search.
+    Reflow(ViewMode),
+}
+
+/// What the latest content dispatch rendered: the file, its [`FileStamp`], git status and view
+/// mode, and for a diff the HEAD commit it was taken against.
+pub(super) struct PreviewStamp {
+    path: PathBuf,
+    file: Option<FileStamp>,
+    status: Option<Status>,
+    mode: ViewMode,
+    head: Option<String>,
+}
+
+/// A cheap change tell for a file on disk: its length and modification time (no content hash).
+/// Length is the reliable half — a same-length rewrite inside a coarse-mtime filesystem's tick can
+/// go unseen — while mtime catches the rest. `None` when the file cannot be read (e.g. deleted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    pub(super) fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
     }
 }

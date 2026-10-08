@@ -62,6 +62,7 @@ use crate::view_policy::{
 };
 use annotation::{AnnotationEditorState, AnnotationListState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use git_apply::PreviewStamp;
 use pinned::PinnedSnapshot;
 use ratatui::layout::Position;
 use ratatui::text::{Line, Text};
@@ -927,6 +928,18 @@ pub struct Controller {
     ///
     /// [`rerender_markdown_for_width`]: Controller::rerender_markdown_for_width
     reflow_seq: Option<u64>,
+    /// The file behind the latest dispatched preview and what it was rendered against,
+    /// recorded by [`dispatch_render`] / [`dispatch_reflow`]. Focus-gain compares it with the file
+    /// on disk so an edit made in another pane reloads the open preview (#180). `None` when the
+    /// last dispatch was not of a file (a directory, an empty tree).
+    ///
+    /// [`dispatch_render`]: Controller::dispatch_render
+    /// [`dispatch_reflow`]: Controller::dispatch_reflow
+    preview_stamp: Option<PreviewStamp>,
+    /// HEAD's commit id, read with the branch at launch, re-root and every git refresh. `None`
+    /// outside a repo or before the first commit. Stamped onto a diff preview so focus-gain can
+    /// tell that HEAD moved under it.
+    head_oid: Option<String>,
     /// Hit-test geometry from the last drawn frame (fed back by the Presenter), so a mouse
     /// event can be mapped to a tree row / the content pane / the divider.
     geom: PaneGeometry,
@@ -1080,10 +1093,10 @@ impl Controller {
         let base_branch = resolved.base_branch.clone();
         // The current branch for the tree's bottom-border title: queried once here from
         // the resolved repo root (never per-frame), `None` outside a repo / on detached HEAD.
-        let current_branch = resolved
+        let (current_branch, head_oid) = resolved
             .repo_root
             .as_deref()
-            .and_then(crate::git::current_branch);
+            .map_or((None, None), crate::git::head_state);
         // The Content Renderer (and the diff query it needs) live on a worker thread; the
         // controller talks to it over a job channel and reads finished renders off a result
         // channel (AC-23). The worker exits when the job sender (held by the controller) is
@@ -1145,6 +1158,8 @@ impl Controller {
             project_search_seq: 0,
             project_search_latest,
             reflow_seq: None,
+            preview_stamp: None,
+            head_oid,
             geom: PaneGeometry::default(),
             last_click: None,
             drag: None,
@@ -1383,10 +1398,10 @@ impl Controller {
         // Recompute the cached branch for the new root's bottom-border title. Cheap and
         // synchronous: a single `git rev-parse` against the already-resolved repo root, done once
         // per re-root (not per-frame). `None` when the new root is outside a repo / detached.
-        self.current_branch = resolved
+        (self.current_branch, self.head_oid) = resolved
             .repo_root
             .as_deref()
-            .and_then(crate::git::current_branch);
+            .map_or((None, None), crate::git::head_state);
 
         // Reset navigation/view state (AC-13). The picker is closed on a switch (AC-13 "picker
         // is closed"); `herdr`/`our_workspace_id` are session-level and deliberately left intact.
@@ -3621,6 +3636,7 @@ impl Controller {
         self.latest_seq += 1;
         let seq = self.latest_seq;
         self.reflow_seq = Some(seq);
+        self.stamp_preview(&path, mode);
         let rel = self.rel(&path);
         // Status mode always diffs the working tree, so a reflow must use the SAME forced
         // `Baseline::Head` `dispatch_render` does — otherwise a resize/wrap re-render on a
@@ -3686,6 +3702,7 @@ impl Controller {
         // Launch open-range flash is also content-bound: a new file/view must not keep the old
         // range painted. (apply_open_target re-arms it after its own dispatch.)
         self.open_range_flash = None;
+        self.preview_stamp = None;
 
         let Some(node) = self.tree.selected() else {
             // No visible node: an empty tree or a filter (changed-only, gitignore, etc.)
@@ -3709,6 +3726,9 @@ impl Controller {
         } else {
             (self.effective_mode(&node.path), false, self.baseline)
         };
+        if node.kind == NodeKind::File {
+            self.stamp_preview(&node.path, mode);
+        }
         let rel = self.rel(&node.path);
         // a slow render used to leave the PREVIOUS file's body visible under the NEW
         // selection's title (the title is derived from the tree cursor, which moves immediately,

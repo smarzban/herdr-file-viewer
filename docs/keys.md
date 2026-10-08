@@ -67,7 +67,8 @@ automatically when the pane is resized.
 
 **Git state stays current.** The viewer rereads git status when the pane **regains focus**, so a
 merge, pull, or commit in another pane appears automatically. Press `r` for a full refresh. A focus
-refresh updates tree status without changing the content scroll.
+refresh updates tree status without changing the content scroll, and reloads the open file in
+place when it was edited, its git status changed, or (for a diff) HEAD moved.
 
 Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
 not trigger a viewer action; `Shift` is permitted for keys such as `<`, `>`, `{`, and `}` (and `a`/`A`,

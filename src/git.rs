@@ -584,6 +584,18 @@ pub fn current_branch(repo_root: &Path) -> Option<String> {
     }
 }
 
+/// The current branch (as [`current_branch`]) and HEAD's commit id, from ONE `git rev-parse`.
+/// Both `None` outside a repo or before the first commit (an unborn HEAD fails the call).
+pub fn head_state(repo_root: &Path) -> (Option<String>, Option<String>) {
+    let Some(out) = run_trimmed(repo_root, &["rev-parse", "HEAD", "--abbrev-ref", "HEAD"]) else {
+        return (None, None);
+    };
+    let mut lines = out.lines();
+    let oid = lines.next().map(str::to_owned);
+    let branch = lines.next().filter(|b| *b != "HEAD").map(str::to_owned);
+    (branch, oid)
+}
+
 /// `HEAD` when it resolves, else git's empty-tree object so an unborn repo's first
 /// (staged) files still diff as additions instead of failing on `bad revision 'HEAD'`.
 fn head_or_empty_tree(repo_root: &Path) -> String {
