@@ -1,13 +1,13 @@
 # Summoning the viewer
 
-This page explains the open actions, idempotent launcher, split and tab layouts, and the `--remote`
-caveat. For a short installation and keybinding example, see the [Quick
+This page explains the open actions, idempotent launcher, split and tab layouts, opening at another
+directory, and the `--remote` caveat. For a short installation and keybinding example, see the [Quick
 start](../README.md#quick-start). After opening the viewer, see the [usage guide](usage.md) and
 [keys reference](keys.md).
 
 The viewer opens **only** in response to an explicit action. There are no event hooks and no
-automatic invocation. The manifest declares a `[[panes]]` entry (the split-pane viewer) and an
-`[[actions]]` whose command opens it:
+automatic invocation. The manifest declares `[[panes]]` entries (the viewer and the root-picker
+popup) and `[[actions]]` that open them; the core pair is:
 
 ```toml
 [[panes]]

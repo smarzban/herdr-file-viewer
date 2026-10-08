@@ -13,10 +13,10 @@ See [external renderers](renderers.md).
 > **No Rust toolchain needed when a prebuilt exists.** `herdr plugin install smarzban/herdr-file-viewer`
 > downloads a prebuilt, SHA-256-verified binary for your platform (macOS arm64/x86_64, Linux x86_64,
 > Windows x86_64 preview).
-> The prebuilt is matched by **version**, so you get it even when `main` is ahead of the latest tag.
-> You'll receive the most recent released binary (a note tells you when newer, unreleased changes
-> aren't in it yet). It builds from source with `cargo` (Rust 1.96+) only when there's no matching
-> prebuilt at all: an unsupported platform, or a version that hasn't been released yet. The install
+> The prebuilt is matched by the **version the source declares**. When that version has a release,
+> you get it even if `main` has newer commits since the tag (a note tells you when unreleased
+> changes aren't in it). It builds from source with `cargo` (Rust 1.96+) only when there's no matching
+> prebuilt: an unsupported platform, or a declared version that hasn't been released yet. The install
 > command is the same either way.
 
 **Install through herdr.** At install time, herdr runs the manifest's `[[build]]` step. The step

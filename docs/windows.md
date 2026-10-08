@@ -34,6 +34,10 @@ open and toggle actions.
   the `windows-latest` job is advisory. A Windows-specific regression can therefore land between
   releases. Full feature parity with Linux and macOS is the goal. [Open an
   issue](https://github.com/smarzban/herdr-file-viewer/issues) for a Windows-specific problem.
+- **Open at another directory is Linux/macOS only for now.** `open-file-viewer-at` and
+  `open-file-viewer-at-tab` (and their root-picker popup) are not declared for Windows; use WSL.
+- **`e` falls back to Notepad.** With neither `editor` nor `$EDITOR` set, the editor hand-off opens
+  `%SystemRoot%\System32\notepad.exe`.
 - **WSL needs no extra setup.** The Linux (`x86_64-unknown-linux-musl`) binary runs unmodified
   inside WSL. Install herdr and this plugin from the WSL distribution as you would on native Linux.
 

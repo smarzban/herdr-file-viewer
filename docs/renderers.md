@@ -19,8 +19,8 @@ installation link instead of trying Cargo:
 ```
 
 **If a renderer is not installed, the viewer falls back to plain text.** The content pane names the
-missing renderer in a short notice, such as *"Markdown renderer unavailable (glow: …); showing plain
-text."* A missing renderer does not crash the viewer or leave the pane empty. The renderers improve
+missing renderer in a short notice, such as *"Markdown renderer (glow) not found; showing plain text.
+Install it or see docs/renderers.md."* A renderer that times out or fails gets a similar notice. A missing renderer does not crash the viewer or leave the pane empty. The renderers improve
 the display but are not required.
 
 The viewer sends untrusted file content to renderers on **stdin**, never as a command argument. It

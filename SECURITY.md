@@ -48,7 +48,8 @@ assume that this content is hostile.
 
 - **Resource bounds.** File reads and captured renderer/diff output are size-capped, and external
   renderers run under a wall-clock timeout, so a huge or slow input degrades gracefully rather
-  than hanging or exhausting memory.
+  than hanging or exhausting memory. Project content search skips files over 1 MiB and keeps at
+  most 500 matching lines.
 
 - **Crash containment.** The viewer catches renderer failures, including a panic on the render
   worker, and shows a non-fatal notice or placeholder instead of crashing.
