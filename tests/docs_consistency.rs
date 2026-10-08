@@ -154,6 +154,7 @@ fn config_example_documents_every_config_key() {
         "show_ignored",
         "compact_dirs",
         "expand_changed",
+        "changed_only",
         "changed_file_view",
         "baseline",
         "update_check",
@@ -345,6 +346,7 @@ fn configuration_doc_documents_config_file() {
         "show_ignored",
         "compact_dirs",
         "expand_changed",
+        "changed_only",
         "update_check",
         "confirm_discard",
     ] {

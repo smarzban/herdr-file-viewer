@@ -292,6 +292,9 @@ The tree includes git status:
 - **Open folders to new changes**: set [`expand_changed = true`](configuration.md) and the tree
   opens the folders of every file with uncommitted changes at launch, and of each newly changed file
   as refreshes land. A folder you collapse stays closed until a different file inside it changes.
+- **Start on the changed files**: set [`changed_only = true`](configuration.md) and the viewer
+  launches with `c` already on, so the tree shows only what the active baseline changed. `c` still
+  toggles back to the full tree; outside a git repository the key is ignored.
 - **Git-status mode**: press `d` to filter the tree to **current working-tree status only**
   (modified, staged, untracked, and deleted, independent of baseline) and force working-tree diffs
   in the content pane. On a directory, that means a unified diff of all tracked changes under it.

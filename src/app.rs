@@ -136,6 +136,10 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // Apply the config-driven `expand_changed`: open the folders holding uncommitted changes now,
     // and those of each newly changed file as refreshes land.
     controller.apply_expand_changed(eff.expand_changed);
+    // Apply the config-driven `changed_only`: start on the changed-only tree, exactly as if `c`
+    // had already been pressed. Inert outside a git repo. Before the open target, so its reveal
+    // sees the same filters a live session would.
+    controller.apply_changed_only(eff.changed_only);
     // Apply the config-driven quit guard (`confirm_discard`): whether quitting with
     // session annotations held confirms first or discards them immediately.
     controller.apply_confirm_discard(eff.confirm_discard);

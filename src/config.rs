@@ -161,6 +161,11 @@ pub struct Config {
     /// launch, and whenever a refresh finds a newly changed file). `None` falls back to `false`. A
     /// folder you collapse stays closed until a different file inside it changes.
     pub expand_changed: Option<bool>,
+    /// Whether the viewer starts with the changed-only tree (`c`) already on, filtered against the
+    /// active baseline. `None` falls back to `false`. Ignored outside a git repository. The
+    /// interactive `c` toggle still flips it during the session, starting from whichever value
+    /// this seeds.
+    pub changed_only: Option<bool>,
     /// The automatic initial view for Git-changed files: `"diff"` (the default) or `"content"`
     /// (apply the normal file-type policy to paths that still exist: rendered Markdown, syntax
     /// content otherwise). Deleted paths remain diff-first. A lenient string resolved by
@@ -345,6 +350,9 @@ pub struct EffectiveSettings {
     /// The effective **expand changed folders** switch: the config `expand_changed` when present,
     /// else `false`. Config-or-default (no env var).
     pub expand_changed: bool,
+    /// The effective **start changed-only** switch: the config `changed_only` when present, else
+    /// `false`. Seeds the `c` filter at startup. Config-or-default (no env var).
+    pub changed_only: bool,
     /// The effective automatic view policy for Git-changed files. Config `"content"` selects the
     /// normal file-type view; absent, invalid, or `"diff"` preserves the original diff-first
     /// behavior. Config-or-default (no env var).
@@ -442,6 +450,9 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
     // Config > default; no env var. Defaults OFF so the tree opens and closes only by hand for
     // everyone who does not ask for it.
     let expand_changed = config.expand_changed.unwrap_or(false);
+
+    // Config > default; no env var. Defaults OFF so the full tree shows at launch unless asked.
+    let changed_only = config.changed_only.unwrap_or(false);
 
     // Config > default; no env var. Lenient string match (trimmed, case-insensitive): only
     // `content` bypasses the changed-file diff preference. Anything else preserves the original
@@ -561,6 +572,7 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
         show_ignored,
         compact_dirs,
         expand_changed,
+        changed_only,
         changed_file_view,
         baseline,
         update_check,
@@ -848,6 +860,24 @@ mod tests {
             |_| None,
         );
         assert!(on.expand_changed, "config wins");
+    }
+
+    #[test]
+    fn changed_only_resolves_config_over_default() {
+        let (config, _outcome) = parse_config("changed_only = true\n");
+        assert_eq!(config.changed_only, Some(true));
+
+        let off = resolve(&Config::default(), |_| None);
+        assert!(!off.changed_only, "absent falls back to off");
+
+        let on = resolve(
+            &Config {
+                changed_only: Some(true),
+                ..Config::default()
+            },
+            |_| None,
+        );
+        assert!(on.changed_only, "config wins");
     }
 
     #[test]
