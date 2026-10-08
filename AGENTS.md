@@ -222,6 +222,10 @@ prose, not build-failing checks — hold yourself to them.
   a Linux-only failure: reproduce in a Linux container (`rust:1.96-trixie`, mount the worktree
   read-only, cache `CARGO_TARGET_DIR` in a volume) before claiming a fix, and say plainly when you
   could not.
+- **Two smaller traps.** Pty e2e tests match single words: ratatui writes only changed cells and
+  skips blanks with cursor moves, so a phrase spanning a space never matches. Pure path tests also
+  run on the advisory Windows job, so use platform-absolute paths (`C:/…`) there; a rootless `/x`
+  is not absolute on Windows.
 
 ### Adding a keybinding or a config key (touchpoints + drift guards)
 
@@ -294,4 +298,6 @@ assignment for every scalar `Config` field — keep its key list in lockstep wit
 **Install gate (current, since PR #50):** the prebuilt binary is used by **declared version match**,
 not commit-exact; main being ahead of the tag no longer forces a source build. So features can
 batch into one release. Caveat: a change to how a launcher script/manifest **invokes** the binary
-must bump the version in that same commit.
+must bump the version in that same commit. The flip side: from that bump until the version is
+released, every fresh install has no matching prebuilt and builds from source (Rust 1.96+), so cut
+the release soon after such a bump (1.18.0 sat declared-but-unreleased for days after #191).
