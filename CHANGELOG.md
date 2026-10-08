@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-08
+
 ### Added
 - `s` searches file contents across the project and opens the match at its line. Thanks @neverendingstory (#174) → [usage](docs/usage.md#searching-file-contents) · [keys](docs/keys.md)
 - `x` closes every open folder in the tree at once (tree focus only; remappable as `close_all`). Thanks @sftinc (#198) → [keys](docs/keys.md)
