@@ -168,7 +168,9 @@ cargo audit
   `docs/`, not the README.
 - **Verify the branch base before a PR.** Worktrees here are often branched off a feature commit,
   not `main`; always `git log main..HEAD` before committing/opening a PR, or strays get swept in.
-- Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic.
+- Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic. `cargo audit`
+  passes with two allowed unsoundness warnings (`anyhow` RUSTSEC-2026-0190, `lru`
+  RUSTSEC-2026-0253); any other warning is new and needs a look.
 
 ### Tests prove things deterministically, or they don't count
 
@@ -222,6 +224,10 @@ prose, not build-failing checks — hold yourself to them.
   a Linux-only failure: reproduce in a Linux container (`rust:1.96-trixie`, mount the worktree
   read-only, cache `CARGO_TARGET_DIR` in a volume) before claiming a fix, and say plainly when you
   could not.
+- **Two smaller traps.** Pty e2e tests match single words: ratatui writes only changed cells and
+  skips blanks with cursor moves, so a phrase spanning a space never matches. Pure path tests also
+  run on the advisory Windows job, so use platform-absolute paths (`C:/…`) there; a rootless `/x`
+  is not absolute on Windows.
 
 ### Adding a keybinding or a config key (touchpoints + drift guards)
 
@@ -276,7 +282,9 @@ assignment for every scalar `Config` field — keep its key list in lockstep wit
 2. Add the `## [X.Y.Z] - DATE` `CHANGELOG.md` entry (Keep-a-Changelog `Added`/`Changed`/`Fixed`,
    omit empty sections; keep bullets terse and credit external contributors `Thanks @user (#NN)`).
    **The CHANGELOG section IS the release notes** (single source of truth) — never author them
-   separately, or the two drift. Show the owner the section before posting.
+   separately, or the two drift. Show the owner the section before posting. Some
+   `tests/docs_consistency.rs` checks pin exact CHANGELOG phrases (e.g. the CJK selection line):
+   when tightening wording, keep the pinned phrase rather than editing the test.
 3. Protected `main` → bump via a **`release/vX.Y.Z` PR** → green CI → merge.
 4. **Tag `vX.Y.Z` AT the merge commit** (`git tag -a vX.Y.Z <merge-sha>` → push) so a bare
    `herdr plugin install`'s tagless-clone `HEAD` matches the published `COMMIT` asset. The tag push
@@ -294,4 +302,6 @@ assignment for every scalar `Config` field — keep its key list in lockstep wit
 **Install gate (current, since PR #50):** the prebuilt binary is used by **declared version match**,
 not commit-exact; main being ahead of the tag no longer forces a source build. So features can
 batch into one release. Caveat: a change to how a launcher script/manifest **invokes** the binary
-must bump the version in that same commit.
+must bump the version in that same commit. The flip side: from that bump until the version is
+released, every fresh install has no matching prebuilt and builds from source (Rust 1.96+), so cut
+the release soon after such a bump (1.18.0 sat declared-but-unreleased for days after #191).
