@@ -225,6 +225,7 @@ customized).
 | | `page_down` | `PageDown`, `Space` | Move down one screenful (content pane when focused, else the tree cursor) |
 | | `expand` | `Right`, `l` | Expand the selected directory |
 | | `collapse` | `Left`, `h` | Collapse a directory, or walk up from a file/collapsed directory in the normal tree |
+| | `close_all` | `x` | Close every open folder in the tree |
 | | `activate` | `Enter` | Activate the selection: expand/collapse a directory, or open a file |
 | **View & layout** | `open_fullscreen` | `Z` | Toggle full-screen reading of the selected file |
 | | `cycle_view` | `v` | Cycle the content pane's view mode |

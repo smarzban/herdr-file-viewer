@@ -2351,6 +2351,7 @@ impl Controller {
             Intent::PageDown => self.navigate(self.page_step()),
             Intent::Expand => self.expand(),
             Intent::Collapse => self.collapse(),
+            Intent::CloseAll => self.close_all(),
             Intent::Activate => self.activate(),
             Intent::OpenFullscreen => self.open_fullscreen(),
             Intent::ToggleIgnore => self.toggle_ignore(),
@@ -2778,6 +2779,23 @@ impl Controller {
             current = parent;
         }
         Effects::noop()
+    }
+
+    /// Close every open folder. Tree focus only, like `H`: from the content pane (zoomed or not)
+    /// or the pinned preview it is inert, so `x` never swaps the file being read for its
+    /// collapsed ancestor. Inert in changed-only and status mode, whose trees always show every
+    /// folder open. Re-renders when the selection moves up to its top-level ancestor, like
+    /// walking up with [`Self::collapse`].
+    fn close_all(&mut self) -> Effects {
+        if self.focus != Focus::Tree || self.changed_only || self.status_mode {
+            return Effects::noop();
+        }
+        let before = self.tree.selected().map(|n| n.path);
+        self.tree.collapse_all();
+        if self.tree.selected().map(|n| n.path) != before {
+            self.dispatch_render();
+        }
+        Effects::redraw()
     }
 
     /// Activate the selected node (Enter / double-click): a directory toggles expand/collapse;

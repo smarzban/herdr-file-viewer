@@ -1985,3 +1985,42 @@ fn active_refresh_and_width_reflow_do_not_change_a_pinned_snapshot() {
     assert_eq!(after.scroll, before.scroll);
     assert_eq!(after.hscroll, before.hscroll);
 }
+
+#[test]
+fn close_all_is_inert_from_pinned_focus() {
+    // `x` is tree-only: from the pinned preview it neither collapses the tree nor moves the
+    // active file, and it is a plain no-op rather than an AC-31 rejection notice.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    std::fs::write(dir.path().join("src/inner/deep.rs"), "x\n").unwrap();
+    let mut ctrl = controller(dir.path());
+    ctrl.handle(Intent::Expand); // the cursor starts on `src`
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::Expand);
+    ctrl.handle(Intent::NavDown);
+    let deep = dir.path().join("src/inner/deep.rs");
+    assert_eq!(ctrl.tree().selected().map(|n| n.path), Some(deep.clone()));
+    await_content(&mut ctrl);
+    ctrl.set_preview_viewports(PreviewViewports {
+        active: (8, 4),
+        pinned: None,
+    });
+    ctrl.handle(Intent::PinPreview);
+    ctrl.set_preview_viewports(PreviewViewports {
+        active: (8, 4),
+        pinned: Some((8, 4)),
+    });
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Pinned);
+    let rows = ctrl.tree().visible_nodes().len();
+    let seq = ctrl.render_seq();
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(!fx.redraw);
+    assert_eq!(ctrl.tree().visible_nodes().len(), rows);
+    assert_eq!(ctrl.tree().selected().map(|n| n.path), Some(deep));
+    assert_eq!(ctrl.render_seq(), seq, "no render was dispatched");
+    assert_eq!(ctrl.action_notice(), None);
+}

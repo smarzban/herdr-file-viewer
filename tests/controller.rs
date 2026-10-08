@@ -12124,3 +12124,158 @@ fn controller_exposes_update_status_with_its_default_resolved_labels() {
         "status never presents an install command or automatic action: {line}"
     );
 }
+
+#[test]
+fn close_all_closes_every_folder_and_selects_the_top_level_ancestor() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    std::fs::write(dir.path().join("src/inner/deep.rs"), "x\n").unwrap();
+    std::fs::write(dir.path().join("z.txt"), "z\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.handle(Intent::Expand); // the cursor starts on `src`
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::Expand);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(visible_names(&ctrl), ["src", "inner", "deep.rs", "z.txt"]);
+    let seq = ctrl.render_seq();
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(fx.redraw);
+    assert_eq!(visible_names(&ctrl), ["src", "z.txt"]);
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("src"))
+    );
+    assert!(
+        ctrl.render_seq() > seq,
+        "the selection moved to `src`, so its content is re-rendered"
+    );
+}
+
+#[test]
+fn close_all_keeps_a_top_level_selection_without_re_rendering() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    std::fs::write(dir.path().join("src/inner/deep.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.handle(Intent::Expand); // the cursor starts on `src`
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::Expand);
+    ctrl.handle(Intent::NavUp); // back on `src`, with `src/inner` still open beneath it
+    assert_eq!(visible_names(&ctrl), ["src", "inner", "deep.rs"]);
+    let seq = ctrl.render_seq();
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(fx.redraw);
+    assert_eq!(visible_names(&ctrl), ["src"]);
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("src"))
+    );
+    assert_eq!(
+        ctrl.render_seq(),
+        seq,
+        "the selection did not move, so nothing is re-rendered"
+    );
+}
+
+/// Expand `src/inner` and select `src/inner/deep.rs`, with its content rendered.
+fn reading_deep_file(dir: &TempDir) -> Controller {
+    std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    std::fs::write(dir.path().join("src/inner/deep.rs"), "x\n").unwrap();
+    let (mut ctrl, _, _) = controller(dir.path(), false, StubGit::default(), false);
+    ctrl.handle(Intent::Expand); // the cursor starts on `src`
+    ctrl.handle(Intent::NavDown);
+    ctrl.handle(Intent::Expand);
+    ctrl.handle(Intent::NavDown);
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("src/inner/deep.rs"))
+    );
+    await_marker(&mut ctrl, "stub-content");
+    ctrl
+}
+
+/// `x` from anywhere but the tree must leave the tree, the selection and the content alone.
+fn assert_close_all_inert(ctrl: &mut Controller, dir: &TempDir) {
+    let seq = ctrl.render_seq();
+    let content = flatten(ctrl.content());
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(!fx.redraw);
+    assert_eq!(visible_names(ctrl), ["src", "inner", "deep.rs"]);
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path),
+        Some(dir.path().join("src/inner/deep.rs"))
+    );
+    assert_eq!(ctrl.render_seq(), seq, "no render was dispatched");
+    assert_eq!(flatten(ctrl.content()), content);
+}
+
+#[test]
+fn close_all_is_inert_from_the_content_pane() {
+    // Reading a file must not swap it for its collapsed top-level ancestor.
+    let dir = TempDir::new();
+    let mut ctrl = reading_deep_file(&dir);
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+    assert!(!ctrl.zoomed());
+
+    assert_close_all_inert(&mut ctrl, &dir);
+}
+
+#[test]
+fn close_all_is_inert_while_reading_zoomed() {
+    let dir = TempDir::new();
+    let mut ctrl = reading_deep_file(&dir);
+    ctrl.handle(Intent::Activate); // Enter on a file reads it full-screen
+    assert!(ctrl.zoomed());
+    assert_eq!(ctrl.focus(), Focus::Content);
+
+    assert_close_all_inert(&mut ctrl, &dir);
+    assert!(ctrl.zoomed());
+}
+
+#[test]
+fn close_all_is_a_noop_in_changed_only_mode() {
+    // The changed-only tree always shows every folder open, so there is nothing to close.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "x\n").unwrap();
+    let git = StubGit {
+        changed: BTreeMap::from([(PathBuf::from("src/x.rs"), Status::Modified)]),
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.handle(Intent::ToggleChangedOnly);
+    assert_eq!(visible_names(&ctrl), ["src", "x.rs"]);
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(!fx.redraw);
+    assert_eq!(visible_names(&ctrl), ["src", "x.rs"]);
+}
+
+#[test]
+fn close_all_is_a_noop_in_status_mode() {
+    // The status tree always shows every folder open, so there is nothing to close.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "x\n").unwrap();
+    let git = StubGit {
+        status: BTreeMap::from([(PathBuf::from("src/x.rs"), Status::Modified)]),
+        ..Default::default()
+    };
+    let (mut ctrl, _, _) = controller(dir.path(), true, git, false);
+    ctrl.handle(Intent::ToggleStatusMode);
+    assert!(ctrl.status_mode());
+    assert_eq!(visible_names(&ctrl), ["src", "x.rs"]);
+
+    let fx = ctrl.handle(Intent::CloseAll);
+
+    assert!(!fx.redraw);
+    assert_eq!(visible_names(&ctrl), ["src", "x.rs"]);
+}

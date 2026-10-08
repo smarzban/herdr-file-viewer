@@ -613,6 +613,18 @@ impl TreeModel {
         self.clamp_cursor();
     }
 
+    /// Collapse every directory at every depth, moving the cursor to the top-level row that held
+    /// the selection (a compacted chain's row is the chain's deepest directory, still an ancestor).
+    pub fn collapse_all(&mut self) {
+        let selected = self.selected().map(|n| n.path);
+        self.expanded.clear();
+        let rows = self.visible_nodes();
+        match selected.and_then(|s| rows.iter().position(|n| s.starts_with(&n.path))) {
+            Some(idx) => self.place(&rows, idx),
+            None => self.clamp_cursor(),
+        }
+    }
+
     /// Set the cursor to an absolute visible-row index, clamped to the visible range (used by
     /// a mouse click that selects the row it landed on).
     pub fn set_cursor(&mut self, idx: usize) {

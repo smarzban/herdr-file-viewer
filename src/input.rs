@@ -259,6 +259,13 @@ pub(crate) const REGISTRY: &[Binding] = &[
         category: "Navigation",
     },
     Binding {
+        intent: Intent::CloseAll,
+        name: "close_all",
+        default_keys: &[KeyCode::Char('x')],
+        description: "Close every open folder in the tree.",
+        category: "Navigation",
+    },
+    Binding {
         intent: Intent::Activate,
         name: "activate",
         default_keys: &[KeyCode::Enter],
@@ -831,6 +838,7 @@ mod tests {
         (KeyCode::Char('l'), Intent::Expand),
         (KeyCode::Left, Intent::Collapse),
         (KeyCode::Char('h'), Intent::Collapse),
+        (KeyCode::Char('x'), Intent::CloseAll),
         (KeyCode::Enter, Intent::Activate),
         (KeyCode::Char('Z'), Intent::OpenFullscreen),
         (KeyCode::Char('i'), Intent::ToggleIgnore),
@@ -993,7 +1001,7 @@ mod tests {
     #[test]
     fn unmapped_keys_are_a_noop() {
         assert_eq!(map_key(k(KeyCode::Char('g'))), None);
-        assert_eq!(map_key(k(KeyCode::Char('x'))), None);
+        assert_eq!(map_key(k(KeyCode::Char('m'))), None);
         assert_eq!(map_key(k(KeyCode::F(1))), None);
         assert_eq!(map_key(k(KeyCode::Backspace)), None);
     }

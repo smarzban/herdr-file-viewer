@@ -405,3 +405,60 @@ fn a_filter_toggle_keeps_the_selected_path() {
     model.set_show_ignored(true); // a.log appears above b.txt
     assert_eq!(selected_name(&model), "b.txt");
 }
+
+// ── collapse_all() ──────────────────────────────────────────────────────
+
+#[test]
+fn collapse_all_closes_every_folder_and_selects_the_top_level_ancestor() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+    fs::create_dir_all(dir.path().join("docs")).unwrap();
+    fs::write(dir.path().join("src/inner/deep.rs"), "x").unwrap();
+    fs::write(dir.path().join("docs/a.md"), "y").unwrap();
+    fs::write(dir.path().join("z.txt"), "z").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    model.expand(&dir.path().join("docs"));
+    assert!(model.reveal(&dir.path().join("src/inner/deep.rs")));
+
+    model.collapse_all();
+
+    assert_eq!(names(&model), ["docs", "src", "z.txt"]);
+    assert_eq!(selected_name(&model), "src");
+    // Re-opening a folder shows its children collapsed: nothing deeper stayed open.
+    model.expand(&dir.path().join("src"));
+    assert_eq!(names(&model), ["docs", "src", "inner", "z.txt"]);
+}
+
+#[test]
+fn collapse_all_keeps_a_top_level_selection() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/a.rs"), "x").unwrap();
+    fs::write(dir.path().join("z.txt"), "z").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    model.expand(&dir.path().join("src"));
+    assert!(model.reveal(&dir.path().join("z.txt")));
+
+    model.collapse_all();
+
+    assert_eq!(names(&model), ["src", "z.txt"]);
+    assert_eq!(selected_name(&model), "z.txt");
+}
+
+#[test]
+fn collapse_all_selects_a_compacted_top_level_row() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+    fs::write(dir.path().join("a/b/c/f.rs"), "x").unwrap();
+
+    let mut model = TreeModel::new(dir.path());
+    model.set_compact_dirs(true);
+    assert!(model.reveal(&dir.path().join("a/b/c/f.rs")));
+
+    model.collapse_all();
+
+    assert_eq!(model.visible_nodes().len(), 1);
+    assert_eq!(model.selected().unwrap().path, dir.path().join("a/b/c"));
+}
