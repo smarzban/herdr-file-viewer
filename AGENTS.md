@@ -168,9 +168,7 @@ cargo audit
   `docs/`, not the README.
 - **Verify the branch base before a PR.** Worktrees here are often branched off a feature commit,
   not `main`; always `git log main..HEAD` before committing/opening a PR, or strays get swept in.
-- Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic. `cargo audit`
-  passes with two allowed unsoundness warnings (`anyhow` RUSTSEC-2026-0190, `lru`
-  RUSTSEC-2026-0253); any other warning is new and needs a look.
+- Keep the deterministic tier green (fmt/clippy/`cargo audit`) and tests hermetic.
 
 ### Tests prove things deterministically, or they don't count
 
@@ -282,9 +280,7 @@ assignment for every scalar `Config` field — keep its key list in lockstep wit
 2. Add the `## [X.Y.Z] - DATE` `CHANGELOG.md` entry (Keep-a-Changelog `Added`/`Changed`/`Fixed`,
    omit empty sections; keep bullets terse and credit external contributors `Thanks @user (#NN)`).
    **The CHANGELOG section IS the release notes** (single source of truth) — never author them
-   separately, or the two drift. Show the owner the section before posting. Some
-   `tests/docs_consistency.rs` checks pin exact CHANGELOG phrases (e.g. the CJK selection line):
-   when tightening wording, keep the pinned phrase rather than editing the test.
+   separately, or the two drift. Show the owner the section before posting.
 3. Protected `main` → bump via a **`release/vX.Y.Z` PR** → green CI → merge.
 4. **Tag `vX.Y.Z` AT the merge commit** (`git tag -a vX.Y.Z <merge-sha>` → push) so a bare
    `herdr plugin install`'s tagless-clone `HEAD` matches the published `COMMIT` asset. The tag push
