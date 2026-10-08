@@ -23,7 +23,6 @@ impl Controller {
     /// - Otherwise nothing is dispatched, the common case.
     pub fn handle_focus_gained(&mut self) -> Effects {
         let before = self.tree.selected().map(|n| n.path);
-        let status_before = before.as_deref().map(|p| self.change_status(p));
         self.refresh_git_state();
         let Some(node) = self.tree.selected() else {
             if before.is_some() {
@@ -34,7 +33,7 @@ impl Controller {
         if Some(&node.path) != before.as_ref() {
             self.dispatch_render();
         } else if node.kind == NodeKind::File {
-            match self.preview_refresh(&node.path, status_before) {
+            match self.preview_refresh(&node.path) {
                 Some(PreviewRefresh::Render) => self.dispatch_render(),
                 Some(PreviewRefresh::Reflow(mode)) => self.dispatch_reflow(node.path, mode),
                 None => {}
@@ -44,8 +43,8 @@ impl Controller {
     }
 
     /// How the settled preview of `path` must re-render, if at all: it is stale when the file's
-    /// stamp moved since its render was dispatched, its git status changed across the refresh,
-    /// or — for a diff — HEAD moved (a partial commit, an amend, a reset) while both stayed put.
+    /// stamp moved since its render was dispatched, its git status differs from the one it was
+    /// rendered with, or — for a diff — HEAD moved (a partial commit, an amend, a reset) while both stayed put.
     /// A view-mode change re-renders from the top; anything else reflows in place.
     ///
     /// Deferred (`None`, the stamp kept so the next focus-gain catches up) while the reload could
@@ -55,11 +54,11 @@ impl Controller {
     /// annotation editor — whose marker indexes the current body, so a reload under it would make
     /// `y` copy (or the note annotate) different lines than were selected. Any other
     /// in-flight render (a resize reflow) is simply superseded, like a resize superseding another.
-    fn preview_refresh(
-        &self,
-        path: &Path,
-        status_before: Option<Option<Status>>,
-    ) -> Option<PreviewRefresh> {
+    ///
+    /// Everything is compared against the dispatch-time [`PreviewStamp`], never against the state
+    /// just before this refresh: a change seen by a deferred focus-gain, or applied by `r` or an
+    /// editor return after the render was dispatched, must still reload the next time.
+    fn preview_refresh(&self, path: &Path) -> Option<PreviewRefresh> {
         let latest = self.latest_seq;
         if self.pending_goto.is_some_and(|(seq, _)| seq == latest)
             || self.pending_line_select == Some(latest)
@@ -76,7 +75,7 @@ impl Controller {
             return Some(PreviewRefresh::Render);
         }
         let stale = stamp.file != FileStamp::of(path)
-            || status_before != Some(self.change_status(path))
+            || stamp.status != self.change_status(path)
             || stamp.head != self.head_token(mode);
         stale.then_some(PreviewRefresh::Reflow(mode))
     }
@@ -95,6 +94,7 @@ impl Controller {
         self.preview_stamp = Some(PreviewStamp {
             path: path.to_path_buf(),
             file: FileStamp::of(path),
+            status: self.change_status(path),
             mode,
             head: self.head_token(mode),
         });
@@ -199,11 +199,12 @@ pub(super) enum PreviewRefresh {
     Reflow(ViewMode),
 }
 
-/// What the latest content dispatch rendered: the file, its [`FileStamp`] and view mode, and for a
-/// diff the HEAD commit it was taken against.
+/// What the latest content dispatch rendered: the file, its [`FileStamp`], git status and view
+/// mode, and for a diff the HEAD commit it was taken against.
 pub(super) struct PreviewStamp {
     path: PathBuf,
     file: Option<FileStamp>,
+    status: Option<Status>,
     mode: ViewMode,
     head: Option<String>,
 }

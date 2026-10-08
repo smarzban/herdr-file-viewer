@@ -4144,6 +4144,37 @@ fn focus_gained_reloads_in_place_when_only_the_status_changes_within_the_same_vi
 }
 
 #[test]
+fn a_status_change_seen_by_a_deferred_focus_gain_still_reloads_on_the_next_one() {
+    // Review F-2: status used to be compared only across ONE refresh, so a `git add` noticed by a
+    // focus-gain that deferred (here under `L`) was forgotten by the next focus-gain, which saw no
+    // change. The status is now stamped at dispatch, like the file and HEAD.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "x").unwrap();
+    let added = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let git = StagingGit {
+        added: Arc::clone(&added),
+    };
+    let mut ctrl =
+        controller_with_content(dir.path(), true, Arc::new(git), || Box::new(ModeContent));
+    await_marker(&mut ctrl, "Diff 0"); // untracked, settled
+    ctrl.enter_line_select_at_top(); // switches to source view and opens `L` when it lands
+    await_marker(&mut ctrl, "SyntaxContent 0");
+    assert!(ctrl.line_select_active(), "precondition: `L` is open");
+
+    added.store(true, std::sync::atomic::Ordering::SeqCst); // staged elsewhere; no edit
+    let seq = ctrl.render_seq();
+    ctrl.handle_focus_gained();
+    assert_eq!(ctrl.render_seq(), seq, "deferred under `L`");
+
+    ctrl.exit_line_select();
+    ctrl.handle_focus_gained();
+    assert!(
+        ctrl.render_seq() > seq,
+        "the staged status still reloads once `L` closes"
+    );
+}
+
+#[test]
 fn focus_gained_defers_the_reload_while_an_annotation_editor_holds_a_line_selection() {
     // `a` inside `L` swaps the selection for the annotation editor, which keeps the selection to
     // restore on Esc and annotates its line range on save. Both index the current body, so the
