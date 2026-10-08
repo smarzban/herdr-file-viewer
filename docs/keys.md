@@ -73,7 +73,7 @@ place when it was edited, its git status changed, or (for a diff) HEAD moved.
 
 Character keys with a control modifier are normally inert, so terminal chords such as `Ctrl+C` do
 not trigger a viewer action; `Shift` is permitted for keys such as `<`, `>`, `{`, and `}` (and `a`/`A`,
-`y`/`Y`, `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the
+`y`/`Y`, `D`, `W`, `N`, `O`, `R`, `Z`, `?`, `H`/`L`, `J`/`K` in line-select mode, and `d`/`D` in the
 annotation overview).
 
 **On Windows only**, `Ctrl+Alt`+character (with optional `Shift`) is treated as typing (AltGr), not
@@ -163,7 +163,8 @@ config key is more reliable:
 - **Fallback: `$EDITOR`.** With no `editor` configured, `e` uses the `$EDITOR` environment variable
   (e.g. `vim`, or `"code --wait"` for editors that fork). Zero config if it's already set.
 
-If `e` says "no editor configured," neither source is set: add `editor` to your config (simplest),
+On Linux and macOS, if `e` says "no editor configured," neither source is set (Windows falls back
+to Notepad): add `editor` to your config (simplest),
 or export `$EDITOR` where the herdr server can see it (expand below).
 
 <details>

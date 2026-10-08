@@ -528,7 +528,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::ShowHelp,
         name: "show_help",
         default_keys: &[KeyCode::Char('?')],
-        description: "Open the in-app help overlay (What's New and About).",
+        description: "Open the in-app help overlay (What's New, keys, settings, about).",
         category: "Session",
     },
     Binding {

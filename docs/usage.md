@@ -5,7 +5,7 @@ gestures, [summoning](summoning.md) to open the viewer, and [configuration](conf
 customize it.
 
 - [The tree](#the-tree)
-- [Finding a file fast](#finding-a-file-fast)
+- [Finding a file fast](#finding-a-file-fast) (incl. [Searching file contents](#searching-file-contents))
 - [Open at a known file](#open-at-a-known-file) (incl. [Teach your agent](#teach-your-agent))
 - [Viewing a file](#viewing-a-file)
 - [Pinned previews](#pinned-previews)
@@ -22,7 +22,8 @@ customize it.
 ## The tree
 
 The left column is a recursive, expandable directory tree, **rooted at the worktree root** when you
-launch inside a git repo, otherwise at the launch directory. It honors `.gitignore` (press `i` to
+launch inside a git repo, otherwise at the launch directory, or at a directory you choose with
+[Open at another directory](summoning.md#open-at-another-directory). It honors `.gitignore` (press `i` to
 reveal ignored files, or set [`show_ignored = true`](configuration.md) to start with them visible),
 and a separate toggle (`.`) hides dot-prefixed "hidden" files and folders when a directory is full
 of them. Ignored paths often contain local credentials or generated secrets, so keep the startup
@@ -40,7 +41,7 @@ the nearest visible parent, so repeated presses climb the tree; it stops at a ro
 skips folded segments when [`compact_dirs`](configuration.md) is on. Changed-only (`c`) and status
 (`d`) views keep their existing collapse behavior because their directory rows are always expanded.
 With the tree focused, press `x` to close every open folder at once; the cursor moves to the top-level
-folder that held it.
+folder that held it (it does nothing in the `c` and `d` views, whose folders are always open).
 The tree scrolls to keep the selection in view and sideways for long or deeply nested names. Use `H`
 / `L` when the tree is focused. A scrollbar appears whenever there's more than fits. Narrow or widen
 the tree column with `<` / `>`, or drag the divider; the starting split, the tree's side, and a

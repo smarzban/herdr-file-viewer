@@ -263,7 +263,7 @@ customized).
 | | `prev_changed` | `[` | Jump the tree cursor to the previous changed file (wraps) |
 | **Session** | `dismiss_update` | `u` | Dismiss the advisory status row for this session; remember the current Spotlight across launches |
 | | `switch_worktree` | `W` | Open the worktree picker to re-root at another git worktree |
-| | `show_help` | `?` | Open the in-app help overlay (What's New and About) |
+| | `show_help` | `?` | Open the in-app help overlay (What's New, keys, settings, about) |
 | | `close` | `q`, `Esc` | Close the viewer and return to the prior pane |
 
 `Esc` always closes the viewer even if you rebind `close`; you cannot remove that minimum binding

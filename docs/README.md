@@ -16,8 +16,8 @@ herdr TUI pane. Start with the [README](../README.md) for an overview and quick 
 
 | Page | What's in it |
 | --- | --- |
-| [Install & updating](install.md) | Prebuilt vs. source, pinning a version, local development linking, and the in-app update banner. |
-| [Summoning the viewer](summoning.md) | The open actions, the idempotent launcher, split vs. tab, and the `--remote` caveat. |
+| [Install & updating](install.md) | Prebuilt vs. source, pinning a version, local development linking, and remote notices (the advisory status row and What's New). |
+| [Summoning the viewer](summoning.md) | The open actions, the idempotent launcher, split vs. tab, opening at another directory, and the `--remote` caveat. |
 | [Usage guide](usage.md) | A feature-by-feature tour of the tree, open-at-launch, view modes, git awareness, find/search, copying, hand-offs, worktrees, and help. |
 | [Keys & mouse](keys.md) | The complete key table, mouse gestures, and the editor hand-off (`$EDITOR` troubleshooting). |
 | [Configuration](configuration.md) | The full `config.toml` reference for editor, renderer, and opener commands, startup toggles, tree layout, and `[keys]` remapping. |
