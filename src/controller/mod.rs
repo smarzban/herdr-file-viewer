@@ -2158,7 +2158,6 @@ impl Controller {
             },
             pinned: self.pinned_projection(),
             focus: self.focus,
-            width: self.width,
             // Last frame's tree offset, so the Presenter scrolls minimally from it (#45): selecting
             // a row already in view — e.g. a mouse click — never jumps the viewport.
             tree_scroll: self.geom.tree_scroll,

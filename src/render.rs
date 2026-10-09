@@ -476,8 +476,7 @@ fn delegate_markdown_section(
 /// Map a typed failure to the existing short, actionable user-facing notice, preserving a prior
 /// truncation notice when a general file/diff render already has one.
 fn fallback_notice(err: RendererError, mode: ViewMode, base_notice: Option<String>) -> String {
-    // The raw OS errno / io::Error detail is retained by `RendererError`, never shown here: a user
-    // can act on the capability and remediation, not "No such file or directory (os error 2)".
+    // A user can act on the capability and remediation, not "No such file or directory (os error 2)".
     let fallback = err.notice(capability(mode));
     match base_notice {
         Some(prev) => format!("{prev}\n{fallback}"),
@@ -486,18 +485,15 @@ fn fallback_notice(err: RendererError, mode: ViewMode, base_notice: Option<Strin
 }
 
 /// A typed renderer failure, so the fallback notice can branch on the failure *kind* rather
-/// than string-matching a raw error. The raw detail is retained for a future
-/// debug/verbose path but is kept out of the user-facing notice.
+/// than string-matching a raw error. The user-facing notice names the kind, not a raw OS error.
 #[derive(Debug)]
-#[allow(dead_code)] // `detail` is retained for a future debug/verbose path.
 enum RendererError {
     /// The renderer binary could not be found (spawn returned `ErrorKind::NotFound`).
-    NotFound { prog: String, detail: String },
+    NotFound { prog: String },
     /// The renderer exceeded its wall-clock bound and was killed.
     Timeout,
-    /// The renderer spawned but failed otherwise (non-zero exit, IO error, no exit). The detail
-    /// is the raw underlying message (kept off the default notice).
-    Failed { detail: String },
+    /// The renderer spawned but failed otherwise (non-zero exit, IO error, no exit).
+    Failed,
 }
 
 impl RendererError {
@@ -506,12 +502,12 @@ impl RendererError {
     /// `io::Error` Debug string.
     fn notice(&self, cap: &str) -> String {
         match self {
-            RendererError::NotFound { prog, .. } => format!(
+            RendererError::NotFound { prog } => format!(
                 "{cap} renderer ({prog}) not found; showing plain text. \
                  Install it or see docs/renderers.md."
             ),
             RendererError::Timeout => format!("{cap} renderer timed out; showing plain text."),
-            RendererError::Failed { .. } => format!("{cap} renderer failed; showing plain text."),
+            RendererError::Failed => format!("{cap} renderer failed; showing plain text."),
         }
     }
 }
@@ -565,31 +561,21 @@ fn run_renderer_until(
     input: &str,
     deadline: Instant,
 ) -> Result<String, RendererError> {
-    let prog = command
-        .first()
-        .cloned()
-        .ok_or_else(|| RendererError::Failed {
-            detail: "empty renderer command".to_string(),
-        })?;
+    let prog = command.first().cloned().ok_or(RendererError::Failed)?;
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(RendererError::Timeout);
     }
     let mut child = renderer_command(command)
-        .map_err(|e| RendererError::Failed { detail: e })?
+        .map_err(|_| RendererError::Failed)?
         .spawn()
         .map_err(|e| {
             // A spawn failure is almost always "binary not installed" — branch on the OS error
             // kind so the notice can name the binary and point to remediation, instead of
             // leaking the raw "No such file or directory (os error 2)".
             if e.kind() == std::io::ErrorKind::NotFound {
-                RendererError::NotFound {
-                    prog: prog.clone(),
-                    detail: e.to_string(),
-                }
+                RendererError::NotFound { prog: prog.clone() }
             } else {
-                RendererError::Failed {
-                    detail: e.to_string(),
-                }
+                RendererError::Failed
             }
         })?;
 
@@ -610,9 +596,7 @@ fn run_renderer_until(
     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(buf) => match crate::proc::wait_until(&mut child, deadline) {
             Some(status) if status.success() => Ok(String::from_utf8_lossy(&buf).into_owned()),
-            Some(status) => Err(RendererError::Failed {
-                detail: format!("exited with {status}"),
-            }),
+            Some(_) => Err(RendererError::Failed),
             // `wait_until` killed and reaped the child on overrun.
             None => Err(RendererError::Timeout),
         },

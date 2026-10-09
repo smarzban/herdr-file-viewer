@@ -27,7 +27,7 @@ fn node(path: &str, kind: NodeKind, depth: usize, status: Option<Status>) -> Nod
     }
 }
 
-fn state(width: u16, focus: Focus) -> ViewState {
+fn state(focus: Focus) -> ViewState {
     let mut active = PreviewProjection::new("main.rs", to_text("fn main() {}\n"));
     active.notices = vec!["delta not found — showing plain diff".to_string()];
     ViewState {
@@ -40,7 +40,6 @@ fn state(width: u16, focus: Focus) -> ViewState {
         active,
         pinned: None,
         focus,
-        width,
         tree_scroll: 0,
         tree_hscroll: 0,
         preview_split_pct: 50,
@@ -77,7 +76,7 @@ fn render(state: &ViewState, w: u16, h: u16) -> String {
 
 #[test]
 fn narrow_tree_focus_gives_tree_full_width_and_hides_content() {
-    let out = render(&state(60, Focus::Tree), 60, 20);
+    let out = render(&state(Focus::Tree), 60, 20);
     assert!(out.contains("scratch.log"), "tree shown full-width\n{out}");
     assert!(
         !out.contains("fn main()"),
@@ -91,7 +90,7 @@ fn narrow_tree_focus_gives_tree_full_width_and_hides_content() {
 
 #[test]
 fn narrow_content_focus_gives_content_full_width_and_hides_tree() {
-    let out = render(&state(60, Focus::Content), 60, 20);
+    let out = render(&state(Focus::Content), 60, 20);
     assert!(out.contains("fn main()"), "content shown full-width\n{out}");
     assert!(
         out.contains("delta not found"),
@@ -107,7 +106,7 @@ fn narrow_content_focus_gives_content_full_width_and_hides_tree() {
 fn zoom_overrides_narrow_layout_and_fills_with_content() {
     // zoom hides the tree even below the 80-col narrow threshold and with the
     // tree focused — the content pane fills the frame regardless of width or focus.
-    let mut st = state(60, Focus::Tree);
+    let mut st = state(Focus::Tree);
     st.zoomed = true;
     let out = render(&st, 60, 20);
     assert!(
@@ -122,7 +121,7 @@ fn zoom_overrides_narrow_layout_and_fills_with_content() {
 
 #[test]
 fn wide_shows_both_columns_regardless_of_focus() {
-    let out = render(&state(100, Focus::Tree), 100, 20);
+    let out = render(&state(Focus::Tree), 100, 20);
     assert!(
         out.contains("scratch.log"),
         "tree column present at >= 80 cols\n{out}"
@@ -175,46 +174,21 @@ fn structural_policy_keeps_no_pin_boundary_and_pin_floor_distinct() {
 }
 
 #[test]
-fn split_decision_follows_the_live_frame_not_a_stale_state_width() {
-    // The narrow/wide decision must come from the frame the Presenter actually draws into,
-    // so a stale state.width can never disagree with the geometry. Here state.width claims
-    // "wide" (100) but the real pane is 60 → must render the narrow single-column layout.
-    let mut st = state(100, Focus::Tree);
-    let out = render(&st, 60, 20);
-    assert!(out.contains("scratch.log"), "tree shown\n{out}");
-    assert!(
-        !out.contains("fn main()"),
-        "narrow layout follows the 60-col frame, content hidden\n{out}"
-    );
-
-    // Conversely, a stale "narrow" width with a wide frame must show both columns.
-    st.width = 40;
-    let out = render(&st, 100, 20);
-    assert!(
-        out.contains("scratch.log") && out.contains("fn main()"),
-        "wide frame → both columns\n{out}"
-    );
-}
-
-#[test]
 fn narrow_tree_snapshot() {
-    insta::assert_snapshot!(
-        "presenter_narrow_tree",
-        render(&state(60, Focus::Tree), 60, 20)
-    );
+    insta::assert_snapshot!("presenter_narrow_tree", render(&state(Focus::Tree), 60, 20));
 }
 
 #[test]
 fn narrow_content_snapshot() {
     insta::assert_snapshot!(
         "presenter_narrow_content",
-        render(&state(60, Focus::Content), 60, 20)
+        render(&state(Focus::Content), 60, 20)
     );
 }
 
 #[test]
 fn annotation_title_marker_remains_visible_with_tree_hidden_in_narrow_and_zoom_layouts() {
-    let mut narrow = state(60, Focus::Content);
+    let mut narrow = state(Focus::Content);
     narrow.annotation_indicators.displayed_file_annotated = true;
     narrow.active.pad_left = true;
     let narrow_out = render(&narrow, 60, 10);
@@ -227,7 +201,7 @@ fn annotation_title_marker_remains_visible_with_tree_hidden_in_narrow_and_zoom_l
         "tree is hidden in narrow content focus"
     );
 
-    let mut zoomed = state(100, Focus::Content);
+    let mut zoomed = state(Focus::Content);
     zoomed.annotation_indicators.displayed_file_annotated = true;
     zoomed.zoomed = true;
     let zoomed_out = render(&zoomed, 100, 10);
@@ -243,7 +217,7 @@ fn annotation_title_marker_remains_visible_with_tree_hidden_in_narrow_and_zoom_l
 
 #[test]
 fn annotation_overview_stays_centered_and_windowed_in_a_narrow_layout() {
-    let mut st = state(34, Focus::Content);
+    let mut st = state(Focus::Content);
     let rows = (0..12)
         .map(|i| AnnotationRowView {
             target: AnnotationTargetView {
@@ -275,7 +249,7 @@ fn annotation_overview_stays_centered_and_windowed_in_a_narrow_layout() {
 
 #[test]
 fn annotation_editor_stays_bounded_and_usable_in_a_narrow_layout() {
-    let mut empty = state(34, Focus::Content);
+    let mut empty = state(Focus::Content);
     let target = AnnotationTargetView {
         path: PathBuf::from("src/界\u{1b}[2J/very-long-name.rs"),
         lines: Some(LineRange::new(8, 12).unwrap()),
@@ -288,7 +262,7 @@ fn annotation_editor_stays_bounded_and_usable_in_a_narrow_layout() {
         error: None,
     });
 
-    let mut mutable = state(34, Focus::Content);
+    let mut mutable = state(Focus::Content);
     let text = format!("hidden\u{7} {}界🙂", "long input ".repeat(12));
     mutable.annotation_editor = Some(AnnotationEditorView {
         kind: AnnotationEditorKind::Add,
@@ -340,7 +314,7 @@ fn annotation_editor_stays_bounded_and_usable_in_a_narrow_layout() {
 
 #[test]
 fn narrow_content_border_suppresses_overlapping_annotation_chip() {
-    let mut st = state(20, Focus::Content);
+    let mut st = state(Focus::Content);
     st.annotation_count = 9;
     let out = render(&st, 20, 8);
     let last = out.lines().last().unwrap();
