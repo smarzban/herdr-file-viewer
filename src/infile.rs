@@ -18,7 +18,7 @@ pub enum PromptMode {
 /// which match is currently active (the `current` index into `matches`).
 ///
 /// Fields are `pub` so the controller can read and update them without
-/// needing extra accessors, and to avoid dead-code warnings before all paths land.
+/// needing extra accessors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchState {
     pub query: String,
@@ -28,8 +28,8 @@ pub struct SearchState {
 }
 
 /// State for the open bottom-prompt modal: the mode, the editable buffer, and the content scroll
-/// snapshot taken when the prompt opened (for Esc-restore in the incremental search added later;
-/// go-to-line never scrolls while typing, so its Esc simply closes).
+/// snapshot taken when the prompt opened (for Esc-restore of the content scroll after a cancelled
+/// search; go-to-line never scrolls while typing, so its Esc simply closes).
 #[derive(Debug)]
 pub struct PromptState {
     pub mode: PromptMode,

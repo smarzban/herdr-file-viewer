@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- The `?` Keybindings list and the remappable-actions table now describe `L` as tree-scroll or line-select, and `Tab` as cycling tree, active preview, and pinned preview. → [keys](docs/keys.md) · [configuration](docs/configuration.md#keybindings)
+
 ## [1.18.0] - 2026-10-08
 
 ### Added

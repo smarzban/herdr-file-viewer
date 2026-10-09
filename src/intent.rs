@@ -168,9 +168,10 @@ pub enum Intent {
     /// adjusts an in-memory scroll offset; no file or git mutation (AC-N1, AC-N3). Bound to
     /// `H` (Shift+`h`) only — no event hook (AC-N6). Inert unless the tree is focused.
     TreeScrollLeft,
-    /// Scroll the tree pane right by the horizontal step (AC-18). Read-only navigation — like
-    /// [`Intent::TreeScrollLeft`] it only moves the in-pane scroll; no mutation. Bound to `L`
-    /// (Shift+`l`) only — no event hook (AC-N6). Inert unless the tree is focused.
+    /// Scroll the tree pane right by the horizontal step (AC-18), or enter line-select when the
+    /// content pane is focused. Read-only: on tree focus it only moves the in-pane scroll, like
+    /// [`Intent::TreeScrollLeft`]; on content focus it opens line-select. Bound to `L`
+    /// (Shift+`l`) only; no event hook (AC-N6). Inert on pinned focus.
     TreeScrollRight,
     /// Close the viewer and return control to the prior pane (AC-20).
     Close,

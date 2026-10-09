@@ -229,7 +229,7 @@ customized).
 | | `activate` | `Enter` | Activate the selection: expand/collapse a directory, or open a file |
 | **View & layout** | `open_fullscreen` | `Z` | Toggle full-screen reading of the selected file |
 | | `cycle_view` | `v` | Cycle the content pane's view mode |
-| | `toggle_focus` | `Tab` | Move focus between the tree and content columns |
+| | `toggle_focus` | `Tab` | Cycle focus among the tree, active preview, and pinned preview |
 | | `shrink_tree` | `<` | Narrow the tree column |
 | | `grow_tree` | `>` | Widen the tree column |
 | | `shrink_preview` | `{` | Give the pinned preview less horizontal space |
@@ -238,7 +238,7 @@ customized).
 | | `toggle_zoom` | `z` | Hide the tree so content fills the frame, or restore the split |
 | | `pin_preview` | `p` | Pin or unpin the settled preview as a reference |
 | | `tree_scroll_left` | `H` | Scroll the tree pane left |
-| | `tree_scroll_right` | `L` | Scroll the tree pane right |
+| | `tree_scroll_right` | `L` | Scroll the tree pane right, or enter line-select when content is focused |
 | **Git & filters** | `toggle_ignore` | `i` | Reveal or hide gitignored files |
 | | `toggle_hidden` | `.` | Hide or reveal dot-prefixed (hidden) files and folders |
 | | `toggle_changed_only` | `c` | Restrict the tree to changed files (baseline-aware), or restore the full tree |
