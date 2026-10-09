@@ -192,9 +192,8 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // Start the complete once-daily remote-notice coordinator off the UI thread. Pass the
     // resolved config > env > default decision once: disabled startup returns its empty sentinel
     // without source or cache work, while enabled startup returns the initial snapshot and one
-    // refresh receiver. `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let
-    // the env silently override a config `update_check = true` (AC-3/AC-10).
-    let update_check_enabled = crate::config::should_start_update_check(&eff);
+    // refresh receiver.
+    let update_check_enabled = eff.update_check;
     if update_check_enabled && let Some(dir) = crate::update::cache::cache_dir() {
         controller.set_spotlight_dismissal_store(Box::new(
             crate::update::dismissal::FileSpotlightDismissalStore::new(dir),

@@ -106,10 +106,6 @@ pub fn parse_porcelain(bytes: &[u8], current_root: &Path) -> Vec<Worktree> {
     result
 }
 
-// ---------------------------------------------------------------------------
-// Agent-active resolution (AC-3, AC-4, AC-15)
-// ---------------------------------------------------------------------------
-
 /// Serde-only view of one entry from `herdr worktree list --json`.
 ///
 /// Only the fields needed for agent-active resolution are read; all other fields
@@ -268,7 +264,6 @@ pub fn agent_active(
         }
     };
 
-    // Step 7 — normalize against the worktrees slice (symlink-stable).
     let canon_chosen = chosen_path
         .canonicalize()
         .unwrap_or_else(|_| chosen_path.clone());
