@@ -179,8 +179,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
     // state, never touching the filesystem or git. The run loop's key arm below decodes against
     // these instead of the hardwired default map; the `KeyLoadOutcome` is stored for the T-7
-    // Keybindings overlay to surface any ignored entries (AC-16). Consuming both here avoids an
-    // unused-variable warning.
+    // Keybindings overlay to surface any ignored entries (AC-16).
     let (bindings, key_outcome) =
         crate::input::resolve_bindings(crate::input::registry(), cfg.keys.as_ref());
     controller.set_keybindings(bindings, key_outcome);

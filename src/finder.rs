@@ -1,7 +1,7 @@
 //! Finder State — the ephemeral state of the go-to-file overlay.
 //!
 //! [`FinderState`] holds a query buffer ([`PromptInput`]), the full candidate list returned
-//! by [`crate::index::build`], the current scored/ranked match indices, and the cursor
+//! by [`crate::index::build_cancellable`], the current scored/ranked match indices, and the cursor
 //! position within the match list. The live overlay builds its fresh index and matches on one
 //! worker; input and draw only edit a query or read immutable result snapshots.
 
@@ -159,7 +159,7 @@ const PROGRESS_REPAINT: Duration = Duration::from_millis(100);
 pub struct FinderState {
     /// The current query the user has typed.
     prompt: PromptInput,
-    /// Every file under the root, as root-relative strings (from [`crate::index::build`]).
+    /// Every file under the root, as root-relative strings (from [`crate::index::build_cancellable`]).
     /// Populated by the worker once per opening; queries replace only the ranking.
     results: FinderMatches,
     worker: Option<Worker>,

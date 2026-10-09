@@ -25,15 +25,6 @@ pub enum SpawnError {
     NonZeroExit(String),
 }
 
-impl From<SpawnError> for io::Error {
-    fn from(e: SpawnError) -> Self {
-        match e {
-            SpawnError::NotLaunched(e) => e,
-            SpawnError::NonZeroExit(msg) => io::Error::other(msg),
-        }
-    }
-}
-
 /// The external-effect seam. The real implementation runs the editor process; tests
 /// substitute a recorder so no editor is actually launched.
 pub trait Spawner {

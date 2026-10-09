@@ -77,7 +77,6 @@ fn sample_state() -> ViewState {
         active,
         pinned: None,
         focus: Focus::Tree,
-        width: 100,
         tree_scroll: 0,
         tree_hscroll: 0,
         preview_split_pct: 50,
