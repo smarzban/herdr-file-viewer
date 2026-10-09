@@ -15,10 +15,6 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-// ---------------------------------------------------------------------------
-// Public trait: the substitution point the rest of the app depends on
-// ---------------------------------------------------------------------------
-
 /// Run read-only herdr subcommands and return their JSON stdout.
 ///
 /// Callers pass the subcommand args; this seam executes and returns the output.
@@ -37,10 +33,6 @@ pub trait HerdrCli {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Inner seam: CommandRunner — lets tests assert argv without real spawning
-// ---------------------------------------------------------------------------
-
 /// The inner command-execution seam. The real implementation shells out via
 /// [`std::process::Command`]; tests substitute a recorder.
 pub trait CommandRunner {
@@ -57,10 +49,6 @@ impl CommandRunner for RealRunner {
             .output()
     }
 }
-
-// ---------------------------------------------------------------------------
-// LiveHerdr: the real HerdrCli implementation
-// ---------------------------------------------------------------------------
 
 /// Resolves and invokes the herdr binary via an injected [`CommandRunner`].
 ///
@@ -102,11 +90,6 @@ impl<R: CommandRunner> HerdrCli for LiveHerdr<R> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Pure helper — factored out so tests can cover the env-resolution logic
-// without touching the real environment.
-// ---------------------------------------------------------------------------
 
 /// Resolve the herdr binary path from the optional env-var value.
 ///

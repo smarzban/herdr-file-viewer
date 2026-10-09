@@ -1,9 +1,4 @@
-//! Config Loader — parse the plugin's TOML config text into a [`Config`] (AC-14, AC-16, AC-17).
-//!
-//! Parsing is defensive: malformed or wrong-typed TOML degrades to `Config::default()` rather
-//! than panicking (AC-14), and unknown keys are silently ignored so a partial or forward-looking
-//! config file still loads the fields it recognizes (AC-16, AC-17). File reading and config-path
-//! resolution are later tasks — this module is string-in, struct-out only.
+//! Load and resolve the plugin's read-only TOML config into [`Config`] and [`EffectiveSettings`].
 
 use serde::Deserialize;
 
@@ -20,7 +15,7 @@ pub const MAX_SCROLL_LINES: u16 = 10;
 
 /// The built-in **tree width**: the directory tree column's share of the viewer pane (percent) at
 /// startup, when the config supplies no valid `tree_width`. Also the controller's initial
-/// `split_pct`. Owner-set to 30 (was 40) so the content pane gets more room out of the box.
+/// `split_pct`.
 pub const DEFAULT_TREE_WIDTH: u16 = 30;
 /// The narrowest accepted **tree width**, in percent — the same floor the live keyboard/drag resize
 /// enforces, so the tree column can never collapse. A configured value below this clamps up to it.
@@ -126,7 +121,7 @@ impl OpenDirection {
 /// tries the variants in order, so `One(String)` must come first: a bare string deserializes to
 /// `One` and an array to `Many` (order verified by `specs/keybinding-registry/probe-keyspec-untagged.txt`).
 /// Semantic validation (bindable-key check, replace-semantics, clashes) happens later in the
-/// Bindings Resolver (T-5); this type is deserialization-shape only.
+/// Bindings Resolver; this type is deserialization-shape only.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum KeySpec {
@@ -222,7 +217,7 @@ pub struct Config {
     /// and it bounds the disk read (AC-N1). `None` falls back to [`DEFAULT_PREVIEW_MAX_KIB`]; the
     /// resolver clamps a present value into `MIN_PREVIEW_MAX_KIB..=MAX_PREVIEW_MAX_KIB`. 1024 = 1 MiB.
     pub preview_max_kib: Option<u32>,
-    /// The `[keys]` remapping table: **intent name -> key spec** (T-4, Slice B). `None` when the
+    /// The `[keys]` remapping table: **intent name -> key spec**. `None` when the
     /// config omits `[keys]`. A `BTreeMap` keeps the entries in deterministic order. Rides the
     /// existing defensive `load_config` / `parse_config` with no wiring change: a malformed `[keys]`
     /// table degrades the whole config to defaults via the existing `Malformed` path (AC-13), and a
@@ -235,7 +230,7 @@ pub struct Config {
 pub enum LoadOutcome {
     /// Parsed successfully (including an empty or all-unknown-keys input).
     Loaded,
-    /// No config source was found (later tasks; unused by `parse_config` itself).
+    /// No config source was found.
     Absent,
     /// The input was present but failed to parse; carries a short reason.
     Malformed(String),
@@ -287,7 +282,7 @@ pub fn config_path_from_env() -> std::path::PathBuf {
     config_path(|k| std::env::var(k).ok())
 }
 
-/// File-loading layer over [`config_path`] (T-2) and [`parse_config`] (T-1), with the filesystem
+/// File-loading layer over [`config_path`] and [`parse_config`], with the filesystem
 /// **injected** via `get`/`read` so it is hermetic and testable without touching the real
 /// filesystem. This is the sole trust boundary for config loading (AC-20): it only reads, never
 /// writes, creates, or modifies anything, and it never panics or propagates an error — every path
@@ -322,7 +317,7 @@ pub fn load_config(
 }
 
 /// Thin convenience wrapper over [`load_config`] using real process env and filesystem (untested
-/// by unit tests; `load_config` is the tested unit). Used by later tasks (T-8).
+/// by unit tests; `load_config` is the tested unit).
 pub fn load_config_from_env() -> (Config, LoadOutcome) {
     load_config(|k| std::env::var(k).ok(), |p| std::fs::read_to_string(p))
 }
@@ -330,7 +325,7 @@ pub fn load_config_from_env() -> (Config, LoadOutcome) {
 /// The fully-resolved, downstream-ready settings after applying the config > env > default
 /// precedence (AC-3, AC-4, AC-5). `None` on a renderer/opener field means "use the built-in
 /// default"; `None` on `editor` means no editor is configured at all (a platform default, if
-/// any, is applied later at wiring time — T-8).
+/// any, is applied later at wiring time).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveSettings {
     pub editor: Option<std::ffi::OsString>,
@@ -588,9 +583,9 @@ pub fn resolve(config: &Config, get_env: impl Fn(&str) -> Option<String>) -> Eff
 }
 
 /// Settings Applier: the editor hand-off's platform-default layer (AC-6). `eff.editor` already
-/// encodes config > `$EDITOR` (T-5's [`resolve`]), so falling back to `platform_default` here
+/// encodes config > `$EDITOR` ([`resolve`]), so falling back to `platform_default` here
 /// yields the full **config > `$EDITOR` > platform-default** precedence chain. Pure: no
-/// `std::env`, no FS -- the caller (T-8) supplies `platform_default` from `resolve_editor(None)`.
+/// `std::env`, no FS -- the caller supplies `platform_default` from `resolve_editor(None)`.
 pub fn effective_editor(
     eff: &EffectiveSettings,
     platform_default: Option<std::ffi::OsString>,
@@ -637,13 +632,6 @@ pub fn effective_renderers(
         syntax: eff.syntax.clone().unwrap_or_else(|| base.syntax.clone()),
         timeout: base.timeout,
     }
-}
-
-/// Settings Applier: whether to start the once-a-day update check (AC-10). A pure passthrough of
-/// the already-resolved `EffectiveSettings.update_check` (config > env > default, from T-5's
-/// [`resolve`]).
-pub fn should_start_update_check(eff: &EffectiveSettings) -> bool {
-    eff.update_check
 }
 
 #[cfg(test)]
@@ -1005,7 +993,7 @@ mod tests {
         );
     }
 
-    // --- [keys] table (T-4, AC-9, AC-13, AC-17) ---
+    // --- [keys] table (AC-9, AC-13, AC-17) ---
 
     #[test]
     fn keys_table_parses_string_and_array_specs() {
@@ -1768,12 +1756,11 @@ mod tests {
         }
     }
 
-    // --- Settings Applier: effective_editor / effective_renderers / should_start_update_check
-    // (T-7, AC-6, AC-7, AC-10) ---
+    // --- Settings Applier: effective_editor / effective_renderers
+    // (AC-6, AC-7, AC-10) ---
 
     /// Mirrors `app::default_renderers()`'s shape (markdown/syntax/diff/full_diff argv), so the
-    /// override/derive logic can be tested without reaching into `app.rs` (T-7 stays confined to
-    /// `config.rs`).
+    /// override/derive logic can be tested without reaching into `app.rs`.
     fn test_base_renderers() -> crate::render::Renderers {
         crate::render::Renderers {
             markdown: vec!["glow".to_string(), "-".to_string()],
@@ -1846,14 +1833,5 @@ mod tests {
         let result = effective_renderers(&eff, &base);
         assert_eq!(result.full_diff, base.full_diff);
         assert_eq!(result.diff, base.diff);
-    }
-
-    #[test]
-    fn should_start_update_check_reflects_eff_update_check() {
-        let mut eff = resolve(&Config::default(), |_| None);
-        eff.update_check = false;
-        assert!(!should_start_update_check(&eff));
-        eff.update_check = true;
-        assert!(should_start_update_check(&eff));
     }
 }
