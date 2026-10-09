@@ -19,12 +19,6 @@ pub fn released_changelog(changelog: &str) -> String {
         .collect()
 }
 
-/// The What's New body source: the embedded released changelog, with file metadata and
-/// `[Unreleased]` excluded.
-pub fn changelog_display() -> String {
-    released_changelog(CHANGELOG_MD)
-}
-
 /// The built-in, fixed sections of the help overlay: What's New and About.
 ///
 /// This enum is intentionally closed at these two variants — it is NOT the full inventory of
@@ -459,26 +453,26 @@ mod tests {
         );
     }
 
-    // ①: changelog_display() drops the file-meta preamble (title + Keep-a-Changelog/SemVer
-    // paragraph + link refs) and starts at the first version heading — but keeps the entries.
+    // ①: released_changelog() drops the file-meta preamble (title + Keep-a-Changelog/SemVer
+    // paragraph + link refs) and starts at the first version heading, but keeps the entries.
     #[test]
     fn changelog_display_strips_file_preamble() {
-        let shown = changelog_display();
+        let shown = released_changelog(CHANGELOG_MD);
         assert!(
             !shown.contains("Keep a Changelog"),
-            "changelog_display() must not contain the 'Keep a Changelog' preamble line"
+            "released_changelog() must not contain the 'Keep a Changelog' preamble line"
         );
         assert!(
             !shown.contains("Semantic Versioning"),
-            "changelog_display() must not contain the 'Semantic Versioning' preamble line"
+            "released_changelog() must not contain the 'Semantic Versioning' preamble line"
         );
         assert!(
             shown.starts_with("## [") && !shown.starts_with("## [Unreleased]"),
-            "changelog_display() must begin at the newest released version, not Unreleased"
+            "released_changelog() must begin at the newest released version, not Unreleased"
         );
         assert!(
             !shown.contains("## [Unreleased]"),
-            "changelog_display() must exclude the unreleased work-in-progress section"
+            "released_changelog() must exclude the unreleased work-in-progress section"
         );
         // The const stays whole — the preamble is only sliced off for display.
         assert!(

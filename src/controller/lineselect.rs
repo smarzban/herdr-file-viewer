@@ -5,13 +5,12 @@
 //! products, one keystroke apart.
 
 use super::*;
-use crate::preview::PreviewSelection as LineSelectState;
 use ratatui::buffer::CellWidth;
 
 /// Format `rel_path` plus a 1-based line selection as `"<rel>:<n>"` for a single line
 /// (`start == end`) or `"<rel>:<lo>-<hi>"` for a range, normalizing `start`/`end` to ascending
 /// order first so a selection dragged either direction reads the same. Pure formatting only —
-/// no sanitization of `rel_path` (the Copy adapter, T-7, handles that before this is called).
+/// no sanitization of `rel_path` (the copy adapter handles that before this is called).
 pub(crate) fn format_line_reference(rel_path: &str, start: usize, end: usize) -> String {
     let (lo, hi) = if start <= end {
         (start, end)
@@ -90,7 +89,7 @@ impl Controller {
     /// - **Source view, up to date** (`SyntaxContent` AND `applied_seq == latest_seq`): the
     ///   line→row mapping is valid now, so open the modal synchronously on `content_scroll + 1`
     ///   (1-based), clamped into `[1, line_count]` so an empty/short file still yields a valid line 1.
-    ///   The selection starts collapsed (anchor == marker); the user moves/extends it from here (T-5).
+    ///   The selection starts collapsed (anchor == marker); the user moves/extends it from here.
     /// - **Transformed view, or a source render still in flight**: a source line has no display row in
     ///   a transformed view (RenderedMarkdown / Diff / FullDiff), and a still-in-flight source render
     ///   holds stale content — either way the marker can't be placed now. If the view is transformed,
@@ -106,7 +105,7 @@ impl Controller {
         // `is_double_click` only compares the row, not the column/pane, so a stale prior-context
         // click could otherwise fire `copy_line_content` (copy + close) before the marker is
         // ever placed. Cleared here, at the top of entry, so BOTH the synchronous path below and
-        // the deferred (T-6 auto-switch) path are covered — the clear happens when entry begins,
+        // the deferred auto-switch path are covered: the clear happens when entry begins,
         // not when the (possibly-deferred) modal actually opens.
         self.last_click = None;
         // Drop any ambient selection AND in-flight drag so L mode starts clean: a still-held ambient
@@ -124,7 +123,7 @@ impl Controller {
             let top = self
                 .line_at_content_row(self.active_interaction.vertical_scroll as usize)
                 .clamp(1, last);
-            self.modal = Modal::LineSelect(LineSelectState::new(top));
+            self.modal = Modal::LineSelect(PreviewSelection::new(top));
         } else if let Some(path) = self
             .tree
             .selected()
@@ -472,7 +471,7 @@ impl Controller {
     /// ("Copied line 5" / "Copied lines 5-8" / "Copied selection" on `Ok`; a failure message on
     /// `Err`, AC-10/AC-11).
     ///
-    /// Guards the no-real-file case: the mode can be open without a selected *file* node (the T-4
+    /// Guards the no-real-file case: the mode can be open without a selected *file* node (the
     /// guidance screen is non-empty), so if there is no active selection or the selected node is
     /// not a file, copy nothing and return [`Effects::noop`] rather than copy the guidance text.
     /// Read-only (AC-17): touches only the clipboard and in-memory notice / modal state.
@@ -482,7 +481,7 @@ impl Controller {
     /// finder/picker/prompt confirm paths; the notice conveys the outcome.
     pub fn copy_line_content(&mut self) -> Effects {
         // Both an active selection AND a selected file node are required; otherwise there is no
-        // file content to copy — do not copy the non-file guidance screen (T-4).
+        // file content to copy: do not copy the non-file guidance screen.
         let Some((start, end)) = self.line_selection() else {
             return Effects::noop();
         };
@@ -542,13 +541,13 @@ impl Controller {
         self.pending_line_select = None;
     }
 
-    /// Whether line-select mode is currently active. Exposed for the Presenter (T-9) and tests.
+    /// Whether line-select mode is currently active. Exposed for the Presenter and tests.
     pub fn line_select_active(&self) -> bool {
         self.modal.line_select().is_some()
     }
 
     /// The current line-select selection as an ascending 1-based `(start, end)` pair, or `None`
-    /// when line-select is inactive. Exposed for the Presenter (T-9) and tests.
+    /// when line-select is inactive. Exposed for the Presenter and tests.
     pub fn line_selection(&self) -> Option<(usize, usize)> {
         self.modal.line_select().map(|s| s.selection())
     }
@@ -598,7 +597,7 @@ impl Controller {
                 return self.add_annotation_for_line_selection();
             }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                return self.copy_line_content(); // the content — the PR #78 addition
+                return self.copy_line_content();
             }
             _ => {}
         }
@@ -738,14 +737,14 @@ mod tests {
     #[test]
     fn char_span_orders_by_line_then_column() {
         // Anchor after marker on the same line → ordered ascending by column.
-        let mut s = LineSelectState::new(3);
+        let mut s = PreviewSelection::new(3);
         s.begin_char(3, 7, 10);
         s.drag_char(3, 2, 10);
         assert_eq!(s.char_span(), ((3, 2), (3, 7)));
         assert!(s.is_char_mode());
 
         // Anchor on a later line than the marker → ordered ascending by line.
-        let mut s = LineSelectState::new(5);
+        let mut s = PreviewSelection::new(5);
         s.begin_char(5, 1, 10);
         s.drag_char(2, 9, 10);
         assert_eq!(s.char_span(), ((2, 9), (5, 1)));
@@ -753,7 +752,7 @@ mod tests {
 
     #[test]
     fn keyboard_move_reverts_to_line_mode() {
-        let mut s = LineSelectState::new(1);
+        let mut s = PreviewSelection::new(1);
         s.begin_char(1, 4, 10);
         assert!(s.is_char_mode(), "a mouse press is character-granular");
         s.move_to(3, 10);
@@ -765,29 +764,29 @@ mod tests {
 
     #[test]
     fn move_clamps_to_bounds() {
-        let mut state = LineSelectState::new(5);
+        let mut state = PreviewSelection::new(5);
         state.move_to(0, 10);
         assert_eq!(state.selection(), (1, 1));
 
-        let mut state = LineSelectState::new(5);
+        let mut state = PreviewSelection::new(5);
         state.move_to(999, 10);
         assert_eq!(state.selection(), (10, 10));
     }
 
     #[test]
     fn move_keeps_single_line_selection() {
-        let mut state = LineSelectState::new(5);
+        let mut state = PreviewSelection::new(5);
         state.move_to(8, 10);
         assert_eq!(state.selection(), (8, 8));
     }
 
     #[test]
     fn extend_holds_anchor_and_orders() {
-        let mut state = LineSelectState::new(5);
+        let mut state = PreviewSelection::new(5);
         state.extend_to(2, 10);
         assert_eq!(state.selection(), (2, 5));
 
-        let mut state = LineSelectState::new(5);
+        let mut state = PreviewSelection::new(5);
         state.extend_to(9, 10);
         assert_eq!(state.selection(), (5, 9));
     }

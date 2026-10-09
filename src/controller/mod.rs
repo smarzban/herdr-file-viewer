@@ -74,10 +74,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-// The line-select modal and the ambient active-preview selection share one interaction value.
-// Keep the established controller-local name while the modal is migrated in-place.
-type LineSelectState = PreviewSelection;
-
 /// Count the rows a preview's displayed lines occupy at its measured viewport width.
 ///
 /// Layout remains controller behavior: a later pinned preview can pass its own lines and
@@ -616,23 +612,24 @@ struct ProjectSearchCompletion {
 /// the `poll` that applies them.
 type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 
-/// The single open modal overlay, or [`Modal::None`] when the columns have focus. Collapses the
-/// former parallel `Option<…State>` fields into one value, so "at most one modal is open at a time"
-/// is enforced by the type rather than by hand: opening any modal (`self.modal =
-/// Modal::Picker(…)`) implicitly closes whatever else was open, and a single `Modal::None` closes
-/// the lot (the old per-field teardown in [`re_root`](Controller::re_root)).
-/// The variants:
-/// - `Picker` — the worktree picker (AC-1); a re-root closes it (its candidate list is old-root).
-/// - `Finder` — the go-to-file finder (AC-1), opened by `f`; closed by confirm/cancel/re-root.
-/// - `ProjectSearch` — the project-content finder, opened by `s`; captures the current ignored-file
+/// The single open modal overlay, or [`Modal::None`] when the columns have focus. Opening any
+/// variant replaces the previous one; `Modal::None` closes it (including on
+/// [`re_root`](Controller::re_root)).
+///
+/// - `Picker`: the worktree picker (AC-1); a re-root closes it (its candidate list is old-root).
+/// - `Finder`: the go-to-file finder (AC-1), opened by `f`; closed by confirm/cancel/re-root.
+/// - `ProjectSearch`: the project-content finder, opened by `s`; captures the current ignored-file
 ///   scope and owns raw query/navigation keys until confirm/cancel/re-root.
-/// - `Prompt` — the in-file-nav bottom prompt (go-to-line / search). While open the run loop routes
+/// - `Prompt`: the in-file-nav bottom prompt (go-to-line / search). While open the run loop routes
 ///   raw keys to `handle_prompt_key` and the mouse is inert, so the selection can't change beneath it.
-/// - `Help` — the help overlay (AC-1, AC-6), opened by `?`; dismissed by Esc/`q`. While open,
+/// - `Help`: the help overlay (AC-1, AC-6), opened by `?`; dismissed by Esc/`q`. While open,
 ///   `handle()`/`handle_mouse()` return early (AC-N4).
-/// - `LineSelect` — the copy-line-reference selection (a content-pane marker, not a popup). While
-///   active `handle()` returns early — the run loop routes keys to its own handler (like the
-///   prompt/finder) — and a re-root / exit resets it to `Modal::None` (no clipboard touch here).
+/// - `LineSelect`: the copy-line-reference selection (a content-pane marker, not a popup). While
+///   active `handle()` returns early and the run loop routes keys to its own handler. A re-root
+///   or exit resets it to `Modal::None` (no clipboard touch here).
+/// - `Annotations`: the session annotation overview.
+/// - `AnnotationEditor`: the add/edit annotation prompt.
+/// - `DiscardConfirm`: the confirm raised when an action would discard unexported annotations.
 enum Modal {
     None,
     Picker(PickerState),
@@ -747,8 +744,6 @@ impl Modal {
             _ => None,
         }
     }
-    // Used by the line-select key handler (`handle_line_select_key`); the state exists here from
-    // T-3 so the accessor pair mirrors picker/finder/prompt/help.
     fn line_select_mut(&mut self) -> Option<&mut PreviewSelection> {
         match self {
             Modal::LineSelect(s) => Some(s),
@@ -955,8 +950,8 @@ pub struct Controller {
     notice_snapshot: NoticeSnapshot,
     /// The pre-formatted Settings section body (AC-15, AC-18), or `None` before
     /// [`set_settings_display`](Self::set_settings_display) is called. Injected post-construction
-    /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests — a
-    /// test that never calls the setter gets the pre-T-9 two-section overlay unchanged.
+    /// (mirrors [`set_update`](Self::set_update)) so the controller stays hermetic in tests: a
+    /// test that never calls the setter keeps the overlay unchanged.
     settings_display: Option<String>,
     /// The pre-formatted Keybindings section body (AC-16, AC-19, AC-20), or `None` before
     /// [`set_keybindings_display`](Self::set_keybindings_display) is called. Injected
@@ -976,11 +971,10 @@ pub struct Controller {
     /// One-shot receiver for a re-root's off-thread status/changed-set computation (AC-17).
     /// `Some` between a re-root and the tick that applies the result; `None` otherwise.
     status_rx: Option<mpsc::Receiver<StatusResult>>,
-    /// The single open modal overlay (picker / finder / prompt / help), or [`Modal::None`] when the
-    /// columns have focus. One field instead of four parallel `Option`s, so mutual exclusion is
-    /// type-enforced — see [`Modal`]. A re-root resets it to `Modal::None` (the old symmetric
-    /// per-modal teardown), since a re-root invalidates the picker/finder old-root candidate lists
-    /// and must not strand a prompt/help over the freshly re-rooted tree.
+    /// The currently open modal overlay, or [`Modal::None`] when the columns have focus.
+    /// See [`Modal`]. A re-root resets it to `Modal::None`, since a re-root invalidates the
+    /// picker/finder candidate lists and must not strand a prompt or help overlay over the
+    /// freshly re-rooted tree.
     modal: Modal,
     /// The herdr query channel for the agent-active overlay (AC-3), injected post-construction
     /// via [`set_host`](Self::set_host). `None` until then ⇒ a git-only picker (AC-15).
@@ -1033,17 +1027,15 @@ pub struct Controller {
     /// manager). Injected post-construction via [`set_opener`](Self::set_opener) (like
     /// [`herdr`](Self::herdr)) so the controller stays hermetic in tests. `None` until then.
     opener: Option<Box<dyn crate::opener::Opener>>,
-    /// The effective key -> intent bindings the run loop decodes against (Slice B, T-6): the
-    /// keybinding registry resolved with the config's `[keys]` overrides (config > default).
-    /// Initialized to [`default_bindings`](crate::input::default_bindings) so a controller always
-    /// holds a valid map (including in tests that never wire config); `app::run` replaces it via
+    /// The effective key -> intent bindings the run loop decodes against: the keybinding registry
+    /// resolved with the config's `[keys]` overrides (config > default). Initialized to
+    /// [`default_bindings`](crate::input::default_bindings) so a controller always holds a valid
+    /// map (including in tests that never wire config); `app::run` replaces it via
     /// [`set_keybindings`](Self::set_keybindings). Read-only input, never persisted (AC-23).
     bindings: crate::input::EffectiveBindings,
-    /// The outcome of resolving the config's `[keys]` table — every rejected entry and why — kept so
-    /// the T-7 Keybindings overlay can surface which bindings were ignored (AC-16). Empty until
+    /// The outcome of resolving the config's `[keys]` table: every rejected entry and why, so the
+    /// Keybindings overlay can surface which bindings were ignored (AC-16). Empty until
     /// [`set_keybindings`](Self::set_keybindings) forwards the resolver's outcome.
-    #[allow(dead_code)]
-    // consumed by the T-7 Keybindings overlay; exercised by this module's tests.
     key_load_outcome: crate::input::KeyLoadOutcome,
 }
 
@@ -1704,8 +1696,8 @@ impl Controller {
     }
 
     /// Install the effective key bindings resolved from the registry + the config's `[keys]` table,
-    /// plus the resolver's [`KeyLoadOutcome`](crate::input::KeyLoadOutcome) (Slice B, T-6). Called
-    /// once by `app::run` after construction (mirrors [`set_settings_display`](Self::set_settings_display));
+    /// plus the resolver's [`KeyLoadOutcome`](crate::input::KeyLoadOutcome). Called once by
+    /// `app::run` after construction (mirrors [`set_settings_display`](Self::set_settings_display));
     /// a test that never calls it keeps the [`default_bindings`](crate::input::default_bindings) set
     /// from `Controller::new`. Read-only wiring: it only stores in-memory state, never writes (AC-23).
     pub(crate) fn set_keybindings(
@@ -1717,7 +1709,7 @@ impl Controller {
         self.key_load_outcome = outcome;
     }
 
-    /// The effective key bindings the run loop decodes each key event against (Slice B, T-6).
+    /// The effective key bindings the run loop decodes each key event against.
     pub(crate) fn bindings(&self) -> &crate::input::EffectiveBindings {
         &self.bindings
     }
@@ -2388,16 +2380,13 @@ impl Controller {
             Intent::NextChanged => self.navigate_changed(true),
             Intent::PrevChanged => self.navigate_changed(false),
             Intent::TreeScrollLeft => self.scroll_tree_h_focus(-(HSCROLL_STEP as i32)),
-            // `L` is focus-gated (ADR-0010, copy-line-reference): on tree focus it is unchanged
-            // (AC-2, still `scroll_tree_h_focus`); on content focus it instead enters line-select
-            // at the top visible line (AC-1). The `is_empty()` inert branch below (AC-3) fires
-            // only once a render has *completed* with a zero-line body — a render still in
-            // flight shows the non-empty "Rendering…" placeholder, and no-file-selected/directory
-            // states show non-empty guidance text (`clear_content`), so `L` enters line-select in
-            // both of those. `TreeScrollLeft`/`H` is untouched — only `L` is overloaded. NOTE: the
-            // `Intent::TreeScrollRight` doc comment in `src/intent.rs` still reads "Inert unless
-            // the tree is focused" — that file is under a hard no-edit rule for this feature, so
-            // this comment is the up-to-date behavior note instead.
+            // `L` is focus-gated (ADR-0010): on tree focus it still scrolls (`scroll_tree_h_focus`,
+            // AC-2); on content focus it enters line-select at the top visible line (AC-1). The
+            // `is_empty()` inert branch below (AC-3) fires only once a render has completed with a
+            // zero-line body. A render still in flight shows the non-empty "Rendering..."
+            // placeholder, and no-file-selected/directory states show non-empty guidance text
+            // (`clear_content`), so `L` enters line-select in both of those. `H` is untouched;
+            // only `L` is overloaded.
             Intent::TreeScrollRight => match self.focus {
                 Focus::Tree => self.scroll_tree_h_focus(HSCROLL_STEP as i32), // AC-2: unchanged
                 Focus::Content => {
@@ -4105,14 +4094,14 @@ mod tests {
         );
     }
 
-    // ---- T-6 Bindings Wiring (AC-16, AC-23) --------------------------------------------
+    // ---- Bindings Wiring (AC-16, AC-23) --------------------------------------------
     //
     // These exercise the wiring end-to-end: a `[keys]` remap resolved via `input::resolve_bindings`
     // and stored through `set_keybindings` must reach the run loop's decode source
     // (`controller.bindings()`), and the resolver's `KeyLoadOutcome` must be forwarded/stored so the
-    // T-7 Keybindings overlay can surface rejected entries. AC-23 (read-only) is reviewer-checked:
+    // Keybindings overlay can surface rejected entries. AC-23 (read-only) is reviewer-checked:
     // the whole binding path here only *reads* the already-loaded config and builds in-memory state
-    // (`resolve_bindings` is pure; `set_keybindings` just stores) — no filesystem or git write is
+    // (`resolve_bindings` is pure; `set_keybindings` just stores). No filesystem or git write is
     // reached, so there is nothing for a test to assert beyond that (the empanel gate confirms it).
 
     // `super::*` re-exports everything mod.rs has in scope, incl. the injected-component traits, the
@@ -4790,7 +4779,7 @@ mod tests {
     #[test]
     fn rejected_entry_outcome_is_stored_on_the_controller() {
         // AC-16 surfacing: a rejected `[keys]` entry (an unknown intent name) is forwarded through
-        // `set_keybindings` and stored, so the outcome the T-7 overlay reads is non-empty.
+        // `set_keybindings` and stored, so the outcome the overlay reads is non-empty.
         let mut ctrl = wiring_controller();
         let mut keys: BTreeMap<String, KeySpec> = BTreeMap::new();
         keys.insert("bogus_intent".into(), KeySpec::One("g".into()));
@@ -4906,12 +4895,12 @@ mod tests {
         );
     }
 
-    // ---- T-7 Keybindings View-Model (AC-19) --------------------------------------------
+    // ---- Keybindings View-Model (AC-19) --------------------------------------------
 
     #[test]
     fn open_help_appends_keybindings_section_only_after_set_keybindings_display() {
-        // T-7/AC-19: with the Keybindings display injected, the `?` overlay gains a "Keybindings"
-        // section (appended LAST). Without it, the overlay has no such section — so existing
+        // AC-19: with the Keybindings display injected, the `?` overlay gains a "Keybindings"
+        // section (appended last). Without it, the overlay has no such section, so existing
         // count/label-based overlay tests stay green for controllers that never wire it.
         let mut ctrl = wiring_controller();
 
