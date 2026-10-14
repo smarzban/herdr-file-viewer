@@ -23,7 +23,9 @@ customize it.
 
 The left column is a recursive, expandable directory tree, **rooted at the worktree root** when you
 launch inside a git repo, otherwise at the launch directory, or at a directory you choose with
-[Open at another directory](summoning.md#open-at-another-directory). It honors `.gitignore` (press `i` to
+[Open at another directory](summoning.md#open-at-another-directory). If the repo config names a
+worktree other than the directory that contains the `.git` entry you opened, that path is ignored
+and the tree stays on the launch directory. It honors `.gitignore` (press `i` to
 reveal ignored files, or set [`show_ignored = true`](configuration.md) to start with them visible),
 and a separate toggle (`.`) hides dot-prefixed "hidden" files and folders when a directory is full
 of them. Ignored paths often contain local credentials or generated secrets, so keep the startup

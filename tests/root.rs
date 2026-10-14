@@ -39,6 +39,47 @@ fn git_repo_root_is_the_repository_toplevel() {
 }
 
 #[test]
+fn foreign_core_worktree_does_not_become_the_viewer_root() {
+    let opened = TempDir::new();
+    let outside = TempDir::new();
+    git(opened.path(), &["init", "-q"]);
+    git(
+        opened.path(),
+        &["config", "core.worktree", outside.path().to_str().unwrap()],
+    );
+    // Git itself reports the foreign directory. The viewer must not adopt it.
+    let reported = git(opened.path(), &["rev-parse", "--show-toplevel"]);
+    assert_eq!(canon(Path::new(reported.trim())), canon(outside.path()));
+
+    let nested = opened.path().join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    let resolved = resolve(&ctx(&nested));
+    assert_eq!(canon(&resolved.root), canon(&nested));
+    assert!(!resolved.is_git_repo);
+    assert!(resolved.repo_root.is_none());
+    assert_ne!(canon(&resolved.root), canon(outside.path()));
+}
+
+#[test]
+fn core_worktree_that_matches_the_opened_repo_still_resolves() {
+    let dir = TempDir::new();
+    git(dir.path(), &["init", "-q"]);
+    git(
+        dir.path(),
+        &["config", "core.worktree", dir.path().to_str().unwrap()],
+    );
+    let sub = dir.path().join("nested/inner");
+    fs::create_dir_all(&sub).unwrap();
+    let resolved = resolve(&ctx(&sub));
+    assert!(resolved.is_git_repo);
+    assert_eq!(canon(&resolved.root), canon(dir.path()));
+    assert_eq!(
+        resolved.repo_root.as_deref().map(canon),
+        Some(canon(dir.path()))
+    );
+}
+
+#[test]
 fn linked_worktree_root_is_the_worktree_and_is_flagged() {
     let main = TempDir::new();
     init_repo_with_commit(main.path());

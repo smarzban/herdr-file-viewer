@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- A repository `core.worktree` that points at another directory no longer becomes the viewed tree. The viewer stays on the directory that was opened. → [usage](docs/usage.md#the-tree)
+
 ## [1.18.0] - 2026-10-08
 
 ### Added

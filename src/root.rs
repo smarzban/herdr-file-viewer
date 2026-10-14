@@ -24,18 +24,16 @@ pub struct Resolved {
 
 /// Resolve the tree root and git-presence for a launch context.
 pub fn resolve(ctx: &LaunchContext) -> Resolved {
-    match git_output(&ctx.cwd, &["rev-parse", "--show-toplevel"]) {
-        Some(toplevel) => {
-            let root = PathBuf::from(toplevel);
-            Resolved {
-                is_git_repo: true,
-                repo_root: Some(root.clone()),
-                is_worktree: is_linked_worktree(&ctx.cwd),
-                base_branch: ctx.base_branch.clone(),
-                root,
-            }
-        }
-        // Not a git repo (or git unavailable): a plain browser rooted at the cwd (AC-2, AC-26).
+    match trusted_toplevel(&ctx.cwd) {
+        Some(root) => Resolved {
+            is_git_repo: true,
+            repo_root: Some(root.clone()),
+            is_worktree: is_linked_worktree(&ctx.cwd),
+            base_branch: ctx.base_branch.clone(),
+            root,
+        },
+        // Not a git repo, git unavailable, or a toplevel that is not the opened tree:
+        // a plain browser rooted at the cwd (AC-2, AC-26).
         None => Resolved {
             root: ctx.cwd.clone(),
             is_git_repo: false,
@@ -43,6 +41,37 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
             is_worktree: false,
             base_branch: None,
         },
+    }
+}
+
+/// Git's toplevel, only when it is the directory that actually holds the `.git` entry above
+/// `cwd`.
+///
+/// `core.worktree` in an untrusted repo config can make `rev-parse --show-toplevel` name a
+/// different directory than the one the user opened. Walking from `cwd` to the nearest `.git`
+/// file or directory is the filesystem fact; git's answer is accepted only when the two
+/// canonical paths are the same. A mismatch degrades to a non-repo rooted at `cwd`, so later
+/// reads and git queries stay on the opened tree.
+fn trusted_toplevel(cwd: &Path) -> Option<PathBuf> {
+    let reported = PathBuf::from(git_output(cwd, &["rev-parse", "--show-toplevel"])?);
+    let discovered = directory_containing_git_entry(cwd)?;
+    let reported_canon = reported.canonicalize().ok()?;
+    let discovered_canon = discovered.canonicalize().ok()?;
+    // Keep git's own toplevel string when it names that same directory, so a trusted repo
+    // resolves exactly as before.
+    (reported_canon == discovered_canon).then_some(reported)
+}
+
+/// Nearest ancestor of `start`, including `start`, that contains a `.git` file or directory.
+fn directory_containing_git_entry(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.canonicalize().ok()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }
 
