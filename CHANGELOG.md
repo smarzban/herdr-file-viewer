@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Reading a repository's filter configuration no longer waits forever when an included file does not return. That query is skipped instead.
+
 ## [1.18.0] - 2026-10-08
 
 ### Added
