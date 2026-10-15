@@ -1,4 +1,7 @@
 //! Load and resolve the plugin's read-only TOML config into [`Config`] and [`EffectiveSettings`].
+//!
+//! Parsing is defensive: malformed or wrong-typed TOML degrades to `Config::default()` (AC-14),
+//! and unknown keys are ignored (AC-16, AC-17).
 
 use serde::Deserialize;
 
@@ -1757,7 +1760,7 @@ mod tests {
     }
 
     // --- Settings Applier: effective_editor / effective_renderers
-    // (AC-6, AC-7, AC-10) ---
+    // (AC-6, AC-7) ---
 
     /// Mirrors `app::default_renderers()`'s shape (markdown/syntax/diff/full_diff argv), so the
     /// override/derive logic can be tested without reaching into `app.rs`.
