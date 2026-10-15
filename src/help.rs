@@ -456,7 +456,7 @@ mod tests {
     // ①: released_changelog() drops the file-meta preamble (title + Keep-a-Changelog/SemVer
     // paragraph + link refs) and starts at the first version heading, but keeps the entries.
     #[test]
-    fn changelog_display_strips_file_preamble() {
+    fn released_changelog_strips_file_preamble() {
         let shown = released_changelog(CHANGELOG_MD);
         assert!(
             !shown.contains("Keep a Changelog"),

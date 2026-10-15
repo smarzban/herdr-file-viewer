@@ -81,7 +81,7 @@ pub enum Intent {
     AddAnnotation,
     /// Open the session-only annotation overview. Viewing it never touches files or git.
     ShowAnnotations,
-    /// Move focus between the tree and content columns (AC-21).
+    /// Cycle focus among the tree, active preview, and pinned preview (AC-21).
     ToggleFocus,
     /// Narrow the tree column (move the tree/content divider left).
     ShrinkTree,
