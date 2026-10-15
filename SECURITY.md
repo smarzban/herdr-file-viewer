@@ -35,7 +35,9 @@ assume that this content is hostile.
 
 - **Git invocations are hardened in untrusted repositories.** Because the opened repo may be
   hostile, queries disable configured clean, smudge, and process filters, and use `--no-ext-diff` /
-  `--no-textconv` to refuse diff/textconv programs. Git 2.40+ also uses `--attr-source` to read
+  `--no-textconv` to refuse diff/textconv programs. `diff.submodule=short` is forced on the same
+  command so Git does not spawn a nested diff that would miss those flags and run a submodule
+  `diff.external` or textconv. Git 2.40+ also uses `--attr-source` to read
   worktree attributes from the empty tree. Concurrent hostile changes to Git configuration between
   filter inspection and query execution are outside this protection. `core.fsmonitor` and
   `core.hooksPath` are neutralized, `GIT_OPTIONAL_LOCKS=0` prevents index writes, and

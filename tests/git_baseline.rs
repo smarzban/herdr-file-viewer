@@ -483,6 +483,71 @@ fn malicious_repo_config_is_not_executed_during_queries() {
     );
 }
 
+/// `--no-ext-diff` is a flag of the top-level git process. A superproject
+/// `diff.submodule=diff` makes Git spawn another diff inside the submodule, and that
+/// child would otherwise run the submodule's `diff.external`.
+#[cfg(unix)]
+#[test]
+fn submodule_diff_external_is_not_executed() {
+    let sub = TempDir::new();
+    git(sub.path(), &["init", "-q", "-b", "main"]);
+    git(sub.path(), &["config", "user.email", "t@example.com"]);
+    git(sub.path(), &["config", "user.name", "T"]);
+    fs::write(sub.path().join("file.txt"), "hello\n").unwrap();
+    git(sub.path(), &["add", "."]);
+    git(sub.path(), &["commit", "-q", "-m", "init"]);
+
+    let super_repo = TempDir::new();
+    git(super_repo.path(), &["init", "-q", "-b", "main"]);
+    git(
+        super_repo.path(),
+        &["config", "user.email", "t@example.com"],
+    );
+    git(super_repo.path(), &["config", "user.name", "T"]);
+    git(
+        super_repo.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.path().to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(super_repo.path(), &["commit", "-q", "-m", "add submodule"]);
+    git(super_repo.path(), &["config", "diff.submodule", "diff"]);
+
+    let checkout = super_repo.path().join("sub");
+    let marker = super_repo.path().join("PWNED");
+    let script = super_repo.path().join("payload.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    git(
+        &checkout,
+        &["config", "diff.external", script.to_str().unwrap()],
+    );
+    fs::write(checkout.join("file.txt"), "hello\ndirty\n").unwrap();
+
+    let rendered = diff_directory(super_repo.path(), Path::new(""), Baseline::Head, None);
+    assert!(
+        !marker.exists(),
+        "submodule diff.external must not run while rendering a directory diff"
+    );
+    assert!(
+        rendered.contains("Subproject commit"),
+        "the gitlink is still reported, as a short summary: {rendered}"
+    );
+}
+
 // Creating a symlink reliably without elevated privilege is a unix assumption (Windows
 // symlink creation needs Developer Mode or admin rights, not guaranteed on a CI runner); the
 // escape-via-symlink guard itself (`is_within_root`'s canonicalize check) is platform-agnostic.

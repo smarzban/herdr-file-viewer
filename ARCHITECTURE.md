@@ -133,7 +133,8 @@ Four untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
    bytes, and at most 500 retained matching lines; unreadable or vanished files are skipped.
 2. **The git repository** may be untrusted (an agent's worktree, a clone): every `git`
    invocation is hardened against repo-controlled code execution (no external diff/textconv,
-   neutralized `core.fsmonitor`/`core.hooksPath`, scrubbed repo-redirecting env). This hardening
+   submodule diffs kept to the short gitlink summary, neutralized `core.fsmonitor`/`core.hooksPath`,
+   scrubbed repo-redirecting env). This hardening
    lives in **one** shared builder so it cannot drift between callers. Nor can the repo move the
    viewed root: `root` accepts git's top-level only when it is the directory whose `.git` entry
    resolves to the git dir git discovered, so a foreign `core.worktree` degrades to a plain browser

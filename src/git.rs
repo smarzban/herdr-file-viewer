@@ -7,8 +7,9 @@
 //! The viewer opens *untrusted* repositories (e.g. an agent's worktree, a clone), so
 //! every invocation is hardened against repo-controlled code execution: executable filters
 //! are neutralized, `--no-ext-diff` + `--no-textconv` refuse diff/textconv programs,
-//! `core.fsmonitor` and `core.hooksPath` are neutralized, and `GIT_OPTIONAL_LOCKS=0` keeps
-//! status/diff from writing the index (AC-N2). Paths are parsed from NUL-delimited (`-z`) output as raw
+//! `diff.submodule=short` stops Git from spawning a nested diff that would not inherit
+//! those flags, `core.fsmonitor` and `core.hooksPath` are neutralized, and
+//! `GIT_OPTIONAL_LOCKS=0` keeps status/diff from writing the index (AC-N2). Paths are parsed from NUL-delimited (`-z`) output as raw
 //! bytes, so any filename — spaces, control chars, non-ASCII — maps to the real
 //! filesystem path. The host's base-branch hint is threaded through every Base query so
 //! the baseline used to *decide* Base matches the one used to *compute* it.
@@ -529,13 +530,21 @@ fn base_git_command(repo_root: &Path) -> Command {
         .arg(repo_root)
         .args(["-c", "core.fsmonitor=false"])
         .arg("-c")
-        .arg(format!("core.hooksPath={NULL_DEVICE}"));
+        .arg(format!("core.hooksPath={NULL_DEVICE}"))
+        // `--no-ext-diff` / `--no-textconv` are flags of this process only. A repository
+        // `diff.submodule=diff` makes Git spawn another `git diff` inside a populated
+        // submodule, and that child does not receive those flags, so the submodule's
+        // `diff.external` (and, without `--attr-source`, its textconv) would run.
+        // Command-line `-c` overrides the repo value and is inherited by that child, and
+        // `short` never spawns the content diff.
+        .args(["-c", "diff.submodule=short"]);
     cmd
 }
 
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
 /// repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the index (AC-N2);
-/// `core.fsmonitor` / `core.hooksPath` are neutralized; every configured clean/smudge/process
+/// `core.fsmonitor` / `core.hooksPath` are neutralized; `diff.submodule=short` keeps a nested
+/// repository from running its own external diff; every configured clean/smudge/process
 /// filter is replaced by an empty non-required command; and inherited repo-redirecting env is
 /// dropped. **This is the single source of that hardening** for the Git Service and Root Resolver.
 ///
@@ -865,6 +874,10 @@ mod tests {
         assert!(
             args.contains(&format!("core.hooksPath={NULL_DEVICE}")),
             "hooks neutralized: {args:?}"
+        );
+        assert!(
+            args.contains(&"diff.submodule=short".to_string()),
+            "submodule content diffs are not spawned: {args:?}"
         );
 
         let envs: Vec<(String, Option<String>)> = cmd
