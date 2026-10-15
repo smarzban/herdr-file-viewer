@@ -42,6 +42,12 @@ assume that this content is hostile.
   repo-redirecting environment variables (`GIT_DIR`, `GIT_WORK_TREE`, …) are scrubbed. This
   hardening lives in a single shared builder so it cannot drift between callers.
 
+- **A repository cannot move the viewed root.** Git's reported top-level is accepted only when it is
+  the directory whose `.git` entry resolves to the git dir git actually discovered from the opened
+  path. A `core.worktree` naming anything else (a sibling, an ancestor, or a path that differs only
+  by trailing whitespace) is ignored: the viewer falls back to a plain browser at the launch
+  directory, so no file read or git query follows the redirect.
+
 - **Injection guards.** Host-supplied pane ids are validated before they reach an argv (so a
   flag-like id can't option-inject the herdr CLI). Paths are passed to `git` as raw `OsStr`
   arguments after a within-root check (no traversal above the root, no arbitrary reads).
