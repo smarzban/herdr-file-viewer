@@ -1,9 +1,8 @@
 //! Shared subprocess reaping helpers.
 //!
-//! The single place that knows how to wait for a child process with a bounded
-//! wall-clock budget and kill/reap it if it overruns. Used by the content
-//! renderer (`render.rs`) and the update check (`update/mod.rs`) so the
-//! timeout-kill semantics are defined once.
+//! [`wait_until`] waits for a child through an absolute deadline; [`terminate_and_reap`]
+//! kills and reaps on overrun. Used by the content renderer (`render.rs`) and the update
+//! gateway (`update/gateway.rs`) so the timeout-kill semantics are defined once.
 
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -38,16 +37,6 @@ pub fn in_launch_dir(cmd: &mut Command) -> &mut Command {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Wait for `child` to exit within `grace`, polling every 10 ms; if it overruns,
-/// kill and reap it, then return `None`.
-///
-/// `grace` bounds the wait for **useful work** — callers pass a deadline-derived
-/// remainder so a double-timeout regression can't happen. See [`wait_until`] for
-/// the termination contract on overrun.
-pub fn wait_bounded(child: &mut Child, grace: Duration) -> Option<std::process::ExitStatus> {
-    wait_until(child, Instant::now() + grace)
-}
 
 /// Wait for `child` through its caller's absolute deadline.
 ///
@@ -94,7 +83,7 @@ mod tests {
     use std::time::Instant;
 
     const STALL_FIXTURE_ENV: &str = "HERDR_FV_PROC_STALL_FIXTURE";
-    const STALL_FIXTURE_NAME: &str = "proc::tests::wait_bounded_stalled_child_fixture";
+    const STALL_FIXTURE_NAME: &str = "proc::tests::wait_until_stalled_child_fixture";
     const STALL_FIXTURE_MARKER: &str = "herdr-fv-proc-stall";
 
     fn fixture_command(stall: bool) -> Command {
@@ -109,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_bounded_stalled_child_fixture() {
+    fn wait_until_stalled_child_fixture() {
         if std::env::var_os(STALL_FIXTURE_ENV).is_some()
             && std::env::args().any(|argument| argument == STALL_FIXTURE_MARKER)
         {
@@ -118,23 +107,27 @@ mod tests {
     }
 
     #[test]
-    fn wait_bounded_returns_a_successful_normal_status() {
+    fn wait_until_returns_a_successful_normal_status() {
         let mut child = fixture_command(false)
             .spawn()
             .expect("fixture child starts");
 
         assert!(
-            wait_bounded(&mut child, Duration::from_secs(1)).is_some_and(|status| status.success()),
+            wait_until(&mut child, Instant::now() + Duration::from_secs(1))
+                .is_some_and(|status| status.success()),
             "a normally completing renderer child retains its successful status"
         );
     }
 
     #[test]
-    fn wait_bounded_times_out_and_reaps_a_stalled_child() {
+    fn wait_until_times_out_and_reaps_a_stalled_child() {
         let mut child = fixture_command(true).spawn().expect("stalled child starts");
         let started = Instant::now();
 
-        assert_eq!(wait_bounded(&mut child, Duration::from_millis(100)), None);
+        assert_eq!(
+            wait_until(&mut child, Instant::now() + Duration::from_millis(100)),
+            None
+        );
         // Bounded vs unbounded: the fixture child stalls for 60s, so this proves termination and
         // reaping returned rather than waiting on it. 2s is 20x the requested timeout — ample for a
         // loaded runner (the flakes this replaced were 314-340ms) while still rejecting a
