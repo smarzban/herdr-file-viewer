@@ -289,7 +289,6 @@ fn draw_if_needed<B: Backend>(
     if *dirty {
         let mut need_redraw = false;
         terminal.draw(|frame| {
-            controller.set_width(frame.area().width);
             let view: ViewState = controller.view_state();
             let viewports = presenter::draw(frame, &view);
             // Feed the drawn content viewport back so content scrolling can be clamped to

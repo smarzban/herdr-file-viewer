@@ -476,7 +476,8 @@ fn delegate_markdown_section(
 /// Map a typed failure to the existing short, actionable user-facing notice, preserving a prior
 /// truncation notice when a general file/diff render already has one.
 fn fallback_notice(err: RendererError, mode: ViewMode, base_notice: Option<String>) -> String {
-    // A user can act on the capability and remediation, not "No such file or directory (os error 2)".
+    // The notice names the capability and remediation, never the raw OS error: a user can act on
+    // those, not "No such file or directory (os error 2)".
     let fallback = err.notice(capability(mode));
     match base_notice {
         Some(prev) => format!("{prev}\n{fallback}"),

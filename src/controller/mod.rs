@@ -1,9 +1,9 @@
 //! Session Controller — orchestrate intents into coordinated state changes.
 //!
 //! Holds the ephemeral session state (root, git-presence, baseline, filter flags, per-file
-//! view overrides, cursor/expansion via the Tree Model, focus, observed width) and turns
-//! each [`Intent`] into state mutations plus a set of [`Effects`] the run loop acts on
-//! (redraw, quit, force-clear). The side-effecting components — Git Service, Content
+//! view overrides, cursor/expansion via the Tree Model, focus) and turns each [`Intent`]
+//! into state mutations plus a set of [`Effects`] the run loop acts on (redraw, quit,
+//! force-clear). The side-effecting components — Git Service, Content
 //! Renderer, Editor Launcher — are reached through injected traits so the controller is
 //! unit-testable with stubs; the Tree Model is the one read-only component it drives
 //! directly. No intent edits a file (AC-N3); git-only intents are inert when not in a repo
@@ -819,9 +819,6 @@ pub struct Controller {
     /// The interaction state an open in-file prompt was created for. It is deliberately not
     /// inferred from later focus changes, so incremental search cannot leak across previews.
     prompt_target: PreviewTarget,
-    /// The pane width the run loop last observed (session state for the narrow-split flag,
-    /// AC-21); the Presenter still lays out from the live frame, never this.
-    width: u16,
     /// Mutable viewport, search, and displayed-text selection state for the active preview.
     /// A later pinned snapshot owns a distinct clone of this value.
     active_interaction: PreviewInteractionState,
@@ -1126,7 +1123,6 @@ impl Controller {
             git_status: BTreeMap::new(),
             focus: Focus::Tree,
             prompt_target: PreviewTarget::Active,
-            width: 0,
             active_interaction: PreviewInteractionState::default(),
             pinned_snapshot: None,
             preview_split_pct: 50,
@@ -1643,11 +1639,6 @@ impl Controller {
         Some(self.effective_mode(&node.path))
     }
 
-    /// Record the pane width the run loop observed (session state, AC-21).
-    pub fn set_width(&mut self, width: u16) {
-        self.width = width;
-    }
-
     /// Inject the optional spotlight dismissal record before the first draw. No remote I/O.
     pub fn set_spotlight_dismissal_store(
         &mut self,
@@ -2048,8 +2039,8 @@ impl Controller {
     }
 
     /// Assemble the [`ViewState`] the Presenter draws from: the visible tree rows + cursor,
-    /// the current content and notices, focus, and the observed width (the narrow-split
-    /// input, AC-21).
+    /// the current content and notices, and focus. The narrow-split decision (AC-21) is the
+    /// Presenter's, from the live frame width.
     pub fn view_state(&self) -> ViewState {
         // Build the visible node list once and read the selection from it, rather than calling
         // `tree.selected()` (which re-runs the gitignore-aware filesystem walk) a second time
