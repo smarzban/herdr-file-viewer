@@ -108,7 +108,6 @@ fn draw(controller: &mut Controller) -> String {
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal
         .draw(|frame| {
-            controller.set_width(frame.area().width);
             presenter::draw(frame, &controller.view_state());
         })
         .unwrap();

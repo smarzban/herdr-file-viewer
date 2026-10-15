@@ -94,8 +94,7 @@ pub struct PreviewViewports {
 
 /// Everything the Presenter needs to draw one frame. Built by the Session Controller from
 /// the Tree Model (nodes + selection), Content Renderer (content + notices), and session
-/// focus/width. `width` is the pane width the controller observed (the narrow-split input
-/// for AC-21); geometry is taken from the live frame area.
+/// focus. Geometry is taken from the live frame area.
 pub struct ViewState {
     /// Visible tree rows, in display order.
     pub nodes: Vec<Node>,
@@ -107,10 +106,6 @@ pub struct ViewState {
     pub pinned: Option<PreviewProjection>,
     /// Which column has focus.
     pub focus: Focus,
-    /// The pane width the controller last observed (session state — e.g. for tracking the
-    /// narrow-split flag). The Presenter lays out from the live frame width, not this, so
-    /// the two can never disagree; it is carried for the controller's own use.
-    pub width: u16,
     /// The tree's vertical scroll offset from the LAST drawn frame (first visible node index),
     /// carried back via [`PaneGeometry::tree_scroll`]. The Presenter scrolls *minimally* from it
     /// so selecting a row already in view (e.g. a mouse click) never jumps the viewport (#45). `0`
@@ -1617,7 +1612,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 /// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the focused
 /// column is drawn — full width — so the active content stays readable (AC-21). The split is
 /// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
-/// geometry it is drawn into (a stale `state.width` cannot desync the layout).
+/// geometry it is drawn into.
 pub fn draw(frame: &mut Frame, state: &ViewState) -> PreviewViewports {
     let layout = structural_layout(frame.area(), state);
     let active = &state.active;

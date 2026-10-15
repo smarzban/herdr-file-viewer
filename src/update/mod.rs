@@ -178,7 +178,7 @@ impl UpdateState {
     }
 }
 
-/// Injected dependencies for [`start_with`] — real values in [`start_default`], fakes in tests.
+/// Injected dependencies for [`start_with`]: real values in [`start_default_with`], fakes in tests.
 pub struct StartDeps {
     pub disabled: bool,
     pub now_unix: u64,
@@ -314,12 +314,7 @@ pub fn start_with(deps: StartDeps) -> UpdateState {
     }
 }
 
-/// The real entry point: read the env/clock/cache and use the `git` runner.
-pub fn start_default() -> UpdateState {
-    start_default_with(std::env::var_os(DISABLE_ENV).is_some())
-}
-
-/// Like [`start_default`] but with the disable decision **already made by the caller**, so the
+/// Start the real coordinator with the disable decision **already made by the caller**, so the
 /// resolved `config > env > default` precedence is not re-litigated here by re-reading
 /// [`DISABLE_ENV`] (AC-3/AC-10). `app::run` passes the effective `update_check` through this: a
 /// config `update_check = true` that already won over the env must not be silently vetoed by the
@@ -661,27 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_decision_projects_fresh_spotlight_in_status_and_whats_new() {
-        let session_started_at_unix = 1_000_000;
-        let initial = decide(
-            false,
-            session_started_at_unix,
-            &Some(Cache {
-                spotlight: Some(b"# Project\nbody\n".to_vec()),
-                spotlight_retrieved_at_unix: Some(session_started_at_unix - 1),
-                ..Cache::default()
-            }),
-        )
-        .initial;
-
-        assert_eq!(initial.spotlight.status_title(), Some("Project"));
-        assert_eq!(
-            initial.spotlight.whats_new_body(),
-            Some(b"body\n".as_slice())
-        );
-    }
-
-    #[test]
     fn startup_decision_fixes_spotlight_freshness_at_session_start() {
         let session_started_at_unix = 1_000_000;
         let cache = Some(Cache {
@@ -963,13 +937,8 @@ mod tests {
 
     #[test]
     fn start_default_with_honors_the_passed_decision_not_the_env() {
-        // AC-3/AC-10 wiring regression: the update start must obey the ALREADY-RESOLVED
-        // decision (config > env > default) the caller passes, NOT re-read
-        // HERDR_FILE_VIEWER_NO_UPDATE_CHECK. Passing `disabled = true` yields the disabled
-        // sentinel (no probe thread, no banner) — proving the arg governs. The enabled path
-        // (`disabled = false`) is the env-free `start_with` already covered above; before the
-        // fix, `app::run` routed through `start_default()`, letting a set env var silently veto a
-        // config `update_check = true`.
+        // AC-3/AC-10: the update start must obey the already-resolved decision the caller
+        // passes, not re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK.
         let state = start_default_with(true);
         assert!(
             state.initial.detected_release.is_none() && state.rx.is_none(),

@@ -28,7 +28,7 @@ impl AnnotationListState {
 #[derive(Debug, Clone)]
 enum AnnotationEditorMode {
     Add {
-        restore_line_select: Option<LineSelectState>,
+        restore_line_select: Option<PreviewSelection>,
     },
     Edit {
         id: AnnotationId,
@@ -46,7 +46,7 @@ pub struct AnnotationEditorState {
 }
 
 impl AnnotationEditorState {
-    fn add(target: AnnotationTarget, restore_line_select: Option<LineSelectState>) -> Self {
+    fn add(target: AnnotationTarget, restore_line_select: Option<PreviewSelection>) -> Self {
         Self {
             target,
             input: PromptInput::new(),

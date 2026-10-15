@@ -25,10 +25,7 @@ pub(crate) struct EffectiveBindings {
     /// Which [`Intent`] each logical key decodes to.
     map: HashMap<KeyCode, Intent>,
     /// Intents whose effective key set came from a user `[keys]` entry; empty under the defaults.
-    /// Populated by [`resolve_bindings`]; read via [`EffectiveBindings::is_customized`] (wired into
-    /// the T-7 Keybindings overlay, exercised by this module's resolver tests).
-    #[allow(dead_code)]
-    // read only in is_customized (test + T-7 overlay), not yet on the hot path.
+    /// Populated by [`resolve_bindings`]; read via [`EffectiveBindings::is_customized`].
     customized: HashSet<Intent>,
 }
 
@@ -381,7 +378,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::ToggleFocus,
         name: "toggle_focus",
         default_keys: &[KeyCode::Tab],
-        description: "Move focus between the tree and content columns.",
+        description: "Cycle focus among the tree, active preview, and pinned preview.",
         category: "View & layout",
     },
     Binding {
@@ -521,7 +518,7 @@ pub(crate) const REGISTRY: &[Binding] = &[
         intent: Intent::TreeScrollRight,
         name: "tree_scroll_right",
         default_keys: &[KeyCode::Char('L')],
-        description: "Scroll the tree pane right.",
+        description: "Scroll the tree pane right, or enter line-select when content is focused.",
         category: "View & layout",
     },
     Binding {
@@ -594,10 +591,9 @@ pub(crate) fn parse_key_spec(s: &str) -> Option<KeyCode> {
 }
 
 /// Why a `[keys]` entry was rejected during binding resolution. Renders to a short human string
-/// (via [`std::fmt::Display`]) so the T-7 Keybindings help section can surface which bindings were
+/// (via [`std::fmt::Display`]) so the Keybindings help section can surface which bindings were
 /// ignored rather than dropping them silently (AC-16).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // variants/payloads read by the T-7 overlay; exercised in this module's tests.
 pub(crate) enum RejectReason {
     /// The entry's key is not a recognized registry [intent name](Binding::name) (AC-14).
     UnknownIntent,
@@ -620,9 +616,8 @@ impl std::fmt::Display for RejectReason {
 }
 
 /// One rejected `[keys]` entry: the intent name the user wrote and why it was dropped. Recorded so
-/// T-7 can tell the user which bindings were ignored (the surfacing path, AC-16).
+/// the Keybindings overlay can tell the user which bindings were ignored (AC-16).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // fields read by the T-6 wiring / T-7 overlay; exercised in this module's tests.
 pub(crate) struct RejectedBinding {
     /// The `[keys]` config key (intent name) as the user wrote it.
     pub name: String,
@@ -634,17 +629,15 @@ pub(crate) struct RejectedBinding {
 /// to its default key set). Empty when every entry was valid, or when the config had no `[keys]`
 /// table. The resolved bindings themselves ride the sibling [`EffectiveBindings`]; this records only
 /// what was dropped, for the surfacing path (AC-16).
-// `Default` (an empty outcome: no rejected entries) is the controller's initial value before the
-// T-6 wiring resolves the real bindings, so a controller always holds a valid outcome in tests.
+// `Default` (an empty outcome: no rejected entries) is the controller's initial value before
+// wiring resolves the real bindings, so a controller always holds a valid outcome in tests.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[allow(dead_code)] // consumed by the T-6 wiring / T-7 overlay; exercised in this module's tests.
 pub(crate) struct KeyLoadOutcome {
     pub rejected: Vec<RejectedBinding>,
 }
 
 impl KeyLoadOutcome {
     /// Whether every `[keys]` entry resolved cleanly (no rejected entries).
-    #[allow(dead_code)] // consumed by the T-6 wiring / T-7 overlay; used in this module's tests.
     pub(crate) fn is_empty(&self) -> bool {
         self.rejected.is_empty()
     }

@@ -179,8 +179,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
     // state, never touching the filesystem or git. The run loop's key arm below decodes against
     // these instead of the hardwired default map; the `KeyLoadOutcome` is stored for the T-7
-    // Keybindings overlay to surface any ignored entries (AC-16). Consuming both here avoids an
-    // unused-variable warning.
+    // Keybindings overlay to surface any ignored entries (AC-16).
     let (bindings, key_outcome) =
         crate::input::resolve_bindings(crate::input::registry(), cfg.keys.as_ref());
     controller.set_keybindings(bindings, key_outcome);
@@ -192,9 +191,8 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
     // Start the complete once-daily remote-notice coordinator off the UI thread. Pass the
     // resolved config > env > default decision once: disabled startup returns its empty sentinel
     // without source or cache work, while enabled startup returns the initial snapshot and one
-    // refresh receiver. `start_default()` would re-read HERDR_FILE_VIEWER_NO_UPDATE_CHECK and let
-    // the env silently override a config `update_check = true` (AC-3/AC-10).
-    let update_check_enabled = crate::config::should_start_update_check(&eff);
+    // refresh receiver.
+    let update_check_enabled = eff.update_check;
     if update_check_enabled && let Some(dir) = crate::update::cache::cache_dir() {
         controller.set_spotlight_dismissal_store(Box::new(
             crate::update::dismissal::FileSpotlightDismissalStore::new(dir),
@@ -290,7 +288,6 @@ fn draw_if_needed<B: Backend>(
     if *dirty {
         let mut need_redraw = false;
         terminal.draw(|frame| {
-            controller.set_width(frame.area().width);
             let view: ViewState = controller.view_state();
             let viewports = presenter::draw(frame, &view);
             // Feed the drawn content viewport back so content scrolling can be clamped to

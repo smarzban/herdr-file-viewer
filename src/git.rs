@@ -20,6 +20,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -417,12 +419,30 @@ fn configured_filter_driver_names(out: &[u8]) -> BTreeSet<Vec<u8>> {
     drivers
 }
 
+/// How long the filter-name inventory may block. An included config path that never returns
+/// (for example a fifo) must not freeze every later git query; past this budget the inventory
+/// is unavailable and the caller fails closed.
+const FILTER_INVENTORY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Largest config-key listing accepted from the inventory. A truncated read is incomplete, so
+/// it is refused rather than turned into a partial override list.
+const MAX_FILTER_INVENTORY_BYTES: u64 = 1024 * 1024;
+
 /// Read filter driver names without consulting attributes or the index, then return command-line
 /// overrides that make every configured filter a non-required no-op. Git's documented behavior for
 /// a filter without a command is pass-through; in git 2.39's `convert.c`, empty clean/process
 /// strings are likewise rejected by the `*cmd` check before any child can spawn.
 fn configured_filter_overrides(repo_root: &Path) -> Option<Vec<OsString>> {
-    let output = base_git_command(repo_root)
+    configured_filter_overrides_within(repo_root, FILTER_INVENTORY_TIMEOUT)
+}
+
+fn configured_filter_overrides_within(
+    repo_root: &Path,
+    timeout: Duration,
+) -> Option<Vec<OsString>> {
+    // One deadline covers both the child's exit and the reader thread's hand-off.
+    let deadline = Instant::now() + timeout;
+    let mut child = base_git_command(repo_root)
         .args([
             "config",
             "--includes",
@@ -431,17 +451,40 @@ fn configured_filter_overrides(repo_root: &Path) -> Option<Vec<OsString>> {
             "--get-regexp",
             r"^filter\.",
         ])
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = crate::proc::terminate_and_reap(&mut child);
+        return None;
+    };
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout
+            .take(MAX_FILTER_INVENTORY_BYTES)
+            .read_to_end(&mut buf);
+        let _ = sender.send(buf);
+    });
+    // On overrun the child is killed and reaped. Do not parse a partial listing.
+    let status = crate::proc::wait_until(&mut child, deadline)?;
+    let stdout = receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()?;
+    if stdout.len() as u64 >= MAX_FILTER_INVENTORY_BYTES {
+        return None;
+    }
     // `git config --get-regexp` returns 1 for no matches. Every other failure is unsafe to
     // interpret as "no filters": fail closed rather than running the requested repo query with
     // an incomplete inventory.
-    let no_matches = output.status.code() == Some(1) && output.stdout.is_empty();
-    if !(output.status.success() || no_matches) {
+    let no_matches = status.code() == Some(1) && stdout.is_empty();
+    if !(status.success() || no_matches) {
         return None;
     }
 
-    filter_overrides_from_config(&output.stdout)
+    filter_overrides_from_config(&stdout)
 }
 
 fn filter_overrides_from_config(output: &[u8]) -> Option<Vec<OsString>> {
@@ -895,6 +938,71 @@ mod tests {
         assert!(
             filter_overrides_from_config(b"filter.normal.clean\0filter.probe=x.clean\0").is_none()
         );
+    }
+
+    #[test]
+    fn filter_inventory_of_a_normal_repo_still_completes() {
+        let got = configured_filter_overrides_within(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            FILTER_INVENTORY_TIMEOUT,
+        );
+        assert!(
+            got.is_some(),
+            "a readable repository config is still a complete inventory"
+        );
+    }
+
+    /// A repo-local `include.path` that never yields bytes used to block `git config` forever,
+    /// and every viewer query waits on that inventory first. The budget must win, and the result
+    /// must be "unavailable" so the query is refused rather than run with an unknown filter set.
+    #[cfg(unix)]
+    #[test]
+    fn filter_inventory_times_out_instead_of_blocking_on_an_included_fifo() {
+        let root = std::env::temp_dir().join(format!(
+            "hfv-filter-fifo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .expect("git init");
+        assert!(init.success(), "git init");
+        let fifo = root.join("block.fifo");
+        let made = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+        assert!(made.success(), "mkfifo");
+        let configured = Command::new("git")
+            .args(["config", "include.path"])
+            .arg(&fifo)
+            .current_dir(&root)
+            .status()
+            .expect("git config");
+        assert!(
+            configured.success(),
+            "writing include.path must not read the included path"
+        );
+
+        let started = std::time::Instant::now();
+        let got = configured_filter_overrides_within(&root, Duration::from_millis(200));
+        assert!(
+            got.is_none(),
+            "a stalled include is not a complete filter inventory"
+        );
+        // The included fifo never returns. 2s is 10x the 200ms budget — enough for a loaded
+        // runner, still far below an unbounded wait. See AGENTS.md, "Tests prove things
+        // deterministically".
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "inventory must return rather than wait on the included fifo: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]
