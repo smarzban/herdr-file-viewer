@@ -19,8 +19,8 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// git's well-known empty-tree object — the baseline for an unborn repo's first files.
@@ -433,36 +433,7 @@ const MAX_FILTER_INVENTORY_BYTES: u64 = 1024 * 1024;
 /// a filter without a command is pass-through; in git 2.39's `convert.c`, empty clean/process
 /// strings are likewise rejected by the `*cmd` check before any child can spawn.
 fn configured_filter_overrides(repo_root: &Path) -> Option<Vec<OsString>> {
-    inventory_or_memoized_failure(&FAILED_FILTER_INVENTORIES, repo_root, |root| {
-        configured_filter_overrides_within(root, FILTER_INVENTORY_TIMEOUT)
-    })
-}
-
-/// Repositories whose filter inventory already failed this session. Every git query takes an
-/// inventory first, so without this a hostile include would charge the full budget on each query
-/// (seconds of frozen startup). Only failures are remembered: a success is re-read every time so a
-/// newly configured filter is still neutralized.
-static FAILED_FILTER_INVENTORIES: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
-
-/// Run `inventory` for `repo_root` unless it already failed in `failed`, recording a new failure.
-fn inventory_or_memoized_failure(
-    failed: &Mutex<BTreeSet<PathBuf>>,
-    repo_root: &Path,
-    inventory: impl FnOnce(&Path) -> Option<Vec<OsString>>,
-) -> Option<Vec<OsString>> {
-    let lock = || {
-        failed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    if lock().contains(repo_root) {
-        return None;
-    }
-    let overrides = inventory(repo_root);
-    if overrides.is_none() {
-        lock().insert(repo_root.to_path_buf());
-    }
-    overrides
+    configured_filter_overrides_within(repo_root, FILTER_INVENTORY_TIMEOUT)
 }
 
 fn configured_filter_overrides_within(
@@ -978,54 +949,6 @@ mod tests {
         assert!(
             got.is_some(),
             "a readable repository config is still a complete inventory"
-        );
-    }
-
-    /// A failed inventory is remembered per repository, so a stalled include charges its budget
-    /// once per session rather than on every git query.
-    #[test]
-    fn failed_filter_inventory_is_memoized_per_repo_root() {
-        let failed = Mutex::new(BTreeSet::new());
-        let calls = std::cell::Cell::new(0);
-        let failing = |_: &Path| {
-            calls.set(calls.get() + 1);
-            None
-        };
-        let hostile = Path::new("/hostile");
-
-        assert!(inventory_or_memoized_failure(&failed, hostile, failing).is_none());
-        assert!(inventory_or_memoized_failure(&failed, hostile, failing).is_none());
-        assert_eq!(
-            calls.get(),
-            1,
-            "a known failure must not re-run the inventory"
-        );
-
-        let other = inventory_or_memoized_failure(&failed, Path::new("/other"), |_| {
-            calls.set(calls.get() + 1);
-            Some(Vec::new())
-        });
-        assert!(other.is_some(), "another repository's inventory still runs");
-        assert_eq!(calls.get(), 2);
-    }
-
-    /// Success is never cached: a filter configured mid-session must still be neutralized.
-    #[test]
-    fn successful_filter_inventory_is_not_cached() {
-        let failed = Mutex::new(BTreeSet::new());
-        let calls = std::cell::Cell::new(0);
-        let succeeding = |_: &Path| {
-            calls.set(calls.get() + 1);
-            Some(Vec::new())
-        };
-        let repo = Path::new("/repo");
-
-        assert!(inventory_or_memoized_failure(&failed, repo, succeeding).is_some());
-        assert!(inventory_or_memoized_failure(&failed, repo, succeeding).is_some());
-        assert_eq!(
-            calls.get(),
-            2,
-            "a successful inventory must be re-read every time"
         );
     }
 
