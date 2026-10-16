@@ -195,10 +195,10 @@ pub fn agent_active(
     agent_json: &str,
     our_workspace_id: Option<&str>,
 ) -> Option<PathBuf> {
-    // Step 1 — parse agent workspaces (defensive). Only entries with a present `agent` field
-    // are REAL agents; non-agent panes (no `agent`, `agent_status: "unknown"`) are excluded so
-    // an idle pane can never mask the agent-active pre-select (AC-3) — consistent with the
-    // per-row status badges (AC-19).
+    // A herdr agent entry counts only when `agent` is present. Non-agent panes
+    // (no `agent`, `agent_status: "unknown"`) are excluded so an idle pane can
+    // never mask the agent-active pre-select (AC-3), consistent with the per-row
+    // status badges (AC-19).
     let agent_workspaces: HashSet<String> = {
         let entries = serde_json::from_str::<AgentListEnvelope>(agent_json)
             .map(|e| e.result.agents)
@@ -211,12 +211,10 @@ pub fn agent_active(
             .collect()
     };
 
-    // Step 2 — parse herdr worktree entries (defensive).
     let wt_entries = serde_json::from_str::<WorktreeListEnvelope>(worktree_json)
         .map(|e| e.result.worktrees)
         .unwrap_or_default();
 
-    // Step 3 — collect qualifying entries (path present, workspace_id ∈ agent_workspaces).
     let qualifying: Vec<(PathBuf, String)> = wt_entries
         .into_iter()
         .filter_map(|e| {
@@ -229,39 +227,22 @@ pub fn agent_active(
         })
         .collect();
 
-    // Step 4 — Tier 1: prefer our own workspace if it uniquely matches.
-    let chosen_path: PathBuf = if let Some(own_ws) = our_workspace_id {
-        if agent_workspaces.contains(own_ws) {
+    let own_path = our_workspace_id
+        .filter(|own_ws| agent_workspaces.contains(*own_ws))
+        .and_then(|own_ws| {
             let own_matches: Vec<&PathBuf> = qualifying
                 .iter()
                 .filter(|(_, ws)| ws == own_ws)
                 .map(|(p, _)| p)
                 .collect();
-            if own_matches.len() == 1 {
-                own_matches[0].clone()
-            } else {
-                // Tier 2 fallback
-                if qualifying.len() == 1 {
-                    qualifying[0].0.clone()
-                } else {
-                    return None;
-                }
-            }
-        } else {
-            // Our workspace has no agent — fall to Tier 2.
-            if qualifying.len() == 1 {
-                qualifying[0].0.clone()
-            } else {
-                return None;
-            }
-        }
+            (own_matches.len() == 1).then(|| own_matches[0].clone())
+        });
+    let chosen_path = if let Some(path) = own_path {
+        path
+    } else if qualifying.len() == 1 {
+        qualifying[0].0.clone()
     } else {
-        // No own workspace hint — Tier 2.
-        if qualifying.len() == 1 {
-            qualifying[0].0.clone()
-        } else {
-            return None;
-        }
+        return None;
     };
 
     let canon_chosen = chosen_path
