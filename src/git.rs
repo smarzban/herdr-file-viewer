@@ -9,10 +9,11 @@
 //! are neutralized, `--no-ext-diff` + `--no-textconv` refuse diff/textconv programs,
 //! `diff.submodule=short` stops Git from spawning a nested diff that would not inherit
 //! those flags, `core.fsmonitor` and `core.hooksPath` are neutralized, and
-//! `GIT_OPTIONAL_LOCKS=0` keeps status/diff from writing the index (AC-N2). Paths are parsed from NUL-delimited (`-z`) output as raw
-//! bytes, so any filename — spaces, control chars, non-ASCII — maps to the real
-//! filesystem path. The host's base-branch hint is threaded through every Base query so
-//! the baseline used to *decide* Base matches the one used to *compute* it.
+//! `GIT_OPTIONAL_LOCKS=0` keeps status/diff from writing the index (AC-N2). Paths are parsed
+//! from NUL-delimited (`-z`) output as raw bytes, so any filename — spaces, control chars,
+//! non-ASCII — maps to the real filesystem path. The host's base-branch hint is threaded
+//! through every Base query so the baseline used to *decide* Base matches the one used to
+//! *compute* it.
 
 use crate::root::Resolved;
 use std::collections::{BTreeMap, BTreeSet};
