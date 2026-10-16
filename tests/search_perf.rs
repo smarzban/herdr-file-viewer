@@ -2,7 +2,7 @@
 //!
 //! Instead of an absolute ms budget (which flakes on a loaded CI runner and fails to catch the
 //! thing that matters — an O(n²) regression), these assert **relative scaling**: run each
-//! operation over N and 2N inputs, assert `time(2N) < ~2.5 × time(N)` (roughly linear, with slack
+//! operation over N and 2N inputs, assert `time(2N) < 4.0 × time(N)` (roughly linear, with slack
 //! for allocator/cache effects). This survives a 2–3× slower machine (both halves scale together)
 //! but fails on a super-linear regression. Modelled on the `render.rs` exemplar
 //! (`elapsed < timeout.mul_f32(1.5)`).

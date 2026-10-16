@@ -42,7 +42,7 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   worktrees; selecting one performs a **worktree switch**.
 - **active worktree**: the worktree the agent is working in, identified from herdr
   metadata when available and pre-selected in the **worktree picker**.
-- **size cap**: the file-size limit (≥ 1 MB or ≥ 5,000 lines) above which the content
+- **size cap**: the file-size limit (≥ 1 MB or ≥ 10,000 lines) above which the content
   pane shows a bounded, truncated preview instead of the whole file.
 - **truncation notice**: the visible indicator shown when a file is previewed only up
   to the size cap.
@@ -69,15 +69,14 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   `path:line` / `path:start-end`). Applied via **reveal in tree** and, when a line is
   present, **go to line**. Distinct from the interactive **file finder** and from sticky
   **config file** settings: one-shot launch input only.
-- **search scope**: which files the **file finder** indexes: gitignore-respecting by
-  default (skips ignored files and `.git/`), a single knob a future setting can widen to
-  include ignored / hidden files.
+- **search scope**: which files the **file finder** and project search (`s`) include.
+  Both always include dotfiles. The **file finder** honors `.gitignore` (skips ignored
+  files and `.git/`). `i` widens project search (`s`) to include ignored files; `.git/`
+  is never searched.
 - **search in file**: find text in the open file's **displayed content** via the `/`
   **prompt line**; `n`/`N` cycle matches. Read-only, within the open file, distinct from
   the **file finder**, which finds files by name.
-- **go to line**: jump the **content pane** to a source line via the `:` **prompt line**;
-  available only in the source-mapped (syntax/content) **view mode**, where a display row
-  maps to a source line.
+- **go to line**: jump the **content pane** to a source line via the `:` **prompt line**.
 - **prompt line**: the one-line input shown at the bottom of the viewer for **search in
   file** (`/term`) and **go to line** (`:42`); distinct from the centered **file finder**
   and **worktree picker** overlays, so it does not cover the content being positioned.

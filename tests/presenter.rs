@@ -3203,22 +3203,6 @@ fn search_highlight_colors_match_cells_with_highlight_style() {
 }
 
 #[test]
-fn search_none_keeps_draw_content_byte_identical() {
-    // Zero-churn: `search: None` must produce output byte-identical to a state that never had a
-    // search field. We compare two sample_state() renders — both have search: None — confirming
-    // the new field has no side-effects on existing rendering paths.
-    let st = sample_state(); // search: None
-    let out1 = render(&st, 100, 24);
-    let out2 = render(&st, 100, 24);
-    assert_eq!(
-        out1, out2,
-        "deterministic: two identical states produce the same output"
-    );
-    // And the wide-layout snapshot still passes (it references search: None implicitly).
-    insta::assert_snapshot!("presenter_wide", render(&sample_state(), 100, 24));
-}
-
-#[test]
 fn search_prompt_renders_labelled_term_on_bottom_row() {
     // AC-8: while a search prompt is open, the `Search: foo (1/3)`-style string appears on the
     // bottom row. The presenter renders whatever string is in ViewState.prompt; this test checks

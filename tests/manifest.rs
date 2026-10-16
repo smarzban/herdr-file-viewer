@@ -2,8 +2,6 @@
 //!
 //! AC-17: the viewer declares a split-pane launch of the release binary.
 //! AC-N4: the viewer never auto-launches — the manifest declares no event hooks.
-//!
-//! Per the plan, these read `herdr-plugin.toml` to a string and assert on its contents.
 
 use std::fs;
 use std::path::PathBuf;

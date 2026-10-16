@@ -1,4 +1,4 @@
-//! Phase 2 controller integration for session-only file annotations.
+//! Controller integration for session-only file annotations.
 
 mod common;
 

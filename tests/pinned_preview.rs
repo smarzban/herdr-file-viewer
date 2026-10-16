@@ -1,4 +1,4 @@
-//! Pinned-preview interaction-state seams that are useful before pin lifecycle wiring lands.
+//! Pinned-preview interaction-state seams.
 
 mod common;
 
