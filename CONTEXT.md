@@ -70,9 +70,10 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   present, **go to line**. Distinct from the interactive **file finder** and from sticky
   **config file** settings: one-shot launch input only.
 - **search scope**: which files the **file finder** and project search (`s`) include.
-  Both always include dotfiles. The **file finder** honors `.gitignore` (skips ignored
-  files and `.git/`). `i` widens project search (`s`) to include ignored files; `.git/`
-  is never searched.
+  Neither hides dotfiles (the `.` toggle does not apply), and neither ever searches
+  `.git/`. The **file finder** always honors `.gitignore` (skips ignored files). Project
+  search (`s`) takes its scope from the tree's `i` toggle when it opens: with ignored
+  files hidden it honors `.gitignore` and Git excludes; with them shown it includes them.
 - **search in file**: find text in the open file's **displayed content** via the `/`
   **prompt line**; `n`/`N` cycle matches. Read-only, within the open file, distinct from
   the **file finder**, which finds files by name.
