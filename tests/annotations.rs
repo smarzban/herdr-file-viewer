@@ -1234,3 +1234,46 @@ fn discard_confirm_absorbs_mouse_input() {
         "the tree beneath is untouched"
     );
 }
+
+#[test]
+fn discard_confirm_absorbs_decoded_intents() {
+    // The keyboard sibling of `discard_confirm_absorbs_mouse_input`. The run loop routes raw keys
+    // to `handle_discard_confirm_key` while the confirm is open, but `handle` gates the modal too:
+    // without that `Modal::DiscardConfirm` arm a leaked `Close` would overwrite the pending SWITCH
+    // with a QUIT confirm, `AddAnnotation` would open the editor over it, and `NavDown` would move
+    // the tree beneath it. The match is exhaustive, so moving the arm to `Modal::None` would still
+    // compile: pin the behavior.
+    let first = TempDir::new();
+    std::fs::write(first.path().join("a.rs"), "source\n").unwrap();
+    std::fs::write(first.path().join("c.rs"), "source\n").unwrap();
+    let second = TempDir::new();
+    std::fs::write(second.path().join("b.rs"), "source\n").unwrap();
+    let (mut ctrl, _clipboard) = controller(first.path(), false);
+    add_file_annotation(&mut ctrl, "kept");
+    let before = ctrl.tree().selected().map(|n| n.path.clone());
+
+    ctrl.re_root(second.path());
+    assert!(ctrl.discard_confirm_open(), "the switch confirmed first");
+
+    for intent in [Intent::Close, Intent::AddAnnotation, Intent::NavDown] {
+        let fx = ctrl.handle(intent);
+        assert!(!fx.redraw, "{intent:?} is inert under the confirm");
+        assert!(!fx.quit, "{intent:?} must not quit");
+        assert!(ctrl.discard_confirm_open(), "{intent:?} leaves it open");
+        assert!(
+            ctrl.annotation_editor().is_none(),
+            "{intent:?} opens no editor"
+        );
+    }
+    assert_eq!(
+        ctrl.tree().selected().map(|n| n.path.clone()),
+        before,
+        "the tree beneath is untouched"
+    );
+    assert_eq!(ctrl.root(), first.path());
+
+    // The confirm still holds the SWITCH, not a QUIT a leaked `Close` raised over it.
+    let fx = ctrl.handle_discard_confirm_key(key(KeyCode::Enter));
+    assert!(!fx.quit, "proceeding is the switch, not a quit");
+    assert_eq!(ctrl.root(), second.path());
+}

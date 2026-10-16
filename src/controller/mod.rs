@@ -630,6 +630,8 @@ type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 /// - `Annotations`: the session annotation overview.
 /// - `AnnotationEditor`: the add/edit annotation prompt.
 /// - `DiscardConfirm`: the confirm raised when an action would discard unexported annotations.
+///   While open the run loop routes raw keys to `handle_discard_confirm_key`, and `handle()` /
+///   `handle_mouse()` return early, so a leaked intent can't replace it or move the tree beneath.
 enum Modal {
     None,
     Picker(PickerState),
