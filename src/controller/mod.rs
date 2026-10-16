@@ -2286,39 +2286,20 @@ impl Controller {
         // The action notice is transient: clear it at the top of each intent so a stale
         // failure message does not linger past the next action.
         self.action_notice = None;
-        // Modal: while the picker is open, Nav/Activate/Close drive the picker, not the tree;
-        // every other intent is inert (a modal selection). (AC-5)
-        if self.modal.picker().is_some() {
-            return self.handle_picker_intent(intent);
-        }
-        // The finder is modal too: while it is open the run loop (app.rs) routes raw keys to
-        // `handle_finder_key`, so `handle` should not be reached. Guard structurally anyway —
-        // symmetric with the picker guard above — so a future or test caller can't leak an intent
-        // to the tree or open a second modal beneath the finder overlay.
-        if self.modal.finder().is_some() {
-            return Effects::noop();
-        }
-        // Project-content search likewise owns raw keys until it is confirmed or cancelled.
-        if self.modal.project_search().is_some() {
-            return Effects::noop();
-        }
-        // A prompt is modal too: the run loop routes raw keys to handle_prompt_key while it is open, so
-        // handle() should not be reached. Guard structurally — symmetric with the finder guard.
-        if self.modal.prompt().is_some() {
-            return Effects::noop();
-        }
-        // The help overlay is modal: while it is open, all other intents are inert. The run loop
-        // routes keys to handle_help_key instead; this guard mirrors finder/prompt.
-        if self.modal.help().is_some() {
-            return Effects::noop();
-        }
-        // Raw-key modals own every key. Defensive guards prevent a direct/test caller from
-        // leaking a globally-decoded intent to the tree or opening a second modal beneath one.
-        if self.modal.line_select().is_some()
-            || self.modal.annotations().is_some()
-            || self.modal.annotation_editor().is_some()
-        {
-            return Effects::noop();
+        // While the picker is open, Nav/Activate/Close drive the picker, not the tree;
+        // every other intent is inert (a modal selection). (AC-5) Every other open modal,
+        // including discard confirm, owns its keys outside `handle`, so a leaked intent is inert.
+        match self.modal {
+            Modal::Picker(_) => return self.handle_picker_intent(intent),
+            Modal::Finder(_)
+            | Modal::ProjectSearch(_)
+            | Modal::Prompt(_)
+            | Modal::Help(_)
+            | Modal::LineSelect(_)
+            | Modal::Annotations(_)
+            | Modal::AnnotationEditor(_)
+            | Modal::DiscardConfirm(_) => return Effects::noop(),
+            Modal::None => {}
         }
         if target_for(self.focus, intent) == ActionTarget::Rejected {
             self.action_notice = Some("Unavailable from pinned preview".into());

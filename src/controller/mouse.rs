@@ -11,7 +11,7 @@ impl Controller {
     /// on button *release*, so a divider drag is never mistaken for a click.
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Modal gate, exhaustive over `Modal` (so a new overlay variant forces a mouse-routing
-        // decision here, mirroring the keyboard gate in `handle`):
+        // decision here, and the keyboard gate in `handle` matches every variant too):
         // - Picker / Prompt are keyboard-only — swallow the mouse entirely. Without this a
         //   click/wheel would reach the tree/content beneath and change the selection under the
         //   modal, so a later confirm would act on the WRONG file (or strand an override on a dir).
