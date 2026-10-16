@@ -302,6 +302,29 @@ fn draw_if_needed<B: Backend>(
     Ok(())
 }
 
+/// Fold one input [`Effects`] into the frame.
+///
+/// Clear runs first (`terminal.clear()` is best-effort, then `dirty` is forced on).
+/// Key arms pass `stop_on_quit`: a quit effect returns before redraw is folded, and the
+/// caller leaves the loop. The mouse arm passes `false` so only that clear and redraw
+/// half runs; mouse input never quits.
+fn apply_input_effects(
+    terminal: &mut DefaultTerminal,
+    dirty: &mut bool,
+    fx: Effects,
+    stop_on_quit: bool,
+) -> bool {
+    if fx.clear {
+        let _ = terminal.clear();
+        *dirty = true;
+    }
+    if stop_on_quit && fx.quit {
+        return true;
+    }
+    *dirty |= fx.redraw;
+    false
+}
+
 /// Draw (only when something changed), read one input (or time out), drain renders; repeat
 /// until the Close intent. Drawing only when `dirty` avoids re-walking the filesystem (the
 /// tree enumeration in `view_state`) on every idle tick. Backend size reconciliation also catches
@@ -326,14 +349,9 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     if key.kind == KeyEventKind::Press && controller.project_search_open() =>
                 {
                     let fx = controller.handle_project_search_key(key);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 // While the finder overlay is open, every key press is routed directly to
                 // `handle_finder_key` so printable keys (including `j`, `w`, `q`, …) edit the
@@ -342,28 +360,18 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 // the existing `map_key` arm below to run unchanged.
                 Event::Key(key) if key.kind == KeyEventKind::Press && controller.finder_open() => {
                     let fx = controller.handle_finder_key(key);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(()); // finder never quits; harmless for symmetry
                     }
-                    dirty |= fx.redraw;
                 }
                 // While a bottom prompt (go-to-line) is open, route every key press to handle_prompt_key so
                 // digits/printables edit the prompt instead of firing viewer intents (AC-21). Mutually exclusive
                 // with the finder arm above — only one modal is ever open.
                 Event::Key(key) if key.kind == KeyEventKind::Press && controller.prompt_open() => {
                     let fx = controller.handle_prompt_key(key);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 // While the help overlay is open, every key press is routed directly to
                 // `handle_help_key` so printable keys (including `j`, `q`, …) navigate the
@@ -371,14 +379,9 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 // finder/prompt arms above — only one modal is ever open.
                 Event::Key(key) if key.kind == KeyEventKind::Press && controller.help_open() => {
                     let fx = controller.handle_help_key(key);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 // While line-select mode is active, route every key press to
                 // `handle_line_select_key` so `j`/`k`/arrows (and their Shift-extend forms) move
@@ -388,14 +391,9 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                     if key.kind == KeyEventKind::Press && controller.line_select_active() =>
                 {
                     let fx = controller.handle_line_select_key(key);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 // Annotation overview/editor keys are fixed modal controls/raw text. Route them
                 // before global decoding so `q`, `e`, `d`, `D`, `y`, and remapped printables cannot
@@ -406,49 +404,35 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 {
                     let fx = route_annotation_key(controller, key)
                         .expect("an open annotation modal has a raw-key route");
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
                         && let Some(intent) = input::decode(key, controller.bindings()) =>
                 {
                     let fx = controller.handle(intent);
-                    if fx.clear {
-                        // An external program (an editor) drew over the screen, so force a
-                        // full repaint: `terminal.clear()` resets ratatui's back buffer so the
-                        // next draw rewrites every cell (a plain redraw would only diff against
-                        // the stale buffer and skip cells). `clear()` first issues a cursor-
-                        // position (DSR) query to preserve the cursor; a real interactive
-                        // terminal answers it, so this succeeds and the repaint is full. We
-                        // make it best-effort because a terminal that never answers (e.g. a
-                        // headless/test pty) must not crash the viewer — there the repaint is
-                        // skipped and the pane may stay stale until the next change, which is
-                        // strictly better than aborting (constitution: the loop never crashes).
-                        // The e2e editor test exercises exactly this failure path.
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    if fx.quit {
+                    // An external program (an editor) drew over the screen, so force a
+                    // full repaint: `terminal.clear()` resets ratatui's back buffer so the
+                    // next draw rewrites every cell (a plain redraw would only diff against
+                    // the stale buffer and skip cells). `clear()` first issues a cursor-
+                    // position (DSR) query to preserve the cursor; a real interactive
+                    // terminal answers it, so this succeeds and the repaint is full. We
+                    // make it best-effort because a terminal that never answers (e.g. a
+                    // headless/test pty) must not crash the viewer. There the repaint is
+                    // skipped and the pane may stay stale until the next change, which is
+                    // strictly better than aborting (constitution: the loop never crashes).
+                    // The e2e editor test exercises exactly this failure path.
+                    if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
                     }
-                    dirty |= fx.redraw;
                 }
                 // Mouse input (capture is enabled in `run`): clicks select / activate, the
                 // wheel scrolls, dragging the divider resizes. It never quits the viewer.
                 Event::Mouse(me) => {
                     let fx = controller.handle_mouse(me);
-                    if fx.clear {
-                        let _ = terminal.clear();
-                        dirty = true;
-                    }
-                    dirty |= fx.redraw;
+                    apply_input_effects(terminal, &mut dirty, fx, false);
                 }
                 // The pane regained focus (herdr forwards focus events to a pane that opts in):
                 // re-read git state so external changes — a merge, pull, or commit in another
