@@ -413,16 +413,17 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                         && let Some(intent) = input::decode(key, controller.bindings()) =>
                 {
                     let fx = controller.handle(intent);
-                    // An external program (an editor) drew over the screen, so force a
-                    // full repaint: `terminal.clear()` resets ratatui's back buffer so the
-                    // next draw rewrites every cell (a plain redraw would only diff against
-                    // the stale buffer and skip cells). `clear()` first issues a cursor-
-                    // position (DSR) query to preserve the cursor; a real interactive
-                    // terminal answers it, so this succeeds and the repaint is full. We
-                    // make it best-effort because a terminal that never answers (e.g. a
-                    // headless/test pty) must not crash the viewer. There the repaint is
-                    // skipped and the pane may stay stale until the next change, which is
-                    // strictly better than aborting (constitution: the loop never crashes).
+                    // When `fx.clear` is set (an external program, the editor, drew over the
+                    // screen), `apply_input_effects` forces a full repaint: `terminal.clear()`
+                    // resets ratatui's back buffer so the next draw rewrites every cell (a
+                    // plain redraw would only diff against the stale buffer and skip cells).
+                    // `clear()` first issues a cursor-position (DSR) query to preserve the
+                    // cursor; a real interactive terminal answers it, so this succeeds and the
+                    // repaint is full. It is best-effort because a terminal that never
+                    // answers (e.g. a headless/test pty) must not crash the viewer. There the
+                    // repaint is skipped and the pane may stay stale until the next change,
+                    // which is strictly better than aborting (constitution: the loop never
+                    // crashes).
                     // The e2e editor test exercises exactly this failure path.
                     if apply_input_effects(terminal, &mut dirty, fx, true) {
                         return Ok(());
