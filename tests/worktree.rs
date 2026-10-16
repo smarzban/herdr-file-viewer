@@ -526,6 +526,53 @@ fn agent_active_two_worktrees_same_workspace_is_ambiguous() {
     );
 }
 
+/// **Tier 1 with no own worktree falls to Tier 2** — our workspace hosts an agent but opens NO
+/// worktree entry (own matches = 0), and exactly one other worktree qualifies → Tier 2 returns it.
+/// Pins that an agent-hosting own workspace without a unique own match does not short-circuit
+/// to `None`.
+///
+/// Setup: agents in ws-1 and ws-2; the worktree list only has wt-b → ws-2; our_workspace_id =
+/// "ws-1". Expected: `Some("/repo/wt-b")`.
+#[test]
+fn agent_active_own_agent_workspace_without_worktree_falls_to_tier2() {
+    let wt_json = r#"{"id": 1, "result": {"worktrees": [
+        {"path": "/repo/wt-b", "open_workspace_id": "ws-2"}
+    ]}}"#;
+    let worktrees = make_worktrees();
+    let result = agent_active(
+        &worktrees,
+        wt_json,
+        agent_json_two_workspaces(),
+        Some("ws-1"),
+    );
+    assert_eq!(
+        result,
+        Some(PathBuf::from("/repo/wt-b")),
+        "an own agent workspace with no own worktree must fall through to the unique Tier-2 winner"
+    );
+}
+
+/// **Tier 1 ambiguous own workspace → `None`** — two worktree entries both open our own
+/// agent-hosting workspace (own matches = 2), so Tier 1 has no single winner; Tier 2 also sees
+/// two qualifying entries → `None`.
+///
+/// Setup: wt-a and wt-b both → ws-1, agent in ws-1, our_workspace_id = "ws-1". Expected: `None`.
+#[test]
+fn agent_active_own_workspace_with_two_worktrees_is_ambiguous() {
+    let wt_json = r#"{"id": 1, "result": {"worktrees": [
+        {"path": "/repo/wt-a", "open_workspace_id": "ws-1"},
+        {"path": "/repo/wt-b", "open_workspace_id": "ws-1"},
+        {"path": "/repo/wt-c", "open_workspace_id": "ws-3"}
+    ]}}"#;
+    let ag_json = r#"{"id": 2, "result": {"agents": [{"id": "agent-only", "agent": "claude", "agent_status": "working", "workspace_id": "ws-1"}]}}"#;
+    let worktrees = make_worktrees();
+    let result = agent_active(&worktrees, wt_json, ag_json, Some("ws-1"));
+    assert_eq!(
+        result, None,
+        "two worktrees in our own agent workspace must be ambiguous, not pick one"
+    );
+}
+
 /// **Path not in worktrees slice** — agent points to a path not in the slice → `None`.
 ///
 /// The worktrees slice only contains wt-a; the agent targets wt-b (ws-2) which is absent.
