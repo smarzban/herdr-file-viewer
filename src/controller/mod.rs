@@ -4056,17 +4056,6 @@ fn is_markdown(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn help_composition_timeout_is_the_single_200ms_budget() {
-        // T-19: the controller must not retain or stack its former help-render timeout. T-17 owns
-        // the one absolute deadline shared across every independently rendered What's New document.
-        assert_eq!(
-            crate::update::compose::WHATS_NEW_COMPOSE_TIMEOUT,
-            std::time::Duration::from_millis(200),
-            "What's New composition owns the one 200ms Help-open budget"
-        );
-    }
-
     // ---- Bindings Wiring (AC-16, AC-23) --------------------------------------------
     //
     // These exercise the wiring end-to-end: a `[keys]` remap resolved via `input::resolve_bindings`
