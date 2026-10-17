@@ -19,15 +19,10 @@ pub fn released_changelog(changelog: &str) -> String {
         .collect()
 }
 
-/// The built-in, fixed sections of the help overlay: What's New and About.
+/// The built-in help sections: What's New and About.
 ///
-/// This enum is intentionally closed at these two variants — it is NOT the full inventory of
-/// sections the overlay can show. `HelpState.sections` (below) is a generic `Vec<HelpSectionState>`
-/// precisely so later features can append further sections without touching this enum; the
-/// settings-config feature (SMA-49) does exactly that, appending a display-only "Settings" section
-/// at runtime as a raw `HelpSectionState` (see `open_help` / `set_settings_display`) rather than
-/// adding a `Settings` variant here. Do not "fix" a 3-tab runtime overlay by adding a variant to
-/// this enum — the enum staying two-variant is the intended seam, not a bug.
+/// A full `app::run` overlay shows four tabs: What's New, Keybindings, Settings, About.
+/// Keybindings and Settings are injected `HelpSectionState` entries, not variants of this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpSection {
     WhatsNew,
@@ -59,9 +54,6 @@ pub struct HelpSectionState {
 }
 
 /// Active state for the help overlay: an ordered list of sections and the active index.
-///
-/// Sections are a generic `Vec` (the seam for future settings additions) — no hard-coded pair.
-/// SHORTCUT: linear scan over sections — fine for ≤20 sections; index if the list can grow large.
 pub struct HelpState {
     pub sections: Vec<HelpSectionState>,
     active: usize,
@@ -731,15 +723,9 @@ mod tests {
 
     // --- negative-criteria conformance (AC-N5, AC-N6) ---
 
-    // AC-N6 (in-app-help-overlay's v1 scope guard) is INTENTIONALLY SUPERSEDED by
-    // settings-config's AC-18 (SMA-49): a real `app::run` launch now wires `set_settings_display`,
-    // so the live overlay ships a third "Settings" tab. This test's actual, narrower job is proving
-    // the *built-in* `HelpSection` enum stays closed at exactly {WhatsNew, About} — no Keybindings
-    // variant, no Settings variant. That enum-level closure still holds and is still worth guarding:
-    // the Settings section deliberately bypasses this enum via the generic `HelpSectionState` seam
-    // (`HelpState.sections: Vec<..>`) that the in-app-help-overlay design itself reserved for it, so
-    // a 3-tab runtime overlay does NOT contradict this test passing. Do not read this as "the overlay
-    // must only ever show two tabs," and do not "fix" it by adding a `Settings` variant here.
+    // AC-N6: `HelpSection` is exactly What's New and About. A full `app::run` overlay shows
+    // What's New, Keybindings, Settings, and About; Keybindings and Settings are injected
+    // `HelpSectionState` entries. The exhaustive match below fails to compile if a variant is added.
     #[test]
     fn help_section_set_is_exactly_whats_new_and_about() {
         // Exhaustively enumerate the variants by matching every one: adding a variant makes this
@@ -750,8 +736,8 @@ mod tests {
                 HelpSection::About => assert_eq!(s.label(), "About"),
             }
         }
-        // And the built-in enum's label set is precisely these two, in this order — the runtime
-        // overlay may append further HelpSectionState entries (e.g. Settings, SMA-49) beyond this.
+        // Built-in labels, in this order. The runtime overlay adds Keybindings and Settings
+        // as separate HelpSectionState entries.
         let labels: Vec<&str> = [HelpSection::WhatsNew, HelpSection::About]
             .iter()
             .map(|s| s.label())
@@ -759,10 +745,8 @@ mod tests {
         assert_eq!(
             labels,
             vec!["What's New", "About"],
-            "AC-N6 (enum-level, superseded at the overlay level by SMA-49): the built-in \
-             HelpSection enum is exactly What's New then About — no Keybindings/Settings variant. \
-             The runtime overlay's separate Settings HelpSectionState is expected and does not \
-             violate this."
+            "AC-N6: the built-in HelpSection enum is exactly What's New then About. \
+             A full app::run overlay also shows Keybindings and Settings."
         );
     }
 
@@ -1349,7 +1333,7 @@ mod tests {
 
     #[test]
     fn keybindings_text_reports_the_effective_pin_preview_binding() {
-        // T-13: the generated Help model reads the resolved bindings, not the registry default.
+        // The generated Help model reads the resolved bindings, not the registry default.
         let (bindings, outcome) = resolve_one("pin_preview", "P");
         let text = keybindings_text(input::registry(), &bindings, &outcome);
         let row = text
