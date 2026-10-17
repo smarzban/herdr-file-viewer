@@ -304,146 +304,73 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_once() {
-        let set: HashSet<&Intent> = Intent::ALL.iter().collect();
+        // Each variant is one link in this exhaustive match. Adding a variant fails to compile
+        // until it is inserted here, and walking the links builds a list independent of
+        // Intent::ALL. Same set and same length means ALL is exactly these variants, once each.
+        let mut listed = Vec::new();
+        loop {
+            let next = match listed.last().copied() {
+                None => Intent::NavUp,
+                Some(Intent::NavUp) => Intent::NavDown,
+                Some(Intent::NavDown) => Intent::PageUp,
+                Some(Intent::PageUp) => Intent::PageDown,
+                Some(Intent::PageDown) => Intent::Expand,
+                Some(Intent::Expand) => Intent::Collapse,
+                Some(Intent::Collapse) => Intent::CloseAll,
+                Some(Intent::CloseAll) => Intent::Activate,
+                Some(Intent::Activate) => Intent::OpenFullscreen,
+                Some(Intent::OpenFullscreen) => Intent::ToggleIgnore,
+                Some(Intent::ToggleIgnore) => Intent::ToggleHidden,
+                Some(Intent::ToggleHidden) => Intent::ToggleChangedOnly,
+                Some(Intent::ToggleChangedOnly) => Intent::ToggleStatusMode,
+                Some(Intent::ToggleStatusMode) => Intent::ToggleBaseline,
+                Some(Intent::ToggleBaseline) => Intent::CycleDiffRender,
+                Some(Intent::CycleDiffRender) => Intent::CycleView,
+                Some(Intent::CycleView) => Intent::OpenInEditor,
+                Some(Intent::OpenInEditor) => Intent::OpenWithApp,
+                Some(Intent::OpenWithApp) => Intent::RevealInFileManager,
+                Some(Intent::RevealInFileManager) => Intent::CopyRepoPath,
+                Some(Intent::CopyRepoPath) => Intent::CopyAbsPath,
+                Some(Intent::CopyAbsPath) => Intent::AddAnnotation,
+                Some(Intent::AddAnnotation) => Intent::ShowAnnotations,
+                Some(Intent::ShowAnnotations) => Intent::ToggleFocus,
+                Some(Intent::ToggleFocus) => Intent::ShrinkTree,
+                Some(Intent::ShrinkTree) => Intent::GrowTree,
+                Some(Intent::GrowTree) => Intent::ShrinkPreview,
+                Some(Intent::ShrinkPreview) => Intent::GrowPreview,
+                Some(Intent::GrowPreview) => Intent::ToggleWrap,
+                Some(Intent::ToggleWrap) => Intent::ToggleZoom,
+                Some(Intent::ToggleZoom) => Intent::PinPreview,
+                Some(Intent::PinPreview) => Intent::Refresh,
+                Some(Intent::Refresh) => Intent::DismissUpdate,
+                Some(Intent::DismissUpdate) => Intent::SwitchWorktree,
+                Some(Intent::SwitchWorktree) => Intent::OpenFinder,
+                Some(Intent::OpenFinder) => Intent::OpenProjectSearch,
+                Some(Intent::OpenProjectSearch) => Intent::OpenGoToLine,
+                Some(Intent::OpenGoToLine) => Intent::OpenSearch,
+                Some(Intent::OpenSearch) => Intent::NextMatch,
+                Some(Intent::NextMatch) => Intent::PrevMatch,
+                Some(Intent::PrevMatch) => Intent::NextChanged,
+                Some(Intent::NextChanged) => Intent::PrevChanged,
+                Some(Intent::PrevChanged) => Intent::TreeScrollLeft,
+                Some(Intent::TreeScrollLeft) => Intent::TreeScrollRight,
+                Some(Intent::TreeScrollRight) => Intent::ShowHelp,
+                Some(Intent::ShowHelp) => Intent::Close,
+                Some(Intent::Close) => break,
+            };
+            listed.push(next);
+        }
+
+        let listed_set: HashSet<Intent> = listed.iter().copied().collect();
+        let all_set: HashSet<Intent> = Intent::ALL.iter().copied().collect();
         assert_eq!(
-            set.len(),
-            Intent::ALL.len(),
-            "Intent::ALL must have no duplicates"
+            listed_set, all_set,
+            "Intent::ALL must contain exactly the variants named above"
         );
-    }
-
-    #[test]
-    fn switch_worktree_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::SwitchWorktree),
-            "Intent::ALL must contain SwitchWorktree"
-        );
-    }
-
-    #[test]
-    fn open_finder_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::OpenFinder),
-            "Intent::ALL must contain OpenFinder"
-        );
-    }
-
-    #[test]
-    fn open_go_to_line_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::OpenGoToLine),
-            "Intent::ALL must contain OpenGoToLine"
-        );
-    }
-
-    #[test]
-    fn open_search_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::OpenSearch),
-            "Intent::ALL must contain OpenSearch"
-        );
-    }
-
-    #[test]
-    fn next_match_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::NextMatch),
-            "Intent::ALL must contain NextMatch"
-        );
-    }
-
-    #[test]
-    fn prev_match_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::PrevMatch),
-            "Intent::ALL must contain PrevMatch"
-        );
-    }
-
-    #[test]
-    fn all_length_is_46() {
         assert_eq!(
+            listed.len(),
             Intent::ALL.len(),
-            46,
-            "Intent::ALL must have exactly 46 variants"
+            "Intent::ALL must list each variant once"
         );
-    }
-
-    #[test]
-    fn changed_file_jump_intents_are_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::NextChanged),
-            "Intent::ALL must contain NextChanged"
-        );
-        assert!(
-            Intent::ALL.contains(&Intent::PrevChanged),
-            "Intent::ALL must contain PrevChanged"
-        );
-    }
-
-    #[test]
-    fn page_intents_are_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::PageUp),
-            "Intent::ALL must contain PageUp"
-        );
-        assert!(
-            Intent::ALL.contains(&Intent::PageDown),
-            "Intent::ALL must contain PageDown"
-        );
-    }
-
-    #[test]
-    fn cycle_diff_render_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::CycleDiffRender),
-            "Intent::ALL must contain CycleDiffRender"
-        );
-    }
-
-    #[test]
-    fn open_fullscreen_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::OpenFullscreen),
-            "Intent::ALL must contain OpenFullscreen"
-        );
-    }
-
-    #[test]
-    fn reveal_open_intents_are_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::OpenWithApp),
-            "Intent::ALL must contain OpenWithApp"
-        );
-        assert!(
-            Intent::ALL.contains(&Intent::RevealInFileManager),
-            "Intent::ALL must contain RevealInFileManager"
-        );
-    }
-
-    #[test]
-    fn tree_scroll_intents_are_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::TreeScrollLeft),
-            "Intent::ALL must contain TreeScrollLeft"
-        );
-        assert!(
-            Intent::ALL.contains(&Intent::TreeScrollRight),
-            "Intent::ALL must contain TreeScrollRight"
-        );
-    }
-
-    #[test]
-    fn show_help_is_in_all() {
-        assert!(
-            Intent::ALL.contains(&Intent::ShowHelp),
-            "Intent::ALL must contain ShowHelp"
-        );
-    }
-
-    #[test]
-    fn annotation_intents_are_in_all() {
-        assert!(Intent::ALL.contains(&Intent::AddAnnotation));
-        assert!(Intent::ALL.contains(&Intent::ShowAnnotations));
     }
 }

@@ -1671,26 +1671,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decode_over_default_bindings_agrees_with_map_key() {
-        // Belt-and-suspenders AC-1: the pure decode path over the default bindings returns exactly
-        // what map_key returns, across bound, arrow, shifted, chorded, and unbound representatives.
-        let bindings = default_bindings();
-        let cases = [
-            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-        ];
-        for key in cases {
-            assert_eq!(decode(key, &bindings), map_key(key), "{key:?}");
-        }
-    }
-
     // --- T-5 Bindings Resolver (AC-6, AC-7, AC-8, AC-10, AC-14, AC-15, AC-18, AC-20) ---
 
     use crate::config::KeySpec;
