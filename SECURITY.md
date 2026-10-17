@@ -37,9 +37,11 @@ assume that this content is hostile.
   hostile, queries disable configured clean, smudge, and process filters, and use `--no-ext-diff` /
   `--no-textconv` to refuse diff/textconv programs. `diff.submodule=short` is forced on the same
   command so Git does not spawn a nested diff that would miss those flags and run a submodule
-  `diff.external` or textconv. Filter neutralization covers only drivers configured for the opened
-  repository: a filter driver configured solely in a populated submodule's own config is not yet
-  neutralized, and can run when Git recurses into that submodule for status or diff. Git 2.40+
+  `diff.external` or textconv. `status` and `diff` also pass `--ignore-submodules=dirty`, which a
+  repository `submodule.<name>.ignore=none` cannot override, so Git does not hash a populated
+  submodule's worktree and therefore does not run a filter configured only in that submodule.
+  A changed submodule commit is still reported. Content-only dirtiness inside a submodule is not.
+  Git 2.40+
   also uses `--attr-source` to read worktree attributes from the empty tree. Concurrent hostile
   changes to Git configuration between filter inspection and query execution are outside this
   protection. `core.fsmonitor` and `core.hooksPath` are neutralized, `GIT_OPTIONAL_LOCKS=0`
