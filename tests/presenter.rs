@@ -1420,14 +1420,13 @@ fn min_tree_split_pct_yields_at_least_the_min_columns() {
 
 #[test]
 fn split_preview_policy_keeps_prompt_below_remote_status_outside_body() {
-    use herdr_file_viewer::preview_layout::{LayoutInput, PreviewFocus, layout};
+    use herdr_file_viewer::preview_layout::{LayoutInput, layout};
 
     let layout = layout(
         LayoutInput::new(ratatui::layout::Rect::new(4, 8, 100, 12))
             .with_prompt(true)
             .with_remote_status(true)
-            .with_pin(true)
-            .with_focus(PreviewFocus::Active),
+            .with_pin(true),
     );
 
     assert_eq!(

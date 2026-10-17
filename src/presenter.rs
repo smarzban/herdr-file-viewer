@@ -10,7 +10,7 @@
 use crate::annotation::LineRange;
 use crate::git::Status;
 use crate::preview::PreviewOrigin;
-use crate::preview_layout::{LayoutInput, PreviewFocus, PreviewLayout, layout};
+use crate::preview_layout::{LayoutInput, PreviewLayout, layout};
 use crate::text_layout::{line_wrapped_rows_prefixed, sanitize_control};
 use crate::tree::{Node, NodeKind};
 use ratatui::Frame;
@@ -1087,8 +1087,8 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &ViewState) {
 
 /// The content pane's outer block (border + optional left gap), WITHOUT its titles/styles.
 /// Shared by [`draw_content`] and [`geometry`] so the drawn text rect and the hit-test geometry
-/// inset the border identically — a mismatch would map a content-pane click one column off under
-/// the [`ViewState::content_pad_left`] gap.
+/// inset the border identically. A mismatch would map a content-pane click one column off under
+/// the [`PreviewProjection::pad_left`] gap.
 fn content_block(preview: &PreviewProjection) -> Block<'static> {
     let block = Block::bordered();
     if preview.pad_left {
@@ -1108,12 +1108,12 @@ fn draw_content(
     active: bool,
     pinned_space_notice: Option<&str>,
 ) -> (u16, u16) {
-    // the title is derived from the DISPLAYED content's file (`content_title`), not the
-    // live tree cursor, so it switches in lockstep with the body — the pane never shows a newly-
+    // The title is derived from the DISPLAYED content's file (`PreviewProjection::title`), not the
+    // live tree cursor, so it switches in lockstep with the body. The pane never shows a newly
     // selected file's name over the previous file's body while the new render is in flight.
-    // `content_title` is `None` before any file's content has landed (launch, re-root, or a
+    // `title` is `None` before any file's content has landed (launch, re-root, or a
     // directory/empty selection); in that case fall back to the selected node's name (a directory)
-    // or "Content" — but only when NO render is in flight, otherwise the fallback would pick up
+    // or "Content", but only when NO render is in flight, otherwise the fallback would pick up
     // the still-loading selection's name and re-introduce the title-ahead-of-body bug.
     let applied_title = preview.title.is_some();
     let mut title = if let Some(origin) = &preview.origin {
@@ -1308,9 +1308,6 @@ fn draw_prompt_line(frame: &mut Frame, area: Rect, prompt: &str) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Translate the presenter's legacy no-pin view state into the structural policy. Later tasks pass
-/// the policy's pinned state directly; keeping the conversion here preserves every current drawing
-/// and hit-test caller while ensuring they already share one frame-carving path.
 fn pinned_space_notice(layout: &PreviewLayout, state: &ViewState) -> Option<String> {
     layout.pinned_hidden_for_space.then(|| {
         let path = state
@@ -1329,11 +1326,7 @@ fn structural_layout(area: Rect, state: &ViewState) -> PreviewLayout {
         has_prompt: state.prompt.is_some(),
         has_remote_status: state.remote_notice_status.is_some(),
         has_pin: state.pinned.is_some(),
-        focus: match state.focus {
-            Focus::Tree => PreviewFocus::Tree,
-            Focus::Pinned => PreviewFocus::Pinned,
-            Focus::Content => PreviewFocus::Active,
-        },
+        narrow_shows_tree: state.focus == Focus::Tree,
         tree_hidden: state.zoomed,
         preview_split_pct: state.preview_split_pct,
         tree_split_pct: state.split_pct,
@@ -1368,7 +1361,7 @@ pub struct PaneGeometry {
     pub content_inner: Option<Rect>,
     /// Hit rect for the content column's top border (filename title bar), full border width inset
     /// by the left/right border glyphs. Used for double-click → toggle zoom (hide/show tree).
-    /// Named `*_rect` to distinguish it from [`ViewState::content_title`] (the filename string).
+    /// Named `*_rect` to distinguish it from [`PreviewProjection::title`] (the filename string).
     /// `None` when the content column is not drawn.
     pub content_title_rect: Option<Rect>,
     /// The content pane's in-pane scrollbar tracks (1-cell rects), present only when drawn.
@@ -1609,10 +1602,7 @@ pub fn geometry(area: Rect, state: &ViewState) -> PaneGeometry {
 /// present only when that frozen region was drawn. The controller uses only the active feedback
 /// for live reflow, while the aggregate keeps the two regions unambiguous.
 ///
-/// At ≥ 80 columns both columns are shown side by side. Narrower than that, only the focused
-/// column is drawn — full width — so the active content stays readable (AC-21). The split is
-/// taken from the **live frame width** (via [`columns`]), so it can never disagree with the
-/// geometry it is drawn into.
+/// At ≥ 80 columns both columns are shown side by side.
 pub fn draw(frame: &mut Frame, state: &ViewState) -> PreviewViewports {
     let layout = structural_layout(frame.area(), state);
     let active = &state.active;
