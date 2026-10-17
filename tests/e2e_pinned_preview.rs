@@ -1,7 +1,7 @@
 //! e2e (pty): pinned previews are session-only and every interaction remains read-only.
 //!
 //! Unix-only: see `tests/cli_smoke.rs` for why the `expectrl` pty suite is not ported to
-//! Windows's `conpty` backend in this feature.
+//! Windows's `conpty` backend.
 #![cfg(unix)]
 
 mod common;
