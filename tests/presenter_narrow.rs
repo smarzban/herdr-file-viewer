@@ -8,7 +8,7 @@ use herdr_file_viewer::presenter::{
     AnnotationEditorKind, AnnotationEditorView, AnnotationIndicatorsView, AnnotationOverviewView,
     AnnotationRowView, AnnotationTargetView, Focus, PreviewProjection, ViewState, draw,
 };
-use herdr_file_viewer::preview_layout::{LayoutInput, PreviewFocus, layout};
+use herdr_file_viewer::preview_layout::{LayoutInput, layout};
 use herdr_file_viewer::render::to_text;
 use herdr_file_viewer::tree::{Node, NodeKind};
 use ratatui::Terminal;
@@ -147,7 +147,6 @@ fn structural_policy_keeps_no_pin_boundary_and_pin_floor_distinct() {
             area: Rect::new(0, 0, width, 10),
             has_pin: true,
             tree_hidden: true,
-            focus: PreviewFocus::Pinned,
             ..LayoutInput::new(Rect::default())
         });
         assert_eq!(
@@ -162,7 +161,6 @@ fn structural_policy_keeps_no_pin_boundary_and_pin_floor_distinct() {
                     area: Rect::new(0, 0, width, 10),
                     has_pin: true,
                     tree_hidden: true,
-                    focus: PreviewFocus::Pinned,
                     ..LayoutInput::new(Rect::default())
                 }
             });

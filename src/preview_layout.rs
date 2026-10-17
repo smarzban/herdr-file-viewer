@@ -6,18 +6,6 @@
 use crate::config::TreePosition;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-/// The structural focus used when a narrow layout must show exactly one region.
-///
-/// This is intentionally separate from the Presenter's current two-way focus enum: the pinned
-/// preview can be tested before the controller starts producing a pinned focus value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PreviewFocus {
-    #[default]
-    Tree,
-    Pinned,
-    Active,
-}
-
 /// Inputs to the responsive, structural layout policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutInput {
@@ -25,7 +13,8 @@ pub struct LayoutInput {
     pub has_prompt: bool,
     pub has_remote_status: bool,
     pub has_pin: bool,
-    pub focus: PreviewFocus,
+    /// On a narrow frame, show the tree when true and the active preview when false.
+    pub narrow_shows_tree: bool,
     pub tree_hidden: bool,
     pub preview_split_pct: u16,
     pub tree_split_pct: u16,
@@ -41,7 +30,7 @@ impl LayoutInput {
             has_prompt: false,
             has_remote_status: false,
             has_pin: false,
-            focus: PreviewFocus::Tree,
+            narrow_shows_tree: true,
             tree_hidden: false,
             preview_split_pct: 50,
             tree_split_pct: 40,
@@ -63,11 +52,6 @@ impl LayoutInput {
 
     pub fn with_pin(mut self, has_pin: bool) -> Self {
         self.has_pin = has_pin;
-        self
-    }
-
-    pub fn with_focus(mut self, focus: PreviewFocus) -> Self {
-        self.focus = focus;
         self
     }
 }
@@ -176,9 +160,10 @@ fn carve_unpinned(result: &mut PreviewLayout, input: LayoutInput) {
         return;
     }
     if result.body.width < NARROW_SPLIT {
-        match input.focus {
-            PreviewFocus::Tree => result.tree = Some(result.body),
-            PreviewFocus::Pinned | PreviewFocus::Active => result.active = Some(result.body),
+        if input.narrow_shows_tree {
+            result.tree = Some(result.body);
+        } else {
+            result.active = Some(result.body);
         }
         return;
     }
@@ -266,15 +251,11 @@ mod tests {
     #[test]
     fn pin_split_floor_hides_only_the_pin_and_keeps_no_pin_geometry() {
         for ratio in [20, 50, 80] {
-            for focus in [
-                PreviewFocus::Tree,
-                PreviewFocus::Pinned,
-                PreviewFocus::Active,
-            ] {
+            for narrow_shows_tree in [true, false] {
                 let input = LayoutInput {
                     area: Rect::new(0, 0, 138, 10),
                     has_pin: true,
-                    focus,
+                    narrow_shows_tree,
                     preview_split_pct: ratio,
                     tree_split_pct: 40,
                     tree_max_cols: u16::MAX,
@@ -287,11 +268,11 @@ mod tests {
                 });
                 assert_eq!(
                     result.tree, without_pin.tree,
-                    "ratio {ratio}, focus {focus:?}"
+                    "ratio {ratio}, narrow_shows_tree {narrow_shows_tree}"
                 );
                 assert_eq!(
                     result.active, without_pin.active,
-                    "ratio {ratio}, focus {focus:?}"
+                    "ratio {ratio}, narrow_shows_tree {narrow_shows_tree}"
                 );
                 assert_eq!(result.tree_divider, without_pin.tree_divider);
                 assert_eq!(result.pinned, None, "ratio {ratio} hides the pin only");
