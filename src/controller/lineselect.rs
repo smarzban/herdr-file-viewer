@@ -1,8 +1,7 @@
 //! The line-select modal: its in-progress selection state, the enter/exit transitions on the
-//! Controller, and the two confirm paths — `Enter` copies the selection's `path:line` /
-//! `path:start-end` REFERENCE (the v1.9.0 copy-line-reference contract, unchanged), while
-//! `y`/`Y` copy the selected lines' CONTENT (the actual file text). One selection, two
-//! products, one keystroke apart.
+//! Controller, and the two confirm paths. `Enter` copies the selection's `path:line` /
+//! `path:start-end` REFERENCE, while `y`/`Y` copy the selected lines' CONTENT (the actual file
+//! text). One selection, two products, one keystroke apart.
 
 use super::*;
 use ratatui::buffer::CellWidth;
@@ -415,8 +414,7 @@ impl Controller {
     }
 
     /// Copy the current line reference for the selected file to the clipboard and close the mode
-    /// (the `Enter` confirm — the v1.9.0 copy-line-reference contract, unchanged by the
-    /// copy-content addition; `y`/`Y` copy the CONTENT instead, see
+    /// (the `Enter` confirm; `y`/`Y` copy the CONTENT instead, see
     /// [`copy_line_content`](Self::copy_line_content)). Mirrors [`copy_path`](Controller::copy_path):
     /// build the `path:line` / `path:start-end` reference, run it through
     /// [`sanitize_control`](crate::text_layout::sanitize_control) **before** it reaches the
@@ -562,9 +560,9 @@ impl Controller {
     /// plus `KeyModifiers::SHIFT`, so both spellings are accepted. `move_to`/`extend_to` clamp
     /// the target to `[1, last]` (AC-6). After any move the content pane scrolls so the marker
     /// stays visible (AC-7). `Esc` exits without copying (AC-4); `Enter` copies the `path:line`
-    /// REFERENCE and closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9 —
-    /// the shipped v1.9.0 behavior, unchanged); `y`/`Y` copy the selected CONTENT instead
-    /// ([`copy_line_content`](Self::copy_line_content)) — one selection, two products. Any other key
+    /// REFERENCE and closes the mode ([`copy_line_reference`](Self::copy_line_reference), AC-9);
+    /// `y`/`Y` copy the selected CONTENT instead
+    /// ([`copy_line_content`](Self::copy_line_content)): one selection, two products. Any other key
     /// is inert. Ctrl/Alt chords are rejected up
     /// front so a reserved combo never moves the marker; Shift is meaningful (extend / shifted
     /// arrows) and is allowed.
@@ -581,8 +579,8 @@ impl Controller {
                 self.exit_line_select(); // AC-4: close, copy nothing, scroll unchanged
                 return Effects::redraw();
             }
-            // Two confirms, one selection: `Enter` copies the `path:line` REFERENCE (the shipped
-            // v1.9.0 contract — ready to paste into an agent chat or an issue), while `y`/`Y` copy
+            // Two confirms, one selection: `Enter` copies the `path:line` REFERENCE (ready to
+            // paste into an agent chat or an issue), while `y`/`Y` copy
             // the selected CONTENT (the actual text — vim's yank, and the app's `y`=copy idiom;
             // they reach here because line-select routes every key through this handler). `Y`
             // arrives as the uppercase char + SHIFT, which the modifier guard above permits —

@@ -1,5 +1,5 @@
 //! Go-to-file finder (`f`) — open, key + mouse handling, confirm, and the draw-model
-//! projection. Part of the Session Controller (split out of `controller/mod.rs`, M6).
+//! projection. Part of the Session Controller.
 
 use super::*;
 // The shared double-click timing rule lives with click handling in the `mouse` submodule.

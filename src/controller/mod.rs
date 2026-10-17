@@ -76,7 +76,7 @@ use std::time::{Duration, Instant};
 
 /// Count the rows a preview's displayed lines occupy at its measured viewport width.
 ///
-/// Layout remains controller behavior: a later pinned preview can pass its own lines and
+/// Layout remains controller behavior: a pinned preview passes its own lines and
 /// interaction value without teaching [`PreviewInteractionState`] about ratatui text layout.
 fn rendered_rows(
     interaction: &PreviewInteractionState,
@@ -186,7 +186,7 @@ const FLASH_FULL: Duration = Duration::from_millis(1600);
 /// How long a [`Flash`] lingers dimmed after [`FLASH_FULL`] before it disappears entirely. The
 /// bright→dim→gone progression is the terminal-idiomatic "fade" for an auto-dismissing hint.
 const FLASH_DIM: Duration = Duration::from_millis(700);
-/// How long a launch open-target **range** keeps a passive content highlight (option 3). Display
+/// How long a launch open-target **range** keeps a passive content highlight. Display
 /// only: no line-select modal, no key capture. Cleared early on content change or Esc.
 const OPEN_RANGE_FLASH: Duration = Duration::from_secs(1);
 
@@ -284,8 +284,8 @@ pub struct RenderResult {
     pub source: Option<Vec<String>>,
 }
 
-/// Produce the content-pane text for `(file, mode)`. `Send` so a later task can run it on a
-/// worker thread (AC-23). Behind a trait so tests stub it instead of spawning glow/delta/bat.
+/// Produce the content-pane text for `(file, mode)`. `Send` so the render worker can run it
+/// on a worker thread (AC-23). Behind a trait so tests stub it instead of spawning glow/delta/bat.
 pub trait ContentProvider: Send {
     fn render(&self, path: &Path, mode: ViewMode, raw_diff: Option<&str>) -> RenderResult;
 
@@ -368,8 +368,8 @@ enum EmptyReason {
 /// What the active content region currently displays.
 ///
 /// Only `Document` is a settled file preview. Keeping loading, directory (including a rendered
-/// status-mode directory diff), and empty-tree output as distinct variants makes it impossible for
-/// the later pin lifecycle to mistake guidance or an in-flight placeholder for a pinnable file.
+/// status-mode directory diff), and empty-tree output as distinct variants makes it impossible to
+/// mistake guidance or an in-flight placeholder for a pinnable file.
 enum ActiveDisplay {
     Loading {
         content: Arc<Text<'static>>,
@@ -678,8 +678,7 @@ impl DiscardAction {
 }
 
 impl Modal {
-    /// The picker state when the picker is the open modal, else `None` — the enum's `Option<&_>`
-    /// view, so call sites read like the old `self.modal.picker()`.
+    /// The picker state when the picker is the open modal, else `None`.
     fn picker(&self) -> Option<&PickerState> {
         match self {
             Modal::Picker(s) => Some(s),
@@ -817,7 +816,7 @@ pub struct Controller {
     /// inferred from later focus changes, so incremental search cannot leak across previews.
     prompt_target: PreviewTarget,
     /// Mutable viewport, search, and displayed-text selection state for the active preview.
-    /// A later pinned snapshot owns a distinct clone of this value.
+    /// A pinned snapshot owns a distinct clone of this value.
     active_interaction: PreviewInteractionState,
     /// The one optional frozen document and independently evolving interaction state.
     pinned_snapshot: Option<PinnedSnapshot>,
@@ -988,9 +987,7 @@ pub struct Controller {
     /// hint isn't available cross-worktree, so the launch hint is the best shared-base recovery.
     base_branch: Option<String>,
     /// The current git branch (e.g. `"main"`, `"feat/x"`), shown on the tree's bottom border.
-    /// `None` outside a repo or on a detached HEAD. Computed ONCE from the freshly-resolved root
-    /// at construction and on each re-root and cached here — never queried per-frame, since the
-    /// branch can only change by a re-root, not by navigation.
+    /// `None` outside a repo or on a detached HEAD. Cached here, never queried per frame.
     current_branch: Option<String>,
     /// A queued go-to-line jump awaiting its re-render: `(render seq, 1-based source line)`. Set when
     /// `:` confirms in a **transformed** view (RenderedMarkdown / Diff / FullDiff) — the view is
@@ -1082,8 +1079,8 @@ impl Controller {
         // The launch base-branch hint is session-level — recorded once here and carried across
         // re-roots (F). It is `None` outside a repo / when herdr gave no hint.
         let base_branch = resolved.base_branch.clone();
-        // The current branch for the tree's bottom-border title: queried once here from
-        // the resolved repo root (never per-frame), `None` outside a repo / on detached HEAD.
+        // The current branch for the tree's bottom-border title, from the resolved repo root
+        // (cached, never per-frame). `None` outside a repo / on detached HEAD.
         let (current_branch, head_oid) = resolved
             .repo_root
             .as_deref()
@@ -1188,9 +1185,8 @@ impl Controller {
 
     /// Spawn the off-thread render worker that owns `git` (for the diff query) and `content`
     /// (the Content Renderer), returning the job sender and result receiver the controller keeps
-    /// (AC-23). The worker runs until the job sender is dropped — so `new` spawns it once, and a
-    /// re-root spawns a fresh one and drops the old sender to retire the old worker. The loop
-    /// body is the same one `new` used inline before it was extracted; behavior is unchanged.
+    /// (AC-23). The worker runs until the job sender is dropped, so `new` spawns it once, and a
+    /// re-root spawns a fresh one and drops the old sender to retire the old worker.
     fn spawn_worker(
         git: Arc<dyn GitService>,
         content: Box<dyn ContentProvider>,
@@ -2013,8 +2009,8 @@ impl Controller {
 
     /// Mutably access the active preview's interaction state.
     ///
-    /// The controller continues to clamp and project this state through its regular input and
-    /// presentation paths; this accessor is the copy seam used by the later pinned snapshot.
+    /// The controller clamps and projects this state through its regular input and
+    /// presentation paths.
     pub fn active_interaction_mut(&mut self) -> &mut PreviewInteractionState {
         &mut self.active_interaction
     }
@@ -2190,7 +2186,7 @@ impl Controller {
 
     /// Build the bottom-line string shown in `ViewState.prompt`. Single source of truth for all
     /// three cases: an open prompt (go-to-line or search while typing), a committed search (prompt
-    /// closed but `self.search` is Some), and nothing active (returns `None`).
+    /// closed but `active_interaction.search` is Some), and nothing active (returns `None`).
     ///
     /// Priority:
     ///   1. Open prompt → label + query + (for Search) live match count.
@@ -2230,7 +2226,7 @@ impl Controller {
     }
 
     /// Build the committed-search status + hint bar shown while a search is committed (prompt
-    /// closed, `self.search` is `Some`). Returns `None` when no committed search is active.
+    /// closed, `active_interaction.search` is `Some`). Returns `None` when no committed search is active.
     ///
     /// Format:
     /// - ≥1 match: `Search: {query} ({current+1}/{total}) · n next · N prev · Esc clear`
@@ -2545,8 +2541,6 @@ impl Controller {
     }
 
     /// Clamp the active interaction's two viewport offsets against the currently displayed lines.
-    /// The active-only shell supplies the current render's wrap and modal-overlay facts until a
-    /// later task supplies a Preview Document.
     fn clamp_active_interaction(&mut self) {
         let wrap = self.effective_wrap();
         let overlay_columns = self.content_overlay_glyph_cols();
@@ -3672,8 +3666,8 @@ impl Controller {
         // AC-20: any displayed-content change (file-select, view-cycle, baseline-toggle, refresh,
         // go-to-line auto-switch, re-root, etc.) clears a committed search and its highlighting.
         // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets
-        // `self.search` directly — it does NOT call `dispatch_render` — so live typing is NOT
-        // wiped by this clear.
+        // `active_interaction.search` directly. It does NOT call `dispatch_render`, so live typing
+        // is NOT wiped by this clear.
         self.active_interaction.search = None;
         // Drop an ambient selection on any content change: its line/char coordinates only mean
         // something against the body it was dragged over, so a stale highlight (and copy) must not
@@ -3855,7 +3849,7 @@ impl Controller {
                     self.pending_line_select = None;
                 }
                 // A render that was in flight when a search was opened/committed lands here and
-                // swaps self.content; matches computed against the OLD content are now stale.
+                // swaps `active_display`; matches computed against the OLD content are now stale.
                 // Mirror dispatch_render's AC-20 clear: recompute an open Search prompt against
                 // the new content, else drop a committed search — UNLESS this was a width reflow,
                 // where a committed search must be recomputed (not dropped), so a resize does not

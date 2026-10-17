@@ -17,10 +17,10 @@ use std::sync::OnceLock;
 /// The resolved key-to-[`Intent`] decode map plus the set of intents whose key set came from
 /// user config (a **custom binding**).
 ///
-/// Built once from the [`REGISTRY`] (defaults) or, later, the registry layered with a user's
-/// `[keys]` config. The [dispatcher](decode) only ever reads it — it never sees the raw registry
+/// Built once from the [`REGISTRY`] (defaults) or the registry layered with a user's
+/// `[keys]` config. The [dispatcher](decode) only ever reads it; it never sees the raw registry
 /// or config. Fields are private; callers use the accessors. `customized` is empty for the default
-/// build; the T-5 bindings resolver populates it from a user's config.
+/// build.
 pub(crate) struct EffectiveBindings {
     /// Which [`Intent`] each logical key decodes to.
     map: HashMap<KeyCode, Intent>,
@@ -43,7 +43,7 @@ impl EffectiveBindings {
     /// The effective key(s) that decode to `intent`, in a deterministic order (sorted by their
     /// rendered [`key_label`]), so the Keybindings view-model and its tests are stable. Empty when
     /// `intent` has no effective key at all: e.g. an intent whose only key was `Esc`, which the
-    /// no-lockout floor reassigns to `Close`. Consumed by the T-7 Keybindings view-model.
+    /// no-lockout floor reassigns to `Close`. Consumed by the Keybindings view-model.
     pub(crate) fn keys_for(&self, intent: Intent) -> Vec<KeyCode> {
         let mut codes: Vec<KeyCode> = self
             .map
@@ -73,11 +73,11 @@ impl EffectiveBindings {
 /// Fold the [`REGISTRY`] into the default [`EffectiveBindings`]: every default key of every row
 /// decodes to that row's intent, with no key customized.
 ///
-/// Pure — no config, env, or I/O (AC-24). Delegates to [`resolve_bindings`] with **no** `[keys]`
+/// Pure: no config, env, or I/O (AC-24). Delegates to [`resolve_bindings`] with **no** `[keys]`
 /// config so the default and configured paths share one code path (the resolver with an empty
 /// override is the identity over the registry). Because the registry's default keys are
-/// collision-free (test-enforced, AC-3), the resulting map reproduces today's `map_key` bindings
-/// verbatim (AC-1).
+/// collision-free (test-enforced, AC-3), the resulting map is the default [`map_key`] decode
+/// (AC-1).
 pub(crate) fn default_bindings() -> EffectiveBindings {
     resolve_bindings(registry(), None).0
 }
@@ -164,7 +164,7 @@ fn default_bindings_static() -> &'static EffectiveBindings {
 ///
 /// Thin wrapper over [`decode`] against the registry-derived [`default_bindings`]; the single call
 /// site and the existing dispatcher tests exercise this to prove the default map is unchanged
-/// (AC-1). The run loop switches to the effective bindings in T-6.
+/// (AC-1).
 pub fn map_key(key: KeyEvent) -> Option<Intent> {
     decode(key, default_bindings_static())
 }
@@ -174,8 +174,8 @@ pub fn map_key(key: KeyEvent) -> Option<Intent> {
 ///
 /// This is the single source of truth for each global action's default binding. The dispatcher,
 /// the help overlay, and the README docs-consistency check all derive from it, so a key, its
-/// config name, and its description live in exactly one place. `default_keys` reproduces the
-/// current [`map_key`] bindings verbatim; `name` is the public `[keys]` config key.
+/// config name, and its description live in exactly one place. `name` is the public `[keys]`
+/// config key.
 pub(crate) struct Binding {
     /// The global action this row binds. Consumed by [`default_bindings`].
     pub intent: Intent,
@@ -209,9 +209,9 @@ pub(crate) const CATEGORY_ORDER: &[&str] = &[
 
 /// The keybinding registry: one [`Binding`] per [`Intent::ALL`] member, in that order.
 ///
-/// The `default_keys` mirror [`map_key`] exactly (behavior-preserving foundation). Invariants,
-/// all test-enforced rather than at runtime: every `Intent::ALL` member appears exactly once
-/// (AC-2), no two rows share a `name` (AC-5), and no [`KeyCode`] is a default of two rows (AC-3).
+/// Invariants, all test-enforced rather than at runtime: every `Intent::ALL` member appears
+/// exactly once (AC-2), no two rows share a `name` (AC-5), and no [`KeyCode`] is a default of
+/// two rows (AC-3).
 pub(crate) const REGISTRY: &[Binding] = &[
     Binding {
         intent: Intent::NavUp,
@@ -1691,7 +1691,7 @@ mod tests {
         }
     }
 
-    // --- T-5 Bindings Resolver (AC-6, AC-7, AC-8, AC-10, AC-14, AC-15, AC-18, AC-20) ---
+    // --- Bindings Resolver (AC-6, AC-7, AC-8, AC-10, AC-14, AC-15, AC-18, AC-20) ---
 
     use crate::config::KeySpec;
     use std::collections::BTreeMap;
@@ -1910,7 +1910,7 @@ mod tests {
         assert!(!bindings.is_customized(Intent::ShowAnnotations));
     }
 
-    // --- T-8 docs consistency: the keys reference `## Keys` table stays in sync with the registry (AC-21) ---
+    // --- docs consistency: the keys reference `## Keys` table stays in sync with the registry (AC-21) ---
 
     /// The keys-reference source (`docs/keys.md`), compiled in so a drift between the registry and
     /// the `## Keys` table fails the build. This assertion lives here, not in

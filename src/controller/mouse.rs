@@ -1,6 +1,6 @@
 //! Column/tree pointer handling — wheel scroll, press/drag on the divider and scrollbars
 //! (click-to-scroll), click vs double-click, and the scrollbar track\u2192offset math. Routed here
-//! from `handle_mouse` for the non-modal case. Part of the Session Controller (M6 split).
+//! from `handle_mouse` for the non-modal case. Part of the Session Controller.
 
 use super::*;
 
@@ -495,8 +495,7 @@ impl Controller {
         };
         let rows = self.tree.visible_nodes();
         let len = rows.len();
-        // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None` here,
-        // exactly the old `span == 0 || len <= 1` no-op.
+        // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None` here.
         let Some(idx) =
             Self::track_to_offset(row, track.y, track.height, len.saturating_sub(1) as u32)
         else {

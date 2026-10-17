@@ -1,7 +1,6 @@
 //! Apply git state to the tree — set working-tree markers + the baseline fallback, keep the
-//! changed-only filter in sync, and the focus-gained refresh. Part of the Session Controller
-//! (split out of `controller/mod.rs`, M6). The re-root orchestration that drives these stays in
-//! mod.rs.
+//! changed-only filter in sync, and the focus-gained refresh. Part of the Session Controller.
+//! The re-root orchestration that drives these stays in mod.rs.
 
 use super::*;
 
