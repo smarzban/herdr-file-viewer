@@ -1,5 +1,5 @@
-//! Help overlay (`?`) — open/close, key + mouse handling, and the draw-model projection.
-//! Part of the Session Controller (split out of `controller/mod.rs`, M6).
+//! Help overlay (`?`): open/close, key + mouse handling, and the draw-model projection.
+//! Part of the Session Controller.
 
 use super::*;
 
@@ -90,7 +90,7 @@ impl Controller {
     /// Install the formatted Keybindings section body (AC-16, AC-19, AC-20), so
     /// [`open_help`](Self::open_help) appends a "Keybindings" section to the `?` overlay. Reads the
     /// already-stored effective bindings + load outcome (wired by
-    /// [`set_keybindings`](Self::set_keybindings), T-6), so it takes no arguments. Called once by
+    /// [`set_keybindings`](Self::set_keybindings)), so it takes no arguments. Called once by
     /// `app::run` after construction (mirrors
     /// [`set_settings_display`](Self::set_settings_display)); a controller that never calls it (most
     /// tests) keeps the pre-existing overlay unchanged.
@@ -180,10 +180,9 @@ impl Controller {
         self.modal.help()
     }
 
-    /// Dismiss the help overlay. A no-op when help is not the open modal — so this clears ONLY the
-    /// help overlay, never some other modal that happens to be open (matching the old per-field
-    /// `self.help = None`, which was inert unless help was actually open). The match guard keeps
-    /// that contract now that the four modal slots share one `modal` field.
+    /// Dismiss the help overlay. A no-op when help is not the open modal, so this clears ONLY the
+    /// help overlay, never some other modal that happens to be open. The match guard keeps that
+    /// close-only contract.
     pub fn close_help(&mut self) {
         if matches!(self.modal, Modal::Help(_)) {
             self.modal = Modal::None;
@@ -198,7 +197,7 @@ impl Controller {
         let key = crate::input::normalize_altgr(key, cfg!(windows));
         // Ignore Ctrl/Alt chords (mirrors input::map_key): Shift is allowed (Shift+Tab = BackTab
         // retreats), but a Ctrl+'?' / Alt+1 must NOT close or switch — consume it as a no-op so it
-        // neither acts here nor leaks past the modal. (R3 item 3, consistency with map_key.)
+        // neither acts here nor leaks past the modal (consistent with map_key).
         if key.modifiers.difference(KeyModifiers::SHIFT) != KeyModifiers::NONE {
             return Effects::noop();
         }
@@ -230,13 +229,13 @@ impl Controller {
             // Clamp EAGERLY against the last-known geometry so the drawn offset never
             // over-scrolls past the last wrapped row on the shown frame (mirrors
             // scroll_content's max_content_scroll). The post-draw clamp in set_pane_geometry
-            // stays as the backstop for resize/width changes. (R3 item 5/AC-9.)
+            // stays as the backstop for resize/width changes (AC-9).
             KeyCode::Char('j') | KeyCode::Down => {
                 help.scroll_by(1);
                 // Clamp eagerly only once a frame has measured the body (help_body_rows > 0);
                 // before the first draw there is no geometry to clamp against and clamping to a
                 // zero total would wrongly forbid all scroll. set_pane_geometry remains the
-                // per-frame backstop. (R3 item 5.)
+                // per-frame backstop.
                 if help_body_rows > 0 {
                     help.clamp_scroll(help_body_rows, help_body_height);
                 }

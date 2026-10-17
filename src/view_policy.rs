@@ -1,6 +1,6 @@
 //! View Policy — a pure decision: which content-pane view mode a file gets.
 //!
-//! Precedence (design.md): deleted → diff; other changed files → the configured preference
+//! Precedence: deleted → diff; other changed files → the configured preference
 //! (diff by default, or the normal file-type view); else markdown → rendered (AC-8); else →
 //! syntax-highlighted content (AC-10). The applicable set (AC-11) is what a mode-cycle key steps
 //! through; for a changed file it also offers a full-context diff (the whole file with line numbers

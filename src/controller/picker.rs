@@ -1,5 +1,5 @@
 //! Worktree picker (`W`) — open, intent handling, the agent-overlay hint, and the draw-model
-//! projection. Part of the Session Controller (split out of `controller/mod.rs`, M6).
+//! projection. Part of the Session Controller.
 
 use super::*;
 
