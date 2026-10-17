@@ -3,8 +3,8 @@
 # action and a herdr keybinding (e.g. `prefix+shift+f`). "Open-or-switch, toggle on repeat",
 # scoped across the tabs of the CURRENT WORKSPACE:
 #   - no Files pane in this workspace        -> open the viewer in a new tab (focused)
-#   - a Files pane in another tab of this
-#     workspace                              -> switch to that tab (no duplicate viewer)
+#   - a Files pane showing the focused root
+#     in another tab of this workspace       -> switch to that tab (no duplicate viewer)
 #   - a Files pane is in the current tab,
 #     but not focused                        -> focus it in place
 #   - the focused pane IS the Files pane      -> close it ("toggle off"; herdr auto-closes the

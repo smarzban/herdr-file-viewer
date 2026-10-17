@@ -147,7 +147,8 @@ Canonical vocabulary for this repo. Glossary only: no implementation detail, no 
   grow/shrink keys) lifts it for the session.
 - **keybinding registry**: the single data-driven table binding each global viewer action
   to its default key(s) and a human description; the source of truth the input dispatcher
-  decodes from and the help overlay and README both derive from.
+  decodes from and the help overlay (`?`) derives from. The README key table is
+  hand-written.
 - **intent name**: the stable snake_case identifier of a global action, used as the key of
   a `[keys]` **config file** entry (e.g. `refresh`, `nav_up`).
 - **key spec**: the string, or array of strings, a user writes to name the key(s) an action
