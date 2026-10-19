@@ -2186,7 +2186,8 @@ impl Controller {
 
     /// Build the bottom-line string shown in `ViewState.prompt`. Single source of truth for all
     /// three cases: an open prompt (go-to-line or search while typing), a committed search (prompt
-    /// closed but `active_interaction.search` is Some), and nothing active (returns `None`).
+    /// closed but the focused preview's committed `search` is Some), and nothing active (returns
+    /// `None`).
     ///
     /// Priority:
     ///   1. Open prompt → label + query + (for Search) live match count.
@@ -2226,7 +2227,8 @@ impl Controller {
     }
 
     /// Build the committed-search status + hint bar shown while a search is committed (prompt
-    /// closed, `active_interaction.search` is `Some`). Returns `None` when no committed search is active.
+    /// closed, the focused preview's committed `search` is `Some`). Returns `None` when no
+    /// committed search is active.
     ///
     /// Format:
     /// - ≥1 match: `Search: {query} ({current+1}/{total}) · n next · N prev · Esc clear`
@@ -3665,9 +3667,9 @@ impl Controller {
         self.pending_line_select = None;
         // AC-20: any displayed-content change (file-select, view-cycle, baseline-toggle, refresh,
         // go-to-line auto-switch, re-root, etc.) clears a committed search and its highlighting.
-        // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets
-        // `active_interaction.search` directly. It does NOT call `dispatch_render`, so live typing
-        // is NOT wiped by this clear.
+        // `refresh_search` (the incremental-typing path) only calls `scroll_to_line` and sets the
+        // target interaction's `search` directly. It does NOT call `dispatch_render`, so live
+        // typing is NOT wiped by this clear.
         self.active_interaction.search = None;
         // Drop an ambient selection on any content change: its line/char coordinates only mean
         // something against the body it was dragged over, so a stale highlight (and copy) must not

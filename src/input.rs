@@ -1910,7 +1910,7 @@ mod tests {
         assert!(!bindings.is_customized(Intent::ShowAnnotations));
     }
 
-    // --- docs consistency: the keys reference `## Keys` table stays in sync with the registry (AC-21) ---
+    // --- docs consistency: the docs/keys.md `## Keys` table matches the registry (AC-21) ---
 
     /// The keys-reference source (`docs/keys.md`), compiled in so a drift between the registry and
     /// the `## Keys` table fails the build. This assertion lives here, not in

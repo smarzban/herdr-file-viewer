@@ -495,7 +495,8 @@ impl Controller {
         };
         let rows = self.tree.visible_nodes();
         let len = rows.len();
-        // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None` here.
+        // `max = len - 1` (the last index): a 1-cell track or a list of ≤ 1 node yields `None`
+        // here.
         let Some(idx) =
             Self::track_to_offset(row, track.y, track.height, len.saturating_sub(1) as u32)
         else {
