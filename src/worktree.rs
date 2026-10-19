@@ -8,7 +8,7 @@
 //! [`agent_active`] resolves the pre-selected worktree when a herdr agent is running (AC-3,
 //! AC-4, AC-15).
 
-use crate::git::git_command;
+use crate::git::{Reach, git_command};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,9 +45,14 @@ pub fn list(repo_root: &Path, current_root: &Path) -> Vec<Worktree> {
         .canonicalize()
         .unwrap_or_else(|_| current_root.to_path_buf());
 
-    let out = git_command(repo_root, &["worktree", "list", "--porcelain", "-z"])
-        .output()
-        .ok();
+    // `worktree list` reads worktree metadata only; it never checks a submodule for changes.
+    let out = git_command(
+        repo_root,
+        Reach::Repository,
+        &["worktree", "list", "--porcelain", "-z"],
+    )
+    .output()
+    .ok();
 
     match out {
         Some(o) if o.status.success() => {

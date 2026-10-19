@@ -5,6 +5,7 @@
 //! Uses only read-only `git` subcommands.
 
 use crate::context::LaunchContext;
+use crate::git::{Operation, Reach};
 use std::path::{Path, PathBuf};
 
 /// The resolved root and git facts the Session Controller initializes from.
@@ -24,11 +25,13 @@ pub struct Resolved {
 
 /// Resolve the tree root and git-presence for a launch context.
 pub fn resolve(ctx: &LaunchContext) -> Resolved {
-    match trusted_toplevel(&ctx.cwd) {
+    // One operation: the filter inventory runs once for every query below.
+    let git = Operation::new(&ctx.cwd);
+    match trusted_toplevel(&git, &ctx.cwd) {
         Some(root) => Resolved {
             is_git_repo: true,
             repo_root: Some(root.clone()),
-            is_worktree: is_linked_worktree(&ctx.cwd),
+            is_worktree: is_linked_worktree(&git),
             base_branch: ctx.base_branch.clone(),
             root,
         },
@@ -52,9 +55,9 @@ pub fn resolve(ctx: &LaunchContext) -> Resolved {
 /// ancestor of `cwd` whose `.git` entry resolves to the git dir git itself reports; git's
 /// toplevel is accepted only when the two canonical paths are the same. A mismatch degrades to
 /// a non-repo rooted at `cwd`, so later reads and git queries stay on the opened tree.
-fn trusted_toplevel(cwd: &Path) -> Option<PathBuf> {
-    let reported = PathBuf::from(git_output(cwd, &["rev-parse", "--show-toplevel"])?);
-    let git_dir = git_output(cwd, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
+fn trusted_toplevel(git: &Operation, cwd: &Path) -> Option<PathBuf> {
+    let reported = PathBuf::from(git_output(git, &["rev-parse", "--show-toplevel"])?);
+    let git_dir = git_output(git, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
     let discovered = directory_owning_git_dir(cwd, Path::new(&git_dir))?;
     let reported_canon = reported.canonicalize().ok()?;
     // Keep git's own toplevel string when it names that same directory, so a trusted repo
@@ -87,7 +90,7 @@ fn directory_owning_git_dir(start: &Path, git_dir: &Path) -> Option<PathBuf> {
 
 /// The canonical git dir a `.git` file (`gitdir: <path>`) in `dir` points at. Like git, only
 /// trailing line terminators are stripped and a relative path resolves against `dir`.
-fn gitfile_target(dir: &Path, gitfile: &Path) -> Option<PathBuf> {
+pub(crate) fn gitfile_target(dir: &Path, gitfile: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(gitfile).ok()?;
     let target = content
         .strip_prefix("gitdir: ")?
@@ -95,19 +98,20 @@ fn gitfile_target(dir: &Path, gitfile: &Path) -> Option<PathBuf> {
     dir.join(target).canonicalize().ok()
 }
 
-/// Run a read-only `git` query in `dir`; `Some(stdout)` minus its line terminator on success,
+/// Run a read-only `git` query in the operation's directory; `Some(stdout)` minus its line terminator on success,
 /// else `None`. Only the final `\n` is dropped, never other whitespace: a path git prints may
 /// itself end in a space or `\r`, and trimming it would compare a different directory than
 /// the one git will use (`core.worktree = "/repo "` must not pass for `/repo`).
-/// Built through the Git Service's shared [`crate::git::git_command`] so the untrusted-repo
+/// Built through the Git Service's shared [`Operation::command`] so the untrusted-repo
 /// hardening (no optional index locks, neutralized `core.fsmonitor`/`core.hooksPath`, dropped
-/// repo-redirecting env so the *root* resolves against `dir`) is applied identically here and
+/// repo-redirecting env so the *root* resolves against that directory) is applied identically here and
 /// in the Git Service — it cannot drift between the two. The shared builder pins
 /// `--attr-source` only when the installed git accepts it (git ≥ 2.40); older git (Apple's
 /// 2.39.x) omits the flag so root resolution still sees a real repo instead of degrading to a
 /// plain browser (#160).
-fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = crate::git::git_command(dir, args).output().ok()?;
+fn git_output(git: &Operation, args: &[&str]) -> Option<String> {
+    // Root resolution runs only `rev-parse`, which never checks a submodule for changes.
+    let out = git.command(Reach::Repository, args).output().ok()?;
     if out.status.success() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         Some(stdout.strip_suffix('\n').unwrap_or(&stdout).to_string())
@@ -118,10 +122,10 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// A linked worktree's git-dir (`.git/worktrees/<name>`) differs from the shared
 /// common dir (`.git`); the main working tree's are the same.
-fn is_linked_worktree(dir: &Path) -> bool {
-    let git_dir = git_output(dir, &["rev-parse", "--path-format=absolute", "--git-dir"]);
+fn is_linked_worktree(git: &Operation) -> bool {
+    let git_dir = git_output(git, &["rev-parse", "--path-format=absolute", "--git-dir"]);
     let common = git_output(
-        dir,
+        git,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     );
     match (git_dir, common) {
