@@ -536,6 +536,9 @@ fn submodule_diff_external_is_not_executed() {
         &["config", "diff.external", script.to_str().unwrap()],
     );
     fs::write(checkout.join("file.txt"), "hello\ndirty\n").unwrap();
+    // A content-only edit is not walked (`--ignore-submodules=dirty`). Move the submodule
+    // commit so the gitlink change is still reported without entering the worktree.
+    git(&checkout, &["commit", "-q", "--allow-empty", "-m", "move"]);
 
     let rendered = diff_directory(super_repo.path(), Path::new(""), Baseline::Head, None);
     assert!(
@@ -544,7 +547,84 @@ fn submodule_diff_external_is_not_executed() {
     );
     assert!(
         rendered.contains("Subproject commit"),
-        "the gitlink is still reported, as a short summary: {rendered}"
+        "a changed submodule commit is still reported: {rendered}"
+    );
+}
+
+/// A clean filter that exists only in a populated submodule runs when Git hashes that
+/// worktree. `$GIT_DIR/info/attributes` still selects it under `--attr-source`, and
+/// `submodule.<name>.ignore=none` defeats a config-only ignore. Status and diff must
+/// not enter the worktree.
+#[cfg(unix)]
+#[test]
+fn submodule_only_clean_filter_is_not_executed() {
+    let sub = TempDir::new();
+    git(sub.path(), &["init", "-q", "-b", "main"]);
+    git(sub.path(), &["config", "user.email", "t@example.com"]);
+    git(sub.path(), &["config", "user.name", "T"]);
+    fs::write(sub.path().join("file.txt"), "hello\n").unwrap();
+    git(sub.path(), &["add", "."]);
+    git(sub.path(), &["commit", "-q", "-m", "init"]);
+
+    let super_repo = TempDir::new();
+    git(super_repo.path(), &["init", "-q", "-b", "main"]);
+    git(
+        super_repo.path(),
+        &["config", "user.email", "t@example.com"],
+    );
+    git(super_repo.path(), &["config", "user.name", "T"]);
+    git(
+        super_repo.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.path().to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(super_repo.path(), &["commit", "-q", "-m", "add submodule"]);
+    git(super_repo.path(), &["config", "diff.submodule", "diff"]);
+    git(
+        super_repo.path(),
+        &["config", "diff.ignoreSubmodules", "none"],
+    );
+    git(
+        super_repo.path(),
+        &["config", "submodule.sub.ignore", "none"],
+    );
+
+    let checkout = super_repo.path().join("sub");
+    let marker = super_repo.path().join("PWNED");
+    let script = super_repo.path().join("payload.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    git(
+        &checkout,
+        &["config", "filter.evil.clean", script.to_str().unwrap()],
+    );
+    git(&checkout, &["config", "filter.evil.required", "false"]);
+    let git_dir = git(&checkout, &["rev-parse", "--absolute-git-dir"]);
+    let info = PathBuf::from(git_dir).join("info");
+    fs::create_dir_all(&info).unwrap();
+    fs::write(info.join("attributes"), "* filter=evil\n").unwrap();
+    // Same length as `hello\n`, so a stat size check cannot skip hashing.
+    fs::write(checkout.join("file.txt"), "world\n").unwrap();
+
+    let _ = status(super_repo.path());
+    let _ = diff_directory(super_repo.path(), Path::new(""), Baseline::Head, None);
+    assert!(
+        !marker.exists(),
+        "a submodule-only clean filter must not run during status or a directory diff"
     );
 }
 
