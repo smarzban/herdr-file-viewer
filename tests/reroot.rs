@@ -1,9 +1,7 @@
 //! Provider Factory (ADR-0004). The controller is built from a *factory* closure that
 //! yields the root-bound providers (Git Service + Content Renderer) for a given [`Resolved`],
-//! rather than from fixed instances. This is the construction shape a later re-root
-//! re-invokes to rebuild those providers against a new root. Here we prove the seam in
-//! isolation: a fake factory returns fake providers, `Controller::new` builds, and the first
-//! frame renders the fake content — touching no real git, renderer, or editor.
+//! rather than from fixed instances. This file is the re-root suite: root switches rebuild
+//! those providers, refresh git state, and stay read-only.
 
 mod common;
 

@@ -58,7 +58,7 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
 
     // Load + resolve the plugin's optional TOML config once, up front (AC-3..AC-5, AC-14, AC-16,
     // AC-17): `eff` is the fully-resolved config > env > default settings the rest of `run` wires
-    // in below. Kept alive (borrowed, never moved wholesale) so the Settings section (T-9) below
+    // in below. Kept alive (borrowed, never moved wholesale) so the Settings section below
     // can read `eff`/`load_outcome` for the in-app Settings display. With no config file present,
     // `load_config_from_env` returns `Config::default()`, so default behavior is unchanged.
     let (cfg, load_outcome) = crate::config::load_config_from_env();
@@ -174,11 +174,11 @@ pub fn run(open_flag: Option<String>) -> io::Result<()> {
         &crate::config::config_path_from_env(),
         &settings_wired,
     );
-    // Resolve the effective key bindings from the registry + the config's `[keys]` table (Slice B,
-    // T-6): `config > default`, defensively (a rejected entry reverts to its default key set). This
-    // is read-only wiring (AC-23) — it only reads the already-loaded `cfg` and builds in-memory
+    // Resolve the effective key bindings from the registry + the config's `[keys]` table:
+    // `config > default`, defensively (a rejected entry reverts to its default key set). This
+    // is read-only wiring (AC-23): it only reads the already-loaded `cfg` and builds in-memory
     // state, never touching the filesystem or git. The run loop's key arm below decodes against
-    // these instead of the hardwired default map; the `KeyLoadOutcome` is stored for the T-7
+    // these instead of the hardwired default map; the `KeyLoadOutcome` is stored for the
     // Keybindings overlay to surface any ignored entries (AC-16).
     let (bindings, key_outcome) =
         crate::input::resolve_bindings(crate::input::registry(), cfg.keys.as_ref());
@@ -357,7 +357,7 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                 // `handle_finder_key` so printable keys (including `j`, `w`, `q`, …) edit the
                 // query instead of firing viewer intents (AC-7). The arm is gated on
                 // `finder_open()` so it is entirely skipped when the finder is closed, leaving
-                // the existing `map_key` arm below to run unchanged.
+                // the existing `input::decode` arm below to run unchanged.
                 Event::Key(key) if key.kind == KeyEventKind::Press && controller.finder_open() => {
                     let fx = controller.handle_finder_key(key);
                     if apply_input_effects(terminal, &mut dirty, fx, true) {
@@ -1105,7 +1105,7 @@ mod tests {
         }
     }
 
-    // ---- resolve_editor: default-editor platform seam (AC-8, T-5) --------------
+    // ---- resolve_editor: default-editor platform seam (AC-8) --------------
 
     /// A set `$EDITOR` is always used as-is, on every platform.
     #[test]

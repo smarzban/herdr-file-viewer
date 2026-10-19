@@ -10,8 +10,8 @@
 //! and the process exit non-zero — the `exit == 0` assertion guards against that regression.
 //!
 //! Unix-only: see `tests/cli_smoke.rs` for why this `expectrl`-pty e2e suite is not ported to
-//! Windows's `conpty` backend in this feature (the recording "editor" here is also a `#!/bin/sh`
-//! script made executable via unix permission bits).
+//! Windows's `conpty` backend (the recording "editor" here is also a `#!/bin/sh` script made
+//! executable via unix permission bits).
 #![cfg(unix)]
 
 mod common;

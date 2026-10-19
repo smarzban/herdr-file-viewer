@@ -1,7 +1,7 @@
 //! e2e (pty): launch open target via `--open` and `HERDR_FILE_VIEWER_OPEN`.
 //!
 //! Unix-only: see `tests/cli_smoke.rs` for why this `expectrl`-pty e2e suite is not ported to
-//! Windows's `conpty` backend in this feature.
+//! Windows's `conpty` backend.
 #![cfg(unix)]
 
 mod common;
