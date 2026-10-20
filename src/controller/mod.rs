@@ -3947,7 +3947,6 @@ impl Controller {
     fn descriptor(&self, path: &Path) -> FileDescriptor {
         let status = self.change_status(path);
         FileDescriptor {
-            path: path.to_path_buf(),
             is_markdown: is_markdown(path),
             is_changed: status.is_some(),
             is_deleted: status == Some(Status::Deleted) && !path.exists(),

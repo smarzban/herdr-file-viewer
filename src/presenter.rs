@@ -941,16 +941,16 @@ fn draw_blank_annotation_cells(
     text: Rect,
     state: &ViewState,
     preview: &PreviewProjection,
-) -> Vec<Position> {
+) {
     if text.width == 0 || text.height == 0 {
-        return Vec::new();
+        return;
     }
     // With no mapped ranges nothing can paint: `range_covers` is false for every line, so the walk
     // below is pure waste, and it runs every draw, computing wrapped-row counts for the whole file.
     // The common cases hit this: file-level-only annotations, and any transformed view (rendered
     // markdown / diff), which carries no source map. (Copilot, PR #101.)
     if state.annotation_indicators.displayed_line_ranges.is_empty() {
-        return Vec::new();
+        return;
     }
 
     let scroll = preview.scroll as usize;
@@ -959,7 +959,6 @@ fn draw_blank_annotation_cells(
     let prefix = usize::from(preview.line_select.as_ref().is_some_and(|ls| !ls.passive));
     let mut display_row = 0usize;
     let mut range_index = 0usize;
-    let mut painted = Vec::with_capacity(text.height as usize);
 
     for (index, line) in preview.content.lines.iter().enumerate() {
         let source_line = index + 1;
@@ -990,10 +989,8 @@ fn draw_blank_annotation_cells(
         let position = Position::new(text.x, text.y + y_offset as u16);
         if let Some(cell) = frame.buffer_mut().cell_mut(position) {
             cell.set_style(blank_annotation_style(source_line, preview));
-            painted.push(position);
         }
     }
-    painted
 }
 
 /// Border style for a column — highlighted when it holds focus.
