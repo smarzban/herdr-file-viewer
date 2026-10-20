@@ -49,6 +49,7 @@ is additive and on by default.
 | `r` | Refresh git state: pick up changes made outside the viewer (a merge / pull / commit elsewhere) |
 | `W` (Shift+`w`) | **Switch worktree**: open a picker of the repo's git worktrees and re-root the viewer to the one you pick (read-only; no branch checkout). Marks the current worktree and pre-selects the one with an active herdr agent; `↑`/`↓` move, `←`/`→` scroll long paths, `Enter` switches, `Esc` cancels. A switch clears annotations (their targets belong to the old root), so with any held it confirms first (`y` copies them and switches, `Enter` switches and discards, `Esc` cancels) |
 | `?` (Shift+`/`) | Open help with **What's New** details selected first, including updates and spotlights; `Esc` / `q` closes it |
+| _help overlay_ | `Tab` / `→` next section, `Shift`+`Tab` / `←` previous, `1`-`9` jump to a section, `j`/`k` and `↓`/`↑` scroll, the mouse wheel scrolls, clicking a tab selects it, and `?` closes like `Esc` / `q` |
 | `u` | Dismiss the advisory status row for this session and remember the current Spotlight across launches; **What's New** stays available |
 | `q` / `Esc` | Back out of zoom if zoomed; otherwise close the viewer and return to the prior pane. With annotations held, a confirm appears first (`y` copies them and quits, `q` quits and discards, `Esc` returns to the viewer): they are session-only, so quitting destroys them. Skip it with `confirm_discard = false` |
 

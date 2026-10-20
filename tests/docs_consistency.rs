@@ -357,6 +357,38 @@ fn configuration_doc_documents_config_file() {
     }
 }
 
+#[test]
+fn help_overlay_docs_list_its_own_controls() {
+    // `?` only opens help. While the overlay is open, handle_help_key and handle_help_mouse
+    // own a fixed set that HELP_FOOTER_HINT summarizes: switch section, jump with 1-9, scroll,
+    // and close (including `?`). The mouse wheel and a tab click are part of that set too.
+    let keys_row = section(KEYS_DOC, "| _help overlay_", "\n");
+    let usage = section(USAGE_DOC, "## In-app help", "\n## ");
+    for phrase in [
+        "`Tab` / `→`",
+        "next section",
+        "`Shift`+`Tab` / `←`",
+        "previous",
+        "`1`-`9`",
+        "`j`/`k`",
+        "`↓`/`↑`",
+        "scroll",
+        "mouse wheel",
+        "clicking a tab",
+        "`?` closes",
+        "`Esc` / `q`",
+    ] {
+        assert!(
+            keys_row.contains(phrase),
+            "docs/keys.md help-overlay row must document {phrase:?}"
+        );
+        assert!(
+            usage.contains(phrase),
+            "docs/usage.md In-app help must document {phrase:?}"
+        );
+    }
+}
+
 fn section<'a>(document: &'a str, start: &str, end: &str) -> &'a str {
     let (_, remainder) = document
         .split_once(start)
@@ -411,7 +443,9 @@ fn remote_notice_docs_keep_their_controls_and_boundaries() {
         );
     }
 
-    let remote_notice = section(SECURITY, "**Remote notices", "- **Untrusted repository");
+    // The next bullet heading bounds this slice. "- **Untrusted repository" is gone, and a
+    // missing end marker makes section() return the rest of the file.
+    let remote_notice = section(SECURITY, "**Remote notices", "- **Git invocations");
     assert!(
         remote_notice.contains("fixed official HTTPS sources"),
         "remote notices must use fixed official HTTPS sources"
