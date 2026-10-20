@@ -206,8 +206,8 @@ impl Controller {
                 // The finder is modal: its scrollbar drag is handled in handle_finder_mouse and
                 // never reaches this (non-finder) path. Covered here only for exhaustiveness.
                 Some(Drag::FinderV) => Effects::noop(),
-                // Extend the ambient selection to the dragged caret + autoscroll past a viewport edge
-                // — the L-mode drag, but on the Modal-independent `content_selection`.
+                // Extend the ambient selection to the dragged caret and autoscroll past a viewport
+                // edge. Same motion as the L-mode drag, mutating `active_interaction.selection`.
                 Some(Drag::ContentSelect) => {
                     let (line, caret) = self.char_at_content_col(col, row);
                     let last = self.active_lines().len().max(1);

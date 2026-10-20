@@ -1200,14 +1200,15 @@ impl Controller {
                 while let Ok(newer) = job_rx.try_recv() {
                     job = newer;
                 }
-                // Contain a panic anywhere in the per-job work — the diff read AND the render —
+                // Contain a panic anywhere in the per-job work (the diff read and the render)
                 // so the worker thread always survives to send a result. The diff is read here,
                 // off the input thread, so a large/slow diff never blocks input (AC-23); other
                 // modes don't need git, the full-file diff view asks git for whole-file context,
-                // the compact diff uses git's default. The diff read MUST sit inside this guard:
-                // if `git.diff` panicked the worker would die without sending, no result would
-                // ever reach `poll`, and `content_rendering` would never clear — stranding the
-                // pane on the `Rendering…` placeholder for the rest of the session.
+                // the compact diff uses git's default. The diff read MUST sit inside this guard.
+                // A queued job installs `ActiveDisplay::Loading { previous_title, .. }`; the title
+                // during load is `previous_title`, and `poll` replaces `active_display` when a
+                // result arrives. A panic outside the guard kills the worker before that send, so
+                // the pane stays on the `Rendering…` placeholder for the session.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let raw_diff =
                         if matches!(job.mode, ViewMode::Diff | ViewMode::FullDiff) && job.is_git {
@@ -1951,9 +1952,8 @@ impl Controller {
         need_redraw
     }
 
-    /// Receive all preview viewport feedback from the Presenter. The active-only compatibility
-    /// seam remains the owner of launch-open zoom and width-sensitive rerendering; a pinned
-    /// interaction state is added by the lifecycle task.
+    /// Forward the Presenter's preview viewport feedback to `set_content_viewport` (active pane)
+    /// and `set_pinned_viewport` (pin).
     pub fn set_preview_viewports(&mut self, viewports: PreviewViewports) -> bool {
         let redraw = self.set_content_viewport(viewports.active.0, viewports.active.1);
         self.set_pinned_viewport(viewports.pinned);
@@ -2610,7 +2610,7 @@ impl Controller {
     /// line. Used to place the line-select marker at the top visible source line on entry and to map
     /// a mouse click's screen row back to a source line, so both are correct under the `w` wrap
     /// override (the copy-line-reference wrap fix). Returns at least 1; the last source line for a
-    /// `row` past the end. `content.lines` empty ⇒ 1 (callers guard the empty case separately).
+    /// `row` past the end. `active_lines()` empty ⇒ 1 (callers guard the empty case separately).
     fn line_at_content_row(&self, row: usize) -> usize {
         line_at_row(
             &self.active_interaction,
@@ -3481,7 +3481,7 @@ impl Controller {
     }
 
     /// The current go-to-line prompt buffer, or `""` when no prompt is open. Exposed for tests
-    /// (AC-2) and the Presenter's bottom prompt line. Mirrors `finder_query()`.
+    /// (AC-2). Mirrors `finder_query()`.
     pub fn prompt_query(&self) -> &str {
         self.modal.prompt().map(|p| p.input.query()).unwrap_or("")
     }
@@ -3503,20 +3503,19 @@ impl Controller {
     }
 
     /// The live incremental-search state, or `None` when no search is active (no Search prompt
-    /// has been typed into yet, or the prompt was closed and state cleared). Exposed for tests;
-    /// the Presenter reads it for the highlight overlay.
+    /// has been typed into yet, or the prompt was closed and state cleared). Exposed for tests.
     pub fn search(&self) -> Option<&SearchState> {
         self.active_interaction.search.as_ref()
     }
 
     /// The full candidate list loaded when the finder was opened, or an empty slice when
-    /// the finder is closed. Exposed for tests; the Presenter reads via `finder()`.
+    /// the finder is closed. Exposed for tests.
     pub fn finder_candidates(&self) -> &[String] {
         self.modal.finder().map(|f| f.candidates()).unwrap_or(&[])
     }
 
     /// The current finder query string, or `""` when the finder is closed or the query is
-    /// empty. Exposed for tests; the Presenter reads via `finder()`.
+    /// empty. Exposed for tests.
     pub fn finder_query(&self) -> &str {
         self.modal.finder().map(|f| f.query()).unwrap_or("")
     }
@@ -3706,18 +3705,11 @@ impl Controller {
             self.stamp_preview(&node.path, mode);
         }
         let rel = self.rel(&node.path);
-        // a slow render used to leave the PREVIOUS file's body visible under the NEW
-        // selection's title (the title is derived from the tree cursor, which moves immediately,
-        // while the body arrives off-thread). Show a loading placeholder for the body now and
-        // mark a render in flight; `content_path` (the title's source of truth) is NOT touched
-        // here — it updates only when the matching result lands in `poll`, so the title and body
-        // switch to the new file together. The `latest_seq`/`applied_seq` gap already keys the
-        // supersession, so a stale result for a superseded selection is dropped by `poll`.
-        // Dispatch first, and only show the loading placeholder if the job was actually
-        // queued. If the worker has gone (channel closed) the send fails — keep the last
-        // rendered content instead of stranding the pane on a `Rendering…` placeholder that
-        // no result will ever arrive to clear (`poll` only clears `content_rendering` when a
-        // matching result lands). The send never panics, so the viewer stays alive either way.
+        // A queued job installs `ActiveDisplay::Loading { previous_title, .. }`. The title during
+        // load is `previous_title`; `poll` replaces `active_display` when the matching result
+        // lands. Only show the placeholder if the send succeeded. A failed send leaves the
+        // previous display in place, so the pane is not stuck on `Rendering…` with nothing
+        // coming to replace it. The send never panics.
         if self
             .job_tx
             .send(RenderJob {
@@ -4036,9 +4028,9 @@ enum Drag {
     TreeH,
     /// Dragging the finder overlay's vertical scrollbar (handled in `handle_finder_mouse`).
     FinderV,
-    /// Dragging out a character-granular text selection in the content pane — in L mode (handled
-    /// in `handle_line_select_mouse`, on the modal's state) or ambient (handled in
-    /// `handle_column_mouse`, on `content_selection`; the release auto-copies).
+    /// Dragging out a character-granular text selection in the content pane. L mode
+    /// (`handle_line_select_mouse`) updates the modal's selection; ambient
+    /// (`handle_column_mouse`) mutates `active_interaction.selection`, and the release auto-copies.
     ContentSelect,
 }
 
