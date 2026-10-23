@@ -777,6 +777,73 @@ impl Modal {
     }
 }
 
+/// Identity of a preview's vertical clamp. The max offset depends only on these
+/// fields, so a wheel burst can reuse one walk of the wrapped rows.
+#[derive(Clone)]
+struct VerticalExtentKey {
+    /// The displayed text. The key holds this `Arc`, so a replacement document cannot
+    /// reuse the allocation and match a stale clamp. Wrap is separate because a `w`
+    /// toggle keeps the same allocation until the reflow lands.
+    content: Arc<Text<'static>>,
+    width: u16,
+    height: u16,
+    overlay: usize,
+    wrap_override: Option<bool>,
+    cursor: usize,
+}
+
+impl PartialEq for VerticalExtentKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.content, &other.content)
+            && self.width == other.width
+            && self.height == other.height
+            && self.overlay == other.overlay
+            && self.wrap_override == other.wrap_override
+            && self.cursor == other.cursor
+    }
+}
+
+impl Eq for VerticalExtentKey {}
+
+struct VerticalExtent {
+    key: VerticalExtentKey,
+    max: u16,
+}
+
+/// The pinned preview's clamp does not follow the tree cursor or the `w` override.
+/// Its wrap flag is the frozen document's own presentation.
+#[derive(Clone)]
+struct PinnedExtentKey {
+    content: Arc<Text<'static>>,
+    width: u16,
+    height: u16,
+    wrap: bool,
+}
+
+impl PartialEq for PinnedExtentKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.content, &other.content)
+            && self.width == other.width
+            && self.height == other.height
+            && self.wrap == other.wrap
+    }
+}
+
+impl Eq for PinnedExtentKey {}
+
+struct PinnedExtent {
+    key: PinnedExtentKey,
+    max: u16,
+}
+
+fn scroll_effects(moved: bool) -> Effects {
+    if moved {
+        Effects::redraw()
+    } else {
+        Effects::noop()
+    }
+}
+
 /// The interaction orchestrator and the ephemeral session state.
 pub struct Controller {
     root: PathBuf,
@@ -818,6 +885,11 @@ pub struct Controller {
     /// Mutable viewport, search, and displayed-text selection state for the active preview.
     /// A pinned snapshot owns a distinct clone of this value.
     active_interaction: PreviewInteractionState,
+    /// Last vertical clamp for the active preview. A wheel event that cannot move the
+    /// offset must not walk every wrapped row to rediscover that.
+    content_v_extent: Option<VerticalExtent>,
+    /// Same memo for the frozen pinned preview, keyed by its own document and viewport.
+    pinned_v_extent: Option<PinnedExtent>,
     /// The one optional frozen document and independently evolving interaction state.
     pinned_snapshot: Option<PinnedSnapshot>,
     /// The pinned preview's share of the preview area, preserved across removal/recreation.
@@ -1115,6 +1187,8 @@ impl Controller {
             focus: Focus::Tree,
             prompt_target: PreviewTarget::Active,
             active_interaction: PreviewInteractionState::default(),
+            content_v_extent: None,
+            pinned_v_extent: None,
             pinned_snapshot: None,
             preview_split_pct: 50,
             wheel_step: crate::config::DEFAULT_SCROLL_LINES as isize,
@@ -2398,14 +2472,8 @@ impl Controller {
     /// adding a separate scroll intent.
     fn navigate(&mut self, delta: isize) -> Effects {
         match self.focus {
-            Focus::Content => {
-                self.scroll_content(delta);
-                Effects::redraw()
-            }
-            Focus::Pinned => {
-                self.scroll_pinned(delta);
-                Effects::redraw()
-            }
+            Focus::Content => scroll_effects(self.scroll_content(delta)),
+            Focus::Pinned => scroll_effects(self.scroll_pinned(delta)),
             Focus::Tree => {
                 self.tree.move_cursor(delta);
                 self.dispatch_render(); // new selection → re-render (and reset the scroll)
@@ -2478,26 +2546,112 @@ impl Controller {
         self.show_ignored = self.tree.show_ignored();
     }
 
-    /// Scroll the content pane by `delta` lines, clamped to `[0, max]` so it can never run
-    /// above the first line or past the last screenful.
-    fn scroll_content(&mut self, delta: isize) {
-        let max = self.max_content_scroll() as isize;
-        let next = (self.active_interaction.vertical_scroll as isize + delta).clamp(0, max);
-        self.active_interaction.vertical_scroll = next as u16;
+    /// Scroll the content pane by `delta` rows, clamped to `[0, max]`.
+    ///
+    /// Returns whether the offset changed. A wheel or key that is already against the
+    /// edge leaves the offset alone, and the run loop must not rebuild the frame for it.
+    fn scroll_content(&mut self, delta: isize) -> bool {
+        let before = self.active_interaction.vertical_scroll;
+        self.scroll_vertical(
+            delta,
+            before,
+            |this| this.content_v_max(),
+            |this, next| this.active_interaction.vertical_scroll = next,
+        )
+    }
+
+    fn scroll_pinned(&mut self, delta: isize) -> bool {
+        if self.pinned_snapshot.is_none() {
+            return false;
+        }
+        let before = self
+            .pinned_interaction()
+            .map(|state| state.vertical_scroll)
+            .unwrap_or(0);
+        self.scroll_vertical(
+            delta,
+            before,
+            |this| this.pinned_v_max(),
+            |this, next| {
+                if let Some(interaction) = this.pinned_interaction_mut() {
+                    interaction.vertical_scroll = next;
+                }
+            },
+        )
+    }
+
+    /// Apply `delta` to `before`, clamped to the memoized max. `false` when the offset
+    /// does not move, including another step into an edge the memo already knows.
+    fn scroll_vertical(
+        &mut self,
+        delta: isize,
+        before: u16,
+        max_of: impl FnOnce(&mut Self) -> u16,
+        set: impl FnOnce(&mut Self, u16),
+    ) -> bool {
+        if delta == 0 || (delta < 0 && before == 0) {
+            return false;
+        }
+        let max = max_of(self);
+        let next = (before as isize + delta).clamp(0, max as isize) as u16;
+        if next == before {
+            return false;
+        }
+        set(self, next);
+        true
+    }
+
+    fn content_v_max(&mut self) -> u16 {
+        let key = self.content_extent_key();
+        if let Some(hit) = &self.content_v_extent
+            && hit.key == key
+        {
+            return hit.max;
+        }
+        let max = self.max_content_scroll();
+        self.content_v_extent = Some(VerticalExtent { key, max });
+        max
+    }
+
+    fn content_extent_key(&self) -> VerticalExtentKey {
+        VerticalExtentKey {
+            content: self.active_display.shared_content(),
+            width: self.active_interaction.viewport_width,
+            height: self.active_interaction.viewport_height,
+            overlay: self.content_overlay_glyph_cols(),
+            wrap_override: self.wrap_override,
+            cursor: self.tree.cursor(),
+        }
+    }
+
+    fn pinned_v_max(&mut self) -> u16 {
+        let Some(key) = self.pinned_extent_key() else {
+            return 0;
+        };
+        if let Some(hit) = &self.pinned_v_extent
+            && hit.key == key
+        {
+            return hit.max;
+        }
+        let max = self.max_pinned_scroll();
+        self.pinned_v_extent = Some(PinnedExtent { key, max });
+        max
+    }
+
+    fn pinned_extent_key(&self) -> Option<PinnedExtentKey> {
+        let document = self.pinned_document()?;
+        let interaction = self.pinned_interaction()?;
+        Some(PinnedExtentKey {
+            content: document.shared_content(),
+            width: interaction.viewport_width,
+            height: interaction.viewport_height,
+            wrap: document.presentation().wrap(),
+        })
     }
 
     fn pinned_viewport_height(&self) -> u16 {
         self.pinned_interaction()
             .map_or(0, |state| state.viewport_height)
-    }
-
-    fn scroll_pinned(&mut self, delta: isize) {
-        let max = self.max_pinned_scroll();
-        let Some(interaction) = self.pinned_interaction_mut() else {
-            return;
-        };
-        interaction.vertical_scroll =
-            (interaction.vertical_scroll as isize + delta).clamp(0, max as isize) as u16;
     }
 
     /// The frozen preview's largest valid vertical offset, computed only from its own immutable
@@ -2623,9 +2777,13 @@ impl Controller {
 
     /// Scroll the content pane horizontally by `delta` columns, clamped to `[0, max]`.
     fn scroll_content_h(&mut self, delta: i32) -> Effects {
+        let before = self.active_interaction.horizontal_scroll;
         let max = self.max_content_hscroll() as i32;
-        let next = (self.active_interaction.horizontal_scroll as i32 + delta).clamp(0, max);
-        self.active_interaction.horizontal_scroll = next as u16;
+        let next = (before as i32 + delta).clamp(0, max) as u16;
+        if next == before {
+            return Effects::noop();
+        }
+        self.active_interaction.horizontal_scroll = next;
         Effects::redraw()
     }
 
@@ -2633,12 +2791,19 @@ impl Controller {
         if self.pinned_snapshot.is_none() {
             return Effects::noop();
         }
+        let before = self
+            .pinned_interaction()
+            .map(|state| state.horizontal_scroll)
+            .unwrap_or(0);
         let max = self.max_pinned_hscroll() as i32;
+        let next = (before as i32 + delta).clamp(0, max) as u16;
+        if next == before {
+            return Effects::noop();
+        }
         let Some(interaction) = self.pinned_interaction_mut() else {
             return Effects::noop();
         };
-        interaction.horizontal_scroll =
-            (interaction.horizontal_scroll as i32 + delta).clamp(0, max) as u16;
+        interaction.horizontal_scroll = next;
         Effects::redraw()
     }
 
