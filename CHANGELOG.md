@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
+- A burst of wheel or scroll-key steps that cannot move a preview (already at an edge) no longer redraws once per step, so the next scroll stays responsive. → [usage](docs/usage.md#using-the-mouse)
 - A repository can no longer run a program through a submodule `diff.external` (or, on older git, a submodule textconv) while a diff is shown. Nested submodule diffs stay a one-line gitlink summary. → [security](SECURITY.md)
 - The `?` Keybindings list and the remappable-actions table now describe `L` as tree-scroll or line-select, and `Tab` as cycling tree, active preview, and pinned preview. → [keys](docs/keys.md) · [configuration](docs/configuration.md#keybindings)
 - Reading a repository's filter configuration no longer waits forever when an included file does not return. The read gives up after a short budget and git features are unavailable in that repository, rather than running git with an unknown filter set.

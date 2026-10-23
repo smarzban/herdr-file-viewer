@@ -328,14 +328,8 @@ impl Controller {
     /// wheel moves the selection (the tree then scrolls to keep it in view, #45).
     fn scroll_at(&mut self, col: u16, row: u16, delta: isize) -> Effects {
         match self.hit_test(col, row) {
-            MouseRegion::Content => {
-                self.scroll_content(delta);
-                Effects::redraw()
-            }
-            MouseRegion::Pinned => {
-                self.scroll_pinned(delta);
-                Effects::redraw()
-            }
+            MouseRegion::Content => scroll_effects(self.scroll_content(delta)),
+            MouseRegion::Pinned => scroll_effects(self.scroll_pinned(delta)),
             MouseRegion::TreeRow(_) => {
                 self.focus = Focus::Tree;
                 self.tree.move_cursor(delta.signum());
