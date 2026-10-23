@@ -777,13 +777,10 @@ impl Modal {
     }
 }
 
-/// Identity of a preview's vertical clamp. The max offset depends only on these
-/// fields, so a wheel burst can reuse one walk of the wrapped rows.
 #[derive(Clone)]
 struct VerticalExtentKey {
-    /// The displayed text. The key holds this `Arc`, so a replacement document cannot
-    /// reuse the allocation and match a stale clamp. Wrap is separate because a `w`
-    /// toggle keeps the same allocation until the reflow lands.
+    /// Held, not just addressed, so a replacement document cannot reuse the allocation.
+    /// `w` keeps this `Arc` until the reflow lands, which is why wrap is its own field.
     content: Arc<Text<'static>>,
     width: u16,
     height: u16,
@@ -810,8 +807,6 @@ struct VerticalExtent {
     max: u16,
 }
 
-/// The pinned preview's clamp does not follow the tree cursor or the `w` override.
-/// Its wrap flag is the frozen document's own presentation.
 #[derive(Clone)]
 struct PinnedExtentKey {
     content: Arc<Text<'static>>,
@@ -885,10 +880,7 @@ pub struct Controller {
     /// Mutable viewport, search, and displayed-text selection state for the active preview.
     /// A pinned snapshot owns a distinct clone of this value.
     active_interaction: PreviewInteractionState,
-    /// Last vertical clamp for the active preview. A wheel event that cannot move the
-    /// offset must not walk every wrapped row to rediscover that.
     content_v_extent: Option<VerticalExtent>,
-    /// Same memo for the frozen pinned preview, keyed by its own document and viewport.
     pinned_v_extent: Option<PinnedExtent>,
     /// The one optional frozen document and independently evolving interaction state.
     pinned_snapshot: Option<PinnedSnapshot>,
@@ -2547,9 +2539,6 @@ impl Controller {
     }
 
     /// Scroll the content pane by `delta` rows, clamped to `[0, max]`.
-    ///
-    /// Returns whether the offset changed. A wheel or key that is already against the
-    /// edge leaves the offset alone, and the run loop must not rebuild the frame for it.
     fn scroll_content(&mut self, delta: isize) -> bool {
         let before = self.active_interaction.vertical_scroll;
         self.scroll_vertical(
@@ -2580,8 +2569,6 @@ impl Controller {
         )
     }
 
-    /// Apply `delta` to `before`, clamped to the memoized max. `false` when the offset
-    /// does not move, including another step into an edge the memo already knows.
     fn scroll_vertical(
         &mut self,
         delta: isize,

@@ -1732,7 +1732,6 @@ impl ContentProvider for LinesContent {
     }
 }
 
-/// Long wrapped prose: 2000 lines of 180 columns. One clamp walks every line.
 struct LongWrappedContent;
 impl ContentProvider for LongWrappedContent {
     fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
@@ -2591,8 +2590,6 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
         "one H press moves the tree left by HSCROLL_STEP"
     );
 
-    // H at 0 stays at 0. The tree path still redraws; the content pane's own clamp does not
-    // when its offset is unchanged (a wheel burst at the edge must not repaint).
     ctrl.handle(Intent::TreeScrollLeft);
     assert_eq!(
         ctrl.view_state().tree_hscroll,
@@ -3378,9 +3375,6 @@ fn wheel_scrolls_the_pane_under_the_cursor() {
 
 #[test]
 fn wheel_and_keys_at_a_content_edge_do_not_redraw() {
-    // A wheel notch that cannot move the offset must not ask for a frame. The run loop
-    // draws before it reads the next event, so a fling into the edge used to queue one
-    // full layout per leftover notch (#222).
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let mut ctrl = controller_with_lines(dir.path(), 50);
@@ -3417,27 +3411,25 @@ fn wheel_and_keys_at_a_content_edge_do_not_redraw() {
     assert!(!key.redraw, "j/k at the top edge does not redraw");
     assert_eq!(ctrl.content_scroll(), 0);
 
-    // A taller viewport raises the clamp. The old bottom must not stay stuck.
     ctrl.active_interaction_mut().vertical_scroll = 40;
     ctrl.set_content_viewport(58, 5); // 50 lines, 5 visible → max scroll = 45
     assert_eq!(
         ctrl.content_scroll(),
         40,
-        "growing the pane does not jump the offset"
+        "a shorter pane leaves the offset where it is"
     );
     let further = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
     assert!(
         further.redraw,
-        "wheel-down still moves after the pane grows"
+        "wheel-down still moves after the viewport height changes"
     );
     assert_eq!(ctrl.content_scroll(), 43);
 }
 
 #[test]
 fn wheel_burst_at_the_bottom_of_wrapped_prose_does_not_redraw() {
-    // Wrapped markdown pays a full row walk to learn the clamp. Repeating that walk for
-    // every notch already at the bottom is the lag in #222. Without the memo this loop
-    // takes several seconds in debug; a cache hit stays well under the bound.
+    // 300 stuck notches must not rewalk the wrapped rows. Without the memo this loop
+    // took 3.89s in debug. The bound stays loose enough for a loaded runner.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("a.md"), "# x\n").unwrap();
     let components = Components {
