@@ -463,6 +463,78 @@ mod tests {
         );
     }
 
+    /// Windows `PathBuf::push` keeps the base bytes and, for a relative child,
+    /// appends `\` plus that child (`std::path` `_push`). Git for Windows prints
+    /// `--show-toplevel` with `/`. The tree stores each walkdir join of that root,
+    /// so `docs` then `example.pdf` is `C:/Users/me/My Repo\docs\example.pdf`.
+    fn windows_path_push(base: &str, child: &str) -> String {
+        let mut out = base.to_string();
+        if !out.is_empty() && !out.ends_with(['\\', '/']) {
+            out.push('\\');
+        }
+        out.push_str(child);
+        out
+    }
+
+    #[test]
+    fn windows_open_and_reveal_rewrite_a_git_toplevel_mixed_separator_path() {
+        let toplevel = "C:/Users/me/My Repo";
+        let mixed = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+        assert_eq!(
+            mixed, r"C:/Users/me/My Repo\docs\example.pdf",
+            "fixture must be the mixed path a Windows join produces"
+        );
+        let path = Path::new(&mixed);
+        let native = r"C:\Users\me\My Repo\docs\example.pdf";
+        let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+        assert_eq!(open.len(), 2);
+        assert_eq!(open[1], OsString::from(native));
+        let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+        assert_eq!(reveal.len(), 2);
+        assert_eq!(reveal[1], OsString::from(format!("/select,{native}")));
+    }
+
+    #[test]
+    fn windows_open_and_reveal_keep_an_already_native_backslash_path() {
+        let toplevel = r"C:\Users\me\My Repo";
+        let native = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+        assert_eq!(native, r"C:\Users\me\My Repo\docs\example.pdf");
+        let path = Path::new(&native);
+        let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+        assert_eq!(open[1], OsString::from(&native));
+        let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+        assert_eq!(reveal[1], OsString::from(format!("/select,{native}")));
+    }
+
+    #[test]
+    fn windows_custom_open_receives_native_separators() {
+        let mixed = Path::new(r"C:/Users/me/My Repo\docs\example.pdf");
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Windows, Box::new(recorder))
+            .with_overrides(Some(vec![OsString::from("myopen")]), None);
+        assert_eq!(opener.open(mixed), OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            vec![
+                OsString::from("myopen"),
+                OsString::from(r"C:\Users\me\My Repo\docs\example.pdf"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unix_open_leaves_a_windows_looking_path_unchanged() {
+        let path = Path::new(r"C:/Users/me/My Repo\docs\example.pdf");
+        for os in [OsKind::Mac, OsKind::Linux] {
+            let argv = opener_argv(os, OpenAction::Open, path);
+            assert_eq!(
+                argv[1],
+                path.as_os_str(),
+                "{os:?} must not rewrite separators"
+            );
+        }
+    }
+
     #[test]
     fn with_overrides_open_replaces_default_argv() {
         // AC-8: a configured open override replaces the per-OS default entirely.
