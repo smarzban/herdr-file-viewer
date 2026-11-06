@@ -1732,6 +1732,21 @@ impl ContentProvider for LinesContent {
     }
 }
 
+struct LongWrappedContent;
+impl ContentProvider for LongWrappedContent {
+    fn render(&self, _path: &Path, _mode: ViewMode, _raw_diff: Option<&str>) -> RenderResult {
+        let line = "w".repeat(180);
+        let body = std::iter::repeat_n(line, 2000)
+            .collect::<Vec<_>>()
+            .join("\n");
+        RenderResult {
+            content: Text::raw(body),
+            notices: Vec::new(),
+            source: None,
+        }
+    }
+}
+
 /// A Content Renderer stub returning five 100-column-wide lines (marker `WIDE` at the start
 /// of each), for horizontal-scroll tests.
 struct WideContent;
@@ -2575,8 +2590,6 @@ fn h_l_keys_scroll_the_tree_horizontally_and_clamp_to_the_measured_max() {
         "one H press moves the tree left by HSCROLL_STEP"
     );
 
-    // H at 0 is a saturating no-op-ish clamp: it stays at 0 (still redraws — the clamp path
-    // returns Effects::redraw like scroll_content_h does).
     ctrl.handle(Intent::TreeScrollLeft);
     assert_eq!(
         ctrl.view_state().tree_hscroll,
@@ -3357,6 +3370,291 @@ fn wheel_scrolls_the_pane_under_the_cursor() {
         ctrl.content_scroll(),
         0,
         "wheel-up scrolls it back to the top"
+    );
+}
+
+#[test]
+fn wheel_and_keys_at_a_content_edge_do_not_redraw() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10); // 50 lines, 10 visible → max scroll = 40
+    ctrl.set_pane_geometry(wide_geometry());
+
+    let moved = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert!(moved.redraw, "a wheel notch that moves the text redraws");
+    assert_eq!(ctrl.content_scroll(), 3);
+
+    ctrl.active_interaction_mut().vertical_scroll = 40;
+    let stuck = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert!(!stuck.redraw, "wheel-down at the bottom does not redraw");
+    assert_eq!(ctrl.content_scroll(), 40);
+    for _ in 0..40 {
+        let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+        assert!(!fx.redraw);
+        assert_eq!(ctrl.content_scroll(), 40);
+    }
+
+    let back = ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert!(back.redraw, "wheel-up off the bottom redraws");
+    assert_eq!(ctrl.content_scroll(), 37);
+
+    ctrl.active_interaction_mut().vertical_scroll = 0;
+    let top = ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert!(!top.redraw, "wheel-up at the top does not redraw");
+    assert_eq!(ctrl.content_scroll(), 0);
+
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+    let key = ctrl.handle(Intent::NavUp);
+    assert!(!key.redraw, "j/k at the top edge does not redraw");
+    assert_eq!(ctrl.content_scroll(), 0);
+
+    ctrl.active_interaction_mut().vertical_scroll = 40;
+    ctrl.set_content_viewport(58, 5); // 50 lines, 5 visible → max scroll = 45
+    assert_eq!(
+        ctrl.content_scroll(),
+        40,
+        "a shorter pane leaves the offset where it is"
+    );
+    let further = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert!(
+        further.redraw,
+        "wheel-down still moves after the viewport height changes"
+    );
+    assert_eq!(ctrl.content_scroll(), 43);
+}
+
+#[test]
+fn wheel_burst_at_the_bottom_of_wrapped_prose_does_not_redraw() {
+    // 300 stuck notches must not rewalk the wrapped rows: the extent memo is keyed on the
+    // document, viewport, overlay and wrap, none of which a stuck notch changes, so the burst
+    // may recompute the largest offset at most once (counted, not timed).
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.md"), "# x\n").unwrap();
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(LongWrappedContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_marker(&mut ctrl, "wwww");
+    ctrl.set_content_viewport(30, 12);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(ctrl.view_state().active.wrap, "markdown wraps");
+
+    ctrl.active_interaction_mut().vertical_scroll = u16::MAX;
+    let landed = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert!(
+        landed.redraw,
+        "the notch that first clamps onto the bottom redraws"
+    );
+    let bottom = ctrl.content_scroll();
+    assert!(bottom > 0, "the prose is taller than the viewport");
+
+    let recomputes_before = ctrl.extent_recomputes();
+    for _ in 0..300 {
+        let fx = ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+        assert!(!fx.redraw, "a notch past the bottom does not redraw");
+        assert_eq!(ctrl.content_scroll(), bottom);
+    }
+    let recomputes = ctrl.extent_recomputes() - recomputes_before;
+    assert!(
+        recomputes <= 1,
+        "300 wheel-downs already at the bottom re-walked the wrapped rows {recomputes} times"
+    );
+
+    let up = ctrl.handle_mouse(mouse(MouseEventKind::ScrollUp, 50, 5));
+    assert!(up.redraw, "the opposite wheel still scrolls");
+    assert!(ctrl.content_scroll() < bottom);
+}
+
+#[test]
+fn a_scroll_key_at_an_edge_still_redraws_to_clear_a_visible_action_notice() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut ctrl = controller_with_lines(dir.path(), 50);
+    await_marker(&mut ctrl, "L0");
+    ctrl.set_content_viewport(58, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+    assert_eq!(ctrl.content_scroll(), 0, "precondition: at the top edge");
+    assert!(
+        !ctrl.handle(Intent::NavUp).redraw,
+        "precondition: k at the top with no notice is a noop"
+    );
+
+    for intent in [
+        Intent::NavUp,
+        Intent::PageUp,
+        Intent::Collapse,
+        Intent::Expand,
+        Intent::Expand,
+    ] {
+        // `y` sets a visible "Copied" notice without moving the viewport.
+        ctrl.handle(Intent::CopyRepoPath);
+        assert!(
+            ctrl.action_notice().is_some(),
+            "precondition: a notice is showing"
+        );
+        let fx = ctrl.handle(intent);
+        assert!(
+            ctrl.action_notice().is_none(),
+            "{intent:?} clears the notice"
+        );
+        assert!(
+            fx.redraw,
+            "{intent:?} at an edge still repaints so the cleared notice is erased"
+        );
+    }
+    assert_eq!(ctrl.content_scroll(), 0, "no key moved the viewport");
+}
+
+#[test]
+fn horizontal_scroll_at_a_content_column_edge_does_not_redraw() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.rs"), "code\n").unwrap();
+    let components = Components {
+        providers: Box::new(move |_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(WideContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_marker(&mut ctrl, "WIDE");
+    ctrl.set_content_viewport(20, 10);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(!ctrl.view_state().active.wrap, "precondition: unwrapped");
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Content);
+    assert_eq!(ctrl.view_state().active.hscroll, 0);
+
+    assert!(
+        !ctrl.handle(Intent::Collapse).redraw,
+        "h at column 0 is a noop"
+    );
+    assert!(
+        !ctrl
+            .handle_mouse(mouse(MouseEventKind::ScrollLeft, 50, 5))
+            .redraw,
+        "wheel-left at column 0 is a noop"
+    );
+    assert_eq!(ctrl.view_state().active.hscroll, 0);
+
+    assert!(ctrl.handle(Intent::Expand).redraw, "l off column 0 redraws");
+    assert!(
+        ctrl.handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 5))
+            .redraw,
+        "wheel-right that moves redraws"
+    );
+
+    ctrl.active_interaction_mut().horizontal_scroll = u16::MAX;
+    assert!(
+        ctrl.handle(Intent::Expand).redraw,
+        "the press that clamps onto the right edge redraws"
+    );
+    let right = ctrl.view_state().active.hscroll;
+    assert!(right > 0);
+    assert!(
+        !ctrl.handle(Intent::Expand).redraw,
+        "l at the right edge is a noop"
+    );
+    assert!(
+        !ctrl
+            .handle_mouse(mouse(MouseEventKind::ScrollRight, 50, 5))
+            .redraw,
+        "wheel-right at the right edge is a noop"
+    );
+    assert_eq!(ctrl.view_state().active.hscroll, right);
+    assert!(
+        ctrl.handle(Intent::Collapse).redraw,
+        "h off the right edge redraws"
+    );
+    assert!(ctrl.view_state().active.hscroll < right);
+}
+
+#[test]
+fn width_and_wrap_changes_invalidate_the_cached_scroll_extent() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.md"), "# x\n").unwrap();
+    let components = Components {
+        providers: Box::new(|_resolved| RootProviders {
+            git: Arc::new(StubGit::default()),
+            content: Box::new(LongWrappedContent),
+        }),
+        editor: Box::new(StubEditor {
+            fail: false,
+            opened: Arc::new(Mutex::new(Vec::new())),
+            ..Default::default()
+        }),
+        clipboard: Box::new(common::RecordingClipboard::default()),
+        renderers: None,
+    };
+    let mut ctrl = Controller::new(
+        common::resolved(dir.path().to_path_buf(), false),
+        Baseline::Head,
+        components,
+    );
+    await_marker(&mut ctrl, "wwww");
+    ctrl.set_content_viewport(30, 12);
+    ctrl.set_pane_geometry(wide_geometry());
+    assert!(ctrl.view_state().active.wrap, "markdown wraps");
+
+    // Seed the memo at the wrapped bottom of a 30-column pane.
+    ctrl.active_interaction_mut().vertical_scroll = u16::MAX;
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    let narrow_bottom = ctrl.content_scroll();
+    assert!(
+        !ctrl
+            .handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5))
+            .redraw
+    );
+
+    // A wider pane wraps into fewer rows: its bottom is above the stale cached one, so the
+    // first notch must clamp to the new, smaller max rather than trust the old extent.
+    ctrl.set_content_viewport(60, 12);
+    ctrl.active_interaction_mut().vertical_scroll = u16::MAX;
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    let wide_bottom = ctrl.content_scroll();
+    assert!(
+        wide_bottom < narrow_bottom,
+        "a wider viewport recomputes the extent ({wide_bottom} vs {narrow_bottom})"
+    );
+
+    // Unwrapping leaves one row per source line (2000 lines, 12 visible).
+    ctrl.handle(Intent::ToggleWrap);
+    assert!(!ctrl.view_state().active.wrap, "`w` unwraps the markdown");
+    ctrl.active_interaction_mut().vertical_scroll = u16::MAX;
+    ctrl.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 5));
+    assert_eq!(
+        ctrl.content_scroll(),
+        2000 - 12,
+        "toggling wrap recomputes the extent"
     );
 }
 
