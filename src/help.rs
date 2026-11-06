@@ -539,7 +539,7 @@ mod tests {
         );
         let x_pos = lines
             .iter()
-            .position(|line| *line == "Say hi at https://x.com/smarzbanX")
+            .position(|line| *line == "Say hi at https://x.com/smarzban")
             .expect("about_text must contain the X profile link");
         assert!(
             cta_pos < x_pos,
