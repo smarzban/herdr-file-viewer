@@ -882,6 +882,8 @@ pub struct Controller {
     active_interaction: PreviewInteractionState,
     content_v_extent: Option<VerticalExtent>,
     pinned_v_extent: Option<PinnedExtent>,
+    /// How many times a wheel/key scroll missed both extent memos and re-walked the rows.
+    extent_recomputes: usize,
     /// The one optional frozen document and independently evolving interaction state.
     pinned_snapshot: Option<PinnedSnapshot>,
     /// The pinned preview's share of the preview area, preserved across removal/recreation.
@@ -1181,6 +1183,7 @@ impl Controller {
             active_interaction: PreviewInteractionState::default(),
             content_v_extent: None,
             pinned_v_extent: None,
+            extent_recomputes: 0,
             pinned_snapshot: None,
             preview_split_pct: 50,
             wheel_step: crate::config::DEFAULT_SCROLL_LINES as isize,
@@ -2081,6 +2084,16 @@ impl Controller {
         &mut self.active_interaction
     }
 
+    /// How many times a vertical scroll recomputed the active or pinned preview's largest offset
+    /// instead of reusing the memo keyed on its document, viewport, wrap and overlay.
+    ///
+    /// A test seam like [`crate::tree::TreeModel::walk_counts`]: take it before and after a burst of
+    /// scrolls and assert the delta, so "the memo avoids re-walking wrapped rows" is proved by a
+    /// count rather than a stopwatch. Monotonic.
+    pub fn extent_recomputes(&self) -> usize {
+        self.extent_recomputes
+    }
+
     /// The most recently dispatched render's sequence number.
     ///
     /// A read-only observability seam for tests: both [`dispatch_render`](Self::dispatch_render)
@@ -2350,8 +2363,18 @@ impl Controller {
     /// Apply one intent, returning the effects the run loop should act on.
     pub fn handle(&mut self, intent: Intent) -> Effects {
         // The action notice is transient: clear it at the top of each intent so a stale
-        // failure message does not linger past the next action.
-        self.action_notice = None;
+        // failure message does not linger past the next action. Clearing a visible notice is
+        // itself a screen change, so an intent that otherwise changes nothing (a scroll key at
+        // an edge) still repaints to erase it.
+        let had_notice = self.action_notice.take().is_some();
+        let mut effects = self.handle_intent(intent);
+        if had_notice {
+            effects.redraw = true;
+        }
+        effects
+    }
+
+    fn handle_intent(&mut self, intent: Intent) -> Effects {
         // While the picker is open, Nav/Activate/Close drive the picker, not the tree;
         // every other intent is inert (a modal selection). (AC-5) Every other open modal,
         // including discard confirm, owns its keys outside `handle`, so a leaked intent is inert.
@@ -2595,6 +2618,7 @@ impl Controller {
         {
             return hit.max;
         }
+        self.extent_recomputes += 1;
         let max = self.max_content_scroll();
         self.content_v_extent = Some(VerticalExtent { key, max });
         max
@@ -2620,6 +2644,7 @@ impl Controller {
         {
             return hit.max;
         }
+        self.extent_recomputes += 1;
         let max = self.max_pinned_scroll();
         self.pinned_v_extent = Some(PinnedExtent { key, max });
         max

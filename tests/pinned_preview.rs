@@ -1322,6 +1322,143 @@ fn preview_resize_intents_are_inert_without_a_pin() {
     assert_eq!(ctrl.split_pct(), tree_split);
 }
 
+fn pinned_scroll(ctrl: &Controller) -> (u16, u16) {
+    let pin = ctrl.view_state().pinned.expect("pin is present");
+    (pin.scroll, pin.hscroll)
+}
+
+fn pinned_mouse(kind: MouseEventKind) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: 67,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn pinned_geometry() -> PaneGeometry {
+    PaneGeometry {
+        preview_area_x: 40,
+        preview_area_width: 50,
+        preview_divider_x: Some(65),
+        content_inner: Some(Rect::new(40, 1, 8, 4)),
+        pinned_inner: Some(Rect::new(65, 1, 8, 4)),
+        ..PaneGeometry::default()
+    }
+}
+
+#[test]
+fn pinned_vertical_scroll_at_an_edge_does_not_redraw() {
+    let (_dir, mut ctrl) = pin_ready_controller();
+    ctrl.set_pane_geometry(pinned_geometry());
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Pinned);
+    assert_eq!(pinned_scroll(&ctrl).0, 0, "precondition: pinned at the top");
+
+    assert!(
+        !ctrl.handle(Intent::NavUp).redraw,
+        "k at the pinned top is a noop"
+    );
+    assert!(
+        !ctrl
+            .handle_mouse(pinned_mouse(MouseEventKind::ScrollUp))
+            .redraw,
+        "wheel-up at the pinned top is a noop"
+    );
+    assert!(ctrl.handle(Intent::NavDown).redraw, "j that moves redraws");
+    assert!(
+        ctrl.handle_mouse(pinned_mouse(MouseEventKind::ScrollDown))
+            .redraw,
+        "wheel-down that moves redraws"
+    );
+
+    // 20 lines in a 4-row viewport: the bottom offset is 16. PageDown walks there in a bounded
+    // number of presses; the last press that moves still redraws.
+    for _ in 0..20 {
+        if pinned_scroll(&ctrl).0 == 16 {
+            break;
+        }
+        assert!(ctrl.handle(Intent::PageDown).redraw);
+    }
+    assert_eq!(pinned_scroll(&ctrl).0, 16, "reached the pinned bottom");
+
+    assert!(
+        !ctrl.handle(Intent::NavDown).redraw,
+        "j at the pinned bottom is a noop"
+    );
+    assert!(
+        !ctrl.handle(Intent::PageDown).redraw,
+        "PageDown at the bottom is a noop"
+    );
+    for _ in 0..10 {
+        assert!(
+            !ctrl
+                .handle_mouse(pinned_mouse(MouseEventKind::ScrollDown))
+                .redraw,
+            "wheel-down at the pinned bottom is a noop"
+        );
+    }
+    assert_eq!(pinned_scroll(&ctrl).0, 16);
+    assert!(
+        ctrl.handle_mouse(pinned_mouse(MouseEventKind::ScrollUp))
+            .redraw,
+        "wheel-up off the pinned bottom redraws"
+    );
+    assert!(pinned_scroll(&ctrl).0 < 16);
+}
+
+#[test]
+fn pinned_horizontal_scroll_at_a_column_edge_does_not_redraw() {
+    let (_dir, mut ctrl) = pin_ready_controller();
+    ctrl.set_pane_geometry(pinned_geometry());
+    ctrl.handle(Intent::ToggleFocus);
+    ctrl.handle(Intent::ToggleFocus);
+    assert_eq!(ctrl.focus(), Focus::Pinned);
+    assert_eq!(
+        pinned_scroll(&ctrl).1,
+        0,
+        "precondition: pinned at column 0"
+    );
+
+    assert!(
+        !ctrl.handle(Intent::Collapse).redraw,
+        "h at column 0 is a noop"
+    );
+    assert!(
+        !ctrl
+            .handle_mouse(pinned_mouse(MouseEventKind::ScrollLeft))
+            .redraw,
+        "wheel-left at column 0 is a noop"
+    );
+
+    // "line 20 needle" overflows the 8-column viewport, so l moves until the right edge.
+    assert!(ctrl.handle(Intent::Expand).redraw, "l that moves redraws");
+    for _ in 0..20 {
+        if !ctrl.handle(Intent::Expand).redraw {
+            break;
+        }
+    }
+    let right = pinned_scroll(&ctrl).1;
+    assert!(right > 0, "precondition: the pinned text overflows");
+    assert!(
+        !ctrl.handle(Intent::Expand).redraw,
+        "l at the right edge is a noop"
+    );
+    assert!(
+        !ctrl
+            .handle_mouse(pinned_mouse(MouseEventKind::ScrollRight))
+            .redraw,
+        "wheel-right at the right edge is a noop"
+    );
+    assert_eq!(pinned_scroll(&ctrl).1, right);
+    assert!(
+        ctrl.handle(Intent::Collapse).redraw,
+        "h off the right edge redraws"
+    );
+    assert!(pinned_scroll(&ctrl).1 < right);
+}
+
 #[test]
 fn mouse_routes_pinned_scroll_and_preview_divider_drag_without_touching_active() {
     let (_dir, mut ctrl) = pin_ready_controller();
