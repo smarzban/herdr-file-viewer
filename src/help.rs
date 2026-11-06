@@ -197,7 +197,7 @@ pub fn about_text(snapshot: &crate::update::NoticeSnapshot) -> String {
         status = status,
         license = env!("CARGO_PKG_LICENSE"),
         star_cta = "If you enjoy the file viewer, don't forget to give it a ★ on GitHub!",
-        x_handle = "Say hi at https://x.com/smarzbanX",
+        x_handle = "Say hi at https://x.com/smarzban",
     )
 }
 
@@ -539,7 +539,7 @@ mod tests {
         );
         let x_pos = lines
             .iter()
-            .position(|line| *line == "Say hi at https://x.com/smarzbanX")
+            .position(|line| *line == "Say hi at https://x.com/smarzban")
             .expect("about_text must contain the X profile link");
         assert!(
             cta_pos < x_pos,
