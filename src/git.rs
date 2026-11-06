@@ -8,7 +8,8 @@
 //! every invocation is hardened against repo-controlled code execution: executable filters
 //! are neutralized, `--no-ext-diff` + `--no-textconv` refuse diff/textconv programs,
 //! `diff.submodule=short` stops Git from spawning a nested diff that would not inherit
-//! those flags, `core.fsmonitor` and `core.hooksPath` are neutralized, and
+//! those flags, `--ignore-submodules=dirty` keeps status and diff from hashing a
+//! populated submodule's worktree, `core.fsmonitor` and `core.hooksPath` are neutralized, and
 //! `GIT_OPTIONAL_LOCKS=0` keeps status/diff from writing the index (AC-N2). Paths are parsed
 //! from NUL-delimited (`-z`) output as raw bytes, so any filename — spaces, control chars,
 //! non-ASCII — maps to the real filesystem path. The host's base-branch hint is threaded
@@ -537,7 +538,9 @@ fn base_git_command(repo_root: &Path) -> Command {
         // submodule, and that child does not receive those flags, so the submodule's
         // `diff.external` (and, without `--attr-source`, its textconv) would run.
         // Command-line `-c` overrides the repo value and is inherited by that child, and
-        // `short` never spawns the content diff.
+        // `short` never spawns the content diff. It does not stop the `git status` Git
+        // spawns to decide whether a submodule worktree is dirty; that child is refused
+        // by `--ignore-submodules=dirty` on the status and diff argv below.
         .args(["-c", "diff.submodule=short"]);
     cmd
 }
@@ -545,7 +548,9 @@ fn base_git_command(repo_root: &Path) -> Command {
 /// Build a `git -C <dir> <args>` command hardened for read-only use against an **untrusted**
 /// repository: `GIT_OPTIONAL_LOCKS=0` stops status/diff from writing the index (AC-N2);
 /// `core.fsmonitor` / `core.hooksPath` are neutralized; `diff.submodule=short` keeps a nested
-/// repository from running its own external diff; every configured clean/smudge/process
+/// repository from running its own external diff; `status` and `diff` pass
+/// `--ignore-submodules=dirty` so Git does not hash a submodule worktree (a per-submodule
+/// `ignore=none` overrides the config key and does not override that flag); every configured clean/smudge/process
 /// filter is replaced by an empty non-required command; and inherited repo-redirecting env is
 /// dropped. **This is the single source of that hardening** for the Git Service and Root Resolver.
 ///
@@ -579,7 +584,17 @@ fn git_command_with(
     for filter_override in filter_overrides {
         cmd.arg("-c").arg(filter_override);
     }
-    cmd.args(args);
+    // `--ignore-submodules` is a command flag, not a `-c` value. `submodule.<name>.ignore`
+    // overrides `diff.ignoreSubmodules` and would turn a config-only setting back into a
+    // descent. Status and diff are the commands that spawn `git status` inside a populated
+    // submodule; that child runs a clean filter configured only in the submodule.
+    if let Some((subcommand, rest)) = args.split_first() {
+        cmd.arg(*subcommand);
+        if *subcommand == "status" || *subcommand == "diff" {
+            cmd.arg("--ignore-submodules=dirty");
+        }
+        cmd.args(rest);
+    }
     cmd
 }
 
@@ -880,6 +895,10 @@ mod tests {
             args.contains(&"diff.submodule=short".to_string()),
             "submodule content diffs are not spawned: {args:?}"
         );
+        assert!(
+            args.contains(&"--ignore-submodules=dirty".to_string()),
+            "submodule worktrees are not hashed: {args:?}"
+        );
 
         let envs: Vec<(String, Option<String>)> = cmd
             .get_envs()
@@ -1089,6 +1108,36 @@ mod tests {
             "attr-source must be omitted on older git: {args:?}"
         );
         assert_version_independent_guards(&cmd);
+    }
+
+    /// `status` and `diff` must not descend into a submodule worktree. `rev-parse` is not
+    /// one of those commands, and a flag it does not understand must not be added there.
+    #[test]
+    fn status_and_diff_skip_submodule_worktrees_rev_parse_does_not() {
+        let status = command_args(&git_command_with(
+            Path::new("/some/repo"),
+            &["status", "--porcelain=v1"],
+            false,
+            &[],
+        ));
+        let diff = command_args(&git_command_with(
+            Path::new("/some/repo"),
+            &["diff", "--no-ext-diff"],
+            false,
+            &[],
+        ));
+        let rev = command_args(&git_command_with(
+            Path::new("/some/repo"),
+            &["rev-parse", "--show-toplevel"],
+            false,
+            &[],
+        ));
+        assert!(status.contains(&"--ignore-submodules=dirty".to_string()));
+        assert!(diff.contains(&"--ignore-submodules=dirty".to_string()));
+        assert!(
+            rev.iter().all(|arg| arg != "--ignore-submodules=dirty"),
+            "rev-parse must not grow a status/diff flag: {rev:?}"
+        );
     }
 
     /// The live builder's `--attr-source` decision must match the probe, so a runner's git
