@@ -1,0 +1,182 @@
+[
+  {
+    "verdict": "confirmed",
+    "fingerprint": "src/git.rs:git_command:submodule-only-filter-on-nested-status",
+    "title": "Nested submodule git status runs a clean filter configured only in that submodule",
+    "description": "On git 2.43.0, the viewer's hardened git status and whole-tree git diff still spawn git status inside a populated submodule. That child runs a clean filter that exists only in the submodule config when the submodule's $GIT_DIR/info/attributes selects it. A same-size content change and a same-size mtime change both run the filter; a size change is reported dirty without running it. --attr-source pinned to the empty tree is inherited and stops a worktree .gitattributes from selecting the driver. -c diff.submodule=short stops the separate nested git diff --submodule=diff that runs diff.external, and leaves this status child running. -c diff.ignoreSubmodules=dirty still runs the child when submodule.<name>.ignore=none is set. The status/diff flag --ignore-submodules=dirty does not run the child. An index entry whose mtime second equals the index file's mtime second is racy on this git, so the filter also ran once for an otherwise matching file. At this commit the status argv is still status --porcelain=v1 -z -uall and the diff argv is still diff --no-ext-diff --no-textconv --no-color, with no --ignore-submodules. --attr-source, filter overrides for the opened repo, -c diff.submodule=short, core.hooksPath, and core.fsmonitor=false are still applied. They do not replace a submodule-only clean filter.",
+    "root_cause": "configured_filter_overrides inventories filter drivers only for the opened repository, so a driver that exists only in a populated submodule is never replaced with an empty command. base_git_command forces -c diff.submodule=short and does not pass --ignore-submodules. Git still spawns git status --porcelain=2 in each populated submodule to decide dirtiness, and that child reads the submodule config and $GIT_DIR/info/attributes. --attr-source replaces worktree .gitattributes and does not replace info/attributes. --attr-source, filter overrides for the opened repo, -c diff.submodule=short, core.hooksPath, and core.fsmonitor=false do not replace a submodule-only clean filter.",
+    "intended_behavior": "A read-only query of an untrusted repository must not execute a repository-controlled clean, smudge, or process filter, including a filter configured only in a populated submodule. SECURITY.md already states that this submodule-only case is not neutralized.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/controller/mod.rs",
+        "line": 1181,
+        "scope": "Controller::new_with_changed_file_view",
+        "description": "Controller::new at line 1045 delegates here. Line 1181 calls refresh_git_state before the first frame, which reads the opened worktree. Re-root calls dispatch_status_refresh at line 1446, and that function calls git.status at line 1475. A diff render calls git.diff_directory at line 1219 or git.diff at line 1224."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/controller/git_apply.rs",
+        "line": 168,
+        "scope": "refresh_git_state",
+        "description": "After the repo guard, refresh_git_state calls self.git.status() on the opened root, then changed_set. Typical callers include construction-time refresh, the r refresh key, editor return, and focus-gain. Re-root uses dispatch_status_refresh instead. Baseline toggle calls git.changed_set directly, not refresh_git_state. On Head baseline that path still invokes status."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/app.rs",
+        "line": 475,
+        "scope": "LiveGit::status",
+        "description": "LiveGit is constructed in app::run's provider factory, struct literal at line 82, with the resolved repo_root. It forwards status to git::status. diff and diff_directory at lines 480-496 forward the same way."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/git.rs",
+        "line": 79,
+        "scope": "status",
+        "description": "status runs git status --porcelain=v1 -z -uall through run_bytes. The argv has no --ignore-submodules. diff at line 254 and diff_directory at line 311 build git diff --no-ext-diff --no-textconv without that flag and spawn it through capture_stdout at line 597. diff_directory calls status again at line 336."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/git.rs",
+        "line": 555,
+        "scope": "git_command",
+        "description": "git_command loads filter overrides for the opened root only, then git_command_with adds --attr-source=<empty tree> when supported (line 577) and the -c filter.* overrides. A submodule-only driver is absent from that list. Caller args are appended at line 582 with no --ignore-submodules."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/git.rs",
+        "line": 437,
+        "scope": "configured_filter_overrides",
+        "description": "The inventory is base_git_command(repo_root) plus config --includes --null --name-only --get-regexp ^filter\\. (lines 447-455). It sees drivers of the opened repository, including its include.path files, and does not see a filter that exists only in the submodule git config."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/git.rs",
+        "line": 541,
+        "scope": "base_git_command",
+        "description": "Every query sets GIT_OPTIONAL_LOCKS=0, clears repo-redirecting env, sets core.fsmonitor=false and core.hooksPath on the null device, and forces -c diff.submodule=short. That -c stops a nested content diff. It is not --ignore-submodules=dirty."
+      },
+      {
+        "kind": "sink",
+        "file": "src/git.rs",
+        "line": 616,
+        "scope": "run_bytes",
+        "description": "run_bytes spawns the assembled git command with Command::output. status and changed_set reach this sink. diff and the tracked half of diff_directory spawn the same git_command through capture_stdout at line 597. On git 2.43.0 the status process spawned git status --porcelain=2 in the populated submodule, and the diff process spawned git status --porcelain=2 -uno. The child runs the submodule clean filter while hashing a same-size file selected by info/attributes."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/git.rs",
+        "line": 79,
+        "description": "status argv is status --porcelain=v1 -z -uall. Replaying that argv with the shared hardening created the marker. The filter parent was git status --porcelain=2. Adding --ignore-submodules=dirty to the same argv left the marker absent."
+      },
+      {
+        "file": "src/git.rs",
+        "line": 254,
+        "description": "diff argv is diff --no-ext-diff --no-textconv --no-color <rev> --. On the same-length info/attributes fixture that command created the marker via child git status --porcelain=2 -uno and printed only the short Subproject commit summary. The spawn for this argv is capture_stdout at line 597, which calls the same git_command."
+      },
+      {
+        "file": "src/git.rs",
+        "line": 336,
+        "description": "diff_directory calls status for untracked descendants, so the nested status spawn is also on the directory-diff path."
+      },
+      {
+        "file": "src/git.rs",
+        "line": 437,
+        "description": "Filter overrides are computed for the opened repo_root only. A driver configured solely in the submodule config is not in the override list."
+      },
+      {
+        "file": "src/git.rs",
+        "line": 541,
+        "description": "-c diff.submodule=short was on every firing status and diff command. A submodule diff.external payload stayed silent under that -c and ran only when the -c was removed, as child git diff --submodule=diff. The clean-filter child remained git status."
+      },
+      {
+        "file": "src/git.rs",
+        "line": 577,
+        "description": "--attr-source pins the empty tree when git supports it. With it set, worktree .gitattributes did not create the marker. Without it, the same worktree attributes did. info/attributes created the marker while --attr-source was set. The comment at lines 552-554 says this flag does not replace $GIT_DIR/info/attributes."
+      },
+      {
+        "file": "SECURITY.md",
+        "line": 41,
+        "description": "The documented residual matches the experiment: a filter driver configured solely in a populated submodule is not neutralized and can run when Git recurses for status or diff."
+      },
+      {
+        "file": "src/controller/git_apply.rs",
+        "line": 168,
+        "description": "Launch refresh calls git.status() on the superproject root, so the nested status runs without the operator opening the submodule file."
+      },
+      {
+        "file": "tests/git_baseline.rs",
+        "line": 491,
+        "description": "submodule_diff_external_is_not_executed covers only a submodule diff.external under diff.submodule=short. malicious_repo_config_is_not_executed_during_queries at line 442 plants clean and smudge filters on the opened repository, which the inventory overrides. Neither test passes or asserts --ignore-submodules."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "data_state",
+        "description": "The opened root is a superproject whose submodule is checked out. The clean command is set only in the submodule git config. The superproject filter inventory does not list that driver."
+      },
+      {
+        "kind": "data_state",
+        "description": "The submodule $GIT_DIR/info/attributes selects the driver. With --attr-source set to the empty tree, a worktree .gitattributes rule for the same driver does not select it. Without --attr-source, worktree .gitattributes does."
+      },
+      {
+        "kind": "data_state",
+        "description": "The index size of the tracked file equals the worktree size, and either the bytes differ or the mtime differs. A size-changing edit is reported dirty without running the filter."
+      },
+      {
+        "kind": "timing_dependency",
+        "description": "On git 2.43.0, a cache entry whose mtime second equals the index file mtime second is racy. The clean filter then also ran once when size and content matched. A same-length content edit does not need that race."
+      },
+      {
+        "kind": "system_configuration",
+        "description": "submodule.<name>.ignore=none in the superproject defeats -c diff.ignoreSubmodules=dirty. The argv flag --ignore-submodules=dirty still stops the child."
+      },
+      {
+        "kind": "user_interaction",
+        "description": "The operator opens the superproject, which runs refresh_git_state, or the viewer renders a diff. No separate action on the submodule file is required."
+      },
+      {
+        "kind": "third_party_dependency",
+        "description": "System git 2.43.0 implements submodule dirtiness by spawning git status --porcelain=2 in the populated submodule and runs a clean filter while hashing a same-size mismatch."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Author of a worktree the operator opens. Leave a populated submodule, write the clean command only into that submodule's config, point $GIT_DIR/info/attributes at it, and leave a tracked file whose size matches the index while its bytes differ.",
+      "payloads": [
+        "Submodule-only filter clean command set to a script that appends a marker line. Selected by '* filter=<driver>' in the submodule git dir info/attributes. Tracked file changed from hello\\n to world\\n, both 6 bytes.",
+        "Control: the same script as the submodule diff.external, with superproject diff.submodule=diff."
+      ],
+      "instructions": [
+        "Create a local superproject with a checked-out submodule. Put the clean command only in the submodule config and '* filter=<driver>' in that submodule's $GIT_DIR/info/attributes. Change a tracked file without changing its size.",
+        "Run git -C <super> -c core.fsmonitor=false -c core.hooksPath=/dev/null -c diff.submodule=short --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 status --porcelain=v1 -z -uall.",
+        "Repeat with diff --no-ext-diff --no-textconv --no-color HEAD --. Repeat status with --ignore-submodules=dirty after setting submodule.<name>.ignore=none. Repeat the diff.external control with and without -c diff.submodule=short."
+      ],
+      "observed_result": "With info/attributes and a same-length edit, the marker was created. The child was git status --porcelain=2 under the viewer status argv, and git status --porcelain=2 -uno under the viewer diff argv. The diff text was the short dirty gitlink summary. The marker was also created for a same-size mtime-only change, for worktree .gitattributes when --attr-source was omitted, and for status with -c diff.ignoreSubmodules=dirty while submodule.<name>.ignore=none. The marker was absent for a size-changing edit, for worktree .gitattributes while --attr-source was the empty tree, for status --ignore-submodules=dirty despite ignore=none, and for diff.external while -c diff.submodule=short was set. Omitting only that -c ran diff.external via child git diff --submodule=diff. This run did not re-execute because the OS sandbox is missing and the source path is unchanged."
+    },
+    "remediation": {
+      "strategy": "Pass the command flag --ignore-submodules=dirty on every status and diff argv inside git_command_with, so a repository submodule.<name>.ignore=none cannot turn the descent back on. Keep -c diff.submodule=short so the nested diff.external child stays closed. Do not substitute -c diff.ignoreSubmodules=dirty. The flag stops hashing submodule worktree content. A changed gitlink commit is still reported.",
+      "code_changes": [
+        {
+          "file_name": "src/git.rs",
+          "fixed_code": "if let Some((subcommand, rest)) = args.split_first() {\n    cmd.arg(*subcommand);\n    if *subcommand == \"status\" || *subcommand == \"diff\" {\n        cmd.arg(\"--ignore-submodules=dirty\");\n    }\n    cmd.args(rest);\n}"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Opening an untrusted worktree is normal, and the attacker can place the submodule, the filter, info/attributes, and a same-size mismatch in that worktree. A generic dirty file whose size changed does not hit it, and a committed .gitattributes alone does not hit it while --attr-source is set."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "The submodule clean filter runs as the operator during launch status or a diff, so the hostile repository executes a command in the operator account."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Current status, diff, and diff_directory argv still omit --ignore-submodules and still pass through git_command. The relevant sites (run_bytes at line 616, capture_stdout spawn at line 597) and SECURITY.md line 41 match this path, so the git 2.43.0 marker results stay attached to it. This run did not re-execute git. The existing controls do not replace a submodule-only clean filter."
+    }
+  }
+]

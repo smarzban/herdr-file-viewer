@@ -1,0 +1,73 @@
+{
+  "run_id": "herdr-file-viewer-run-4",
+  "repo": "smarzban/herdr-file-viewer",
+  "target": "/agent/repos/herdr-file-viewer",
+  "source_ref": {
+    "commit": "d17a068ee753daf5ba205bafd59c130b81b8c6c0",
+    "dirty": false,
+    "baseline_commit": "97ba479f6ecd577ca5acaad2f32983c852355f9f",
+    "delta_commits": [
+      "9ec815d",
+      "3363027",
+      "093882a",
+      "d17a068"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped delta from 97ba479f6ecd577ca5acaad2f32983c852355f9f to d17a068ee753daf5ba205bafd59c130b81b8c6c0, plus revalidation of the carried same-source confirmed git filter finding",
+  "scope_paths": [
+    "docs/keys.md",
+    "docs/usage.md",
+    "src/controller/lineselect.rs",
+    "src/controller/mod.rs",
+    "src/controller/mouse.rs",
+    "src/help.rs",
+    "src/presenter.rs",
+    "src/prompt.rs",
+    "src/view_policy.rs",
+    "tests/docs_consistency.rs",
+    "src/git.rs",
+    "SECURITY.md"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md"
+  ],
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters": 3,
+    "coverage_critics": 2,
+    "verifiers": 2,
+    "total": 11
+  },
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/herdr-file-viewer/run-1/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/herdr-file-viewer/run-1/prior/findings.json",
+    "origin/security-audit/2026-10-20:security-audit/2026-10-20/"
+  ],
+  "prior_ledger_status": "compatible scoped standard ledger at 97ba479f6ecd577ca5acaad2f32983c852355f9f; one confirmed finding; zero needs_validation records",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "skill_directory": "/tmp/security-audit-skill/skills/security-audit",
+  "output_directory": "/home/ubuntu/security-audit-skill/herdr-file-viewer/run-1",
+  "run_status": "complete",
+  "sandbox": {
+    "bwrap": false,
+    "unshare_net": false,
+    "unshare_mount": false,
+    "unshare_user_net": true,
+    "cap_eff_empty": true,
+    "target_writable": true,
+    "target_execution": "prohibited_missing_os_sandbox"
+  },
+  "notes": "Delta audit. Source inspection only. Do not execute target code: OS sandbox controls are incomplete. Do not attack deployed services. Carry the prior confirmed submodule-filter finding if source is unchanged. Hunters must not re-file that root cause. No prior needs_validation records to carry."
+}
