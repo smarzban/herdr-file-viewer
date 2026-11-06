@@ -59,12 +59,12 @@ pub fn opener_argv(os: OsKind, action: OpenAction, path: &Path) -> Vec<OsString>
         (OsKind::Windows, OpenAction::Open) => {
             vec![
                 windows_explorer_program(system_root().as_deref()),
-                path.as_os_str().to_owned(),
+                windows_backslashes(path),
             ]
         }
         (OsKind::Windows, OpenAction::Reveal) => {
             let mut s = OsString::from("/select,");
-            s.push(path);
+            s.push(windows_backslashes(path));
             vec![windows_explorer_program(system_root().as_deref()), s]
         }
     }
@@ -108,6 +108,25 @@ fn windows_explorer_program(system_root: Option<&Path>) -> OsString {
         Some(root) if !root.as_os_str().is_empty() => root.join("explorer.exe").into_os_string(),
         _ => OsString::from("explorer"),
     }
+}
+
+fn windows_backslashes(path: &Path) -> OsString {
+    let Some(text) = path.to_str() else {
+        return path.as_os_str().to_owned();
+    };
+    if !is_windows_absolute(text) {
+        return path.as_os_str().to_owned();
+    }
+    OsString::from(text.replace('/', "\\"))
+}
+
+fn is_windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\');
+    drive || path.starts_with(r"\\") || path.starts_with("//")
 }
 
 /// The result of an OS hand-off attempt through the [`Opener`] seam. Mirrors the editor's
@@ -183,7 +202,10 @@ impl CommandOpener {
         let argv = match override_prefix {
             Some(prefix) if !prefix.is_empty() => {
                 let mut argv = prefix.clone();
-                argv.push(path.as_os_str().to_os_string());
+                argv.push(match self.os {
+                    OsKind::Windows => windows_backslashes(path),
+                    OsKind::Mac | OsKind::Linux => path.as_os_str().to_owned(),
+                });
                 argv
             }
             // An empty override (e.g. `open = ""`, or whitespace-only, tokenizes to no args) is
@@ -461,6 +483,93 @@ mod tests {
             argv[1],
             OsString::from("/select,/tmp/a dir/-weird;name.txt")
         );
+    }
+
+    fn windows_path_push(base: &str, child: &str) -> String {
+        let mut out = base.to_string();
+        if !out.is_empty() && !out.ends_with(['\\', '/']) {
+            out.push('\\');
+        }
+        out.push_str(child);
+        out
+    }
+
+    #[test]
+    fn windows_open_and_reveal_rewrite_a_git_toplevel_mixed_separator_path() {
+        let toplevel = "C:/Users/me/My Repo";
+        let mixed = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+        assert_eq!(
+            mixed, r"C:/Users/me/My Repo\docs\example.pdf",
+            "fixture must be the mixed path a Windows join produces"
+        );
+        let path = Path::new(&mixed);
+        let native = r"C:\Users\me\My Repo\docs\example.pdf";
+        let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+        assert_eq!(open.len(), 2);
+        assert_eq!(open[1], OsString::from(native));
+        let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+        assert_eq!(reveal.len(), 2);
+        assert_eq!(reveal[1], OsString::from(format!("/select,{native}")));
+    }
+
+    #[test]
+    fn windows_open_and_reveal_rewrite_a_network_share_path() {
+        let native = r"\\server\share\repo\docs\example.pdf";
+        for toplevel in ["//server/share/repo", r"\\server\share/repo"] {
+            let mixed = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+            let path = Path::new(&mixed);
+            let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+            assert_eq!(open[1], OsString::from(native), "open of {mixed}");
+            let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+            assert_eq!(
+                reveal[1],
+                OsString::from(format!("/select,{native}")),
+                "reveal of {mixed}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_open_and_reveal_keep_an_already_native_backslash_path() {
+        let toplevel = r"C:\Users\me\My Repo";
+        let native = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+        assert_eq!(native, r"C:\Users\me\My Repo\docs\example.pdf");
+        let path = Path::new(&native);
+        let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+        assert_eq!(open[1], OsString::from(&native));
+        let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+        assert_eq!(reveal[1], OsString::from(format!("/select,{native}")));
+    }
+
+    #[test]
+    fn windows_custom_open_receives_native_separators() {
+        let mixed = Path::new(r"C:/Users/me/My Repo\docs\example.pdf");
+        let (recorder, calls) = RecordingSpawner::new(SpawnResult::Ok);
+        let mut opener = CommandOpener::new(OsKind::Windows, Box::new(recorder)).with_overrides(
+            Some(vec![OsString::from("myopen")]),
+            Some(vec![OsString::from("myreveal")]),
+        );
+        let native = OsString::from(r"C:\Users\me\My Repo\docs\example.pdf");
+        assert_eq!(opener.open(mixed), OpenerOutcome::Launched);
+        assert_eq!(
+            calls.borrow()[0],
+            vec![OsString::from("myopen"), native.clone()]
+        );
+        assert_eq!(opener.reveal(mixed), OpenerOutcome::Launched);
+        assert_eq!(calls.borrow()[1], vec![OsString::from("myreveal"), native]);
+    }
+
+    #[test]
+    fn unix_open_leaves_a_windows_looking_path_unchanged() {
+        let path = Path::new(r"C:/Users/me/My Repo\docs\example.pdf");
+        for os in [OsKind::Mac, OsKind::Linux] {
+            let argv = opener_argv(os, OpenAction::Open, path);
+            assert_eq!(
+                argv[1],
+                path.as_os_str(),
+                "{os:?} must not rewrite separators"
+            );
+        }
     }
 
     #[test]
