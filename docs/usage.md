@@ -446,8 +446,10 @@ Read-only: it changes only *what you're viewing*, never the branch or any files.
 `?` opens **What's New** first in the view-only **help overlay**, followed by **Keybindings**
 (every action's config-var name, effective keys, and description, marking your customizations),
 **Settings** (your effective configuration), and **About** (version, repo, license, and update
-status). Keyboard and mouse; `Esc` or `q` closes it. A `? help` hint rides the content pane's bottom
-border so the overlay is discoverable without already knowing the key.
+status). While it is open, `Tab` / `→` moves to the next section, `Shift`+`Tab` / `←` to the
+previous, and `1`-`9` jumps to a section. `j`/`k` and `↓`/`↑` scroll, the mouse wheel scrolls,
+and clicking a tab selects it. `?` closes the overlay like `Esc` / `q`. A `? help` hint rides
+the content pane's bottom border so the overlay is discoverable without already knowing the key.
 
 ## Staying up to date
 
