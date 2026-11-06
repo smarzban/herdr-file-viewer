@@ -87,14 +87,6 @@ impl PromptInput {
         self.cursor = self.query.len();
     }
 
-    /// Sets a byte cursor, clamped to the string and then to the preceding UTF-8 boundary.
-    pub fn set_cursor(&mut self, cursor: usize) {
-        self.cursor = cursor.min(self.query.len());
-        while !self.query.is_char_boundary(self.cursor) {
-            self.cursor -= 1;
-        }
-    }
-
     /// Empties the query buffer and resets the cursor to zero.
     pub fn clear(&mut self) {
         self.query.clear();
@@ -112,18 +104,6 @@ impl PromptInput {
     }
 }
 
-impl From<String> for PromptInput {
-    fn from(text: String) -> Self {
-        Self::with_text(text)
-    }
-}
-
-impl From<&str> for PromptInput {
-    fn from(text: &str) -> Self {
-        Self::with_text(text)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::PromptInput;
@@ -137,12 +117,10 @@ mod tests {
     }
 
     #[test]
-    fn initial_text_and_from_start_at_end() {
+    fn initial_text_starts_at_end() {
         let p = PromptInput::with_text("café");
         assert_eq!(p.query(), "café");
         assert_eq!(p.cursor(), "café".len());
-        assert_eq!(PromptInput::from("hello"), PromptInput::with_text("hello"));
-        assert_eq!(PromptInput::from(String::from("owned")).cursor(), 5);
     }
 
     #[test]
@@ -221,19 +199,6 @@ mod tests {
         p.move_end();
         assert_eq!(p.cursor(), 7);
         p.move_home();
-        assert_eq!(p.cursor(), 0);
-    }
-
-    #[test]
-    fn set_cursor_clamps_length_and_inside_multibyte_to_preceding_boundary() {
-        let mut p = PromptInput::with_text("aé🙂z");
-        p.set_cursor(usize::MAX);
-        assert_eq!(p.cursor(), p.query().len());
-        p.set_cursor(2); // interior byte of é (which begins at byte 1)
-        assert_eq!(p.cursor(), 1);
-        p.set_cursor(5); // interior byte of 🙂 (which begins at byte 3)
-        assert_eq!(p.cursor(), 3);
-        p.set_cursor(0);
         assert_eq!(p.cursor(), 0);
     }
 

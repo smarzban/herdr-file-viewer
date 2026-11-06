@@ -6,8 +6,6 @@
 //! through; for a changed file it also offers a full-context diff (the whole file with line numbers
 //! and the diff shown inline). No I/O.
 
-use std::path::PathBuf;
-
 /// Which rendering the content pane is showing for the selected file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -50,7 +48,6 @@ impl ChangedFileView {
 /// The facts the policy needs about a file — no path I/O is performed here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDescriptor {
-    pub path: PathBuf,
     pub is_markdown: bool,
     pub is_changed: bool,
     /// The cached Git status says this path was deleted and therefore has no content to render.
@@ -100,18 +97,16 @@ pub fn applicable_modes(fd: &FileDescriptor, changed_file_view: ChangedFileView)
 mod tests {
     use super::*;
 
-    fn fd(name: &str, is_markdown: bool, is_changed: bool) -> FileDescriptor {
+    fn fd(is_markdown: bool, is_changed: bool) -> FileDescriptor {
         FileDescriptor {
-            path: PathBuf::from(name),
             is_markdown,
             is_changed,
             is_deleted: false,
         }
     }
 
-    fn deleted_fd(name: &str, is_markdown: bool) -> FileDescriptor {
+    fn deleted_fd(is_markdown: bool) -> FileDescriptor {
         FileDescriptor {
-            path: PathBuf::from(name),
             is_markdown,
             is_changed: true,
             is_deleted: true,
@@ -122,7 +117,7 @@ mod tests {
     fn unchanged_markdown_defaults_to_rendered_markdown() {
         for preference in [ChangedFileView::Diff, ChangedFileView::Content] {
             assert_eq!(
-                default_mode(&fd("README.md", true, false), preference),
+                default_mode(&fd(true, false), preference),
                 ViewMode::RenderedMarkdown
             );
         }
@@ -131,11 +126,11 @@ mod tests {
     #[test]
     fn changed_file_defaults_to_diff_even_when_markdown() {
         assert_eq!(
-            default_mode(&fd("README.md", true, true), ChangedFileView::Diff),
+            default_mode(&fd(true, true), ChangedFileView::Diff),
             ViewMode::Diff
         );
         assert_eq!(
-            default_mode(&fd("main.rs", false, true), ChangedFileView::Diff),
+            default_mode(&fd(false, true), ChangedFileView::Diff),
             ViewMode::Diff
         );
     }
@@ -143,11 +138,11 @@ mod tests {
     #[test]
     fn changed_file_content_preference_uses_the_normal_file_type_policy() {
         assert_eq!(
-            default_mode(&fd("README.md", true, true), ChangedFileView::Content),
+            default_mode(&fd(true, true), ChangedFileView::Content),
             ViewMode::RenderedMarkdown
         );
         assert_eq!(
-            default_mode(&fd("main.rs", false, true), ChangedFileView::Content),
+            default_mode(&fd(false, true), ChangedFileView::Content),
             ViewMode::SyntaxContent
         );
     }
@@ -156,10 +151,7 @@ mod tests {
     fn deleted_file_stays_diff_first_under_content_preference() {
         for is_markdown in [false, true] {
             assert_eq!(
-                default_mode(
-                    &deleted_fd(if is_markdown { "gone.md" } else { "gone.rs" }, is_markdown),
-                    ChangedFileView::Content
-                ),
+                default_mode(&deleted_fd(is_markdown), ChangedFileView::Content),
                 ViewMode::Diff,
                 "a deleted path has no on-disk content to render"
             );
@@ -170,7 +162,7 @@ mod tests {
     fn unchanged_non_markdown_defaults_to_syntax_content() {
         for preference in [ChangedFileView::Diff, ChangedFileView::Content] {
             assert_eq!(
-                default_mode(&fd("main.rs", false, false), preference),
+                default_mode(&fd(false, false), preference),
                 ViewMode::SyntaxContent
             );
         }
@@ -180,13 +172,13 @@ mod tests {
     fn changed_file_cycle_offers_a_full_context_diff_right_after_the_compact_diff() {
         // AC-11: a changed file can cycle from the compact diff to a full-context diff
         // (whole file + line numbers + inline diff) before the content views.
-        let modes = applicable_modes(&fd("main.rs", false, true), ChangedFileView::Diff);
+        let modes = applicable_modes(&fd(false, true), ChangedFileView::Diff);
         assert_eq!(
             modes,
             vec![ViewMode::Diff, ViewMode::FullDiff, ViewMode::SyntaxContent]
         );
         // For a changed markdown file the rendered view sits after the two diff views.
-        let md = applicable_modes(&fd("README.md", true, true), ChangedFileView::Diff);
+        let md = applicable_modes(&fd(true, true), ChangedFileView::Diff);
         assert_eq!(
             md,
             vec![
@@ -201,11 +193,11 @@ mod tests {
     #[test]
     fn content_preference_cycle_starts_normally_and_keeps_diff_available() {
         assert_eq!(
-            applicable_modes(&fd("main.rs", false, true), ChangedFileView::Content),
+            applicable_modes(&fd(false, true), ChangedFileView::Content),
             vec![ViewMode::SyntaxContent, ViewMode::Diff, ViewMode::FullDiff]
         );
         assert_eq!(
-            applicable_modes(&fd("README.md", true, true), ChangedFileView::Content),
+            applicable_modes(&fd(true, true), ChangedFileView::Content),
             vec![
                 ViewMode::RenderedMarkdown,
                 ViewMode::Diff,
@@ -220,7 +212,7 @@ mod tests {
         // A full-context (or compact) diff only makes sense for a changed file — there is no
         // diff for an unchanged one, so neither diff mode is offered.
         for md in [true, false] {
-            let modes = applicable_modes(&fd("x", md, false), ChangedFileView::Content);
+            let modes = applicable_modes(&fd(md, false), ChangedFileView::Content);
             assert!(
                 !modes.contains(&ViewMode::Diff),
                 "no compact diff when unchanged (md={md})"
@@ -234,7 +226,7 @@ mod tests {
 
     #[test]
     fn applicable_modes_start_with_the_default_so_cycling_overrides_it() {
-        let f = fd("README.md", true, false);
+        let f = fd(true, false);
         for preference in [ChangedFileView::Diff, ChangedFileView::Content] {
             assert_eq!(
                 applicable_modes(&f, preference).first(),
@@ -245,7 +237,7 @@ mod tests {
 
     #[test]
     fn applicable_modes_have_no_duplicates() {
-        let f = fd("README.md", true, true);
+        let f = fd(true, true);
         for preference in [ChangedFileView::Diff, ChangedFileView::Content] {
             let modes = applicable_modes(&f, preference);
             let mut seen = modes.clone();
