@@ -86,9 +86,9 @@ impl Controller {
     /// Enter line-select mode with the marker on the top *visible* source line (AC-1, AC-15).
     ///
     /// - **Source view, up to date** (`SyntaxContent` AND `applied_seq == latest_seq`): the
-    ///   line→row mapping is valid now, so open the modal synchronously on `content_scroll + 1`
-    ///   (1-based), clamped into `[1, line_count]` so an empty/short file still yields a valid line 1.
-    ///   The selection starts collapsed (anchor == marker); the user moves/extends it from here.
+    ///   line→row mapping is valid now, so open synchronously at
+    ///   `line_at_content_row(active_interaction.vertical_scroll)`, clamped into `[1, line_count]`
+    ///   so an empty/short file still yields line 1. The selection starts collapsed (anchor == marker).
     /// - **Transformed view, or a source render still in flight**: a source line has no display row in
     ///   a transformed view (RenderedMarkdown / Diff / FullDiff), and a still-in-flight source render
     ///   holds stale content — either way the marker can't be placed now. If the view is transformed,
@@ -114,10 +114,6 @@ impl Controller {
         self.drag = None;
         let source_mapped = self.selected_view_mode() == Some(ViewMode::SyntaxContent);
         if source_mapped && self.applied_seq == self.latest_seq {
-            // Source-mapped AND the displayed content is the latest render → the line→row mapping is
-            // valid now, so open synchronously. The top visible source line is mapped from the scroll
-            // offset through `line_at_content_row`, so it is correct even when the `w` wrap override is
-            // on (under wrap `content_scroll` is a wrapped display-row offset, NOT a source-line index).
             let last = self.active_lines().len().max(1);
             let top = self
                 .line_at_content_row(self.active_interaction.vertical_scroll as usize)
@@ -144,8 +140,8 @@ impl Controller {
 
     /// Join the plain text of the currently-selected 1-based source lines `[start, end]` with `\n`.
     ///
-    /// Line-select forces the source-mapped content view (`SyntaxContent`), so each entry in
-    /// `content.lines` is exactly one source line — the selection therefore indexes straight into
+    /// Line-select forces the source-mapped content view (`SyntaxContent`), so each
+    /// `active_lines()` entry is exactly one source line. The selection indexes straight into
     /// it (`line - 1`). For each selected line we (1) join its spans' text, (2) drop any residual
     /// control char **while keeping `\t`** so indentation survives, and (3) strip the syntax
     /// renderer's line-number gutter via [`strip_line_gutter`] so the copy is the source text
@@ -178,8 +174,8 @@ impl Controller {
     }
 
     /// The retained raw source text of 1-based displayed line `n`, when the current content is
-    /// source-mapped (see [`RenderResult::source`]); `None` otherwise. `content_source` is applied
-    /// in lockstep with `content`, so `Some` guarantees index `n-1` IS displayed line `n`'s source.
+    /// source-mapped (see [`RenderResult::source`]); `None` otherwise. `active_source()` matches
+    /// `active_lines()`, so `Some` means index `n - 1` is displayed line `n`'s source.
     fn source_line(&self, n: usize) -> Option<&str> {
         self.active_source()
             .and_then(|src| src.get(n - 1))
@@ -218,7 +214,7 @@ impl Controller {
     /// The plain text of 1-based source line `n` (its spans joined), with residual control chars
     /// dropped but `\t` kept. Includes the syntax renderer's gutter — callers strip it via
     /// [`gutter_len_of`](Self::gutter_len_of). Caller guarantees `n` is in
-    /// `[1, content.lines.len()]`.
+    /// `[1, active_lines().len()]`.
     fn filtered_display_line(&self, n: usize) -> String {
         let joined: String = self.active_lines()[n - 1]
             .spans
