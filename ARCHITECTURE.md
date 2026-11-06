@@ -135,8 +135,10 @@ Four untrusted inputs are handled defensively (see [SECURITY.md](SECURITY.md)):
    invocation is hardened against repo-controlled code execution (no external diff/textconv,
    submodule diffs kept to the short gitlink summary, neutralized `core.fsmonitor`/`core.hooksPath`,
    scrubbed repo-redirecting env). This hardening lives in **one** shared builder so it cannot
-   drift between callers. Caveat: filter drivers configured only in a populated submodule's own
-   config are not yet neutralized and can run when Git recurses into it. Nor can the repo move the
+   drift between callers. Filter drivers are inventoried once per git operation: in the opened
+   repository and every populated submodule below it for status and worktree diffs, so a nested
+   status check cannot run one, and in the opened repository alone for commands that never check a
+   submodule. Nor can the repo move the
    viewed root: `root` accepts git's top-level only when it is the directory whose `.git` entry
    resolves to the git dir git discovered, so a foreign `core.worktree` degrades to a plain browser
    at the launch directory.
