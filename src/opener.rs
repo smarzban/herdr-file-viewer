@@ -513,6 +513,23 @@ mod tests {
     }
 
     #[test]
+    fn windows_open_and_reveal_rewrite_a_network_share_path() {
+        let native = r"\\server\share\repo\docs\example.pdf";
+        for toplevel in ["//server/share/repo", r"\\server\share/repo"] {
+            let mixed = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
+            let path = Path::new(&mixed);
+            let open = opener_argv(OsKind::Windows, OpenAction::Open, path);
+            assert_eq!(open[1], OsString::from(native), "open of {mixed}");
+            let reveal = opener_argv(OsKind::Windows, OpenAction::Reveal, path);
+            assert_eq!(
+                reveal[1],
+                OsString::from(format!("/select,{native}")),
+                "reveal of {mixed}"
+            );
+        }
+    }
+
+    #[test]
     fn windows_open_and_reveal_keep_an_already_native_backslash_path() {
         let toplevel = r"C:\Users\me\My Repo";
         let native = windows_path_push(&windows_path_push(toplevel, "docs"), "example.pdf");
