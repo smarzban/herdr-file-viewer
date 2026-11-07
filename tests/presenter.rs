@@ -3893,13 +3893,13 @@ fn empty_state_no_files_snapshot() {
 fn loading_state_snapshot_while_a_render_is_in_flight() {
     // while an off-thread render for a newly-selected file is in flight, the content
     // pane shows a loading placeholder body and a neutral "Content" title (NOT the still-loading
-    // selection's name). The controller's `dispatch_render` sets `content_rendering = true` and
-    // `content_title = None` (no content has landed yet — launch / re-root), so the Presenter
+    // selection's name). The controller's `dispatch_render` sets `active.rendering = true` and
+    // `active.title = None` (no content has landed yet — launch / re-root), so the Presenter
     // falls back to "Content" instead of picking up the new selection's name. This snapshot locks
     // that visual: the body is the placeholder and the border title is "Content".
     let mut state = sample_state();
     // The cursor has moved to README.md (index 4) but its render hasn't landed — the body is the
-    // placeholder and `content_title` is `None` (no content has landed at all yet, e.g. launch).
+    // placeholder and `active.title` is `None` (no content has landed at all yet, e.g. launch).
     state.selected = 4; // README.md
     state.active.content = std::sync::Arc::new(to_text("Rendering\u{2026}"));
     state.active.notices.clear();

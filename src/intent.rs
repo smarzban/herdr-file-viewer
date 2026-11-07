@@ -1,8 +1,9 @@
 //! Intents — the viewer's complete, closed vocabulary of user actions.
 //!
-//! The Input Dispatcher ([`crate::input::map_key`]) decodes key events into these; the
-//! Session Controller consumes them. The set deliberately contains no file/git mutation intent
-//! (AC-N3). An annotation action may edit session-only in-memory state, but never repository data.
+//! The Input Dispatcher ([`crate::input::decode`]) decodes key events into these against the
+//! session bindings; the Session Controller consumes them. The set deliberately contains no
+//! file/git mutation intent (AC-N3). An annotation action may edit session-only in-memory state,
+//! but never repository data.
 //! The only file hand-off is [`Intent::OpenInEditor`], which launches an *external* editor (Editor
 //! Launcher) — it never modifies a file in-pane.
 

@@ -302,7 +302,7 @@ pub struct FinderView {
 pub struct AnnotationIndicatorsView {
     /// Absolute tree-file paths with one or more annotations (visible or currently collapsed).
     pub annotated_files: std::collections::BTreeSet<std::path::PathBuf>,
-    /// Whether the applied `content_path` has one or more annotations.
+    /// Whether the applied display has one or more annotations.
     pub displayed_file_annotated: bool,
     /// Sorted, merged source-line ranges for the applied source-mapped file.
     pub displayed_line_ranges: Vec<LineRange>,
