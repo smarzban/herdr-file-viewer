@@ -2053,11 +2053,11 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
     // The transformed views (rendered markdown, diff) get a one-column left gap so their
     // border-hugging delegate output doesn't touch the border; syntax content stays flush because
     // bat's line-number gutter already supplies the gap. The flag tracks the DISPLAYED content's
-    // effective mode, so it is asserted only after the render lands (`content_path` set).
+    // effective mode, so it is asserted only after the render lands (applied display set).
     let md = TempDir::new();
     std::fs::write(md.path().join("a.md"), "# hi\n").unwrap();
     let (mut ctrl_md, _, _) = controller(md.path(), false, StubGit::default(), false);
-    // Keyed off the DISPLAYED content (`content_path`), not the tree cursor: before any body has
+    // Keyed off the DISPLAYED content (applied display), not the tree cursor: before any body has
     // landed the flag is false even though a markdown file is selected (a.md would render markdown).
     assert_eq!(
         ctrl_md.selected_view_mode(),
@@ -2066,7 +2066,7 @@ fn content_pad_left_is_on_for_the_transformed_views_and_off_for_syntax() {
     );
     assert!(
         !ctrl_md.view_state().active.pad_left,
-        "no gap until the body lands — the flag follows content_path, which is None pre-render"
+        "no gap until the body lands — the flag follows the applied display, which is empty pre-render"
     );
     await_marker(&mut ctrl_md, "stub-content");
     assert!(

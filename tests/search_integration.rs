@@ -3,7 +3,7 @@
 //! Proves the search subsystem end-to-end through the controller:
 //!
 //! - **AC-13** — search finds text as displayed in every view mode (RenderedMarkdown, Diff,
-//!   SyntaxContent). Because the search reads `content.lines` plain text, it is
+//!   SyntaxContent). Because the search reads displayed lines via `plain_lines`, it is
 //!   view-agnostic — we prove it across modes by steering the view-policy with the right file
 //!   extension and git-status metadata.
 //!
@@ -11,8 +11,8 @@
 //!   containing an uppercase letter is case-sensitive.
 //!
 //! - **AC-23** — on a size-cap-truncated file, text beyond the truncation boundary is not
-//!   matched. The search literally never sees that text — it only operates on `content.lines`
-//!   (the truncated body returned by the ContentProvider).
+//!   matched. The search literally never sees that text — it only operates on displayed lines
+//!   via `plain_lines` (the truncated body returned by the ContentProvider).
 //!
 //! Integration tests live here; they bring in no new Cargo deps and touch no `src/` files.
 
@@ -136,7 +136,7 @@ impl ContentProvider for SearchContent {
 /// A content provider that mimics the size-cap truncation: it returns only the
 /// first `visible_lines` lines of content plus a truncation notice, simulating
 /// what the real Content Renderer does for large files.  The text that would
-/// appear "beyond" the truncation is never present in `content.lines`.
+/// appear "beyond" the truncation is never present in the displayed lines.
 ///
 /// Wrapped in `Arc` so the `Fn` closure can clone it cheaply.
 #[derive(Clone)]
@@ -223,8 +223,8 @@ fn commit_search(ctrl: &mut Controller, query: &str) -> usize {
 #[test]
 fn search_finds_text_in_rendered_markdown_view() {
     // AC-13: a .md file is displayed in RenderedMarkdown mode. The search still finds
-    // the text produced by the content provider — because search reads `content.lines`
-    // plain text regardless of how it will be rendered in the pane.
+    // the text produced by the content provider — because search reads displayed lines via
+    // `plain_lines` regardless of how it will be rendered in the pane.
     let dir = TempDir::new();
     // A `.md` extension forces the view-policy to pick RenderedMarkdown as the default.
     std::fs::write(dir.path().join("doc.md"), "placeholder\n").unwrap();
@@ -276,7 +276,7 @@ fn search_finds_text_in_diff_view() {
 #[test]
 fn search_finds_text_in_syntax_content_view() {
     // AC-13: an unchanged `.rs` file is in SyntaxContent mode.  Same assertion — the search
-    // reads `content.lines` from the provider, independent of the rendering pipeline.
+    // reads displayed lines via `plain_lines`, independent of the rendering pipeline.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("main.rs"), "placeholder\n").unwrap();
 

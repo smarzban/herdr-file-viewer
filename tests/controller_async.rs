@@ -721,7 +721,7 @@ fn a_slow_render_shows_a_loading_placeholder_and_switches_title_with_body() {
 /// the content-pane left gap (`content_pad_left`) keys off the DISPLAYED content, not the tree
 /// cursor — the same lockstep the title obeys. Selecting a markdown file while a code file is shown
 /// must NOT flip the gap on before the markdown body lands, or the gap would jump ahead of the body
-/// during an async render (the exact bug the `content_path`-keyed design avoids).
+/// during an async render (the exact bug the applied-display-keyed design avoids).
 #[test]
 fn the_left_gap_follows_the_displayed_file_not_the_selection_during_a_slow_render() {
     let dir = TempDir::new();

@@ -364,9 +364,10 @@ fn event_loop(terminal: &mut DefaultTerminal, controller: &mut Controller) -> io
                         return Ok(()); // finder never quits; harmless for symmetry
                     }
                 }
-                // While a bottom prompt (go-to-line) is open, route every key press to handle_prompt_key so
-                // digits/printables edit the prompt instead of firing viewer intents (AC-21). Mutually exclusive
-                // with the finder arm above — only one modal is ever open.
+                // While a bottom prompt is open (go-to-line `:` or in-file search `/`,
+                // `PromptMode::Search`), route every key press to handle_prompt_key so
+                // digits/printables edit the prompt instead of firing viewer intents (AC-21).
+                // Mutually exclusive with the finder arm above — only one modal is ever open.
                 Event::Key(key) if key.kind == KeyEventKind::Press && controller.prompt_open() => {
                     let fx = controller.handle_prompt_key(key);
                     if apply_input_effects(terminal, &mut dirty, fx, true) {
@@ -716,8 +717,8 @@ impl EditorHandoff for LiveEditor {
             return EditorOutcome::NotLaunched(e.to_string());
         }
         if let Some(e) = launched_err {
-            // Distinguish a launch failure from a successful launch that exited non-zero
-            //: only NotLaunched is reported as "could not open editor".
+            // Distinguish a launch failure from a successful launch that exited non-zero:
+            // only NotLaunched is reported as "could not open editor".
             return match e {
                 SpawnError::NotLaunched(e) => EditorOutcome::NotLaunched(e.to_string()),
                 SpawnError::NonZeroExit(detail) => EditorOutcome::NonZeroExit(detail),

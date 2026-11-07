@@ -1628,11 +1628,11 @@ fn held_ambient_press_does_not_leak_into_line_select() {
 fn ambient_drag_over_rendering_placeholder_copies_nothing() {
     // While a render is in flight the pane shows the non-empty "Rendering…" placeholder with a FILE
     // still selected — so the is_file guard does NOT block it. A press over the placeholder must not
-    // seed a selection (the `content_rendering` press-time guard), so a drag copies nothing.
+    // seed a selection (the `active.rendering` press-time guard), so a drag copies nothing.
     let dir = TempDir::new();
     std::fs::write(dir.path().join("code.rs"), "placeholder\n").unwrap();
     let (mut ctrl, copied) = controller_with_clipboard(dir.path(), MultiLine);
-    // Do NOT poll: the pane is still showing the "Rendering…" placeholder (content_rendering == true).
+    // Do NOT poll: the pane is still showing the "Rendering…" placeholder (active.rendering == true).
     ctrl.set_content_viewport(80, 20);
     ctrl.set_pane_geometry(content_geometry());
     assert!(

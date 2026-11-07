@@ -1,6 +1,7 @@
 //! Column/tree pointer handling — wheel scroll, press/drag on the divider and scrollbars
-//! (click-to-scroll), click vs double-click, and the scrollbar track\u2192offset math. Routed here
-//! from `handle_mouse` for the non-modal case. Part of the Session Controller.
+//! (click-to-scroll), click vs double-click, and the scrollbar track\u2192offset math.
+//! `handle_mouse` lives here: it gates open modals, then routes the non-modal case to the
+//! column handler below. Part of the Session Controller.
 
 use super::*;
 
@@ -12,9 +13,10 @@ impl Controller {
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Effects {
         // Modal gate, exhaustive over `Modal` (so a new overlay variant forces a mouse-routing
         // decision here, and the keyboard gate in `handle` matches every variant too):
-        // - Picker / Prompt are keyboard-only — swallow the mouse entirely. Without this a
-        //   click/wheel would reach the tree/content beneath and change the selection under the
-        //   modal, so a later confirm would act on the WRONG file (or strand an override on a dir).
+        // - Picker / ProjectSearch / Prompt / Annotations / AnnotationEditor / DiscardConfirm are
+        //   keyboard-only — swallow the mouse entirely. Without this a click/wheel would reach the
+        //   tree/content beneath and change the selection under the modal, so a later confirm
+        //   would act on the WRONG file (or strand an override on a dir).
         // - LineSelect owns the mouse over the content pane: route to its own handler (BEFORE the
         //   column handler) so a click places the marker and never leaks to the columns or
         //   starts a divider/scrollbar drag while the mode is active (AC-8/AC-9/AC-12).

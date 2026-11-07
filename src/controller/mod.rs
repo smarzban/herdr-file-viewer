@@ -623,7 +623,8 @@ type StatusResult = (BTreeMap<PathBuf, Status>, BTreeMap<PathBuf, Status>);
 /// - `Prompt`: the in-file-nav bottom prompt (go-to-line / search). While open the run loop routes
 ///   raw keys to `handle_prompt_key` and the mouse is inert, so the selection can't change beneath it.
 /// - `Help`: the help overlay (AC-1, AC-6), opened by `?`; dismissed by Esc/`q`. While open,
-///   `handle()`/`handle_mouse()` return early (AC-N4).
+///   `handle()` returns [`Effects::noop()`]; `handle_mouse` routes to `handle_help_mouse`
+///   (wheel scroll and tab click).
 /// - `LineSelect`: the copy-line-reference selection (a content-pane marker, not a popup). While
 ///   active `handle()` returns early and the run loop routes keys to its own handler. A re-root
 ///   or exit resets it to `Modal::None` (no clipboard touch here).
@@ -1821,8 +1822,8 @@ impl Controller {
         self.resync_filter_mirrors();
         // Defer zoom until the first real layout measurement (see `set_content_viewport`).
         self.pending_open_zoom = true;
-        // Success notice (option 2): echo the open target as a line reference. Cleared on the
-        // next intent, same as other action notices.
+        // Success notice: echo the open target as a line reference. Cleared on the next intent,
+        // same as other action notices.
         self.action_notice = Some(format!("Opened {}", target.display_ref()));
 
         if let Some(line) = target.goto_line() {
@@ -1842,7 +1843,7 @@ impl Controller {
         } else {
             self.dispatch_render();
         }
-        // Option 3: after dispatch (which clears prior flash), arm a passive range highlight for
+        // After dispatch (which clears prior flash), arm a passive range highlight for
         // `path:start-end` only — display-only, auto-expires, no line-select modal.
         if let (Some(a), Some(b)) = (target.line, target.end_line) {
             let (start, end) = if a <= b { (a, b) } else { (b, a) };
@@ -1965,9 +1966,10 @@ impl Controller {
     ///
     /// Also re-clamps the finder's stored horizontal scroll to the maximum the Presenter just
     /// measured (`finder_max_hscroll`) — mirroring how [`set_content_viewport`](Self::set_content_viewport)
-    /// re-clamps `content_hscroll`. `scroll_right` is monotonic, so over-scrolling right would
-    /// otherwise leave the offset parked past the widest row, making the first few left presses
-    /// appear to do nothing until the overshoot burned down.
+    /// re-clamps `active_interaction.horizontal_scroll` (`max_content_hscroll` is the helper).
+    /// `scroll_right` is monotonic, so over-scrolling right would otherwise leave the offset parked
+    /// past the widest row, making the first few left presses appear to do nothing until the
+    /// overshoot burned down.
     pub fn set_pane_geometry(&mut self, geom: PaneGeometry) {
         // Read the measured maxima before `geom` is moved into `self.geom`, then clamp each modal's
         // stored hscroll to it — both Expand (finder/picker scroll_right) are monotonic, so without
@@ -3829,7 +3831,7 @@ impl Controller {
                 // correct even if the `w` wrap override is on. A render that landed EMPTY (a zero-line
                 // body) opens nothing: the marker would otherwise fabricate a `path:1` reference to a
                 // line that does not exist — the same guard the synchronous `L` entry has (its
-                // `content.lines.is_empty()` inert branch). The pending entry is cleared either way.
+                // `active_lines().is_empty()` inert branch). The pending entry is cleared either way.
                 if let Some(pseq) = self.pending_line_select
                     && pseq == seq
                 {
